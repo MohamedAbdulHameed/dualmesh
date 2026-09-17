@@ -1,0 +1,52 @@
+# Reddy, Example 5.4.3: a bus bar with internal heat generation, fixed
+# temperatures on the sides, an insulated bottom, and convection on top.
+mesh:
+  type: rectangle
+  x_min: 0.0
+  x_max: 0.1
+  y_min: 0.0
+  y_max: 0.05
+  num_x_elements: 10
+  num_y_elements: 5
+
+problem:
+  method: dmcdm
+
+variables:
+  temperature: {initial_condition: 0.0}
+
+kernels:
+  conduction:
+    type: HeatConduction
+    variable: temperature
+    thermal_conductivity: 20.0
+  heating:
+    type: HeatSource
+    variable: temperature
+    heat_source: 1.0e6
+
+boundary_conditions:
+  left:
+    type: DirichletBC
+    variable: temperature
+    boundary: left
+    value: 40.0
+  right:
+    type: DirichletBC
+    variable: temperature
+    boundary: right
+    value: 10.0
+  top:
+    type: ConvectiveHeatFluxBC
+    variable: temperature
+    boundary: top
+    heat_transfer_coefficient: 75.0
+    ambient_temperature: 0.0
+
+executioner:
+  type: steady
+
+outputs:
+  vtu: bus_bar.vtu
+  reactions: [[temperature, left], [temperature, right]]
+  point_values: [[temperature, 0.05, 0.0], [temperature, 0.05, 0.05]]

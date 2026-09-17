@@ -1,0 +1,70 @@
+[build-system]
+requires = ["scikit-build-core>=0.8", "pybind11>=2.11"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "dualmesh"
+version = "0.1.0"
+description = "The dual mesh control domain method (DMCDM) for computational fluid dynamics and solid mechanics"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "LGPL-2.1-or-later" }
+authors = [{ name = "dualmesh developers" }]
+keywords = [
+  "dual mesh control domain method",
+  "DMCDM",
+  "finite element method",
+  "finite volume method",
+  "computational fluid dynamics",
+  "solid mechanics",
+  "heat transfer",
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: GNU Lesser General Public License v2 or later (LGPLv2+)",
+  "Programming Language :: C++",
+  "Programming Language :: Python :: 3",
+  "Topic :: Scientific/Engineering :: Physics",
+]
+dependencies = ["numpy>=1.20"]
+
+[project.optional-dependencies]
+mesh = ["meshio>=5.0"]
+input = ["pyyaml>=6.0"]
+plot = ["matplotlib>=3.5"]
+docs = ["sphinx>=7.0", "furo", "myst-parser", "sphinx-copybutton"]
+test = ["pytest>=7.0", "meshio>=5.0", "pyyaml>=6.0"]
+all = ["meshio>=5.0", "pyyaml>=6.0", "matplotlib>=3.5"]
+
+[project.urls]
+Homepage = "https://github.com/OWNER/dualmesh"
+Documentation = "https://dualmesh.readthedocs.io"
+Repository = "https://github.com/OWNER/dualmesh"
+Issues = "https://github.com/OWNER/dualmesh/issues"
+
+[project.scripts]
+dualmesh = "dualmesh.cli:main"
+
+[tool.scikit-build]
+wheel.packages = ["python/dualmesh"]
+cmake.version = ">=3.18"
+cmake.args = ["-DDUALMESH_BUILD_TESTS=OFF"]
+build-dir = "build/{wheel_tag}"
+
+[tool.pytest.ini_options]
+testpaths = ["tests/python"]
+pythonpath = ["python"]
+filterwarnings = ["error::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "SIM"]
+ignore = [
+  "N803",  # argument names such as A, B, D are the standard symbols
+  "N806",
+  "C408",  # dict(key=value) reads better than a literal for parameter sets
+]

@@ -1,0 +1,98 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cpp:
+    name: C++ (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DDUALMESH_BUILD_PYTHON=OFF
+      - name: Build
+        run: cmake --build build --config Release -j
+      - name: Test
+        run: ctest --test-dir build --build-config Release --output-on-failure
+
+  python:
+    name: Python ${{ matrix.python-version }} (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python-version: ["3.9", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install
+        run: pip install .[all,test]
+      - name: Verification suite
+        run: pytest -q
+      - name: Examples
+        run: |
+          python examples/cooling_fin.py
+          python examples/custom_kernel.py
+          python examples/functionally_graded_beam.py
+          python examples/transient_slab.py
+      - name: Command line
+        run: |
+          dualmesh --version
+          dualmesh list --module heat_transfer
+          dualmesh describe HeatConduction
+          cd examples && dualmesh run bus_bar.yaml
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install tools
+        run: pip install ruff
+      - name: Ruff
+        run: ruff check python tests examples
+      - name: clang-format
+        run: |
+          sudo apt-get update && sudo apt-get install -y clang-format
+          find include src python/bindings tests/cpp -name '*.h' -o -name '*.cpp' \
+            | xargs clang-format --dry-run --Werror
+
+  docs:
+    name: Documentation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install
+        run: |
+          sudo apt-get update && sudo apt-get install -y libeigen3-dev
+          pip install .[docs,all]
+      - name: Build documentation
+        run: sphinx-build -b html docs docs/_build/html
+      - uses: actions/upload-artifact@v4
+        with:
+          name: documentation
+          path: docs/_build/html
