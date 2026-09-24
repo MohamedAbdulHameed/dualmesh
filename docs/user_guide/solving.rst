@@ -8,6 +8,7 @@ chapter explains both, and every option each takes.
 .. contents::
    :local:
    :depth: 2
+   :class: this-will-duplicate-information-and-it-is-still-useful-here
 
 The steady solve
 ----------------
