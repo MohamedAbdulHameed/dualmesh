@@ -350,42 +350,45 @@ PYBIND11_MODULE(_core, m)
           "Add an element of the named type (for instance 'Quad4') on the given nodes, "
           "numbered as VTK numbers them, in element block 'block'. Returns its index.")
       .def("node", &Mesh::node, py::arg("index"), "The coordinates (x, y, z) of a node.")
-      .def("points",
-           [](const Mesh & mesh)
-           {
-             py::array_t<double> a(
-                 {static_cast<py::ssize_t>(mesh.numNodes()), static_cast<py::ssize_t>(3)});
-             auto r = a.mutable_unchecked<2>();
-             for (Index i = 0; i < mesh.numNodes(); ++i)
-               for (int d = 0; d < 3; ++d)
-                 r(i, d) = mesh.node(i)[d];
-             return a;
-           },
-           "The coordinates of every node, as an array of shape (num_nodes, 3).")
-      .def("cells",
-           [](const Mesh & mesh)
-           {
-             py::list out;
-             for (const auto & el : mesh.elements())
-             {
-               py::list conn;
-               for (int k = 0; k < el.numNodes(); ++k)
-                 conn.append(el.nodes[k]);
-               out.append(py::make_tuple(elementTypeName(el.type), conn, el.block));
-             }
-             return out;
-           },
-           "Every element as a tuple (type, node indices, block).")
-      .def("element_nodes",
-           [](const Mesh & mesh, Index e)
-           {
-             std::vector<Index> out;
-             for (int k = 0; k < mesh.element(e).numNodes(); ++k)
-               out.push_back(mesh.element(e).nodes[k]);
-             return out;
-           },
-           py::arg("element"),
-           "The node indices of an element.")
+      .def(
+          "points",
+          [](const Mesh & mesh)
+          {
+            py::array_t<double> a(
+                {static_cast<py::ssize_t>(mesh.numNodes()), static_cast<py::ssize_t>(3)});
+            auto r = a.mutable_unchecked<2>();
+            for (Index i = 0; i < mesh.numNodes(); ++i)
+              for (int d = 0; d < 3; ++d)
+                r(i, d) = mesh.node(i)[d];
+            return a;
+          },
+          "The coordinates of every node, as an array of shape (num_nodes, 3).")
+      .def(
+          "cells",
+          [](const Mesh & mesh)
+          {
+            py::list out;
+            for (const auto & el : mesh.elements())
+            {
+              py::list conn;
+              for (int k = 0; k < el.numNodes(); ++k)
+                conn.append(el.nodes[k]);
+              out.append(py::make_tuple(elementTypeName(el.type), conn, el.block));
+            }
+            return out;
+          },
+          "Every element as a tuple (type, node indices, block).")
+      .def(
+          "element_nodes",
+          [](const Mesh & mesh, Index e)
+          {
+            std::vector<Index> out;
+            for (int k = 0; k < mesh.element(e).numNodes(); ++k)
+              out.push_back(mesh.element(e).nodes[k]);
+            return out;
+          },
+          py::arg("element"),
+          "The node indices of an element.")
       .def(
           "element_type",
           [](const Mesh & mesh, Index e) { return elementTypeName(mesh.element(e).type); },
@@ -413,51 +416,54 @@ PYBIND11_MODULE(_core, m)
            py::arg("name"),
            py::arg("alias"),
            "Make 'alias' a second name for the existing side set 'name'.")
-      .def("add_sideset_by_predicate",
-           [](Mesh & mesh, const std::string & name, const py::function & f)
-           {
-             mesh.addSidesetByPredicate(name,
-                                        [f](const Point & p)
-                                        {
-                                          py::gil_scoped_acquire gil;
-                                          return py::cast<bool>(f(p[0], p[1], p[2]));
-                                        });
-           },
-           py::arg("name"),
-           py::arg("predicate"),
-           "Add a side set of the boundary sides whose centroid satisfies "
-           "predicate(x, y, z).")
-      .def("add_nodeset_by_predicate",
-           [](Mesh & mesh, const std::string & name, const py::function & f)
-           {
-             mesh.addNodesetByPredicate(name,
-                                        [f](const Point & p)
-                                        {
-                                          py::gil_scoped_acquire gil;
-                                          return py::cast<bool>(f(p[0], p[1], p[2]));
-                                        });
-           },
-           py::arg("name"),
-           py::arg("predicate"),
-           "Add a node set of the nodes that satisfy predicate(x, y, z).")
-      .def("transform_nodes",
-           [](Mesh & mesh, const py::function & f)
-           {
-             mesh.transformNodes(
-                 [f](const Point & p)
-                 {
-                   py::gil_scoped_acquire gil;
-                   auto r = py::cast<std::vector<double>>(f(p[0], p[1], p[2]));
-                   Point out{0, 0, 0};
-                   for (std::size_t i = 0; i < r.size() && i < 3; ++i)
-                     out[i] = r[i];
-                   return out;
-                 });
-           },
-           py::arg("map"),
-           "Move every node: map(x, y, z) returns the new coordinates. Promote a mesh to "
-           "second order before mapping it onto a curved domain, so that the mid-side nodes "
-           "land on the curve.")
+      .def(
+          "add_sideset_by_predicate",
+          [](Mesh & mesh, const std::string & name, const py::function & f)
+          {
+            mesh.addSidesetByPredicate(name,
+                                       [f](const Point & p)
+                                       {
+                                         py::gil_scoped_acquire gil;
+                                         return py::cast<bool>(f(p[0], p[1], p[2]));
+                                       });
+          },
+          py::arg("name"),
+          py::arg("predicate"),
+          "Add a side set of the boundary sides whose centroid satisfies "
+          "predicate(x, y, z).")
+      .def(
+          "add_nodeset_by_predicate",
+          [](Mesh & mesh, const std::string & name, const py::function & f)
+          {
+            mesh.addNodesetByPredicate(name,
+                                       [f](const Point & p)
+                                       {
+                                         py::gil_scoped_acquire gil;
+                                         return py::cast<bool>(f(p[0], p[1], p[2]));
+                                       });
+          },
+          py::arg("name"),
+          py::arg("predicate"),
+          "Add a node set of the nodes that satisfy predicate(x, y, z).")
+      .def(
+          "transform_nodes",
+          [](Mesh & mesh, const py::function & f)
+          {
+            mesh.transformNodes(
+                [f](const Point & p)
+                {
+                  py::gil_scoped_acquire gil;
+                  auto r = py::cast<std::vector<double>>(f(p[0], p[1], p[2]));
+                  Point out{0, 0, 0};
+                  for (std::size_t i = 0; i < r.size() && i < 3; ++i)
+                    out[i] = r[i];
+                  return out;
+                });
+          },
+          py::arg("map"),
+          "Move every node: map(x, y, z) returns the new coordinates. Promote a mesh to "
+          "second order before mapping it onto a curved domain, so that the mid-side nodes "
+          "land on the curve.")
       .def("fix_orientation",
            &Mesh::fixOrientation,
            "Renumber the nodes of every element whose Jacobian determinant is negative, so "
@@ -505,24 +511,26 @@ PYBIND11_MODULE(_core, m)
           },
           py::arg("name"),
           "The sides of a side set, as (element, local side) pairs.")
-      .def("sideset_names",
-           [](const Mesh & mesh)
-           {
-             std::vector<std::string> out;
-             for (const auto & [n, s] : mesh.sidesets())
-               out.push_back(n);
-             return out;
-           },
-           "The names of the side sets.")
-      .def("nodeset_names",
-           [](const Mesh & mesh)
-           {
-             std::vector<std::string> out;
-             for (const auto & [n, s] : mesh.nodesets())
-               out.push_back(n);
-             return out;
-           },
-           "The names of the node sets.")
+      .def(
+          "sideset_names",
+          [](const Mesh & mesh)
+          {
+            std::vector<std::string> out;
+            for (const auto & [n, s] : mesh.sidesets())
+              out.push_back(n);
+            return out;
+          },
+          "The names of the side sets.")
+      .def(
+          "nodeset_names",
+          [](const Mesh & mesh)
+          {
+            std::vector<std::string> out;
+            for (const auto & [n, s] : mesh.nodesets())
+              out.push_back(n);
+            return out;
+          },
+          "The names of the node sets.")
       .def("bounding_box",
            &Mesh::boundingBox,
            "The smallest and the largest coordinates, as two points.")
