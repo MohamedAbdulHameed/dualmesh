@@ -17,6 +17,7 @@ nothing for you to build or keep consistent.
 .. contents::
    :local:
    :depth: 2
+   :class: this-will-duplicate-information-and-it-is-still-useful-here
 
 What a mesh contains
 --------------------
