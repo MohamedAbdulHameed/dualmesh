@@ -1,19 +1,32 @@
 dualmesh
 ========
 
-**dualmesh** solves boundary value problems of heat transfer, solid mechanics,
-structural mechanics, and viscous incompressible flow with the *dual mesh
-control domain method* (DMCDM) of J. N. Reddy, and — using exactly the same
-problem definition — with the standard Galerkin finite element method, so that
-the two can be compared directly.
+**dualmesh** is a multiphysics framework for **heat transfer**, **solid
+mechanics** and **fluid dynamics**.  A problem is any number of fields --
+temperatures, displacements, velocities, or quantities of your own -- each
+governed by a conservation law written as a sum of named terms, and every term
+may depend on every field.  All the fields are solved together, as one
+monolithic system, by Newton's method with an exact Jacobian computed by
+automatic differentiation, so the coupling between the physics is as exact as
+the physics itself.
+
+The same problem description can be discretised by four methods, chosen by one
+keyword: the Galerkin **finite element method**, the vertex-centred and the
+cell-centred **finite volume methods**, and the **dual mesh control domain
+method** (DMCDM) of J. N. Reddy, which combines the finite element
+interpolation with the finite volume balance.  The finite element and finite
+volume methods are held to the same verification standard as the DMCDM, and an
+element or a physics that a method cannot handle is refused with an
+explanation rather than solved wrongly.
 
 The library is written in C++17 and driven from Python.  Its structure follows
-the `MOOSE framework <https://mooseframework.inl.gov>`_: physics is added as
-*kernels*, *boundary conditions*, and *materials*, which are registered objects
-with validated, self-documenting parameters; meshes are either generated or
-read from standard files; and the solvers (Newton with exact automatic
-differentiation, direct iteration, load stepping, time integration) are shared
-by every physics module.
+MOOSE [MOOSE2025]_: physics is added as *kernels*, *boundary conditions* and
+*materials*, which are registered objects with validated, self-documenting
+parameters; meshes are generated or read from standard files; and the solvers
+(Newton with exact automatic differentiation, direct iteration, load stepping,
+adaptive time integration, threaded and distributed linear algebra) are shared
+by every physics.  :doc:`scope` sets out how far that goes and how it compares
+with MOOSE and COMSOL Multiphysics.
 
 .. code-block:: python
 
@@ -59,8 +72,88 @@ The surface integral makes the secondary variables (fluxes, forces, moments)
 appear naturally on the control domain interfaces, which is the physical
 appeal of the finite volume method, while the primal interpolation removes the
 ad-hoc gradient reconstructions that the finite volume method needs.  Chapter 5
-of Reddy's book develops the method; :doc:`theory` summarizes it in the form
-the code implements.
+of Reddy's book develops the method; :doc:`theory/index` develops it in
+the form the code implements.
+
+What it solves
+--------------
+
+The physics comes in three modules, in order of coverage, plus the framework
+they are built on.
+
+**Heat transfer**: steady and transient conduction with constant, spatially
+varying and temperature-dependent conductivity, volumetric sources, convection
+of heat by a computed flow, and the full set of boundary conditions --
+prescribed temperature, prescribed flux, convection and radiation -- in
+Cartesian, axisymmetric and spherical coordinates.
+
+**Solid mechanics**: the continuum -- linear elasticity in plane stress, plane
+strain, axisymmetric and three-dimensional form, isotropic or orthotropic, with
+thermal strain -- and the reduced theories of structural members:
+Euler-Bernoulli and Timoshenko beams, classical and first-order shear
+deformation plates, and axisymmetric circular plates, with the von Kármán
+nonlinearity and sections functionally graded through the thickness
+[Reddy2000]_.  Beams and plates are solid mechanics with the through-thickness
+behaviour integrated out, so they are one module, not two.
+
+**Fluid dynamics**: steady and transient viscous incompressible flow through
+the penalty formulation of the Navier-Stokes equations [HughesLiuBrooks1979]_,
+with buoyancy in the Boussinesq approximation.
+
+**Coupled problems** are built from the same pieces.  Natural convection in a
+heated cavity couples the flow and the energy equation in both directions
+(buoyancy and convection) and reproduces the benchmark of de Vahl Davis
+[DeVahlDavis1983]_ to within half a per cent in the Nusselt number with every
+node-based method; thermal stress couples the temperature to the displacement;
+and a kernel of your own can couple anything to anything, with its Jacobian
+blocks differentiated for you.  Any advection-diffusion-reaction equation that
+can be written as a flux and a source is available through the framework
+kernels, which is also how a new physics is added.
+
+What it offers
+--------------
+
+**Four discretisations of the same problem description.**  The dual mesh
+control domain method, the Galerkin finite element method, and the
+vertex-centred and cell-centred finite volume methods of Chapter 3 of the book.
+Changing one keyword changes the method and nothing else, which is what makes a
+method-to-method comparison meaningful.
+
+**Arbitrary meshes.**  Fourteen element types -- ``Edge2``, ``Tri3``,
+``Quad4``, ``Tet4``, ``Hex8``, ``Wedge6`` (prism), ``Pyramid5``, and the
+quadratic ``Edge3``, ``Tri6``, ``Quad8``, ``Quad9``, ``Tet10``, ``Hex20`` and
+``Hex27`` -- generated by the library or read from any format meshio supports,
+and mixed freely in one mesh.  Each method accepts every element it can treat
+correctly; the dual mesh methods need a dual mesh, which the serendipity
+elements and the pyramid do not have, and they refuse those with the reason.
+
+**Exact Jacobians.**  Every kernel is written in forward-mode automatic
+differentiation, so Newton's method converges quadratically and a new nonlinear
+term needs no hand differentiation.
+
+**Steady, transient and nonlinear throughout.**  The :math:`\theta` family of
+time integrators with fixed, error-controlled and iteration-controlled adaptive
+stepping; Newton and direct iteration with relaxation; load stepping.
+
+**Adaptive mesh refinement.**  A gradient-recovery error indicator, three
+marking rules, and conforming longest-edge bisection.
+
+**Efficient linear algebra.**  A direct solver where a factorisation is cheap
+and a preconditioned Krylov solver where it is not, chosen automatically, and a
+distributed solver with a two-level overlapping Schwarz preconditioner whose
+iteration count does not grow with the number of processes.
+
+**Parallel execution.**  Threaded assembly within a process and a distributed
+solver across processes.
+
+**Verification, not assertion.**  Every claim above is checked by a test.  The
+tests reproduce published tables from the book, analytical solutions and
+independent runs of OpenFOAM, and a systematic method-of-manufactured-solutions
+study measures the order of convergence of every method on every element type
+it accepts, in one, two and three dimensions.  Where a method has a limitation, the
+documentation says so: see for instance the honest account in
+:doc:`theory/elements` of what quadratic elements do and do not buy the dual
+mesh method.
 
 Contents
 --------
@@ -70,7 +163,9 @@ Contents
 
    installation
    getting_started
-   theory
+   scope
+   user_guide/index
+   theory/index
    tutorials/index
    input_files
    objects

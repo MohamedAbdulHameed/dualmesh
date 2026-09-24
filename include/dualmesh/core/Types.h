@@ -57,8 +57,24 @@ enum class CoordinateSystem
 /// Discretization method.
 enum class Method
 {
-  DualMesh,     ///< dual mesh control domain method (DMCDM)
-  FiniteElement ///< standard Galerkin weak form (for comparison)
+  DualMesh,      ///< dual mesh control domain method (DMCDM)
+  FiniteElement, ///< standard Galerkin weak form (for comparison)
+  /// Vertex-centred finite volume method: the control domains of the dual mesh
+  /// with two-point (edge) gradients at their interfaces.  This is the
+  /// half-control volume formulation, HFVM, of Reddy, Chapter 3.
+  FiniteVolumeVertex,
+  /// Cell-centred finite volume method: one unknown per element plus one per
+  /// boundary face.  This is the zero-thickness control volume formulation,
+  /// ZFVM, of Reddy, Chapter 3, and the layout used by OpenFOAM.
+  FiniteVolumeCell
+};
+
+/// Approximation of the normal gradient on a boundary face of the cell-centred
+/// finite volume method.
+enum class BoundaryGradient
+{
+  FirstOrder, ///< two-point difference between the cell and the boundary node
+  SecondOrder ///< one-sided quadratic through the boundary node and two cells
 };
 
 } // namespace dualmesh

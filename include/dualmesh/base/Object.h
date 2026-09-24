@@ -36,6 +36,26 @@ public:
   /// Resolve names against the problem (called once before solving).
   virtual void initialSetup(Problem & problem);
 
+  /// Whether this object may be evaluated from several threads at once.
+  /// Objects implemented in C++ are thread safe because they only read their
+  /// own parameters and write into the integration-point context, which is
+  /// private to each thread.  Objects implemented in Python are not, because
+  /// calling back into the interpreter requires the global interpreter lock;
+  /// the Python bindings override this to return false, and the problem then
+  /// assembles serially.
+  ///
+  /// A C++ object is still unsafe when one of its parameters holds a function
+  /// that is not, which is what happens when a Python callable is passed
+  /// straight to a parameter, as in value=lambda x, y, z, t: ...  The default
+  /// implementation therefore checks every function-valued parameter as well,
+  /// and an override in a derived class should call it rather than simply
+  /// returning true.
+  virtual bool threadSafe() const { return parametersAreThreadSafe(); }
+
+  /// True when no function stored in this object's parameters refuses to be
+  /// called from several threads.
+  bool parametersAreThreadSafe() const;
+
 protected:
   /// Resolve a Function-valued parameter (constant, function name, or object).
   FunctionPtr getFunction(Problem & problem, const std::string & param) const;

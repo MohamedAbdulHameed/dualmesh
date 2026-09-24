@@ -39,7 +39,12 @@ def test_functionally_graded_stiffness_formulas():
         s = stiffness(n)
         a, b, d = dm.fgm.stiffness_by_quadrature(MODULUS_TOP, MODULUS_BOTTOM, n, HEIGHT, WIDTH)
         assert s.extensional == pytest.approx(a, rel=1e-8)
-        assert s.coupling == pytest.approx(b, rel=1e-8)
+        # The coupling stiffness is exactly zero for a homogeneous section
+        # (n = 0), where the quadrature returns round-off whose size depends on
+        # the numpy build.  A relative tolerance on zero cannot pass, so the
+        # tolerance is taken relative to the natural scale of B, which is the
+        # extensional stiffness times the height.
+        assert s.coupling == pytest.approx(b, rel=1e-8, abs=1e-12 * abs(a) * HEIGHT)
         assert s.bending == pytest.approx(d, rel=1e-8)
 
 

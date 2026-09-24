@@ -1,65 +1,50 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 """Expressions given as text, turned into functions of (x, y, z, t).
 
-This is the counterpart of MOOSE's ParsedFunction: input files (and Python
-code, if convenient) can describe a coefficient or a boundary value as an
-expression::
+This is the counterpart of MOOSE's ParsedFunction.  A coefficient, a source or
+a boundary value can be written as an expression::
 
     import dualmesh as dm
 
     top = dm.parsed_function("500*(1 - 10*x^2)")
     problem.add_boundary_condition(
         "DirichletBC", variable="temperature", boundary="top", value=top)
+
+or, more briefly, passed as the text itself, which is compiled the same way::
+
+    problem.add_kernel("BodyForce", variable="u", value="sin(pi*x)*exp(-t)")
+
+The expression is compiled once, to a short program evaluated in C++.  That
+matters for speed and for threading: a Python callable would be called back at
+every quadrature point of every element on every iteration, and because calling
+into Python needs the interpreter lock it would also force the assembly onto a
+single thread.  A compiled expression does neither.
+
+The grammar is the usual one.  ``+ - * /`` have their usual precedence, ``^``
+and ``**`` both mean exponentiation and bind tighter than a unary minus, and
+comparisons ``< > <= >= == !=`` give 1 or 0.  The names in scope are ``x``,
+``y``, ``z``, ``t``, the constants ``pi`` and ``e``, and the functions ``sin``,
+``cos``, ``tan``, ``asin``, ``acos``, ``atan``, ``sinh``, ``cosh``, ``tanh``,
+``exp``, ``log``, ``log10``, ``sqrt``, ``abs``, ``floor``, ``ceil``, ``erf``,
+``sign``, ``atan2``, ``pow``, ``hypot``, ``min``, ``max`` and
+``if(condition, a, b)``.  SymPy's printed form (``E``, ``Abs``, ``**``) is
+accepted unchanged, so a manufactured source derived symbolically can be
+passed straight in.
 """
 
 from __future__ import annotations
 
-import math
+from . import _core
 
-_MATH_NAMESPACE = {
-    name: getattr(math, name)
-    for name in (
-        "sin",
-        "cos",
-        "tan",
-        "asin",
-        "acos",
-        "atan",
-        "atan2",
-        "sinh",
-        "cosh",
-        "tanh",
-        "exp",
-        "log",
-        "log10",
-        "sqrt",
-        "pi",
-        "e",
-        "fabs",
-        "pow",
-        "erf",
-        "floor",
-        "ceil",
-        "hypot",
-    )
-}
-_MATH_NAMESPACE["abs"] = abs
-_MATH_NAMESPACE["min"] = min
-_MATH_NAMESPACE["max"] = max
+ParsedFunction = _core.ParsedFunction
 
 
-def parsed_function(expression: str):
-    """Turn an expression in ``x``, ``y``, ``z``, ``t`` into a callable.
+def parsed_function(expression: str) -> ParsedFunction:
+    """Compile an expression in ``x``, ``y``, ``z`` and ``t``.
 
-    The usual mathematical functions are available (``sin``, ``exp``,
-    ``sqrt``, ...), ``^`` is accepted for exponentiation, and nothing else is
-    in scope.  Input files are trusted input: do not feed expressions from an
-    untrusted source to this function.
+    The result is a :class:`dualmesh.ParsedFunction`, which every parameter
+    that takes a function accepts, and which can also be called from Python as
+    ``f(x, y, z, t)`` to check it.  A syntax error is reported with its
+    position in the text.
     """
-    code = compile(expression.replace("^", "**"), "<dualmesh expression>", "eval")
-
-    def evaluate(x=0.0, y=0.0, z=0.0, t=0.0):
-        return float(eval(code, {"__builtins__": {}}, dict(_MATH_NAMESPACE, x=x, y=y, z=z, t=t)))
-
-    evaluate.expression = expression
-    return evaluate
+    return _core.ParsedFunction(str(expression))

@@ -333,3 +333,195 @@ def test_axisymmetric_pressurized_cylinder_matches_plane_strain():
     ]
     computed = problem.sample("u", np.column_stack([radii, np.full_like(radii, 0.005)]))
     assert computed == pytest.approx(exact, rel=2e-3)
+
+
+# ---------------------------------------------------------------------------
+# Thermal stress
+# ---------------------------------------------------------------------------
+YOUNGS_MODULUS = 200.0e9
+POISSONS_RATIO = 0.3
+EXPANSION_COEFFICIENT = 1.2e-5
+TEMPERATURE_RISE = 100.0
+
+
+def thermal_problem(formulation, restrained, method="dmcdm"):
+    """A unit square heated uniformly by ``TEMPERATURE_RISE``.
+
+    With ``restrained=True`` every edge is held fixed, so the strain is zero
+    everywhere and the stress is the thermal stress of a fully constrained
+    body.  With ``restrained=False`` only the rigid body motion is removed, so
+    the body expands freely and the in-plane stress must vanish.
+    """
+    mesh = dm.generate_rectangle_mesh(
+        x_min=0.0, x_max=1.0, y_min=0.0, y_max=1.0, num_x_elements=3, num_y_elements=3
+    )
+    problem = dm.Problem(mesh, method=method)
+    problem.add_variable("disp_x")
+    problem.add_variable("disp_y")
+    problem.add_variable("temperature")
+    problem.add_kernel("Diffusion", "conduction", variable="temperature")
+    problem.add_boundary_condition(
+        "DirichletBC",
+        "temperature_everywhere",
+        variable="temperature",
+        boundary=mesh.sideset_names(),
+        value=TEMPERATURE_RISE,
+    )
+    problem.add_material(
+        "LinearElasticStress",
+        "elasticity",
+        displacements=["disp_x", "disp_y"],
+        youngs_modulus=YOUNGS_MODULUS,
+        poissons_ratio=POISSONS_RATIO,
+        formulation=formulation,
+        temperature="temperature",
+        thermal_expansion_coefficient=EXPANSION_COEFFICIENT,
+        reference_temperature=0.0,
+    )
+    problem.add_kernel("StressDivergence", "equilibrium_x", variable="disp_x", component=0)
+    problem.add_kernel("StressDivergence", "equilibrium_y", variable="disp_y", component=1)
+    if restrained:
+        for boundary in mesh.sideset_names():
+            problem.add_boundary_condition(
+                "DirichletBC", f"hold_x_{boundary}", variable="disp_x", boundary=boundary, value=0.0
+            )
+            problem.add_boundary_condition(
+                "DirichletBC", f"hold_y_{boundary}", variable="disp_y", boundary=boundary, value=0.0
+            )
+    else:
+        problem.add_boundary_condition(
+            "DirichletBC", "hold_x", variable="disp_x", boundary="left", value=0.0
+        )
+        problem.add_boundary_condition(
+            "DirichletBC", "hold_y", variable="disp_y", boundary="bottom", value=0.0
+        )
+    problem.solve()
+    return problem
+
+
+@pytest.mark.parametrize("method", ["dmcdm", "fem"])
+def test_plane_strain_thermal_stress_of_a_fully_restrained_body(method):
+    r"""For a body that cannot move at all, the strain is zero and the
+    three-dimensional law gives
+
+        sigma_ij = -(3 lambda + 2 mu) alpha dT delta_ij = -E alpha dT / (1 - 2 nu) delta_ij,
+
+    in every direction, the in-plane ones and the out-of-plane one alike.
+    Plane strain is that law with eps_zz held at zero, so it must reproduce the
+    same number; an implementation that leaves the zz column of the stiffness
+    empty gets E alpha dT / [(1 + nu)(1 - 2 nu)] instead, which is too small by
+    a factor of 1 + nu.
+    """
+    problem = thermal_problem("plane_strain", restrained=True, method=method)
+    stress = np.asarray(problem.property_at_centroids("stress"))
+    expected = (
+        -YOUNGS_MODULUS * EXPANSION_COEFFICIENT * TEMPERATURE_RISE / (1.0 - 2.0 * POISSONS_RATIO)
+    )
+    assert stress[:, 0] == pytest.approx(expected, rel=1e-10)
+    assert stress[:, 1] == pytest.approx(expected, rel=1e-10)
+    assert stress[:, 2] == pytest.approx(expected, rel=1e-10)
+    assert stress[:, 5] == pytest.approx(0.0, abs=1e-3)
+
+
+@pytest.mark.parametrize("method", ["dmcdm", "fem"])
+def test_plane_stress_thermal_stress_of_a_fully_restrained_body(method):
+    """In plane stress the out-of-plane strain is free and the out-of-plane
+    stress is zero, which condenses the law down to
+    sigma_xx = sigma_yy = -E alpha dT / (1 - nu)."""
+    problem = thermal_problem("plane_stress", restrained=True, method=method)
+    stress = np.asarray(problem.property_at_centroids("stress"))
+    expected = -YOUNGS_MODULUS * EXPANSION_COEFFICIENT * TEMPERATURE_RISE / (1.0 - POISSONS_RATIO)
+    assert stress[:, 0] == pytest.approx(expected, rel=1e-10)
+    assert stress[:, 1] == pytest.approx(expected, rel=1e-10)
+    assert stress[:, 2] == pytest.approx(0.0, abs=1e-3)
+
+
+def test_free_thermal_expansion_in_plane_strain():
+    r"""A body free to expand in the plane but held in the third direction has
+    no in-plane stress, an out-of-plane stress of -E alpha dT, and an in-plane
+    strain of (1 + nu) alpha dT rather than alpha dT: the material is pushed
+    sideways by the restraint through the thickness.
+    """
+    problem = thermal_problem("plane_strain", restrained=False)
+    stress = np.asarray(problem.property_at_centroids("stress"))
+    reference = YOUNGS_MODULUS * EXPANSION_COEFFICIENT * TEMPERATURE_RISE
+    assert stress[:, 0] == pytest.approx(0.0, abs=1e-6 * reference)
+    assert stress[:, 1] == pytest.approx(0.0, abs=1e-6 * reference)
+    assert stress[:, 2] == pytest.approx(-reference, rel=1e-10)
+
+    points = problem.entity_points()
+    right_edge = np.flatnonzero(np.isclose(points[:, 0], 1.0))
+    expected_stretch = (1.0 + POISSONS_RATIO) * EXPANSION_COEFFICIENT * TEMPERATURE_RISE
+    assert problem.values("disp_x")[right_edge] == pytest.approx(expected_stretch, rel=1e-9)
+
+
+def test_free_thermal_expansion_in_plane_stress():
+    """With the third direction free as well, the body expands by alpha dT and
+    carries no stress at all."""
+    problem = thermal_problem("plane_stress", restrained=False)
+    stress = np.asarray(problem.property_at_centroids("stress"))
+    reference = YOUNGS_MODULUS * EXPANSION_COEFFICIENT * TEMPERATURE_RISE
+    assert np.abs(stress).max() < 1e-6 * reference
+    points = problem.entity_points()
+    right_edge = np.flatnonzero(np.isclose(points[:, 0], 1.0))
+    expected = EXPANSION_COEFFICIENT * TEMPERATURE_RISE
+    assert problem.values("disp_x")[right_edge] == pytest.approx(expected, rel=1e-9)
+
+
+def test_three_dimensional_thermal_stress_matches_plane_strain():
+    """The same fully restrained problem in three dimensions must give exactly
+    the plane strain answer, which is the statement that the two formulations
+    describe the same material law."""
+    mesh = dm.generate_box_mesh(
+        x_min=0.0,
+        x_max=1.0,
+        y_min=0.0,
+        y_max=1.0,
+        z_min=0.0,
+        z_max=1.0,
+        num_x_elements=2,
+        num_y_elements=2,
+        num_z_elements=2,
+    )
+    problem = dm.Problem(mesh)
+    for name in ("disp_x", "disp_y", "disp_z"):
+        problem.add_variable(name)
+    problem.add_variable("temperature")
+    problem.add_kernel("Diffusion", "conduction", variable="temperature")
+    problem.add_boundary_condition(
+        "DirichletBC",
+        "temperature_everywhere",
+        variable="temperature",
+        boundary=mesh.sideset_names(),
+        value=TEMPERATURE_RISE,
+    )
+    problem.add_material(
+        "LinearElasticStress",
+        "elasticity",
+        displacements=["disp_x", "disp_y", "disp_z"],
+        youngs_modulus=YOUNGS_MODULUS,
+        poissons_ratio=POISSONS_RATIO,
+        formulation="three_dimensional",
+        temperature="temperature",
+        thermal_expansion_coefficient=EXPANSION_COEFFICIENT,
+        reference_temperature=0.0,
+    )
+    for component, name in enumerate(("disp_x", "disp_y", "disp_z")):
+        problem.add_kernel(
+            "StressDivergence", f"equilibrium_{name}", variable=name, component=component
+        )
+        for boundary in mesh.sideset_names():
+            problem.add_boundary_condition(
+                "DirichletBC",
+                f"hold_{name}_{boundary}",
+                variable=name,
+                boundary=boundary,
+                value=0.0,
+            )
+    problem.solve()
+    stress = np.asarray(problem.property_at_centroids("stress"))
+    expected = (
+        -YOUNGS_MODULUS * EXPANSION_COEFFICIENT * TEMPERATURE_RISE / (1.0 - 2.0 * POISSONS_RATIO)
+    )
+    for component in range(3):
+        assert stress[:, component] == pytest.approx(expected, rel=1e-10)

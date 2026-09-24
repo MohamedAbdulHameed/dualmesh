@@ -22,7 +22,7 @@ From source
 
 .. code-block:: console
 
-   git clone https://github.com/OWNER/dualmesh.git
+   git clone https://github.com/MohamedAbdulHameed/dualmesh.git
    cd dualmesh
    pip install .[all]
 

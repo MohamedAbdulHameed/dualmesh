@@ -3,12 +3,12 @@
 
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "python"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 project = "dualmesh"
 copyright = "2026, the dualmesh developers"
@@ -32,6 +32,12 @@ source_suffix = {".rst": "restructuredtext", ".md": "markdown"}
 html_theme = "furo"
 html_static_path = ["_static"]
 html_title = "dualmesh"
+# "Edit this page" and "view source" links to the repository.
+html_theme_options = {
+    "source_repository": "https://github.com/MohamedAbdulHameed/dualmesh/",
+    "source_branch": "main",
+    "source_directory": "docs/",
+}
 
 autodoc_member_order = "bysource"
 autodoc_typehints = "description"
@@ -60,55 +66,13 @@ except Exception:  # pragma: no cover
     autodoc_mock_imports = ["dualmesh._core", "numpy", "meshio", "yaml"]
 
 
-def _write_object_reference(app):  # pragma: no cover - documentation build helper
-    """Generate the object (syntax) reference from the registry."""
-    target = Path(app.srcdir) / "objects.rst"
-    if not _HAVE_DUALMESH:
-        if not target.exists():
-            target.write_text(
-                "Object reference\n================\n\n"
-                "The object reference is generated from the compiled library, which was "
-                "not available when this documentation was built. Run ``dualmesh list`` "
-                "and ``dualmesh describe <type>`` locally instead.\n"
-            )
-        return
-    import dualmesh as dm
+def _write_generated_pages(app):  # pragma: no cover - documentation build helper
+    """Generate the syntax reference from the object registry."""
+    from _generate_syntax import write_syntax_reference
 
-    lines = [
-        "Object reference",
-        "================",
-        "",
-        "Every object below is created by name, either from Python::",
-        "",
-        "    problem.add_kernel(\"HeatConduction\", variable=\"temperature\",",
-        "                       thermal_conductivity=20.0)",
-        "",
-        "or from an input file (see :doc:`input_files`). The same list is available at",
-        "the command line with ``dualmesh list`` and ``dualmesh describe <type>``.",
-        "",
-    ]
-    modules: dict[str, list[str]] = {}
-    for name in dm.registered_types():
-        modules.setdefault(dm.object_module(name), []).append(name)
-    titles = {
-        "framework": "Framework",
-        "heat_transfer": "Heat transfer",
-        "solid_mechanics": "Solid mechanics",
-        "structural": "Beams and plates",
-        "fluids": "Viscous incompressible flows",
-    }
-    for module in sorted(modules, key=lambda m: list(titles).index(m) if m in titles else 99):
-        title = titles.get(module, module)
-        lines += [title, "-" * len(title), ""]
-        for name in sorted(modules[module]):
-            lines += [name, "^" * len(name), "", "*Category:* " + dm.object_category(name), ""]
-            body = dm.describe_object(name).strip("\n")
-            lines += ["::", ""]
-            lines += ["    " + row for row in body.splitlines()]
-            lines += [""]
-    target.write_text("\n".join(lines) + "\n")
+    write_syntax_reference(Path(app.srcdir), _HAVE_DUALMESH)
 
 
 def setup(app):  # pragma: no cover - documentation build helper
-    app.connect("builder-inited", _write_object_reference)
+    app.connect("builder-inited", _write_generated_pages)
     return {"parallel_read_safe": True}

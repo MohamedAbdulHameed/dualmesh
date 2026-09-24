@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 //
-// Solid mechanics module: linear elasticity in plane stress, plane strain,
-// axisymmetric, and three-dimensional settings.
+// Solid mechanics module, continuum: linear elasticity in plane stress, plane
+// strain, axisymmetric, and three-dimensional settings.  The structural
+// members (beams and plates), the reduced theories of the same module, are in
+// SolidMechanicsStructures.cpp.
 //
 // Equilibrium is written in the canonical conservation form used by the
 // framework.  For the displacement component u_i,
@@ -68,22 +70,77 @@ public:
     p.addOptional("formulation",
                   ParameterKind::String,
                   std::string("plane_stress"),
-                  "plane_stress, plane_strain, axisymmetric, or three_dimensional.");
-    p.addOptional("youngs_modulus", ParameterKind::Real, 1.0, "Young's modulus E.");
-    p.addOptional("poissons_ratio", ParameterKind::Real, 0.0, "Poisson's ratio nu.");
-    p.addOptional("stiffness_c11", ParameterKind::Real, 0.0, "Orthotropic plane stiffness c11.");
-    p.addOptional("stiffness_c12", ParameterKind::Real, 0.0, "Orthotropic plane stiffness c12.");
-    p.addOptional("stiffness_c22", ParameterKind::Real, 0.0, "Orthotropic plane stiffness c22.");
-    p.addOptional("stiffness_c66", ParameterKind::Real, 0.0, "Orthotropic shear stiffness c66.");
+                  "Which two- or three-dimensional idealisation to use. 'plane_stress' is "
+                  "a thin body free to contract through its thickness, 'plane_strain' a "
+                  "long body restrained along its axis, 'axisymmetric' a body of revolution "
+                  "on an (r, z) mesh, which requires coordinates = 'axisymmetric' on the "
+                  "problem, and 'three_dimensional' a full solid. Any other string is an "
+                  "error.");
+    p.addOptional("youngs_modulus",
+                  ParameterKind::Real,
+                  1.0,
+                  "Young's modulus E, in a force-per-area unit consistent with the mesh and "
+                  "the loads. It is ignored in the orthotropic branch; see "
+                  "'stiffness_c11'.");
+    p.addOptional("poissons_ratio",
+                  ParameterKind::Real,
+                  0.0,
+                  "Poisson's ratio nu, which must satisfy -1 < nu < 0.5. The plane-strain, "
+                  "axisymmetric and three-dimensional stiffnesses become singular as nu "
+                  "approaches 0.5, so a nearly incompressible material needs care. The "
+                  "default 0 gives no transverse coupling at all and is almost never the "
+                  "material intended, so set it explicitly.");
+    p.addOptional("stiffness_c11",
+                  ParameterKind::Real,
+                  0.0,
+                  "Reduced plane stiffness c11 of an orthotropic material. Setting it to a "
+                  "non-zero value is what selects the orthotropic branch: c11, c12, c22 and "
+                  "c66 are then used and 'youngs_modulus' and 'poissons_ratio' are ignored. "
+                  "It applies to 'plane_stress' and 'plane_strain' only. It is an error in "
+                  "'three_dimensional', and it is ignored without warning in "
+                  "'axisymmetric', which always uses E and nu.");
+    p.addOptional("stiffness_c12",
+                  ParameterKind::Real,
+                  0.0,
+                  "Reduced plane stiffness c12, the coupling term, placed symmetrically in "
+                  "the stiffness matrix. Used only when 'stiffness_c11' is non-zero and the "
+                  "formulation is plane stress or plane strain.");
+    p.addOptional("stiffness_c22",
+                  ParameterKind::Real,
+                  0.0,
+                  "Reduced plane stiffness c22. Used only when 'stiffness_c11' is non-zero "
+                  "and the formulation is plane stress or plane strain.");
+    p.addOptional("stiffness_c66",
+                  ParameterKind::Real,
+                  0.0,
+                  "Reduced in-plane shear stiffness c66, relating the shear stress to the "
+                  "engineering shear strain gamma_xy rather than to eps_xy. Used only when "
+                  "'stiffness_c11' is non-zero. In the orthotropic branch the out-of-plane "
+                  "row of the stiffness is left at zero, so the plane-strain sigma_zz is "
+                  "not recovered.");
     p.addOptional("thermal_expansion_coefficient",
                   ParameterKind::Real,
                   0.0,
-                  "Coefficient of thermal expansion alpha (isotropic).");
+                  "Isotropic coefficient of thermal expansion alpha, per degree of the "
+                  "temperature variable. It is subtracted from the three normal strains "
+                  "only, leaving the shear strains untouched, so the thermal strain stays "
+                  "isotropic even when the stiffness is orthotropic. It has an effect only "
+                  "when 'temperature' also names a variable.");
     p.addOptional("temperature",
                   ParameterKind::String,
                   std::string(""),
-                  "Temperature variable driving thermal strains (optional).");
-    p.addOptional("reference_temperature", ParameterKind::Real, 0.0, "Stress-free temperature.");
+                  "Name of an existing variable to use as the temperature in the thermal "
+                  "strain alpha (T - T_reference). Thermal strain is applied only when this "
+                  "and 'thermal_expansion_coefficient' are both set; setting one without "
+                  "the other is accepted and does nothing. Leave it empty for an isothermal "
+                  "analysis.");
+    p.addOptional("reference_temperature",
+                  ParameterKind::Real,
+                  0.0,
+                  "Temperature at which the body is free of stress, in the same units as "
+                  "the temperature variable. It is ignored when 'temperature' is empty. The "
+                  "default 0 turns the whole temperature field into a thermal load, which "
+                  "is seldom intended.");
     return p;
   }
 
@@ -136,11 +193,21 @@ public:
     }
     else // plane strain
     {
+      // Plane strain is the three-dimensional law with eps_zz held at zero, so
+      // the matrix here is the full isotropic one, lambda + 2 mu on the
+      // diagonal and lambda off it, written with f = E / [(1 + nu)(1 - 2 nu)].
+      // The zz column is kept even though eps_zz is always zero, because the
+      // thermal strain alpha (T - T_ref) is subtracted from all three normal
+      // strains before the multiplication, and the zz entry of that subtraction
+      // is what carries the out-of-plane part of the thermal stress.  Dropping
+      // the column makes the in-plane thermal stress of a fully restrained body
+      // come out as E alpha dT / [(1 + nu)(1 - 2 nu)] instead of the correct
+      // E alpha dT / (1 - 2 nu).
       const double f = E / ((1 + nu) * (1 - 2 * nu));
-      _C[0][0] = _C[1][1] = f * (1 - nu);
+      _C[0][0] = _C[1][1] = _C[2][2] = f * (1 - nu);
       _C[0][1] = _C[1][0] = f * nu;
-      _C[2][0] = _C[2][1] = f * nu; // out-of-plane stress, post-computed
-      _C[2][2] = f * (1 - nu);
+      _C[0][2] = _C[2][0] = f * nu;
+      _C[1][2] = _C[2][1] = f * nu;
       _C[5][5] = E / (2 * (1 + nu));
     }
   }
@@ -227,12 +294,28 @@ public:
     InputParameters p = Kernel::validParams();
     p.setClassDescription(
         "Divergence of the stress for one displacement component: "
-        "F = h (sigma_i0, sigma_i1, sigma_i2). The natural boundary quantity is the traction "
-        "component times the thickness. In the axisymmetric case the hoop stress enters the "
-        "radial equation as a source.");
+        "F = h (sigma_i0, sigma_i1, sigma_i2), where h is the thickness. The source is zero "
+        "except in the axisymmetric case, where the radial equation (component 0) carries "
+        "S = sigma_tt / r, taken as zero on the axis. The natural boundary quantity is the "
+        "traction component times the thickness.");
     p.addRequired(
-        "component", ParameterKind::Integer, "Component index: 0 (x or r), 1 (y or z), or 2 (z).");
-    p.addOptional("thickness", ParameterKind::Real, 1.0, "Thickness h of a plane body.");
+        "component",
+        ParameterKind::Integer,
+        "Index of the displacement component whose equilibrium equation this instance "
+        "assembles: 0 for x or r, 1 for y or z, 2 for z. It must agree with the component "
+        "that 'variable' represents; the agreement is not checked, and a mismatch silently "
+        "assembles the wrong row. Add one instance per displacement variable.");
+    p.addOptional("thickness",
+                  ParameterKind::Real,
+                  1.0,
+                  "Out-of-plane thickness h multiplying the whole equilibrium equation, for "
+                  "plane stress and plane strain only. Leave it at 1 in the "
+                  "three-dimensional case and in the axisymmetric case, where the "
+                  "integration measure already carries the factor 2 pi r; any other value "
+                  "there is accepted and gives a wrong answer. It must match the thickness "
+                  "given to every TractionBC and PressureBC of the same model. A PointSource "
+                  "is not scaled by it, so a concentrated load must already be the total "
+                  "force through the thickness.");
     p.addOptional("stress_property",
                   ParameterKind::String,
                   std::string("stress"),
@@ -272,7 +355,11 @@ public:
     // Voigt index of sigma_{component, direction}
     static const int voigt[3][3] = {{0, 5, 4}, {5, 1, 3}, {4, 3, 2}};
     for (int d = 0; d < ctx.dim; ++d)
-      F[d] = _thickness * ctx.property(_stress, voigt[_component][d]);
+    {
+      F[d] = ctx.property(_stress, voigt[_component][d]);
+      if (_thickness != 1.0)
+        F[d] *= _thickness;
+    }
   }
 
   ADReal computeSource(const QpContext & ctx) const override
@@ -299,10 +386,32 @@ public:
   static InputParameters validParams()
   {
     InputParameters p = IntegratedBC::validParams();
-    p.setClassDescription("Prescribed traction component t_i (force per unit area).");
-    p.addOptional("traction", ParameterKind::Function, 0.0, "Traction component t_i(x, t).");
-    p.addOptional("thickness", ParameterKind::Real, 1.0, "Thickness h of a plane body.");
-    p.addOptional("scale_with_load", ParameterKind::Boolean, true, "Scale with the load factor.");
+    p.setClassDescription(
+        "Prescribed component of the surface traction, in force per unit area. The "
+        "component is the one belonging to the equation named by 'variable', so the object "
+        "is added once per displacement variable; unlike PressureBC it has no 'component' "
+        "parameter.");
+    p.addOptional("traction",
+                  ParameterKind::Function,
+                  0.0,
+                  "The traction component conjugate to 'variable', as a constant or the "
+                  "name of a function. A positive value acts along the positive direction "
+                  "of that variable's coordinate axis, whichever way the outward normal "
+                  "points. The value is multiplied by 'thickness'.");
+    p.addOptional("thickness",
+                  ParameterKind::Real,
+                  1.0,
+                  "Out-of-plane thickness h multiplying the traction, for plane problems. It "
+                  "must equal the thickness given to the StressDivergence kernels of the "
+                  "same model, or the load and the stiffness are scaled inconsistently. "
+                  "Leave it at 1 in axisymmetric and three-dimensional problems.");
+    p.addOptional("scale_with_load",
+                  ParameterKind::Boolean,
+                  true,
+                  "Multiply this contribution by the load factor during load stepping. Unlike "
+                  "the framework default this is true, because applied loading is normally "
+                  "what is ramped; set it to false for a part of the loading that must stay "
+                  "fixed while the rest is increased.");
     return p;
   }
   explicit TractionBC(const InputParameters & p)
@@ -331,11 +440,38 @@ public:
   static InputParameters validParams()
   {
     InputParameters p = IntegratedBC::validParams();
-    p.setClassDescription("Normal pressure p acting on a surface: t_i = -p n_i.");
-    p.addRequired("component", ParameterKind::Integer, "Component index of this equation.");
-    p.addOptional("pressure", ParameterKind::Function, 0.0, "Pressure p(x, t) (positive inward).");
-    p.addOptional("thickness", ParameterKind::Real, 1.0, "Thickness h of a plane body.");
-    p.addOptional("scale_with_load", ParameterKind::Boolean, true, "Scale with the load factor.");
+    p.setClassDescription(
+        "A pressure acting normal to a surface, giving the traction t_i = -p n_i with n "
+        "the outward normal, so a positive pressure pushes inward. Add one instance per "
+        "displacement variable, each with its own 'component'.");
+    p.addRequired("component",
+                  ParameterKind::Integer,
+                  "Index of the displacement component this instance contributes to: 0 for "
+                  "x or r, 1 for y or z, 2 for z. It selects which component of the outward "
+                  "normal multiplies the pressure, so it must agree with the component that "
+                  "'variable' represents; a mismatch is not detected and applies the "
+                  "pressure along the wrong axis. Add one instance per displacement "
+                  "variable.");
+    p.addOptional("pressure",
+                  ParameterKind::Function,
+                  0.0,
+                  "Pressure in force per unit area, as a constant or the name of a "
+                  "function. A positive value presses inward, against the outward normal. "
+                  "It is multiplied by 'thickness' in plane problems.");
+    p.addOptional("thickness",
+                  ParameterKind::Real,
+                  1.0,
+                  "Out-of-plane thickness h multiplying the pressure, for plane problems. It "
+                  "must equal the thickness given to the StressDivergence kernels of the "
+                  "same model. Leave it at 1 in axisymmetric and three-dimensional "
+                  "problems.");
+    p.addOptional("scale_with_load",
+                  ParameterKind::Boolean,
+                  true,
+                  "Multiply this contribution by the load factor during load stepping. Unlike "
+                  "the framework default this is true, because applied loading is normally "
+                  "what is ramped; set it to false for a part of the loading that must stay "
+                  "fixed while the rest is increased.");
     return p;
   }
   explicit PressureBC(const InputParameters & p)
@@ -369,6 +505,7 @@ registerSolidMechanicsObjects(Factory & f)
   f.add<StressDivergence>("StressDivergence", ObjectCategory::Kernel, m);
   f.add<TractionBC>("TractionBC", ObjectCategory::BoundaryCondition, m);
   f.add<PressureBC>("PressureBC", ObjectCategory::BoundaryCondition, m);
+  registerStructuralMemberObjects(f);
 }
 
 } // namespace dualmesh

@@ -20,6 +20,9 @@ public:
   virtual ~Function() = default;
   virtual double value(const Point & x, double t) const = 0;
   virtual std::string description() const { return "function"; }
+  /// Whether this function may be called from several threads at once (see
+  /// Object::threadSafe); Python callables override it to return false.
+  virtual bool threadSafe() const { return true; }
 };
 
 using FunctionPtr = std::shared_ptr<Function>;

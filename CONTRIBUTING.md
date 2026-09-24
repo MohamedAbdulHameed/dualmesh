@@ -6,7 +6,7 @@ the project, what is expected of a change, and how the code is organized.
 ## Building and testing
 
 ```console
-git clone https://github.com/OWNER/dualmesh.git
+git clone https://github.com/MohamedAbdulHameed/dualmesh.git
 cd dualmesh
 pip install -e .[all,test]
 

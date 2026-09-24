@@ -68,8 +68,10 @@ private:
 // Module registration functions (called once by the Factory constructor).
 void registerFrameworkObjects(Factory & f);
 void registerHeatTransferObjects(Factory & f);
+/// Solid mechanics: continuum elasticity and, through
+/// registerStructuralMemberObjects, the beams and plates.
 void registerSolidMechanicsObjects(Factory & f);
-void registerStructuralObjects(Factory & f);
+void registerStructuralMemberObjects(Factory & f);
 void registerFluidObjects(Factory & f);
 
 } // namespace dualmesh

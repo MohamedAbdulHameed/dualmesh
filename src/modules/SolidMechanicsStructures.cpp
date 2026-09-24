@@ -1,8 +1,16 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 //
-// Structural module: beams, axisymmetric circular plates, and rectangular
-// plates, including functionally graded (through-thickness graded) sections
-// and the von Karman geometric nonlinearity.
+// Solid mechanics module, structural members: beams, axisymmetric circular
+// plates, and rectangular plates, including functionally graded
+// (through-thickness graded) sections and the von Karman geometric
+// nonlinearity.
+//
+// These are the reduced theories of solid mechanics: a beam or a plate is a
+// three-dimensional elastic body whose kinematics have been restricted by an
+// assumption about how the displacement varies through the thickness, and
+// whose equilibrium equations have been integrated through it.  They belong
+// to the same module as the continuum elasticity of SolidMechanics.cpp, and
+// are kept in a separate file only because they are long.
 //
 // All models are written as systems of second-order equations, which is what
 // the dual mesh control domain method requires, so every equation takes the
@@ -34,29 +42,77 @@ public:
     p.addOptional("extensional_stiffness",
                   ParameterKind::Real,
                   1.0,
-                  "A_xx = integral of E over the cross-section (per unit width for plates).");
+                  "Extensional stiffness A = integral of E dA over the cross-section, per "
+                  "unit width for plates. For every plate model give the plate stiffness, "
+                  "which already contains the factor 1/(1 - nu^2); the kernel does not add "
+                  "it. In the mixed models A does not appear on its own: only the "
+                  "combination Abar = (D A - B^2)/D enters.");
     p.addOptional("coupling_stiffness",
                   ParameterKind::Real,
                   0.0,
-                  "B_xx = integral of E z; non-zero for functionally graded sections.");
-    p.addOptional("bending_stiffness", ParameterKind::Real, 1.0, "D_xx = integral of E z^2.");
+                  "Bending-extension coupling stiffness B = integral of E z dA. It is zero "
+                  "for a section that is symmetric about its reference surface and non-zero "
+                  "for a functionally graded or laminated one, where it couples the axial "
+                  "and bending equations. Because z is measured from the reference surface, "
+                  "B depends on where that surface was placed when A, B and D were "
+                  "computed.");
+    p.addOptional("bending_stiffness",
+                  ParameterKind::Real,
+                  1.0,
+                  "Bending stiffness D = integral of E z^2 dA. It must not be zero, because "
+                  "the mixed models divide by it: Abar = (D A - B^2)/D, Bbar = B/D, and the "
+                  "moment equation carries the term -M/D. For plates give the plate "
+                  "stiffness, which already contains 1/(1 - nu^2).");
     p.addOptional("shear_stiffness",
                   ParameterKind::Real,
                   1.0,
-                  "S_xz = K_s integral of G (shear-deformable models only).");
+                  "Transverse shear stiffness S = K_s integral of G dA, with K_s the shear "
+                  "correction factor, 5/6 for a homogeneous rectangular section. It is used "
+                  "by BeamTimoshenkoDisplacement, BeamTimoshenkoMixed, "
+                  "CircularPlateFirstOrder and PlateFirstOrder, and ignored by "
+                  "BeamEulerBernoulliMixed and CircularPlateClassicalMixed, which are "
+                  "shear-rigid theories.");
     p.addOptional(
-        "foundation_modulus", ParameterKind::Real, 0.0, "Elastic foundation modulus c_f.");
+        "foundation_modulus",
+        ParameterKind::Real,
+        0.0,
+        "Winkler elastic foundation modulus, which contributes the source c_f w to the "
+        "transverse equation. Its units are force per unit deflection per unit length for a "
+        "beam and per unit area for a plate. It must be non-negative; the default 0 means "
+        "no foundation.");
     p.addOptional(
-        "transverse_load", ParameterKind::Function, 0.0, "Distributed transverse load q(x, t).");
-    p.addOptional("axial_load", ParameterKind::Function, 0.0, "Distributed axial load f(x, t).");
+        "transverse_load",
+        ParameterKind::Function,
+        0.0,
+        "Distributed load acting along the deflection w, in force per unit length for a beam "
+        "and force per unit area for a plate, as a constant or the name of a function. It "
+        "enters the transverse equation as the source -q, so a positive value pushes the "
+        "deflection positive.");
+    p.addOptional("axial_load",
+                  ParameterKind::Function,
+                  0.0,
+                  "Distributed load along the axial or radial displacement u, entering that "
+                  "equation as the source -f. It is used by the three beam models and by "
+                  "both circular plate models, and ignored by PlateFirstOrder, which takes "
+                  "its in-plane loads from 'in_plane_load_x' and 'in_plane_load_y' "
+                  "instead.");
     p.addOptional("von_karman",
                   ParameterKind::Boolean,
                   false,
-                  "Include the von Karman nonlinear strain (1/2)(dw/dx)^2.");
+                  "Include the von Karman moderate-rotation nonlinearity: the membrane "
+                  "strain gains the term (1/2)(dw/dx)^2 and the transverse flux gains the "
+                  "follower term N dw/dx. Turn it on when the deflection is of the order of "
+                  "the thickness or larger. It makes the problem nonlinear, so the solve "
+                  "needs Newton's method or direct iteration and usually load stepping, and "
+                  "it must be set the same way on every instance of the model.");
     p.addOptional("scale_with_load",
                   ParameterKind::Boolean,
                   true,
-                  "Scale the distributed loads with the load factor.");
+                  "Multiply this kernel's contribution by the load factor during load "
+                  "stepping, which is how the distributed loads are ramped. It defaults to "
+                  "true here, unlike the framework default. Note that the weight applies to "
+                  "the whole contribution, stiffness terms included, so set it to false on "
+                  "any instance whose internal forces must not be ramped.");
     return p;
   }
 
@@ -136,9 +192,23 @@ public:
         "deflection, and the bending moment. Add it once per variable. The natural boundary "
         "quantities are the axial force N, the shear force V = dM/dx + N dw/dx, and the "
         "rotation dw/dx.");
-    p.addRequired("axial_displacement", ParameterKind::String, "Axial displacement u.");
-    p.addRequired("transverse_displacement", ParameterKind::String, "Deflection w.");
-    p.addRequired("bending_moment", ParameterKind::String, "Bending moment M_xx.");
+    p.addRequired("axial_displacement",
+                  ParameterKind::String,
+                  "Name of the variable holding the axial displacement. This and the other "
+                  "variable-name parameters are how the kernel decides which equation an "
+                  "instance assembles: it compares its own 'variable' against them. Add the "
+                  "kernel once per variable of the model, with identical parameters.");
+    p.addRequired("transverse_displacement",
+                  ParameterKind::String,
+                  "Name of the variable holding the transverse deflection w, measured positive in "
+                  "the direction in which a positive transverse load acts.");
+    p.addRequired("bending_moment",
+                  ParameterKind::String,
+                  "Name of the variable carrying the bending moment. In a mixed formulation "
+                  "the moment is a genuine unknown, not a post-processed quantity, and it "
+                  "needs its own boundary conditions: leave it free at a clamped end, where "
+                  "the natural condition is the vanishing slope, and prescribe it to be "
+                  "zero with a DirichletBC at a simply supported or free end.");
     return p;
   }
   explicit BeamEulerBernoulliMixed(const InputParameters & p) : StructuralKernel(p) {}
@@ -212,8 +282,16 @@ public:
         "transverse deflection, and the rotation of the cross-section. Add it once per "
         "variable. The shear terms are evaluated at the centre of the primal element to "
         "avoid shear locking.");
-    p.addRequired("axial_displacement", ParameterKind::String, "Axial displacement u.");
-    p.addRequired("transverse_displacement", ParameterKind::String, "Deflection w.");
+    p.addRequired(
+        "axial_displacement",
+        ParameterKind::String,
+        "Name of the variable holding the axial displacement u of the reference surface. This and "
+        "the other variable-name parameters are how the kernel decides which equation an instance "
+        "assembles, so add the kernel once per variable with identical parameters.");
+    p.addRequired("transverse_displacement",
+                  ParameterKind::String,
+                  "Name of the variable holding the transverse deflection w, measured positive in "
+                  "the direction in which a positive transverse load acts.");
     p.addRequired("rotation", ParameterKind::String, "Rotation phi_x of the cross-section.");
     return p;
   }
@@ -290,9 +368,23 @@ public:
         "Mixed Timoshenko beam model in terms of the axial displacement, the transverse "
         "deflection, and the bending moment. Add it once per variable. The model is free of "
         "shear locking, and the rotation is recovered as phi = -dw/dx + (1/S) dM/dx.");
-    p.addRequired("axial_displacement", ParameterKind::String, "Axial displacement u.");
-    p.addRequired("transverse_displacement", ParameterKind::String, "Deflection w.");
-    p.addRequired("bending_moment", ParameterKind::String, "Bending moment M_xx.");
+    p.addRequired(
+        "axial_displacement",
+        ParameterKind::String,
+        "Name of the variable holding the axial displacement u of the reference surface. This and "
+        "the other variable-name parameters are how the kernel decides which equation an instance "
+        "assembles, so add the kernel once per variable with identical parameters.");
+    p.addRequired("transverse_displacement",
+                  ParameterKind::String,
+                  "Name of the variable holding the transverse deflection w, measured positive in "
+                  "the direction in which a positive transverse load acts.");
+    p.addRequired(
+        "bending_moment",
+        ParameterKind::String,
+        "Name of the variable carrying the bending moment. In a mixed formulation the moment is a "
+        "genuine unknown, not a post-processed quantity, and it needs its own boundary conditions: "
+        "leave it free at a clamped end, where the natural condition is the vanishing slope, and "
+        "prescribe it to be zero at a simply supported or free end.");
     return p;
   }
   explicit BeamTimoshenkoMixed(const InputParameters & p) : StructuralKernel(p) {}
@@ -367,10 +459,25 @@ public:
         "terms of the radial displacement, the deflection, and the rotation. Use it on a "
         "one-dimensional radial mesh with coordinates = 'axisymmetric'. Add it once per "
         "variable; the stiffnesses are the plate stiffnesses (they contain 1 / (1 - nu^2)).");
-    p.addRequired("radial_displacement", ParameterKind::String, "Radial displacement u.");
-    p.addRequired("transverse_displacement", ParameterKind::String, "Deflection w.");
-    p.addRequired("rotation", ParameterKind::String, "Rotation phi_r.");
-    p.addOptional("poissons_ratio", ParameterKind::Real, 0.3, "Poisson's ratio nu.");
+    p.addRequired("radial_displacement",
+                  ParameterKind::String,
+                  "Name of the variable holding the radial displacement u of the mid-plane.");
+    p.addRequired("transverse_displacement",
+                  ParameterKind::String,
+                  "Name of the variable holding the transverse deflection w, measured positive in "
+                  "the direction in which a positive transverse load acts.");
+    p.addRequired("rotation",
+                  ParameterKind::String,
+                  "Name of the variable holding the rotation of the normal in the (r, z) plane. "
+                  "The sign convention follows the shear resultant Q_r = S (phi_r + dw/dr), so "
+                  "phi_r is positive when it adds to the slope.");
+    p.addOptional(
+        "poissons_ratio",
+        ParameterKind::Real,
+        0.3,
+        "Poisson's ratio nu, used here only to form the hoop and cross-coupling terms of the "
+        "stress resultants. The magnitude of the response comes from A, B and D, which must "
+        "already contain the factor 1/(1 - nu^2); this parameter does not introduce it.");
     p.addOptional("shear_treatment",
                   ParameterKind::String,
                   std::string("include"),
@@ -480,6 +587,182 @@ private:
 };
 
 // ---------------------------------------------------------------------------
+// Axisymmetric circular plate, classical (Kirchhoff) plate theory, mixed model
+// in terms of (u, w, M_rr).  Reddy's DM-CP(M) model, Eqs. (8.2.23)-(8.2.25).
+//
+// The classical theory gives a fourth-order equation in w, which the dual mesh
+// control domain method cannot use, so the bending moment M_rr is carried as a
+// third unknown and the system is reduced to three second-order equations.
+// With
+//
+//   ehat0 = du/dr + (1/2)(dw/dr)^2 + nu u/r          (Eq. 8.2.15a)
+//   Abar  = (D A - B^2)/D ,  Bbar = B/D              (Eq. 8.2.19)
+//   N_rr  = Abar ehat0 + Bbar M_rr                   (Eq. 8.2.18)
+//   N_tt  = Abar [nu du/dr + (nu/2)(dw/dr)^2 + u/r]
+//           + (1 - nu^2)(B/r)(Bbar u - dw/dr) + nu Bbar M_rr    (Eq. 8.2.22)
+//   M_tt  = nu M_rr + (1 - nu^2)(B u - D dw/dr)/r    (Eq. 8.2.21)
+//   Q_r   = dM_rr/dr + (M_rr - M_tt)/r               (Eq. 8.2.10)
+//   V_r   = Q_r + N_rr dw/dr
+//
+// the three equations, each in the canonical form -div F + S = 0 with the
+// axisymmetric measure 2 pi r dr, are
+//
+//   u  :  F = N_rr ,  S = N_tt / r - f              (Eq. 8.2.8,  8.2.23)
+//   w  :  F = V_r ,   S = c_f w - q                 (Eq. 8.2.9,  8.2.24)
+//   M  :  F = dw/dr ,
+//         S = (1 - nu)(dw/dr)/r + Bbar ehat0 - M_rr / D         (Eq. 8.2.25)
+//
+// The third equation is Eq. (8.2.20) rewritten as a divergence: note that
+// -(1/r) d/dr (r dw/dr) + (1 - nu)(dw/dr)/r = -(d^2 w/dr^2 + (nu/r) dw/dr),
+// which is exactly the effective curvature ehat1_rr of Eq. (8.2.15b).
+//
+// Note on the printed form of Eq. (8.2.24): the book writes the term
+// (1 - nu^2) D_rr Bbar_rr (u/r - (1/r) dw/dr), which would put the factor
+// B_rr = D_rr Bbar_rr on both u and dw/dr.  Inverting Eqs. (8.2.14) gives
+// M_tt - nu M_rr = (1 - nu^2)(B_rr u - D_rr dw/dr)/r, so the transverse term
+// carries D_rr, not B_rr.  The form used here is the one that follows from
+// Eq. (8.2.21), which the book states correctly, and it reproduces the
+// published results of Tables 8.6.1 and 8.6.2.
+// ---------------------------------------------------------------------------
+class CircularPlateClassicalMixed : public StructuralKernel
+{
+public:
+  static InputParameters validParams()
+  {
+    InputParameters p = StructuralKernel::validParams();
+    p.setClassDescription(
+        "Mixed classical (Kirchhoff) plate model of an axisymmetric circular plate in terms "
+        "of the radial displacement, the deflection, and the radial bending moment "
+        "(Reddy's DM-CP(M) model). Use it on a one-dimensional radial mesh with "
+        "coordinates = 'axisymmetric'. Add it once per variable; the stiffnesses are the "
+        "plate stiffnesses (they contain 1 / (1 - nu^2)). The natural boundary quantities "
+        "are r N_rr, r V_r, and the slope dw/dr, so a clamped edge needs no condition on "
+        "the moment equation and a simply supported edge prescribes M_rr = 0.");
+    p.addRequired("radial_displacement",
+                  ParameterKind::String,
+                  "Name of the variable holding the radial displacement u of the mid-plane.");
+    p.addRequired("transverse_displacement",
+                  ParameterKind::String,
+                  "Name of the variable holding the transverse deflection w, measured positive in "
+                  "the direction in which a positive transverse load acts.");
+    p.addRequired(
+        "bending_moment",
+        ParameterKind::String,
+        "Name of the variable carrying the radial bending moment M_rr, the third unknown of the "
+        "mixed classical plate model. Prescribe it to be zero at a simply supported edge; leave it "
+        "free at a clamped edge, where the vanishing slope is the natural condition.");
+    p.addOptional(
+        "poissons_ratio",
+        ParameterKind::Real,
+        0.3,
+        "Poisson's ratio nu, used here only to form the hoop and cross-coupling terms of the "
+        "stress resultants. The magnitude of the response comes from A, B and D, which must "
+        "already contain the factor 1/(1 - nu^2); this parameter does not introduce it.");
+    return p;
+  }
+  explicit CircularPlateClassicalMixed(const InputParameters & p)
+      : StructuralKernel(p), _nu(p.getReal("poissons_ratio"))
+  {
+  }
+
+  void initialSetup(Problem & problem) override
+  {
+    StructuralKernel::initialSetup(problem);
+    if (problem.coordinateSystem() != CoordinateSystem::Axisymmetric)
+      throw InputError("CircularPlateClassicalMixed needs coordinates = 'axisymmetric'.");
+    _u = problem.variableIndex(_params.getString("radial_displacement"));
+    _w = problem.variableIndex(_params.getString("transverse_displacement"));
+    _m = problem.variableIndex(_params.getString("bending_moment"));
+    _eq =
+        equationFor(problem, {"radial_displacement", "transverse_displacement", "bending_moment"});
+  }
+
+  bool hasFlux() const override { return true; }
+  bool hasSource() const override { return true; }
+
+private:
+  /// The effective radial membrane strain of Eq. (8.2.15a).
+  ADReal effectiveStrain(const QpContext & ctx) const
+  {
+    const double r = ctx.x[0];
+    const ADReal & du = ctx.gradient(_u)[0];
+    ADReal e = du;
+    if (_von_karman)
+    {
+      const ADReal & slope = ctx.gradient(_w)[0];
+      e += 0.5 * slope * slope;
+    }
+    // At r = 0 the hoop strain u/r is replaced by its limit du/dr.
+    e += _nu * (r != 0.0 ? ctx.value(_u) / r : du);
+    return e;
+  }
+
+  ADReal radialForce(const QpContext & ctx) const
+  {
+    return _Abar * effectiveStrain(ctx) + _Bbar * ctx.value(_m);
+  }
+
+  /// Eq. (8.2.22).
+  ADReal hoopForce(const QpContext & ctx) const
+  {
+    const double r = ctx.x[0];
+    const ADReal & du = ctx.gradient(_u)[0];
+    const ADReal & dw = ctx.gradient(_w)[0];
+    ADReal e = _nu * du;
+    if (_von_karman)
+      e += 0.5 * _nu * dw * dw;
+    e += (r != 0.0 ? ctx.value(_u) / r : du);
+    ADReal out = _Abar * e + _nu * _Bbar * ctx.value(_m);
+    if (r != 0.0)
+      out += (1.0 - _nu * _nu) * _B / r * (_Bbar * ctx.value(_u) - dw);
+    return out;
+  }
+
+  /// Eq. (8.2.10) with M_tt from Eq. (8.2.21).
+  ADReal shearForce(const QpContext & ctx) const
+  {
+    const double r = ctx.x[0];
+    ADReal out = ctx.gradient(_m)[0];
+    if (r != 0.0)
+      out += (1.0 - _nu) * ctx.value(_m) / r -
+             (1.0 - _nu * _nu) / (r * r) * (_B * ctx.value(_u) - _D * ctx.gradient(_w)[0]);
+    return out;
+  }
+
+public:
+  void computeFlux(const QpContext & ctx, ADVector3 & F) const override
+  {
+    if (_eq == 0)
+      F[0] = radialForce(ctx);
+    else if (_eq == 1)
+    {
+      F[0] = shearForce(ctx);
+      if (_von_karman)
+        F[0] += radialForce(ctx) * ctx.gradient(_w)[0];
+    }
+    else
+      F[0] = ctx.gradient(_w)[0];
+  }
+
+  ADReal computeSource(const QpContext & ctx) const override
+  {
+    const double r = ctx.x[0];
+    if (_eq == 0)
+      return (r != 0.0 ? hoopForce(ctx) / r : ADReal(0.0)) - _f->value(ctx.x, ctx.time);
+    if (_eq == 1)
+      return _cf * ctx.value(_w) - _q->value(ctx.x, ctx.time);
+    ADReal out = _Bbar * effectiveStrain(ctx) - ctx.value(_m) / _D;
+    if (r != 0.0)
+      out += (1.0 - _nu) * ctx.gradient(_w)[0] / r;
+    return out;
+  }
+
+private:
+  double _nu;
+  int _u = -1, _w = -1, _m = -1, _eq = 0;
+};
+
+// ---------------------------------------------------------------------------
 // Rectangular plate, first-order shear deformation theory, displacement model
 // in terms of (u, v, w, phi_x, phi_y) with the von Karman nonlinearity.
 // ---------------------------------------------------------------------------
@@ -497,10 +780,25 @@ public:
         "(reduced_integration = true) for thin plates.");
     p.addRequired("in_plane_displacements",
                   ParameterKind::StringList,
-                  "The two in-plane displacements (u, v).");
-    p.addRequired("transverse_displacement", ParameterKind::String, "Deflection w.");
-    p.addRequired("rotations", ParameterKind::StringList, "The two rotations (phi_x, phi_y).");
-    p.addOptional("poissons_ratio", ParameterKind::Real, 0.3, "Poisson's ratio nu.");
+                  "Exactly two variable names, in the order (u along x, v along y). Any other "
+                  "count is an error.");
+    p.addRequired("transverse_displacement",
+                  ParameterKind::String,
+                  "Name of the variable holding the transverse deflection w, measured positive in "
+                  "the direction in which a positive transverse load acts.");
+    p.addRequired(
+        "rotations",
+        ParameterKind::StringList,
+        "Exactly two variable names, in the order (phi_x, phi_y), the rotations of the normal in "
+        "the x-z and y-z planes. The sign convention follows the shear resultants Q = S (phi + "
+        "grad w), so phi_x is positive when it adds to dw/dx. Any other count is an error.");
+    p.addOptional(
+        "poissons_ratio",
+        ParameterKind::Real,
+        0.3,
+        "Poisson's ratio nu, used here only to form the hoop and cross-coupling terms of the "
+        "stress resultants. The magnitude of the response comes from A, B and D, which must "
+        "already contain the factor 1/(1 - nu^2); this parameter does not introduce it.");
     p.addOptional("shear_treatment",
                   ParameterKind::String,
                   std::string("include"),
@@ -509,8 +807,18 @@ public:
                   "transverse shear forces alone). Splitting the kernel in two lets the shear "
                   "terms be integrated with a reduced rule, which removes shear locking in "
                   "thin plates.");
-    p.addOptional("in_plane_load_x", ParameterKind::Function, 0.0, "In-plane load f_x.");
-    p.addOptional("in_plane_load_y", ParameterKind::Function, 0.0, "In-plane load f_y.");
+    p.addOptional(
+        "in_plane_load_x",
+        ParameterKind::Function,
+        0.0,
+        "Distributed in-plane load along x, in force per unit area, entering the u equation as the "
+        "source -f_x. It replaces the inherited 'axial_load', which this model ignores.");
+    p.addOptional(
+        "in_plane_load_y",
+        ParameterKind::Function,
+        0.0,
+        "Distributed in-plane load along y, in force per unit area, entering the v equation as the "
+        "source -f_y. It replaces the inherited 'axial_load', which this model ignores.");
     return p;
   }
   explicit PlateFirstOrder(const InputParameters & p)
@@ -656,13 +964,14 @@ private:
 } // namespace
 
 void
-registerStructuralObjects(Factory & f)
+registerStructuralMemberObjects(Factory & f)
 {
-  const std::string m = "structural";
+  const std::string m = "solid_mechanics";
   f.add<BeamEulerBernoulliMixed>("BeamEulerBernoulliMixed", ObjectCategory::Kernel, m);
   f.add<BeamTimoshenkoDisplacement>("BeamTimoshenkoDisplacement", ObjectCategory::Kernel, m);
   f.add<BeamTimoshenkoMixed>("BeamTimoshenkoMixed", ObjectCategory::Kernel, m);
   f.add<CircularPlateFirstOrder>("CircularPlateFirstOrder", ObjectCategory::Kernel, m);
+  f.add<CircularPlateClassicalMixed>("CircularPlateClassicalMixed", ObjectCategory::Kernel, m);
   f.add<PlateFirstOrder>("PlateFirstOrder", ObjectCategory::Kernel, m);
 }
 

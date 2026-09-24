@@ -22,15 +22,76 @@ from . import _core
 Mesh = _core.Mesh
 
 #: meshio cell names accepted by dualmesh, mapped to dualmesh element types.
+#: dualmesh numbers every element as VTK does, which is also meshio's
+#: convention, so no reordering is needed in either direction.
 _MESHIO_TO_DUALMESH = {
     "line": "Edge2",
     "triangle": "Tri3",
     "quad": "Quad4",
     "tetra": "Tet4",
     "hexahedron": "Hex8",
+    "wedge": "Wedge6",
+    "pyramid": "Pyramid5",
+    "line3": "Edge3",
+    "triangle6": "Tri6",
+    "quad8": "Quad8",
+    "quad9": "Quad9",
+    "tetra10": "Tet10",
+    "hexahedron20": "Hex20",
+    "hexahedron27": "Hex27",
 }
 _DUALMESH_TO_MESHIO = {v: k for k, v in _MESHIO_TO_DUALMESH.items()}
-_DIMENSION = {"Edge2": 1, "Tri3": 2, "Quad4": 2, "Tet4": 3, "Hex8": 3}
+_DIMENSION = {
+    "Edge2": 1,
+    "Edge3": 1,
+    "Tri3": 2,
+    "Quad4": 2,
+    "Tri6": 2,
+    "Quad8": 2,
+    "Quad9": 2,
+    "Tet4": 3,
+    "Hex8": 3,
+    "Wedge6": 3,
+    "Pyramid5": 3,
+    "Tet10": 3,
+    "Hex20": 3,
+    "Hex27": 3,
+}
+#: Element types whose nodes carry the quadratic interpolation.
+_QUADRATIC = {"Edge3", "Tri6", "Quad8", "Quad9", "Tet10", "Hex20", "Hex27"}
+#: The quadratic types reached by the serendipity promotion.
+_SERENDIPITY = {"Quad8", "Hex20"}
+#: The linear element with the same corners, for the generators, which build a
+#: linear mesh first and promote it afterwards.
+_CORNER_TYPE = {
+    "Edge3": "Edge2",
+    "Tri6": "Tri3",
+    "Quad8": "Quad4",
+    "Quad9": "Quad4",
+    "Tet10": "Tet4",
+    "Hex20": "Hex8",
+    "Hex27": "Hex8",
+}
+
+
+def _corner_type(element_type: str) -> str:
+    """The linear element a generator should build for a requested type."""
+    return _CORNER_TYPE.get(element_type, element_type)
+
+
+def _promote(mesh: Mesh, element_type: str) -> Mesh:
+    """Promote to second order when a quadratic element type was asked for."""
+    if element_type not in _QUADRATIC:
+        return mesh
+    return mesh.second_order(serendipity=element_type in _SERENDIPITY)
+
+
+def _meshio_permutation(element_type: str):
+    """The permutation between meshio's node order, which is VTK's, and
+    dualmesh's.  dualmesh follows VTK for every element, so this is the
+    identity; it is kept so that the reader and the writer have one place to
+    change should that ever stop being true."""
+    return Mesh.vtk_node_order(element_type)
 
 
 def graded_coordinates(
@@ -84,14 +145,16 @@ def generate_line_mesh(
     num_elements: int | None = None,
     bias: float = 1.0,
     coordinates: Sequence[float] | None = None,
+    element_type: str = "Edge2",
 ) -> Mesh:
-    """One-dimensional mesh of Edge2 elements.
+    """One-dimensional mesh of ``Edge2`` or ``Edge3`` elements.
 
     Side sets and node sets ``"left"`` and ``"right"`` are created
-    automatically.
+    automatically.  ``num_elements`` always counts elements, so an ``Edge3``
+    mesh with ``num_elements=4`` has four elements and nine nodes.
     """
     x = _axis_coordinates(coordinates, start, end, num_elements, bias, "x")
-    return _core.generate_line_mesh(x)
+    return _promote(_core.generate_line_mesh(x), element_type)
 
 
 def generate_rectangle_mesh(
@@ -108,16 +171,21 @@ def generate_rectangle_mesh(
     x_coordinates: Sequence[float] | None = None,
     y_coordinates: Sequence[float] | None = None,
 ) -> Mesh:
-    """Structured two-dimensional mesh of ``Quad4`` or ``Tri3`` elements.
+    """Structured two-dimensional mesh of ``Quad4``, ``Tri3``, ``Quad8``,
+    ``Quad9`` or ``Tri6`` elements.  ``Quad8`` works with ``method="fem"`` and
+    ``method="zfvm"`` only.
 
     Side sets ``"left"``, ``"right"``, ``"bottom"`` and ``"top"`` are created
     automatically.  Pass ``x_coordinates``/``y_coordinates`` for a fully
     non-uniform grid, or the bounds together with the element counts and an
-    optional geometric ``bias``.
+    optional geometric ``bias``.  The element counts always count elements, so
+    asking for a quadratic type gives the same number of elements and more
+    nodes, not fewer elements.
     """
     x = _axis_coordinates(x_coordinates, x_min, x_max, num_x_elements, x_bias, "x")
     y = _axis_coordinates(y_coordinates, y_min, y_max, num_y_elements, y_bias, "y")
-    return _core.generate_rectangle_mesh(x, y, element_type, diagonal)
+    linear = _core.generate_rectangle_mesh(x, y, _corner_type(element_type), diagonal)
+    return _promote(linear, element_type)
 
 
 def generate_box_mesh(
@@ -138,7 +206,12 @@ def generate_box_mesh(
     y_coordinates: Sequence[float] | None = None,
     z_coordinates: Sequence[float] | None = None,
 ) -> Mesh:
-    """Structured three-dimensional mesh of ``Hex8`` or ``Tet4`` elements.
+    """Structured three-dimensional mesh of ``Hex8``, ``Tet4``, ``Wedge6``,
+    ``Pyramid5``, ``Hex20``, ``Hex27`` or ``Tet10`` elements.  A ``Tet4`` mesh
+    has six tetrahedra per cell, a ``Wedge6`` mesh two prisms split on the base
+    diagonal, and a ``Pyramid5`` mesh six pyramids meeting at an added centre
+    node.  ``Pyramid5`` and ``Hex20`` work with ``method="fem"`` and
+    ``method="zfvm"`` only.
 
     Side sets ``"left"``, ``"right"``, ``"bottom"``, ``"top"``, ``"back"`` and
     ``"front"`` are created automatically.
@@ -146,7 +219,8 @@ def generate_box_mesh(
     x = _axis_coordinates(x_coordinates, x_min, x_max, num_x_elements, x_bias, "x")
     y = _axis_coordinates(y_coordinates, y_min, y_max, num_y_elements, y_bias, "y")
     z = _axis_coordinates(z_coordinates, z_min, z_max, num_z_elements, z_bias, "z")
-    return _core.generate_box_mesh(x, y, z, element_type)
+    linear = _core.generate_box_mesh(x, y, z, _corner_type(element_type))
+    return _promote(linear, element_type)
 
 
 def annulus_coordinates(
@@ -181,7 +255,13 @@ def generate_annulus_mesh(
     )
     angle_start, angle_end = np.radians(start_angle), np.radians(end_angle)
     angles = np.linspace(angle_start, angle_end, num_angular_elements + 1)
-    mesh = _core.generate_rectangle_mesh(radii, list(angles), element_type, "right")
+    mesh = _core.generate_rectangle_mesh(radii, list(angles), _corner_type(element_type), "right")
+    # The promotion happens while the mesh is still a rectangle in the (r,
+    # theta) plane, so that the added mid-side nodes are mapped onto the true
+    # circle by the transformation below rather than onto the straight chord
+    # between their corners.  This is what makes a quadratic annulus mesh
+    # isoparametric: the element edges follow the boundary.
+    mesh = _promote(mesh, element_type)
     mesh.transform_nodes(lambda r, theta, z: [r * np.cos(theta), r * np.sin(theta), 0.0])
     mesh.fix_orientation()
 
@@ -285,13 +365,16 @@ def read_mesh(
         tags = None
         if tag_arrays is not None and block_index < len(tag_arrays):
             tags = np.asarray(tag_arrays[block_index]).ravel()
+        permutation = _meshio_permutation(element_type)
         if _DIMENSION[element_type] == dim:
             for row_index, row in enumerate(block.data):
                 block_id = int(tags[row_index]) if tags is not None else 0
-                mesh.add_element(element_type, [int(i) for i in row], block_id)
+                mesh.add_element(element_type, [int(row[k]) for k in permutation], block_id)
         elif _DIMENSION[element_type] == dim - 1:
             for row_index, row in enumerate(block.data):
                 tag = int(tags[row_index]) if tags is not None else 0
+                # A side is identified by its node set, so its order is
+                # immaterial here.
                 faces_by_tag.setdefault(tag, []).append([int(i) for i in row])
     mesh.fix_orientation()
 
@@ -315,7 +398,10 @@ def write_mesh(mesh: Mesh, filename: str, file_format: str | None = None, **poin
 
     cells: dict[str, list[list[int]]] = {}
     for element_type, connectivity, _ in mesh.cells():
-        cells.setdefault(_DUALMESH_TO_MESHIO[element_type], []).append(list(connectivity))
+        permutation = _meshio_permutation(element_type)
+        cells.setdefault(_DUALMESH_TO_MESHIO[element_type], []).append(
+            [int(connectivity[k]) for k in permutation]
+        )
     blocks: list[int] = [block for _, _, block in mesh.cells()]
     meshio_mesh = meshio.Mesh(
         points=np.asarray(mesh.points()),

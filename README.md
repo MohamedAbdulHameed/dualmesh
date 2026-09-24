@@ -1,19 +1,23 @@
 # dualmesh
 
-**The dual mesh control domain method for computational fluid dynamics and solid mechanics.**
+**A multiphysics framework for heat transfer, solid mechanics and fluid dynamics, with the dual mesh control domain method as an option.**
 
-`dualmesh` solves boundary value problems of heat transfer, solid mechanics,
-structural mechanics and viscous incompressible flow with the *dual mesh control
-domain method* (DMCDM) of J. N. Reddy, and — from the same problem definition —
-with the standard Galerkin finite element method, so that the two can be
-compared directly. The core is C++17; everything is driven from Python.
+`dualmesh` solves coupled boundary value problems: any number of fields
+(temperatures, displacements, velocities, or quantities of your own), each
+governed by a conservation law built from named terms that may depend on every
+field, solved together as one monolithic system by Newton's method with an
+exact Jacobian from automatic differentiation. The same problem description is
+discretised, by changing one keyword, with the Galerkin **finite element
+method**, the vertex-centred or cell-centred **finite volume method**, or the
+**dual mesh control domain method** (DMCDM) of J. N. Reddy. The core is C++17;
+everything is driven from Python.
 
 The structure follows the [MOOSE framework](https://mooseframework.inl.gov):
 physics is added as **kernels**, **boundary conditions** and **materials**,
 which are registered objects with validated, self-documenting parameters;
-meshes are generated or read from standard files; and the solvers (Newton with
-exact automatic differentiation, direct iteration, load stepping, time
-integration) are shared by every physics module.
+meshes are generated or read from standard files; and the solvers are shared
+by every physics. See [`docs/scope.rst`](docs/scope.rst) for what that covers
+and an honest comparison with MOOSE and COMSOL Multiphysics.
 
 ```python
 import dualmesh as dm
@@ -58,34 +62,48 @@ discretized either way.
 
 ## Features
 
-- **Methods**: dual mesh control domain method and Galerkin finite elements,
-  selected by one argument.
-- **Elements**: `Edge2`, `Tri3`, `Quad4`, `Tet4`, `Hex8`, on straight or
-  distorted meshes, in 1D, 2D and 3D.
+- **Methods**: Galerkin finite elements, vertex-centred and cell-centred
+  finite volumes, and the dual mesh control domain method, selected by one
+  argument. A method refuses, with the reason, an element or a physics it
+  cannot treat correctly.
+- **Elements**: `Edge2`, `Edge3`, `Tri3`, `Tri6`, `Quad4`, `Quad8`, `Quad9`,
+  `Tet4`, `Tet10`, `Hex8`, `Hex20`, `Hex27`, `Wedge6`, `Pyramid5`, mixed freely
+  in one mesh, on straight or distorted meshes, in 1D, 2D and 3D.
 - **Coordinate systems**: Cartesian, axisymmetric (`2πr`), spherical (`4πr²`).
 - **Physics modules**
   - *heat transfer*: conduction with temperature-dependent conductivity,
-    volumetric heating, capacity, convective, radiative and flux boundaries;
+    volumetric heating, capacity, convection by a computed flow, convective,
+    radiative and flux boundaries;
   - *solid mechanics*: linear elasticity in plane stress, plane strain,
-    axisymmetric and three-dimensional form, tractions and pressures;
-  - *structural*: mixed Euler–Bernoulli beams, displacement and mixed
-    Timoshenko beams, axisymmetric circular plates and rectangular plates
-    (first-order shear deformation), functionally graded sections, von Kármán
-    nonlinearity;
-  - *fluids*: Stokes and Navier–Stokes flow by the penalty formulation with
-    recovered pressure;
+    axisymmetric and three-dimensional form with thermal strain, tractions and
+    pressures; and the structural members: mixed Euler–Bernoulli beams,
+    displacement and mixed Timoshenko beams, axisymmetric circular plates and
+    rectangular plates, functionally graded sections, von Kármán nonlinearity;
+  - *fluid dynamics*: Stokes and Navier–Stokes flow by the penalty formulation
+    with recovered pressure, and Boussinesq buoyancy;
   - *framework*: diffusion, anisotropic diffusion, reaction, advection, body
     force, time derivative, coupled force, Dirichlet/Neumann/Robin conditions,
-    point sources, generic materials.
+    point sources, generic materials, and expressions such as
+    `"sin(pi*x)*exp(-t)"` compiled to C++.
+- **Coupled problems**: monolithic and fully coupled, verified on the natural
+  convection benchmark of de Vahl Davis (Nusselt numbers within 0.2 %).
 - **Solvers**: Newton's method with exact Jacobians from forward-mode automatic
   differentiation, direct (Picard) iteration with relaxation, load stepping,
-  steady and transient (θ-method) executioners, sparse LU / BiCGSTAB / CG.
+  steady and transient (θ-method, adaptive step size) executioners. Linear
+  systems are solved directly where that is cheap and by BiCGSTAB or GMRES with
+  an ILU(0) preconditioner where it is not, chosen automatically.
+- **Parallel**: threaded assembly, and an MPI solver with a two-level
+  overlapping Schwarz preconditioner whose iteration count does not grow with
+  the number of processes.
 - **Quadrature per kernel**: Gauss rules, midpoint, trapezoid, Simpson, nodal
   lumping, interface and control-domain-trapezoid rules, and selective reduced
   integration for locking and penalty terms.
-- **Meshing**: generators (line, rectangle, box, annulus, graded spacing) and
-  readers for Gmsh, Exodus, VTK, Abaqus and more through
-  [meshio](https://github.com/nschloe/meshio).
+- **Meshing**: generators (line, rectangle, box, annulus, graded spacing),
+  local and uniform refinement, and readers for Gmsh, Exodus, VTK, Abaqus and
+  more through [meshio](https://github.com/nschloe/meshio).
+- **Verification**: Reddy's book examples, analytical solutions, OpenFOAM
+  cross-checks, and a method-of-manufactured-solutions study of the order of
+  convergence of every method on every element type.
 - **Extensible from Python**: kernels, boundary conditions and materials can be
   written in Python and still get exact derivatives.
 - **Input files**: `dualmesh run input.yaml`, plus `dualmesh list` and
@@ -98,7 +116,9 @@ reproduced by the test suite — one-dimensional and two-dimensional conduction,
 axisymmetric conduction, advection–diffusion at high Péclet number, nonlinear
 conduction, plane elasticity, pressurized cylinders, squeezed flow, the
 lid-driven cavity at Re = 0 and Re = 1000, functionally graded beams (linear and
-von Kármán), circular plates and rectangular plates. See
+von Kármán), circular plates and rectangular plates. Natural convection is
+checked against de Vahl Davis (1983), and a manufactured-solution study checks
+the convergence order of every method and element type. See
 [`docs/verification.rst`](docs/verification.rst) and `tests/python`. The suite
 also cross-checks against OpenFOAM (see `verification/openfoam`).
 

@@ -18,14 +18,35 @@
 namespace dualmesh
 {
 
+/// The element types the library knows.
+///
+/// The linear family (Edge2, Tri3, Quad4, Tet4, Hex8, Wedge6) and the full
+/// quadratic family (Edge3, Tri6, Quad9, Tet10, Hex27) carry a dual mesh and so
+/// work with every discretisation.  The serendipity elements Quad8 and Hex20
+/// and the pyramid Pyramid5 have no dual mesh and work with the finite element
+/// method and the cell-centred finite volume method only; a Problem refuses
+/// them for the other two methods and says why.  Node numbering follows VTK
+/// for every type, so files written and read through VTK need no reordering.
 enum class ElementType
 {
   Edge2,
   Tri3,
   Quad4,
   Tet4,
-  Hex8
+  Hex8,
+  Edge3,
+  Tri6,
+  Quad9,
+  Tet10,
+  Hex27,
+  Quad8,
+  Hex20,
+  Wedge6,
+  Pyramid5
 };
+
+/// The largest number of nodes any supported element has (Hex27).
+inline constexpr int kMaxElementNodes = 27;
 
 std::string elementTypeName(ElementType t);
 ElementType elementTypeFromName(const std::string & name);
@@ -35,10 +56,31 @@ int elementDimension(ElementType t);
 struct Element
 {
   ElementType type;
-  std::array<Index, 8> nodes;
+  std::array<Index, kMaxElementNodes> nodes;
   int block = 0;
   int numNodes() const { return elementNumNodes(type); }
+  /// The linear element with the same corners, used for geometric queries
+  /// such as point location and for output formats that cannot store the
+  /// higher-order nodes.
+  ElementType cornerType() const;
+  int numCorners() const { return elementNumNodes(cornerType()); }
 };
+
+/// Whether a type carries mid-edge, mid-face or interior nodes.
+bool elementIsQuadratic(ElementType t);
+/// The linear element with the same corners.
+ElementType elementCornerType(ElementType t);
+/// The quadratic element with the same corners, for mesh promotion.
+ElementType elementQuadraticType(ElementType t);
+
+/// The VTK cell type of an element type (VTK_LINE = 3, VTK_TRIANGLE = 5, and
+/// so on), used by the VTU writer and by the meshio bridge.
+int vtkCellType(ElementType t);
+/// The permutation from VTK local node numbering to dualmesh local node
+/// numbering: entry i is the dualmesh node that goes into VTK position i.
+/// dualmesh numbers every element as VTK does, so this is the identity; it is
+/// kept as the one place to change should a type ever need reordering.
+const std::vector<int> & vtkNodeOrder(ElementType t);
 
 /// A boundary side: (element index, local side index).
 using Side = std::pair<Index, int>;
@@ -73,6 +115,14 @@ public:
   void fixOrientation();
   /// Uniformly refine (every element is split into 2^dim children).
   Mesh refined() const;
+  /// Return the same mesh with quadratic elements: Edge2 becomes Edge3, Tri3
+  /// becomes Tri6, Quad4 becomes Quad9, Tet4 becomes Tet10 and Hex8 becomes
+  /// Hex27.  With @p serendipity, Quad4 becomes Quad8 and Hex8 becomes Hex20
+  /// instead, which work with the finite element and cell-centred finite
+  /// volume methods only.  The corner nodes keep their numbers, the geometry is unchanged
+  /// (the added nodes are placed at the midpoints of the edges, faces and
+  /// cells they belong to), and side sets and node sets are carried over.
+  Mesh secondOrder(bool serendipity = false) const;
 
   // ---- queries -----------------------------------------------------------
   int dimension() const { return _dim; }

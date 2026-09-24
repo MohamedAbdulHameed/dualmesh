@@ -521,6 +521,113 @@ def test_linear_solvers_agree(linear_solver):
     assert centre == pytest.approx(0.0736, rel=0.01)  # 0.07367 for the unit square
 
 
+def _three_dimensional_problem(method, n=8):
+    """A nonsymmetric 3D problem with a variable coefficient."""
+    mesh = dm.generate_box_mesh(
+        x_min=0.0,
+        x_max=1.0,
+        y_min=0.0,
+        y_max=1.0,
+        z_min=0.0,
+        z_max=1.0,
+        num_x_elements=n,
+        num_y_elements=n,
+        num_z_elements=n,
+        element_type="Tet4",
+    )
+    problem = dm.Problem(mesh, method=method)
+    problem.add_variable("u")
+    problem.add_kernel("Diffusion", variable="u", diffusivity="1 + x*y")
+    problem.add_kernel("Advection", variable="u", velocity=[1.0, 0.5, 0.0])
+    problem.add_kernel("BodyForce", variable="u", value="sin(pi*x)*z")
+    problem.add_boundary_condition(
+        "DirichletBC", "walls", variable="u", boundary=list(mesh.sideset_names()), value="x*y"
+    )
+    return problem
+
+
+@pytest.mark.parametrize("method", ["fem", "dmcdm", "zfvm"])
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"linear_solver": "automatic"},
+        {"linear_solver": "bicgstab", "preconditioner": "ilu"},
+        {"linear_solver": "gmres", "preconditioner": "ilu"},
+        {"linear_solver": "bicgstab", "preconditioner": "ilut"},
+        {"linear_solver": "gmres", "preconditioner": "jacobi", "linear_max_iterations": 20000},
+    ],
+)
+def test_the_iterative_solvers_agree_with_the_direct_solver(method, options):
+    """Every combination reaches the direct solution to the linear tolerance,
+    on a nonsymmetric system (advection) of each discretisation."""
+    direct = _three_dimensional_problem(method)
+    direct.solve(linear_solver="lu")
+    iterative = _three_dimensional_problem(method)
+    result = iterative.solve(linear_tolerance=1e-12, **options)
+    assert np.allclose(iterative.values("u"), direct.values("u"), rtol=0, atol=1e-9)
+    assert result.linear_iterations > 0 or options["linear_solver"] == "automatic"
+
+
+def test_the_automatic_solver_iterates_on_a_large_three_dimensional_system():
+    """17^3 = 4913 nodes is past the size at which a 3D system is factorised."""
+    direct = _three_dimensional_problem("fem", n=16)
+    direct.solve(linear_solver="lu")
+    automatic = _three_dimensional_problem("fem", n=16)
+    result = automatic.solve()
+    assert result.linear_iterations > 0
+    assert np.allclose(automatic.values("u"), direct.values("u"), rtol=0, atol=1e-9)
+
+
+def test_the_automatic_solver_factorises_small_and_two_dimensional_systems():
+    """A 2D system of this size is factorised directly: no Krylov
+    iterations are counted."""
+    mesh = dm.generate_rectangle_mesh(
+        x_min=0.0, x_max=1.0, y_min=0.0, y_max=1.0, num_x_elements=30, num_y_elements=30
+    )
+    problem = dm.Problem(mesh)
+    problem.add_variable("u")
+    problem.add_kernel("Diffusion", variable="u")
+    problem.add_kernel("BodyForce", variable="u", value=1.0)
+    problem.add_boundary_condition(
+        "DirichletBC", "all", variable="u", boundary=["left", "right", "bottom", "top"], value=0.0
+    )
+    assert problem.solve().linear_iterations == 0
+
+
+def test_an_unknown_preconditioner_is_reported():
+    problem = _three_dimensional_problem("fem")
+    with pytest.raises(ValueError, match="Unknown preconditioner 'multigrid'"):
+        problem.solve(linear_solver="bicgstab", preconditioner="multigrid")
+
+
+def test_the_linear_system_is_the_one_newton_solves():
+    """One Newton step from the assembled system reproduces the solution of a
+    linear problem."""
+    sparse = pytest.importorskip("scipy.sparse.linalg")
+    problem = _three_dimensional_problem("dmcdm")
+    residual, jacobian = problem.linear_system()
+    assert jacobian.shape == (residual.size, residual.size)
+    step = sparse.spsolve(jacobian.tocsc(), -residual)
+    predicted = np.asarray(problem.solution()) + step
+    problem.solve()
+    assert np.allclose(predicted, problem.solution(), atol=1e-10)
+
+
+def test_a_compiled_function_keeps_the_assembly_threaded():
+    """A ParsedFunction object is evaluated in C++, not called back through
+    Python, so the problem stays thread-safe."""
+    mesh = dm.generate_rectangle_mesh(
+        x_min=0.0, x_max=1.0, y_min=0.0, y_max=1.0, num_x_elements=4, num_y_elements=4
+    )
+    problem = dm.Problem(mesh)
+    problem.add_variable("u")
+    problem.add_kernel("Diffusion", variable="u")
+    problem.add_kernel("BodyForce", variable="u", value=dm.parsed_function("x*y"))
+    assert problem._problem.thread_safe()
+    problem.add_kernel("BodyForce", "callback", variable="u", value=lambda x, y, z, t: x)
+    assert not problem._problem.thread_safe()
+
+
 def test_divergence_is_reported():
     mesh = dm.generate_line_mesh(start=0.0, end=1.0, num_elements=10)
     problem = dm.Problem(mesh)
@@ -652,3 +759,90 @@ def test_comparison_of_the_two_methods_on_the_same_problem():
     for method, value in solutions.items():
         assert value == pytest.approx(exact, rel=0.02), method
     assert solutions["dmcdm"] != solutions["fem"]
+
+
+def test_a_python_callable_parameter_forces_serial_assembly():
+    """A Python callable can be given straight to a parameter, as in
+    ``value=lambda x, y, z, t: ...``.  It is then held inside the object's
+    parameters rather than registered as a named function, but it still calls
+    back into the interpreter, so it still has to switch the assembly onto one
+    thread.  Without this the threaded element loop deadlocks on the global
+    interpreter lock as soon as the mesh is large enough to be split between
+    threads.
+    """
+    mesh = dm.generate_rectangle_mesh(
+        x_min=0.0, x_max=1.0, y_min=0.0, y_max=1.0, num_x_elements=30, num_y_elements=30
+    )
+    problem = dm.Problem(mesh)
+    problem.add_variable("u")
+    problem.add_kernel("Diffusion", "diffusion", variable="u")
+    assert problem.thread_safe  # nothing from Python yet
+
+    problem.add_kernel("BodyForce", "source", variable="u", value=lambda x, y, z, t: x + y)
+    assert not problem.thread_safe
+    problem.set_num_threads(2)
+    assert problem.effective_threads() == 1
+
+    problem.add_boundary_condition(
+        "DirichletBC", "walls", variable="u", boundary=mesh.sideset_names(), value=0.0
+    )
+    problem.solve()  # must finish rather than hang
+    assert np.isfinite(problem.values("u")).all()
+
+
+def test_an_input_file_with_a_misspelled_block_is_refused():
+    """A misspelled block name would otherwise drop part of the problem
+    without a word; the driver refuses it and suggests the right name."""
+    from dualmesh import cli
+
+    document = {
+        "mesh": {"type": "line", "start": 0.0, "end": 1.0, "num_elements": 4},
+        "variables": {"u": {}},
+        "kernel": {"diffusion": {"type": "Diffusion", "variable": "u"}},
+    }
+    with pytest.raises(ValueError, match="Did you mean 'kernels'"):
+        cli.run(document)
+    document = {
+        "mesh": {"type": "line", "start": 0.0, "end": 1.0, "num_elements": 4},
+        "problem": {"methd": "fem"},
+    }
+    with pytest.raises(ValueError, match="Did you mean 'method'"):
+        cli.run(document)
+
+
+def test_an_input_file_runs_unchanged_on_one_process_with_a_parallel_block(tmp_path):
+    """The 'parallel' block configures the distributed solver under mpirun and
+    is ignored on one process, so the same file runs either way; 'threads'
+    sets the assembly threads."""
+    from dualmesh import cli
+
+    document = {
+        "mesh": {
+            "type": "rectangle",
+            "x_min": 0.0,
+            "x_max": 1.0,
+            "y_min": 0.0,
+            "y_max": 1.0,
+            "num_x_elements": 8,
+            "num_y_elements": 8,
+        },
+        "problem": {"method": "fem", "threads": 2},
+        "parallel": {"preconditioner": "two_level_schwarz", "overlap": 1},
+        "variables": {"u": {}},
+        "kernels": {
+            "diffusion": {"type": "Diffusion", "variable": "u"},
+            "source": {"type": "BodyForce", "variable": "u", "value": 1.0},
+        },
+        "boundary_conditions": {
+            "walls": {
+                "type": "DirichletBC",
+                "variable": "u",
+                "boundary": ["left", "right", "bottom", "top"],
+                "value": 0.0,
+            }
+        },
+        "outputs": {"csv": str(tmp_path / "u.csv"), "point_values": [["u", 0.5, 0.5]]},
+    }
+    problem = cli.run(document)
+    assert problem.sample("u", [[0.5, 0.5]])[0] == pytest.approx(0.0737, rel=0.02)
+    assert (tmp_path / "u.csv").exists()

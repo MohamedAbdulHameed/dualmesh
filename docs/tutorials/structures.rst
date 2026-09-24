@@ -1,11 +1,12 @@
 Beams and plates
 ================
 
-The structural module contains three beam models (the mixed Euler-Bernoulli
-model, and the displacement and mixed Timoshenko models), the first-order
-shear deformation model of an axisymmetric circular plate, and the first-order
-shear deformation model of a rectangular plate with five variables.  All of
-them accept functionally graded sections and the von Kármán nonlinearity.
+The structural members of the solid mechanics module are three beam models
+(the mixed Euler-Bernoulli model, and the displacement and mixed Timoshenko
+models), the first-order shear deformation model of an axisymmetric circular
+plate, and the first-order shear deformation model of a rectangular plate with
+five variables.  All of them accept functionally graded sections and the von
+Kármán nonlinearity.
 
 .. literalinclude:: ../../examples/functionally_graded_beam.py
    :language: python

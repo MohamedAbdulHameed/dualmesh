@@ -2,7 +2,10 @@
 #include "dualmesh/core/InputParameters.h"
 #include "dualmesh/core/Function.h"
 
+#include <algorithm>
+#include <cctype>
 #include <sstream>
+#include <vector>
 
 namespace dualmesh
 {
@@ -83,10 +86,14 @@ InputParameters::set(const std::string & name, ParameterValue v)
   if (it == _params.end())
   {
     std::ostringstream os;
-    os << "Unknown parameter '" << name << "'. Accepted parameters are:";
+    std::vector<std::string> names;
     for (const auto & [n, _] : _params)
       if (n.rfind('_', 0) != 0)
-        os << " " << n;
+        names.push_back(n);
+    os << "Unknown parameter '" << name << "'." << didYouMean(name, names)
+       << " Accepted parameters are:";
+    for (const auto & n : names)
+      os << " " << n;
     throw InputError(os.str());
   }
   auto & p = it->second;
@@ -272,6 +279,54 @@ InputParameters::describe() const
        << "): " << p.description << "\n";
   }
   return os.str();
+}
+
+std::string
+closestMatch(const std::string & name, const std::vector<std::string> & candidates)
+{
+  const auto lower = [](std::string t)
+  {
+    for (auto & c : t)
+      c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return t;
+  };
+  const std::string a = lower(name);
+  std::string best;
+  std::size_t best_distance = std::string::npos;
+  for (const auto & candidate : candidates)
+  {
+    const std::string b = lower(candidate);
+    // Optimal string alignment distance (Damerau-Levenshtein restricted to
+    // adjacent transpositions).
+    const std::size_t n = a.size(), m = b.size();
+    std::vector<std::vector<std::size_t>> d(n + 1, std::vector<std::size_t>(m + 1));
+    for (std::size_t i = 0; i <= n; ++i)
+      d[i][0] = i;
+    for (std::size_t j = 0; j <= m; ++j)
+      d[0][j] = j;
+    for (std::size_t i = 1; i <= n; ++i)
+      for (std::size_t j = 1; j <= m; ++j)
+      {
+        const std::size_t cost = a[i - 1] == b[j - 1] ? 0 : 1;
+        d[i][j] = std::min({d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + cost});
+        if (i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1])
+          d[i][j] = std::min(d[i][j], d[i - 2][j - 2] + 1);
+      }
+    if (d[n][m] < best_distance)
+    {
+      best_distance = d[n][m];
+      best = candidate;
+    }
+  }
+  const std::size_t allowed = std::max<std::size_t>(1, name.size() / 3);
+  return best_distance <= allowed ? best : std::string();
+}
+
+std::string
+didYouMean(const std::string & name, const std::vector<std::string> & candidates)
+{
+  const std::string match = closestMatch(name, candidates);
+  return match.empty() ? std::string() : " Did you mean '" + match + "'?";
 }
 
 } // namespace dualmesh

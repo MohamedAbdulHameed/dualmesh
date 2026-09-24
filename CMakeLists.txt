@@ -10,6 +10,16 @@ endif()
 
 option(DUALMESH_BUILD_PYTHON "Build the Python extension module" ON)
 option(DUALMESH_BUILD_TESTS "Build the C++ unit tests" ON)
+option(DUALMESH_ENABLE_OPENMP "Thread the assembly loops with OpenMP" ON)
+option(DUALMESH_ENABLE_MPI "Build the distributed (MPI) solver" OFF)
+option(DUALMESH_ENABLE_METIS "Use METIS for mesh partitioning when available" ON)
+# Automatic differentiation seeds one derivative slot per element node and
+# variable, so the default of 48 covers, for example, Quad9 with five fields,
+# Hex8 with six and Hex27 with one.  Raise it for a multi-field problem on a
+# Hex27 mesh; every ADReal grows with it, so raising it costs memory and
+# assembly time everywhere.
+set(DUALMESH_MAX_AD_DERIVATIVES 48 CACHE STRING
+    "Maximum seeded derivatives per element (nodes per element x variables)")
 
 # ---- dependencies ---------------------------------------------------------
 # Eigen is header-only.  A system installation is used when there is one
@@ -44,16 +54,56 @@ if(NOT Eigen3_FOUND)
     INTERFACE_INCLUDE_DIRECTORIES ${DUALMESH_EIGEN_DIR})
 endif()
 
+# ---- optional parallel dependencies ------------------------------------------
+# OpenMP threads the element assembly loop; it is optional, and without it the
+# library builds and runs exactly as before, on one thread.
+if(DUALMESH_ENABLE_OPENMP)
+  find_package(OpenMP COMPONENTS CXX QUIET)
+  if(NOT OpenMP_CXX_FOUND)
+    message(STATUS "OpenMP not found; the assembly will run on one thread")
+  endif()
+endif()
+
+# METIS gives better partitions than the built-in geometric partitioner for
+# unstructured meshes.  It is what libMesh, and therefore MOOSE, uses.
+if(DUALMESH_ENABLE_METIS)
+  find_path(METIS_INCLUDE_DIR metis.h)
+  find_library(METIS_LIBRARY NAMES metis)
+  if(METIS_INCLUDE_DIR AND METIS_LIBRARY)
+    message(STATUS "METIS found: ${METIS_LIBRARY}")
+  else()
+    message(STATUS "METIS not found; using the built-in mesh partitioners")
+  endif()
+endif()
+
+if(DUALMESH_ENABLE_MPI)
+  find_package(MPI COMPONENTS CXX REQUIRED)
+endif()
+
 # ---- core library ------------------------------------------------------------
 file(GLOB_RECURSE DUALMESH_SOURCES CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/src/*.cpp)
 add_library(dualmesh_core STATIC ${DUALMESH_SOURCES})
 target_include_directories(dualmesh_core PUBLIC ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dualmesh_core PUBLIC Eigen3::Eigen)
+target_compile_definitions(dualmesh_core
+                           PUBLIC DUALMESH_MAX_AD_DERIVATIVES=${DUALMESH_MAX_AD_DERIVATIVES})
 if(MSVC)
   target_compile_options(dualmesh_core PRIVATE /W3 /bigobj)
   target_compile_definitions(dualmesh_core PUBLIC _USE_MATH_DEFINES)
 else()
   target_compile_options(dualmesh_core PRIVATE -Wall -Wextra -Wno-unused-parameter)
+endif()
+if(DUALMESH_ENABLE_OPENMP AND OpenMP_CXX_FOUND)
+  target_link_libraries(dualmesh_core PUBLIC OpenMP::OpenMP_CXX)
+endif()
+if(DUALMESH_ENABLE_METIS AND METIS_INCLUDE_DIR AND METIS_LIBRARY)
+  target_include_directories(dualmesh_core PRIVATE ${METIS_INCLUDE_DIR})
+  target_link_libraries(dualmesh_core PRIVATE ${METIS_LIBRARY})
+  target_compile_definitions(dualmesh_core PRIVATE DUALMESH_HAVE_METIS)
+endif()
+if(DUALMESH_ENABLE_MPI)
+  target_link_libraries(dualmesh_core PUBLIC MPI::MPI_CXX)
+  target_compile_definitions(dualmesh_core PUBLIC DUALMESH_HAVE_MPI)
 endif()
 
 # ---- command-line driver --------------------------------------------------------
@@ -65,6 +115,11 @@ if(DUALMESH_BUILD_TESTS)
   add_executable(dualmesh_unit_tests tests/cpp/unit_tests.cpp)
   target_link_libraries(dualmesh_unit_tests PRIVATE dualmesh_core)
   add_test(NAME unit_tests COMMAND dualmesh_unit_tests)
+  add_executable(dualmesh_benchmark tests/cpp/benchmark.cpp)
+  target_link_libraries(dualmesh_benchmark PRIVATE dualmesh_core)
+  add_executable(dualmesh_parallel_tests tests/cpp/parallel_tests.cpp)
+  target_link_libraries(dualmesh_parallel_tests PRIVATE dualmesh_core)
+  add_test(NAME parallel_tests COMMAND dualmesh_parallel_tests)
 endif()
 
 # ---- Python module ---------------------------------------------------------------

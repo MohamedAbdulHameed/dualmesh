@@ -14,8 +14,9 @@ MOOSE input files)::
       num_y_elements: 5
 
     problem:
-      method: dmcdm            # or fem
+      method: dmcdm            # or fem, hfvm, zfvm
       coordinates: cartesian   # or axisymmetric, spherical
+      threads: 4               # optional; the default uses every core
 
     variables:
       temperature: {initial_condition: 0.0}
@@ -54,13 +55,21 @@ MOOSE input files)::
 Usage::
 
     dualmesh run input.yaml
+    mpirun -n 4 dualmesh run input.yaml     # distributed, when built with MPI
     dualmesh list --category Kernel
     dualmesh describe HeatConduction
+
+Under ``mpirun`` with more than one process the problem is solved by
+:class:`~dualmesh.DistributedProblem`, configured by an optional ``parallel``
+block (``partitioner``, ``linear_solver``, ``preconditioner``, ``overlap``,
+``subdomain_solver``, ``linear_tolerance``, ``linear_max_iterations``); the
+same input file runs unchanged on one process.
 """
 
 from __future__ import annotations
 
 import argparse
+import difflib
 import sys
 from typing import Any
 
@@ -74,7 +83,35 @@ from .meshing import (
     generate_rectangle_mesh,
     read_mesh,
 )
+from .parallel import DistributedProblem, is_root, num_ranks
 from .problem import Problem
+
+#: The blocks an input file may contain.
+BLOCKS = (
+    "mesh",
+    "problem",
+    "parallel",
+    "functions",
+    "variables",
+    "materials",
+    "kernels",
+    "boundary_conditions",
+    "point_sources",
+    "executioner",
+    "outputs",
+)
+PROBLEM_SETTINGS = ("method", "coordinates", "threads", "boundary_gradient")
+OUTPUTS = ("vtu", "csv", "mesh_file", "cell_properties", "reactions", "point_values")
+
+
+def _check_keys(where: str, given, allowed) -> None:
+    """Refuse a key that is not recognised, instead of silently ignoring it:
+    a misspelled block name would otherwise drop part of the problem."""
+    for key in given:
+        if key not in allowed:
+            close = difflib.get_close_matches(str(key), allowed, n=1)
+            hint = f" Did you mean '{close[0]}'?" if close else ""
+            raise ValueError(f"Unknown {where} '{key}'.{hint} Allowed: {', '.join(allowed)}.")
 
 
 def _coerce(value):
@@ -120,17 +157,37 @@ def build_mesh(block: dict[str, Any]):
     raise ValueError(f"Unknown mesh type '{kind}'. Use line, rectangle, box, annulus, or file.")
 
 
-def build_problem(document: dict[str, Any]) -> Problem:
-    """Build a Problem from a parsed input file."""
+def build_problem(document: dict[str, Any]):
+    """Build the problem described by a parsed input file.
+
+    Returns the :class:`~dualmesh.Problem`, or, when the program runs on more
+    than one MPI process, the :class:`~dualmesh.DistributedProblem` whose
+    ``local`` problem carries the objects.
+    """
+    _check_keys("block", document, BLOCKS)
     if "mesh" not in document:
         raise ValueError("The input file needs a 'mesh' block.")
     mesh = build_mesh(document["mesh"])
-    settings = document.get("problem", {})
-    problem = Problem(
-        mesh,
-        method=settings.get("method", "dmcdm"),
-        coordinates=settings.get("coordinates", "cartesian"),
-    )
+    settings = dict(document.get("problem") or {})
+    _check_keys("problem setting", settings, PROBLEM_SETTINGS)
+    method = settings.get("method", "dmcdm")
+    coordinates = settings.get("coordinates", "cartesian")
+    distributed = None
+    if num_ranks() > 1:
+        options = dict(document.get("parallel") or {})
+        distributed = DistributedProblem(
+            mesh, method=method, coordinates=coordinates, **_coerce_options(options)
+        )
+        problem = distributed.local
+    else:
+        problem = Problem(
+            mesh,
+            method=method,
+            coordinates=coordinates,
+            boundary_gradient=settings.get("boundary_gradient", "first_order"),
+        )
+    if "threads" in settings:
+        problem.set_num_threads(int(settings["threads"]))
     for name, expression in (document.get("functions") or {}).items():
         if isinstance(expression, str):
             expression = parsed_function(expression.lstrip("= "))
@@ -154,17 +211,33 @@ def build_problem(document: dict[str, Any]) -> Problem:
             if object_type is None:
                 raise ValueError(f"'{section}.{name}' needs a 'type'.")
             adder(object_type, name, **_coerce_options(options))
-    return problem
+    return distributed if distributed is not None else problem
 
 
-def run(document: dict[str, Any], verbose: bool = False) -> Problem:
+def _gathered_problem(distributed, mesh, method: str, coordinates: str) -> Problem:
+    """A one-process copy of a distributed solution on the whole mesh, for
+    the outputs that need the whole field (sampling at points, CSV)."""
+    whole = Problem(mesh, method=method, coordinates=coordinates)
+    local = distributed.local
+    names = [local._problem.variable_name(i) for i in range(local._problem.num_variables)]
+    for name in names:
+        whole.add_variable(name)
+    for name in names:
+        whole.set_values(name, distributed.gathered_values(name))
+    return whole
+
+
+def run(document: dict[str, Any], verbose: bool = False):
     """Build and solve the problem described by an input file."""
-    problem = build_problem(document)
+    solver = build_problem(document)
+    distributed = isinstance(solver, DistributedProblem)
+    problem = solver.local if distributed else solver
+    root = is_root()
     executioner = _coerce_options(dict(document.get("executioner") or {}))
     kind = str(executioner.pop("type", "steady")).lower()
     executioner.setdefault("verbose", verbose)
     if kind == "steady":
-        result = problem.solve(**executioner)
+        result = solver.solve(**executioner)
     elif kind == "transient":
         transient = {
             key: executioner.pop(key)
@@ -178,37 +251,65 @@ def run(document: dict[str, Any], verbose: bool = False) -> Problem:
             )
             if key in executioner
         }
-        result = problem.solve_transient(**transient, **executioner)
+        result = solver.solve_transient(**transient, **executioner)
     else:
         raise ValueError(f"Unknown executioner type '{kind}' (use steady or transient).")
-    if verbose:
+    if verbose and root:
         print(f"converged: {result.converged} after {result.total_iterations} iterations")
 
     outputs = document.get("outputs") or {}
+    _check_keys("output", outputs, OUTPUTS)
     if "vtu" in outputs:
-        problem.write_vtu(outputs["vtu"], outputs.get("cell_properties", ()))
-        if verbose:
-            print(f"wrote {outputs['vtu']}")
-    if "csv" in outputs:
-        problem.write_csv(outputs["csv"])
-        if verbose:
-            print(f"wrote {outputs['csv']}")
-    if "mesh_file" in outputs:
-        problem.write_mesh_file(outputs["mesh_file"])
-    for variable, boundary in outputs.get("reactions", []):
-        total = problem.total_reaction(variable, boundary)
-        print(f"total reaction of '{variable}' on '{boundary}': {total:.10g}")
+        if distributed:
+            base = str(outputs["vtu"])
+            base = base[:-4] if base.endswith(".vtu") else base
+            solver.write_vtu(base, outputs.get("cell_properties", ()))
+            written = base + ".pvtu"
+        else:
+            problem.write_vtu(outputs["vtu"], outputs.get("cell_properties", ()))
+            written = outputs["vtu"]
+        if verbose and root:
+            print(f"wrote {written}")
+    needs_whole = any(key in outputs for key in ("csv", "mesh_file", "point_values"))
+    whole = problem
+    if distributed and needs_whole:
+        settings = document.get("problem") or {}
+        whole = _gathered_problem(
+            solver,
+            build_mesh(document["mesh"]),
+            settings.get("method", "dmcdm"),
+            settings.get("coordinates", "cartesian"),
+        )
+    if root:
+        if "csv" in outputs:
+            whole.write_csv(outputs["csv"])
+            if verbose:
+                print(f"wrote {outputs['csv']}")
+        if "mesh_file" in outputs:
+            whole.write_mesh_file(outputs["mesh_file"])
+    if outputs.get("reactions"):
+        if distributed:
+            raise ValueError(
+                "The 'reactions' output is not available in a distributed run yet; run the "
+                "input file on one process to compute reactions."
+            )
+        for variable, boundary in outputs["reactions"]:
+            total = problem.total_reaction(variable, boundary)
+            print(f"total reaction of '{variable}' on '{boundary}': {total:.10g}")
     for entry in outputs.get("point_values", []):
         variable, point = entry[0], entry[1:]
-        value = problem.sample(variable, [list(point)])[0]
-        print(f"{variable} at {list(point)}: {value:.10g}")
-    return problem
+        value = whole.sample(variable, [list(point)])[0]
+        if root:
+            print(f"{variable} at {list(point)}: {value:.10g}")
+    return solver
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="dualmesh",
-        description="The dual mesh control domain method for engineering problems.",
+        description=(
+            "A multiphysics framework for heat transfer, solid mechanics and fluid dynamics."
+        ),
     )
     parser.add_argument("--version", action="version", version=f"dualmesh {__version__}")
     subparsers = parser.add_subparsers(dest="command", required=True)

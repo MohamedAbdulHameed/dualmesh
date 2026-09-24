@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 #include "dualmesh/base/Problem.h"
+#include "dualmesh/core/ParsedFunction.h"
 
 #include <Eigen/IterativeLinearSolvers>
 #include <Eigen/SparseLU>
@@ -26,6 +27,69 @@ Problem::Problem(std::shared_ptr<Mesh> mesh, Method method, CoordinateSystem coo
   if (_coord == CoordinateSystem::Axisymmetric && _mesh->dimension() == 3)
     throw InputError(
         "The axisymmetric coordinate system requires a 1D (radial) or 2D (r, z) mesh.");
+  // The dual mesh control domain method and the vertex-centred finite volume
+  // method integrate over the control domains of the dual mesh, so every
+  // element has to carry one.  The finite element method and the cell-centred
+  // finite volume method need only the element itself.  Checking here, once,
+  // is what lets every element type be offered to the methods that can use it
+  // without any of them having to test for the others.
+  if (_method == Method::DualMesh || _method == Method::FiniteVolumeVertex)
+  {
+    std::set<ElementType> refused;
+    for (const auto & el : _mesh->elements())
+      if (!ReferenceElement::get(el.type).supportsDualMesh())
+        refused.insert(el.type);
+    if (!refused.empty())
+    {
+      const ElementType t = *refused.begin();
+      std::ostringstream os;
+      os << "The mesh contains " << elementTypeName(t)
+         << " elements, which cannot be used with the "
+         << (_method == Method::DualMesh ? "dual mesh control domain method"
+                                         : "vertex-centred finite volume method, which "
+                                           "integrates over the same control domains,")
+         << " because " << ReferenceElement::get(t).dualMeshLimitation() << ". "
+         << elementTypeName(t)
+         << " elements work with the finite element method (method='fem') and the "
+            "cell-centred finite volume method (method='zfvm').";
+      throw InputError(os.str());
+    }
+  }
+  if (_method == Method::FiniteVolumeCell)
+    _cells = std::make_shared<CellMesh>(*_mesh);
+}
+
+const CellMesh &
+Problem::cellMesh() const
+{
+  if (!_cells)
+    throw InputError("cellMesh() is only available for the cell-centred finite volume method.");
+  return *_cells;
+}
+
+Index
+Problem::numEntities() const
+{
+  return _cells ? _cells->numEntities() : _mesh->numNodes();
+}
+
+const Point &
+Problem::entityPoint(Index i) const
+{
+  return _cells ? _cells->entityPoint(i) : _mesh->node(i);
+}
+
+std::vector<Index>
+Problem::boundaryEntities(const std::string & name) const
+{
+  if (_cells)
+  {
+    if (!_mesh->hasBoundary(name))
+      throw InputError("The cell-centred finite volume method needs a side set; '" + name +
+                       "' is not one. Node sets have no degrees of freedom in this method.");
+    return _cells->boundaryEntities(*_mesh, name);
+  }
+  return _mesh->boundaryNodes(name);
 }
 
 int
@@ -46,21 +110,41 @@ Problem::addVariable(const std::string & name,
   v.initial_condition = ic ? ic : std::make_shared<ConstantFunction>(0.0);
   v.scaling = scaling;
   _vars.push_back(v);
-  if (numVariables() * 8 > kMaxDerivatives && _mesh->dimension() == 3)
-    throw InputError("Too many variables for 3D elements (at most 6).");
-  if (numVariables() * 4 > kMaxDerivatives)
-    throw InputError("Too many variables (at most 12 in 2D).");
+  // Automatic differentiation seeds one derivative slot per element node and
+  // variable, so the largest element in the mesh sets the limit.
+  int max_nodes = 1;
+  ElementType largest = ElementType::Edge2;
+  for (const auto & el : _mesh->elements())
+    if (el.numNodes() > max_nodes)
+    {
+      max_nodes = el.numNodes();
+      largest = el.type;
+    }
+  if (numVariables() * max_nodes > kMaxDerivatives)
+  {
+    std::ostringstream os;
+    os << "Too many variables for this mesh. The largest element is " << elementTypeName(largest)
+       << " with " << max_nodes
+       << " nodes, and automatic differentiation seeds one slot per node and variable, so "
+       << "at most " << kMaxDerivatives / max_nodes << " variable"
+       << (kMaxDerivatives / max_nodes == 1 ? "" : "s") << " fit in the limit of "
+       << kMaxDerivatives
+       << " slots. Rebuild with -DDUALMESH_MAX_AD_DERIVATIVES=" << numVariables() * max_nodes
+       << " to raise it.";
+    _vars.pop_back();
+    throw InputError(os.str());
+  }
   _initialized = false;
   // Grow the solution, keeping existing values.
   Vector U = Vector::Zero(numDofs());
   const int nold = numVariables() - 1;
-  if (nold > 0 && _U.size() == _mesh->numNodes() * nold)
-    for (Index n = 0; n < _mesh->numNodes(); ++n)
+  if (nold > 0 && _U.size() == numEntities() * nold)
+    for (Index n = 0; n < numEntities(); ++n)
       for (int k = 0; k < nold; ++k)
         U[n * numVariables() + k] = _U[n * nold + k];
   _U = U;
-  for (Index n = 0; n < _mesh->numNodes(); ++n)
-    _U[dof(n, v.index)] = v.initial_condition->value(_mesh->node(n), _time);
+  for (Index n = 0; n < numEntities(); ++n)
+    _U[dof(n, v.index)] = v.initial_condition->value(entityPoint(n), _time);
   return v.index;
 }
 
@@ -79,9 +163,12 @@ Problem::variableIndex(const std::string & name) const
     if (v.name == name)
       return v.index;
   std::ostringstream os;
-  os << "Unknown variable '" << name << "'. Variables:";
+  std::vector<std::string> names;
   for (const auto & v : _vars)
-    os << " " << v.name;
+    names.push_back(v.name);
+  os << "Unknown variable '" << name << "'." << didYouMean(name, names) << " Variables:";
+  for (const auto & n : names)
+    os << " " << n;
   throw InputError(os.str());
 }
 
@@ -98,15 +185,25 @@ FunctionPtr
 Problem::function(const std::string & name) const
 {
   auto it = _functions.find(name);
-  if (it == _functions.end())
+  if (it != _functions.end())
+    return it->second;
+  // Not a registered name: the text may itself be an expression in x, y, z
+  // and t, as in value = "sin(pi*x) * exp(-t)".  That saves registering a
+  // function for a one-off coefficient, and it is compiled to C++, so it costs
+  // nothing at assembly time and keeps the assembly threaded.
+  std::string why;
+  if (ParsedFunction::isExpression(name, &why))
+    return std::make_shared<ParsedFunction>(name);
+  std::ostringstream os;
+  os << "'" << name << "' is neither a registered function nor an expression in x, y, z and t ("
+     << why << ").";
+  if (!_functions.empty())
   {
-    std::ostringstream os;
-    os << "Unknown function '" << name << "'. Functions:";
+    os << " Registered functions:";
     for (const auto & [n, _] : _functions)
       os << " " << n;
-    throw InputError(os.str());
   }
-  return it->second;
+  throw InputError(os.str());
 }
 
 std::shared_ptr<Object>
@@ -240,6 +337,35 @@ Problem::initialize()
       _props.id(p);
   buildGroups();
   markActiveDofs();
+  // The mesh caches the list of exterior sides and the boundary node markers
+  // the first time they are asked for.  Build them here, before any threaded
+  // loop, so that no two threads try to fill them at the same time.
+  _mesh->exteriorSides();
+  _mesh->boundaryNodeMarkers();
+  // Reference element definitions are built on first use and cached in a
+  // function-local static; touch every type present in the mesh for the same
+  // reason.
+  for (Index e = 0; e < _mesh->numElements(); ++e)
+    ReferenceElement::get(_mesh->element(e).type);
+  // Threading is only used when every object and every function can be called
+  // from several threads at once.  Anything defined in Python cannot, because
+  // the interpreter is protected by the global interpreter lock.
+  _thread_safe = true;
+  for (const auto & [n, obj] : _by_name)
+  {
+    (void) n;
+    if (!obj->threadSafe())
+      _thread_safe = false;
+  }
+  for (const auto & [n, f] : _functions)
+  {
+    (void) n;
+    if (f && !f->threadSafe())
+      _thread_safe = false;
+  }
+  for (const auto & v : _vars)
+    if (v.initial_condition && !v.initial_condition->threadSafe())
+      _thread_safe = false;
   _initialized = true;
 }
 
@@ -265,6 +391,27 @@ Problem::markActiveDofs()
 {
   const int nv = numVariables();
   _active_dof.assign(numDofs(), 0);
+  if (_cells)
+  {
+    for (Index c = 0; c < _cells->numCells(); ++c)
+      for (int v = 0; v < nv; ++v)
+      {
+        const int block = _cells->cellBlock(c);
+        const auto & vb = _vars[v].blocks;
+        if (!vb.empty() && !vb.count(block))
+          continue;
+        bool has = false;
+        for (const auto & k : _kernels)
+          has = has || (k->variable() == v && k->activeOnBlock(block));
+        if (!has)
+          continue;
+        _active_dof[dof(c, v)] = 1;
+        for (int fi : _cells->cellFaces(c))
+          if (_cells->faces()[fi].boundary_entity >= 0)
+            _active_dof[dof(_cells->faces()[fi].boundary_entity, v)] = 1;
+      }
+    return;
+  }
   for (Index e = 0; e < _mesh->numElements(); ++e)
   {
     const auto & el = _mesh->element(e);
@@ -285,19 +432,28 @@ Problem::markActiveDofs()
 }
 
 void
+Problem::overrideActiveDofs(const std::vector<char> & active)
+{
+  initialize();
+  if (static_cast<Index>(active.size()) != numDofs())
+    throw InputError("overrideActiveDofs: expected one flag per degree of freedom.");
+  _active_dof = active;
+}
+
+void
 Problem::applyInitialConditions()
 {
   for (const auto & v : _vars)
-    for (Index n = 0; n < _mesh->numNodes(); ++n)
-      _U[dof(n, v.index)] = v.initial_condition->value(_mesh->node(n), _time);
+    for (Index n = 0; n < numEntities(); ++n)
+      _U[dof(n, v.index)] = v.initial_condition->value(entityPoint(n), _time);
 }
 
 std::vector<double>
 Problem::values(const std::string & var) const
 {
   const int v = variableIndex(var);
-  std::vector<double> out(_mesh->numNodes());
-  for (Index n = 0; n < _mesh->numNodes(); ++n)
+  std::vector<double> out(numEntities());
+  for (Index n = 0; n < numEntities(); ++n)
     out[n] = _U[dof(n, v)];
   return out;
 }
@@ -306,9 +462,9 @@ void
 Problem::setValues(const std::string & var, const std::vector<double> & vals)
 {
   const int v = variableIndex(var);
-  if (static_cast<Index>(vals.size()) != _mesh->numNodes())
-    throw InputError("setValues: expected one value per node.");
-  for (Index n = 0; n < _mesh->numNodes(); ++n)
+  if (static_cast<Index>(vals.size()) != numEntities())
+    throw InputError("setValues: expected one value per degree of freedom entity.");
+  for (Index n = 0; n < numEntities(); ++n)
     _U[dof(n, v)] = vals[n];
 }
 

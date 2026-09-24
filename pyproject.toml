@@ -3,9 +3,9 @@ requires = ["scikit-build-core>=0.8", "pybind11>=2.11"]
 build-backend = "scikit_build_core.build"
 
 [project]
-name = "dualmesh"
+name = "dualmesh-multiphysics"
 version = "0.1.0"
-description = "The dual mesh control domain method (DMCDM) for computational fluid dynamics and solid mechanics"
+description = "A multiphysics framework for heat transfer, solid mechanics and fluid dynamics, by finite elements, finite volumes and the dual mesh control domain method"
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "LGPL-2.1-or-later" }
@@ -15,9 +15,10 @@ keywords = [
   "DMCDM",
   "finite element method",
   "finite volume method",
-  "computational fluid dynamics",
+  "fluid dynamics",
   "solid mechanics",
   "heat transfer",
+  "multiphysics",
 ]
 classifiers = [
   "Development Status :: 3 - Alpha",
@@ -33,15 +34,17 @@ dependencies = ["numpy>=1.20"]
 mesh = ["meshio>=5.0"]
 input = ["pyyaml>=6.0"]
 plot = ["matplotlib>=3.5"]
+mms = ["sympy>=1.9"]
+linalg = ["scipy>=1.7"]
 docs = ["sphinx>=7.0", "furo", "myst-parser", "sphinx-copybutton"]
-test = ["pytest>=7.0", "meshio>=5.0", "pyyaml>=6.0"]
-all = ["meshio>=5.0", "pyyaml>=6.0", "matplotlib>=3.5"]
+test = ["pytest>=7.0", "meshio>=5.0", "pyyaml>=6.0", "sympy>=1.9", "scipy>=1.7"]
+all = ["meshio>=5.0", "pyyaml>=6.0", "matplotlib>=3.5", "sympy>=1.9", "scipy>=1.7"]
 
 [project.urls]
-Homepage = "https://github.com/OWNER/dualmesh"
+Homepage = "https://github.com/MohamedAbdulHameed/dualmesh"
 Documentation = "https://dualmesh.readthedocs.io"
-Repository = "https://github.com/OWNER/dualmesh"
-Issues = "https://github.com/OWNER/dualmesh/issues"
+Repository = "https://github.com/MohamedAbdulHameed/dualmesh"
+Issues = "https://github.com/MohamedAbdulHameed/dualmesh/issues"
 
 [project.scripts]
 dualmesh = "dualmesh.cli:main"
@@ -54,7 +57,6 @@ build-dir = "build/{wheel_tag}"
 
 [tool.pytest.ini_options]
 testpaths = ["tests/python"]
-pythonpath = ["python"]
 filterwarnings = ["error::DeprecationWarning"]
 
 [tool.ruff]

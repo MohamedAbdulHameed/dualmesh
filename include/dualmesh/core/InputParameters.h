@@ -110,4 +110,14 @@ public:
   using std::runtime_error::runtime_error;
 };
 
+/// The candidate closest to a misspelled @p name, for a "did you mean"
+/// suggestion in an error message, or an empty string when none is close.
+/// Closeness is the edit distance (insertions, deletions, substitutions and
+/// transpositions of adjacent characters, ignoring case), and a candidate is
+/// offered only when it is within a third of the length of the name.
+std::string closestMatch(const std::string & name, const std::vector<std::string> & candidates);
+
+/// " Did you mean 'x'?" when closestMatch finds a candidate, else "".
+std::string didYouMean(const std::string & name, const std::vector<std::string> & candidates);
+
 } // namespace dualmesh

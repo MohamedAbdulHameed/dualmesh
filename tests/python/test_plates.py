@@ -337,3 +337,127 @@ def test_plate_reduced_integration_is_required_for_thin_plates():
     unlocked_problem.solve()
     unlocked = unlocked_problem.values("w")[unlocked_problem.node_at((0.0, 0.0))]
     assert locked < 0.2 * unlocked
+
+
+# ---------------------------------------------------------------------------
+# Chapter 8, mixed classical plate theory model DM-CP(M)
+# ---------------------------------------------------------------------------
+def classical_circular_plate(
+    num_elements, power_law_index=0.0, support="hinged", von_karman=False, load=CIRCULAR_LOAD
+):
+    """Axisymmetric circular plate, mixed classical (Kirchhoff) theory."""
+    s = circular_plate_stiffness(power_law_index)
+    mesh = dm.generate_line_mesh(start=0.0, end=CIRCULAR_RADIUS, num_elements=num_elements)
+    problem = dm.Problem(mesh, coordinates="axisymmetric")
+    dm.physics.add_circular_plate(
+        problem,
+        theory="classical",
+        radial_displacement="radial_displacement",
+        transverse_displacement="deflection",
+        bending_moment="bending_moment",
+        extensional_stiffness=s.extensional,
+        coupling_stiffness=s.coupling,
+        bending_stiffness=s.bending,
+        poissons_ratio=POISSON,
+        transverse_load=load,
+        von_karman=von_karman,
+    )
+    # Symmetry at r = 0: u(0) = 0.  The slope dw/dr is the natural boundary
+    # quantity of the moment equation, so dw/dr(0) = 0 needs no condition.
+    problem.add_boundary_condition(
+        "DirichletBC", "centre_u", variable="radial_displacement", boundary="left", value=0.0
+    )
+    problem.add_boundary_condition(
+        "DirichletBC", "edge_u", variable="radial_displacement", boundary="right", value=0.0
+    )
+    problem.add_boundary_condition(
+        "DirichletBC", "edge_w", variable="deflection", boundary="right", value=0.0
+    )
+    if support == "hinged":
+        problem.add_boundary_condition(
+            "DirichletBC", "edge_m", variable="bending_moment", boundary="right", value=0.0
+        )
+    if von_karman:
+        problem.solve(load_factors=[0.1 * k for k in range(1, 11)])
+    else:
+        problem.solve()
+    return problem
+
+
+def test_table_8_6_1_mixed_classical_plate():
+    """Table 8.6.1, DM-CP(M) column: w(0) for 2, 4, 8, 16, 32, and 64 elements."""
+    expected = [0.1149, 0.1156, 0.1158, 0.1159, 0.1159, 0.1159]
+    for num_elements, reference in zip((2, 4, 8, 16, 32, 64), expected):
+        problem = classical_circular_plate(num_elements)
+        centre = problem.values("deflection")[problem.node_at((0.0,))]
+        assert centre == pytest.approx(reference, abs=1.1e-4)
+
+
+@pytest.mark.parametrize(
+    "power_law_index, expected",
+    [
+        # Table 8.6.2, DM-CP(M) column (32 elements)
+        (0.0, 0.0284),
+        (1.0, 0.0665),
+        (2.0, 0.0975),
+        (3.0, 0.1151),
+        (4.0, 0.1242),
+        (5.0, 0.1294),
+        (7.5, 0.1369),
+        (10.0, 0.1424),
+        (12.0, 0.1466),
+        (15.0, 0.1527),
+        (20.0, 0.1621),
+    ],
+)
+def test_table_8_6_2_mixed_classical_plate(power_law_index, expected):
+    problem = classical_circular_plate(32, power_law_index=power_law_index, support="clamped")
+    centre = problem.values("deflection")[problem.node_at((0.0,))]
+    assert centre == pytest.approx(expected, abs=1.1e-4)
+
+
+@pytest.mark.parametrize("support", ["hinged", "clamped"])
+def test_mixed_classical_plate_bending_moment(support):
+    """Reddy, Eqs. (8.6.4d) and (8.6.6d): the nodal moment matches the exact
+    solution away from the origin.  At r = 0 the mixed models of both the FEM
+    and the DMCDM are known to be inaccurate (Section 8.6.2 of the book)."""
+    problem = classical_circular_plate(32, support=support)
+    radius = problem.entity_points()[:, 0]
+    moment = problem.values("bending_moment")
+    xi = radius / CIRCULAR_RADIUS
+    scale = CIRCULAR_LOAD * CIRCULAR_RADIUS**2 / 16.0
+    if support == "hinged":
+        exact = scale * (3 + POISSON) * (1 - xi**2)
+    else:
+        exact = scale * ((1 + POISSON) - (3 + POISSON) * xi**2)
+    interior = radius > 1e-9
+    assert abs(moment[interior] - exact[interior]).max() < 0.05 * scale
+
+
+def test_mixed_classical_plate_agrees_with_shear_deformable_model():
+    """With a/h = 100 the shear deformation is negligible, so the mixed
+    classical model and the first-order shear deformation model must agree."""
+    for support in ("hinged", "clamped"):
+        classical = classical_circular_plate(32, support=support)
+        shear = circular_plate(32, support="clamped" if support == "clamped" else "hinged")
+        centre_classical = classical.values("deflection")[classical.node_at((0.0,))]
+        centre_shear = shear.values("deflection")[0]
+        assert centre_classical == pytest.approx(centre_shear, rel=3e-3)
+
+
+@pytest.mark.parametrize(
+    "load, reference",
+    [
+        # Reference values from an independent Ritz energy minimisation of the
+        # von Karman clamped circular plate (see docs/verification.rst).
+        (0.5, 0.027323),
+        (5.0, 0.137082),
+        (20.0, 0.245704),
+    ],
+)
+def test_mixed_classical_plate_von_karman(load, reference):
+    problem = classical_circular_plate(32, support="clamped", von_karman=True, load=load)
+    centre = problem.values("deflection")[problem.node_at((0.0,))]
+    assert centre == pytest.approx(reference, rel=6e-3)
+    linear = CIRCULAR_RADIUS**4 * load / (64 * circular_plate_stiffness(0.0).bending)
+    assert centre < linear  # membrane stretching stiffens the plate

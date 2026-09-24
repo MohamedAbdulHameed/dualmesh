@@ -22,7 +22,12 @@ Diffusion::validParams()
   p.setClassDescription(
       "Diffusion term -div(k grad u), with k = k(x, t) * (c0 + c1 u + c2 u^2 + ...). "
       "Flux F = k grad u; the natural boundary quantity is n . (k grad u).");
-  p.addOptional("diffusivity", ParameterKind::Function, 1.0, "Diffusivity k(x, t).");
+  p.addOptional("diffusivity",
+                ParameterKind::Function,
+                1.0,
+                "Diffusivity k, given as a constant or as the name of a registered function "
+                "of (x, y, z, t). It must be positive. It is ignored when "
+                "'diffusivity_property' names a material property.");
   p.addOptional("diffusivity_property",
                 ParameterKind::String,
                 std::string(""),
@@ -31,7 +36,12 @@ Diffusion::validParams()
   p.addOptional("solution_polynomial",
                 ParameterKind::RealList,
                 std::vector<double>{1.0},
-                "Coefficients c0, c1, ... of the polynomial dependence of k on u.");
+                "Coefficients c0, c1, ... of a polynomial p(u) = c0 + c1 u + c2 u^2 + ... "
+                "that multiplies the diffusivity, giving an effective k(x, t) p(u). It "
+                "multiplies, it does not replace: the default {1} leaves the diffusivity "
+                "unchanged, so a list given here must include its own constant term. The "
+                "polynomial is evaluated at the current iterate under Newton's method and at "
+                "the previous iterate under direct iteration.");
   return p;
 }
 
@@ -77,9 +87,17 @@ AnisotropicDiffusion::validParams()
 {
   InputParameters p = Kernel::validParams();
   p.setClassDescription(
-      "Anisotropic diffusion -div(K grad u) with a constant tensor K. Give 'diffusivity_tensor' "
-      "as dim values (diagonal) or dim*dim values (row by row).");
-  p.addRequired("diffusivity_tensor", ParameterKind::RealList, "Diffusivity tensor entries.");
+      "Anisotropic diffusion with a constant tensor K: the flux is F_i = sum_j K_ij du/dx_j "
+      "and the source is zero, so the equation is -div(K grad u) = 0 and the natural "
+      "boundary quantity is n . (K grad u).");
+  p.addRequired("diffusivity_tensor",
+                ParameterKind::RealList,
+                "Entries of the constant diffusivity tensor K. Give either one value per "
+                "dimension, which is read as the diagonal (K_xx, K_yy, K_zz), or dimension "
+                "squared values, which are read row by row (K_xx, K_xy, K_yx, K_yy in two "
+                "dimensions). Any other count is an error. The tensor is constant in space "
+                "and time and is not checked for symmetry or positive definiteness; a "
+                "non-symmetric K gives a non-symmetric Jacobian.");
   return p;
 }
 
@@ -126,9 +144,24 @@ InputParameters
 Reaction::validParams()
 {
   InputParameters p = Kernel::validParams();
-  p.setClassDescription("Reaction (or elastic foundation) term S = c(x, t) u^p.");
-  p.addOptional("coefficient", ParameterKind::Function, 1.0, "Coefficient c(x, t).");
-  p.addOptional("exponent", ParameterKind::Real, 1.0, "Exponent p.");
+  p.setClassDescription(
+      "A reaction term, which in structural problems is the restoring action of an "
+      "elastic foundation and in transport problems a decay or growth. It contributes no "
+      "flux and the source S = c u^p. With the default exponent 1 the term is linear.");
+  p.addOptional("coefficient",
+                ParameterKind::Function,
+                1.0,
+                "Coefficient c in the source S = c u^p, as a constant or the name of a "
+                "function. The source enters the residual as written, so a positive c "
+                "removes u (a decay, or the restoring action of an elastic foundation) and "
+                "a negative c feeds it.");
+  p.addOptional("exponent",
+                ParameterKind::Real,
+                1.0,
+                "Exponent p in the source S = c u^p. The default 1 gives a linear reaction. "
+                "Any other value makes the term nonlinear; direct iteration then linearizes "
+                "it as c u_previous^(p-1) u, and a non-integer p requires u to stay "
+                "positive.");
   return p;
 }
 
@@ -158,9 +191,24 @@ InputParameters
 BodyForce::validParams()
 {
   InputParameters p = Kernel::validParams();
-  p.setClassDescription("Volumetric source f(x, t) on the right-hand side: S = -f.");
-  p.addOptional("value", ParameterKind::Function, 1.0, "Source intensity f(x, t).");
-  p.addOptional("scale_with_load", ParameterKind::Boolean, true, "Scale with the load factor.");
+  p.setClassDescription(
+      "A distributed source on the right-hand side of the equation. It contributes no "
+      "flux and the source S = -f, so a positive intensity drives the variable up. Use it "
+      "for a body force, an internal generation rate, or any forcing that depends on "
+      "position and time but not on the solution.");
+  p.addOptional("value",
+                ParameterKind::Function,
+                1.0,
+                "Intensity f of the source, per unit volume, as a constant or the name of "
+                "a registered function of (x, y, z, t). A positive value drives the "
+                "variable up.");
+  p.addOptional("scale_with_load",
+                ParameterKind::Boolean,
+                true,
+                "Multiply this body force by the load factor during load stepping. Unlike the "
+                "framework default this is true, because applied loading is normally what "
+                "is ramped; set it to false for a part of the loading that must stay fixed "
+                "while the rest is increased.");
   return p;
 }
 
@@ -184,8 +232,17 @@ InputParameters
 TimeDerivative::validParams()
 {
   InputParameters p = Kernel::validParams();
-  p.setClassDescription("Time derivative c du/dt (backward difference within the theta scheme).");
-  p.addOptional("coefficient", ParameterKind::Function, 1.0, "Capacity coefficient c(x, t).");
+  p.setClassDescription(
+      "The transient term of the equation. It contributes no flux and the source "
+      "S = c (u - u_old) / dt. It is a time kernel: it is skipped entirely in a steady "
+      "solve, and it is not multiplied by the time-integration weight theta, which applies "
+      "to the steady terms only.");
+  p.addOptional("coefficient",
+                ParameterKind::Function,
+                1.0,
+                "Capacity coefficient c multiplying the time derivative, as a constant or the name "
+                "of a function. For heat conduction it is the volumetric heat capacity rho c_p, "
+                "for a mass balance the porosity, and for a wave problem the density.");
   return p;
 }
 
@@ -221,11 +278,21 @@ Advection::validParams()
   p.addOptional("velocity_functions",
                 ParameterKind::StringList,
                 std::vector<std::string>{},
-                "Names of functions for the velocity components (override 'velocity').");
+                "Names of registered functions giving the velocity components. The list is "
+                "matched by position and may be shorter than the dimension: a component uses "
+                "its function when one is listed at that position and otherwise falls back "
+                "to the corresponding entry of 'velocity', so a list with one name overrides "
+                "only the x component.");
   p.addOptional("form",
                 ParameterKind::String,
                 std::string("non_conservative"),
-                "'conservative' or 'non_conservative'.");
+                "Which of the two equivalent statements of the advection term to "
+                "assemble. 'conservative' contributes the flux F = -v u, so the discrete "
+                "term conserves u exactly over the control domains; use it when the velocity "
+                "is divergence free or when a conservation check matters. "
+                "'non_conservative', the default, contributes the source S = v . grad u, "
+                "which is cheaper and is the correct reading when the equation is written in "
+                "non-conservative form. Any other string is an error.");
   return p;
 }
 
@@ -279,9 +346,21 @@ InputParameters
 CoupledForce::validParams()
 {
   InputParameters p = Kernel::validParams();
-  p.setClassDescription("Coupling source S = -c v, where v is another variable.");
-  p.addRequired("coupled_variable", ParameterKind::String, "The coupled variable v.");
-  p.addOptional("coefficient", ParameterKind::Function, 1.0, "Coefficient c(x, t).");
+  p.setClassDescription(
+      "A source proportional to another variable, which is how two equations of a "
+      "multiphysics problem are coupled. It contributes no flux and the source S = -c v. "
+      "The coupling is exact in Newton's method, because the derivative with respect to "
+      "the coupled variable is carried through the automatic differentiation.");
+  p.addRequired("coupled_variable",
+                ParameterKind::String,
+                "Name of the other variable that drives this equation. It must already "
+                "exist on the problem.");
+  p.addOptional("coefficient",
+                ParameterKind::Function,
+                1.0,
+                "Coefficient c in the source S = -c v, as a constant or the name of a "
+                "function. A positive c makes the coupled variable v a source for this "
+                "equation; reverse the sign to make it a sink.");
   return p;
 }
 
@@ -309,7 +388,14 @@ DirichletBC::validParams()
 {
   InputParameters p = NodalBC::validParams();
   p.setClassDescription("Prescribed value u = g(x, t) (essential boundary condition).");
-  p.addOptional("value", ParameterKind::Function, 0.0, "Prescribed value g(x, t).");
+  p.addOptional("value",
+                ParameterKind::Function,
+                0.0,
+                "Prescribed value g(x, t), written directly into the solution at every node "
+                "of the boundary. When the inherited 'scale_with_load' is true the value is "
+                "multiplied by the current load factor, so a prescribed displacement is "
+                "ramped along with the loads; it is false by default, so the value is held "
+                "fixed across the load steps.");
   return p;
 }
 
@@ -333,10 +419,25 @@ NeumannBC::validParams()
 {
   InputParameters p = IntegratedBC::validParams();
   p.setClassDescription(
-      "Prescribed outward normal flux q = n . F (natural boundary condition; the specified "
-      "secondary variable).");
-  p.addOptional("flux", ParameterKind::Function, 0.0, "Outward normal flux q(x, t).");
-  p.addOptional("scale_with_load", ParameterKind::Boolean, true, "Scale with the load factor.");
+      "Prescribed natural boundary quantity q = n . F, where F is the flux assembled by "
+      "the kernels of this variable. This is the secondary variable of the duality pair, "
+      "and it is the condition that applies by default on a boundary that carries no "
+      "condition at all, with q = 0.");
+  p.addOptional("flux",
+                ParameterKind::Function,
+                0.0,
+                "Prescribed value of n . F. For a diffusion-type kernel F = k grad u, so a "
+                "positive value drives u into the body: it is an inflow, not an outflow. "
+                "This is the same convention as HeatFluxBC, whose 'heat_flux' is the heat "
+                "entering the body. The default 0 is the do-nothing condition, insulated "
+                "for heat transfer and traction free for elasticity.");
+  p.addOptional("scale_with_load",
+                ParameterKind::Boolean,
+                true,
+                "Multiply this contribution by the load factor during load stepping. Unlike "
+                "the framework default this is true, because applied loading is normally "
+                "what is ramped; set it to false for a part of the loading that must stay "
+                "fixed while the rest is increased.");
   return p;
 }
 
@@ -362,9 +463,27 @@ RobinBC::validParams()
   p.setClassDescription(
       "Mixed (Robin, convection) condition n . F = q0 - h (u - u_ambient), e.g. Newton's law "
       "of cooling.");
-  p.addOptional("transfer_coefficient", ParameterKind::Function, 0.0, "Coefficient h(x, t).");
-  p.addOptional("ambient_value", ParameterKind::Function, 0.0, "Ambient value u_ambient(x, t).");
-  p.addOptional("flux", ParameterKind::Function, 0.0, "Additional outward flux q0(x, t).");
+  p.addOptional("transfer_coefficient",
+                ParameterKind::Function,
+                0.0,
+                "Transfer, or film, coefficient h in n . F = q0 - h (u - u_ambient). It "
+                "should be non-negative: a positive h drives u towards 'ambient_value', "
+                "whereas a negative one drives it away and makes the problem unstable. The "
+                "default 0 switches the transfer term off and leaves a pure Neumann "
+                "condition of strength 'flux'.");
+  p.addOptional("ambient_value",
+                ParameterKind::Function,
+                0.0,
+                "Far-field value u_ambient that the transfer term drives u towards. It is "
+                "used only when 'transfer_coefficient' is non-zero. The default is 0 rather "
+                "than the initial condition, so leaving it unset cools the surface towards "
+                "zero.");
+  p.addOptional("flux",
+                ParameterKind::Function,
+                0.0,
+                "Prescribed part q0 of the natural quantity n . F, added on top of the "
+                "transfer term. It carries the same sign convention as NeumannBC: a "
+                "positive value drives u into the body.");
   return p;
 }
 
@@ -393,9 +512,21 @@ InputParameters
 GenericConstantMaterial::validParams()
 {
   InputParameters p = Material::validParams();
-  p.setClassDescription("Declares constant scalar material properties.");
-  p.addRequired("property_names", ParameterKind::StringList, "Property names.");
-  p.addRequired("property_values", ParameterKind::RealList, "Property values.");
+  p.setClassDescription(
+      "Declares scalar material properties that are constant in space and time. The "
+      "properties are then available to any kernel or boundary condition on the same "
+      "blocks: a kernel consumes one by being given its name in the matching *_property "
+      "parameter, for example Diffusion's 'diffusivity_property'.");
+  p.addRequired("property_names",
+                ParameterKind::StringList,
+                "Names under which the values are declared, in the same order as "
+                "'property_values'; the two lists must be the same length. A name given "
+                "here is what a kernel's *_property parameter must be set to in order to "
+                "consume the value.");
+  p.addRequired("property_values",
+                ParameterKind::RealList,
+                "One constant per name in 'property_names', matched by position. The units "
+                "are whatever the consuming kernel expects; nothing is checked.");
   return p;
 }
 
@@ -426,9 +557,23 @@ InputParameters
 GenericFunctionMaterial::validParams()
 {
   InputParameters p = Material::validParams();
-  p.setClassDescription("Declares scalar material properties given by functions of (x, t).");
-  p.addRequired("property_names", ParameterKind::StringList, "Property names.");
-  p.addRequired("functions", ParameterKind::StringList, "Function names (one per property).");
+  p.setClassDescription(
+      "Declares scalar material properties whose values come from functions of position and "
+      "time. The functions must already be registered on the problem. Use this for a "
+      "property that varies through the body, such as a graded conductivity; a property "
+      "that depends on the solution itself belongs in a material written in Python or "
+      "C++.");
+  p.addRequired("property_names",
+                ParameterKind::StringList,
+                "Names under which the values are declared, in the same order as "
+                "'functions'; the two lists must be the same length.");
+  p.addRequired("functions",
+                ParameterKind::StringList,
+                "Names of functions already registered on the problem, one per entry of "
+                "'property_names' and matched by position. An unknown name is an error at "
+                "set-up. Each function is evaluated at (x, y, z, t) at every integration "
+                "point, so the property may vary in space and time but not with the "
+                "solution.");
   return p;
 }
 

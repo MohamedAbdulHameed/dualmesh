@@ -30,6 +30,23 @@ jobs:
       - name: Test
         run: ctest --test-dir build --build-config Release --output-on-failure
 
+  mpi:
+    name: MPI (1, 2, 3 and 4 processes)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install MPI and METIS
+        run: sudo apt-get update && sudo apt-get install -y libopenmpi-dev openmpi-bin libmetis-dev libeigen3-dev
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DDUALMESH_BUILD_PYTHON=OFF -DDUALMESH_ENABLE_MPI=ON
+      - name: Build
+        run: cmake --build build -j
+      - name: Distributed tests
+        run: |
+          for n in 1 2 3 4; do
+            mpirun --oversubscribe -n $n ./build/dualmesh_parallel_tests
+          done
+
   python:
     name: Python ${{ matrix.python-version }} (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -53,6 +70,7 @@ jobs:
           python examples/custom_kernel.py
           python examples/functionally_graded_beam.py
           python examples/transient_slab.py
+          python examples/natural_convection.py
       - name: Command line
         run: |
           dualmesh --version

@@ -90,8 +90,20 @@ public:
   virtual double computeValue(const Point & x, double t) const;
   const std::vector<Index> & nodes() const { return _nodes; }
 
+  /// For a load given by coordinates rather than by a boundary: the entity each
+  /// requested point was resolved to, and how far that entity is from the
+  /// point.  One entry per requested point, in the order they were given.
+  const std::vector<std::pair<Index, double>> & pointNodes() const { return _point_nodes; }
+  /// Keep only the requested points whose flag is set, and rebuild nodes().
+  /// A distributed run uses this to drop the points that another process
+  /// resolved more accurately, because each process only sees its own part of
+  /// the mesh and would otherwise apply the load at its own nearest node.
+  void keepPoints(const std::vector<char> & keep);
+
 protected:
   std::vector<Index> _nodes;
+  std::vector<Index> _boundary_nodes;
+  std::vector<std::pair<Index, double>> _point_nodes;
   FunctionPtr _value;
 };
 

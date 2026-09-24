@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 """Ready-made physics: one call adds all the kernels of a model.
 
-The models of the structural, solid mechanics, and fluids modules need one
-kernel per equation (and, for shear-deformable plates, a second kernel for the
+The models of the solid mechanics and fluids modules need one kernel per
+equation (and, for shear-deformable plates, a second kernel for the
 transverse shear terms so that they can be integrated with a reduced rule).
 These helpers add them consistently, in the spirit of MOOSE's Physics syntax::
 
@@ -135,6 +135,47 @@ def add_incompressible_flow(
     return velocities
 
 
+def add_boussinesq_buoyancy(
+    problem,
+    temperature: str,
+    velocities: Sequence[str],
+    gravity: Sequence[float],
+    density: float = 1.0,
+    thermal_expansion: float = 1.0,
+    reference_temperature: float = 0.0,
+    scale_with_load: bool = False,
+    name: str = "buoyancy",
+):
+    r"""Add the Boussinesq buoyancy force to the momentum equations.
+
+    One ``BoussinesqBuoyancy`` kernel is added for every velocity component
+    along which gravity acts, giving the body force
+    :math:`\mathbf{f} = -\rho_0 \beta (T - T_0) \mathbf{g}`.  With
+    ``scale_with_load=True`` load stepping ramps the buoyancy, which is how a
+    high Rayleigh number is reached from rest.  Together with a
+    ``HeatConvection`` kernel on the temperature this makes a natural
+    convection problem; see ``examples/natural_convection.py``.
+    """
+    velocities = list(velocities)
+    added = []
+    for component, variable in enumerate(velocities):
+        if component < len(gravity) and gravity[component] != 0.0:
+            problem.add_kernel(
+                "BoussinesqBuoyancy",
+                f"{name}_{variable}",
+                variable=variable,
+                component=component,
+                temperature=temperature,
+                gravity=list(gravity),
+                density=density,
+                thermal_expansion=thermal_expansion,
+                reference_temperature=reference_temperature,
+                scale_with_load=scale_with_load,
+            )
+            added.append(variable)
+    return added
+
+
 def add_beam(
     problem,
     model: str = "BeamEulerBernoulliMixed",
@@ -175,15 +216,56 @@ def add_circular_plate(
     radial_displacement: str = "radial_displacement",
     transverse_displacement: str = "deflection",
     rotation: str = "rotation",
+    bending_moment: str = "bending_moment",
+    theory: str = "first_order",
     name: str = "plate",
     **parameters,
 ):
-    """Add the first-order (Mindlin) axisymmetric circular plate model.
+    """Add an axisymmetric circular plate model on a radial mesh.
 
-    Two kernels are added per variable: one for the bending and membrane terms
-    and one for the transverse shear force, the latter with reduced integration.
-    The problem must use ``coordinates="axisymmetric"`` on a radial mesh.
+    The problem must use ``coordinates="axisymmetric"``, so that every integral
+    carries the factor :math:`2 \\pi r`.
+
+    With ``theory="first_order"`` (the default) this adds the first-order shear
+    deformation, or Mindlin, model in terms of the radial displacement
+    :math:`u`, the deflection :math:`w`, and the rotation :math:`\\phi_r`.  Two
+    kernels are added per variable: one for the bending and membrane terms, and
+    one for the transverse shear force, which is integrated at the centre of
+    the element so that thin plates do not lock.
+
+    With ``theory="classical"`` this adds the mixed classical, or Kirchhoff,
+    model in terms of :math:`u`, :math:`w`, and the radial bending moment
+    :math:`M_{rr}`.  The classical theory gives a fourth-order equation in
+    :math:`w`, which the dual mesh control domain method cannot discretize, so
+    the bending moment is carried as a third unknown and the system becomes
+    three second-order equations.  There is no shear term to under-integrate,
+    so one kernel per variable is enough.  The natural boundary quantity of the
+    moment equation is the slope :math:`dw/dr`, which means a clamped edge needs
+    no condition at all on that equation, while a simply supported edge
+    prescribes :math:`M_{rr} = 0`.
     """
+    if theory in ("classical", "cpt", "kirchhoff"):
+        variables = [radial_displacement, transverse_displacement, bending_moment]
+        for variable in variables:
+            _ensure_variable(problem, variable)
+        mapping = dict(
+            radial_displacement=radial_displacement,
+            transverse_displacement=transverse_displacement,
+            bending_moment=bending_moment,
+        )
+        for variable in variables:
+            problem.add_kernel(
+                "CircularPlateClassicalMixed",
+                f"{name}_{variable}",
+                variable=variable,
+                **dict(parameters, **mapping),
+            )
+        return variables
+    if theory not in ("first_order", "fsdt", "mindlin"):
+        raise ValueError(
+            "theory must be 'first_order' (shear deformable) or 'classical' (Kirchhoff), "
+            f"not {theory!r}"
+        )
     variables = [radial_displacement, transverse_displacement, rotation]
     for variable in variables:
         _ensure_variable(problem, variable)

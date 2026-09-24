@@ -1,10 +1,12 @@
-Theory manual
-=============
+Foundations: the conservation form and the dual mesh
+====================================================
 
-This chapter states exactly what the code computes.  The notation follows
-J. N. Reddy, *Computational Methods in Engineering: Finite Difference, Finite
-Volume, Finite Element, and Dual Mesh Control Domain Methods* (CRC Press,
-2024), referred to below as "the book".
+This chapter introduces the form in which every equation in the library is
+written, the two meshes the method keeps, and the discretisation itself.  It
+also states, for comparison on identical input, what the Galerkin finite
+element method does with the same problem.  The quadrature rules that evaluate
+the integrals, and the elements that generate the dual mesh, are the subject of
+:doc:`elements`.
 
 .. contents::
    :local:
@@ -194,48 +196,6 @@ remembering, and both are checked in the test suite:
 * for quadrilaterals the two differ slightly, and the dual mesh results are
   usually the more accurate of the two (Tables 5.4.1–5.4.3 of the book).
 
-Quadrature
-----------
-
-Each kernel chooses its own rule with the ``quadrature`` parameter, because in
-this method the rule is part of the model, not only a numerical detail:
-
-``gauss1`` … ``gauss10``
-    Gauss–Legendre rules on the sub-cell or interface patch (the default is
-    ``gauss2``, which integrates the linear interpolant exactly).
-
-``midpoint``
-    One point at the centre of the patch.  Combined with
-    ``reduced_integration=True`` this is the selective reduced integration used
-    for the transverse shear terms of shear-deformable beams and plates and for
-    the penalty term of incompressible flow.
-
-``trapezoid``, ``simpson``
-    The corner and Simpson rules on the patch, for reproducing classical finite
-    volume source treatments.
-
-``nodal``
-    One point at the owning node, with the measure of the control domain as
-    the weight; the row-sum (lumped) treatment of mass-like terms.
-
-``interface``
-    One point at the control domain interface, with the measure of the
-    sub-cell as the weight.
-
-``control_domain_trapezoid``
-    The trapezoidal rule over the whole control domain, which for an interior
-    node in one dimension is :math:`F_I = \tfrac{\Delta x}{2}\,[f(x_A) +
-    f(x_B)]` with :math:`x_A` and :math:`x_B` the two interfaces, and for a
-    boundary node uses the node and its single interface.  This is the source
-    rule of Chapter 3 of the book and reproduces its Example 3.3.1 exactly.
-
-Setting ``reduced_integration=True`` evaluates the *solution* (and hence the
-material properties) at the element centroid while the geometry is still
-integrated exactly.  This is the mechanism the book uses to avoid shear
-locking in displacement models of shear-deformable theories, to avoid membrane
-locking in von Kármán problems, and to make the penalty formulation of
-incompressible flow work.
-
 Coordinate systems
 ------------------
 
@@ -262,79 +222,6 @@ With ``"axisymmetric"`` the reaction returned at a boundary node is therefore a
 heat flow per unit length (or a force), not a flux density; Example 5.3.2 of
 the book, where :math:`Q(R_0) = \pi R_0^2 g_0 = 2\pi\times 10^4` W/m, is
 reproduced to machine precision.
-
-Nonlinear problems
-------------------
-
-Two schemes are available, both driven by the same residual.
-
-**Newton's method** uses the exact Jacobian.  Every kernel is written in terms
-of the forward-mode automatic differentiation type :class:`ADReal`, whose
-partial derivatives with respect to the local (element) degrees of freedom are
-carried through every arithmetic operation.  The element contributions to
-:math:`\partial R_I / \partial U_J` therefore need no hand coding and are exact
-for any nonlinearity, including nonlinear boundary conditions.
-
-**Direct (Picard) iteration** freezes the nonlinear coefficients at the
-previous iterate.  A kernel asks for the lagged value with
-``ctx.coefficient_value(variable)`` — in Newton mode the same call returns the
-current AD value, so one kernel serves both schemes.  With
-``nonlinear_solver="picard"`` the iteration is that of Section 6.2 of the book,
-and the acceleration (relaxation) parameter of Eq. (6.2.15),
-
-.. math::
-
-   \bar{U} = (1-\gamma)\,U^{r} + \gamma\, U^{r-1} , \qquad 0 \le \gamma < 1 ,
-
-is the ``relaxation`` option.  The nonlinear beam problems of Section 7.6 use
-:math:`\gamma = 0.35`, and the lid-driven cavity at :math:`Re = 1000` converges
-with :math:`\gamma = 0.5`.
-
-**Load stepping** applies the loads in increments, taking the converged
-solution of one step as the initial guess of the next.  Objects whose
-contribution scales with the load (body forces, tractions, distributed loads,
-point loads) are multiplied by the load factor; a Dirichlet condition can be
-ramped too by setting ``scale_with_load=True``.  The lid-driven cavity at
-:math:`Re = 1000` does not converge from rest with Newton's method but does
-converge in a handful of load steps, and the nonlinear beams of Table 7.6.1 use
-increments of :math:`\Delta q_0 = 1`.
-
-Convergence is declared when the residual norm drops below
-``absolute_tolerance``, or below ``relative_tolerance`` times its initial
-value, or when the relative solution increment
-
-.. math::
-
-   \frac{\lVert U^{r+1} - U^{r}\rVert}{\lVert U^{r+1}\rVert} \le \varepsilon
-
-falls below ``step_tolerance``, which is the criterion used in the book.
-
-Time integration
-----------------
-
-Transient problems use the :math:`\theta` method.  With
-:math:`R_{\text{time}}` the residual of the time-derivative kernels and
-:math:`R_{\text{ss}}` the rest,
-
-.. math::
-
-   R_{\text{time}}(U^{n+1}) + \theta\, R_{\text{ss}}(U^{n+1}, t^{n+1})
-   + (1-\theta)\, R_{\text{ss}}(U^{n}, t^{n}) = 0 ,
-
-so :math:`\theta = 1` is the backward Euler method, :math:`\theta = 1/2` the
-Crank–Nicolson method, and :math:`\theta = 0` the forward Euler method.  A
-time-derivative kernel with ``quadrature="nodal"`` gives the lumped capacity
-matrix, which in the dual mesh method is simply the measure of the control
-domain times the nodal rate.
-
-Solvers and complexity
-----------------------
-
-The linear systems are solved with Eigen: a sparse LU factorization by default
-(``linear_solver="lu"``), or BiCGSTAB with an incomplete-LU preconditioner, or
-the conjugate gradient method for symmetric problems.  The unknowns are
-ordered node by node (``dof = node * num_variables + variable``), which keeps
-the couplings of a multi-field model close to the diagonal.
 
 Properties worth knowing
 ------------------------

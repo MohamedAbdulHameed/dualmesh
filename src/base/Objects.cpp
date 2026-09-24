@@ -61,21 +61,48 @@ ResidualObject::validParams()
                 "Blocks (subdomains) this object acts on; empty means everywhere.");
   p.addOptional("quadrature",
                 ParameterKind::String,
-                std::string("gauss2"),
-                "Quadrature rule for this term: gauss1..gauss10, midpoint, trapezoid, "
-                "simpson, nodal (lumped at the node), interface (one point at the control "
-                "domain interface), or control_domain_trapezoid (the trapezoidal rule over "
-                "the whole control domain, as in the classical finite volume method).");
+                std::string("automatic"),
+                "Quadrature rule used to integrate this term. The default, automatic, uses "
+                "Gauss-Legendre with as many points per direction as the polynomial order of "
+                "the mesh plus one, which is two points on a linear mesh and three on a "
+                "quadratic one. The choices are gauss1 to "
+                "gauss10 (Gauss-Legendre with that many points per direction), midpoint, "
+                "trapezoid, simpson, nodal (a single point at the owning node, which lumps "
+                "the term), interface (a single point at the control domain interface), and "
+                "control_domain_trapezoid (the trapezoidal rule over the whole control "
+                "domain, which is the source rule of the classical finite volume method). "
+                "The aliases trapezoidal, lumped, centroid and cd_trapezoid are accepted, a "
+                "bare gauss means gauss2, and the name is matched without regard to case. "
+                "The automatic default is enough for a smooth coefficient on a mildly "
+                "distorted element; raise it for strongly curved elements or a rapidly "
+                "varying coefficient, and use nodal to lump a capacity or mass term.");
   p.addOptional("reduced_integration",
                 ParameterKind::Boolean,
                 false,
-                "Evaluate the solution at the element centroid (selective reduced "
-                "integration; avoids shear and membrane locking; used for penalty terms).");
+                "Evaluate the solution and its gradients at the centroid of the element "
+                "while still integrating with the rule named by 'quadrature'; the geometry "
+                "is unaffected. This is selective reduced integration. Turn it on only for "
+                "the transverse shear terms of a thin beam or plate and for the penalty term "
+                "of an incompressible flow, where it removes locking. Using it on a bending "
+                "or diffusion term instead degrades the accuracy.");
   p.addOptional("scale_with_load",
                 ParameterKind::Boolean,
                 false,
                 "Multiply this contribution by the load factor during load stepping.");
   return p;
+}
+
+bool
+Object::parametersAreThreadSafe() const
+{
+  for (const auto & [name, info] : _params.all())
+  {
+    (void) name;
+    if (const auto * f = std::get_if<std::shared_ptr<Function>>(&info.value))
+      if (*f && !(*f)->threadSafe())
+        return false;
+  }
+  return true;
 }
 
 ResidualObject::ResidualObject(const InputParameters & params) : Object(params)
@@ -90,6 +117,17 @@ void
 ResidualObject::initialSetup(Problem & problem)
 {
   _var = problem.variableIndex(_var_name);
+  if (_quad.automatic)
+  {
+    // The rule must integrate a product of shape functions exactly, so it
+    // needs one more point per direction than the polynomial order.
+    int order = 1;
+    for (const auto & el : problem.mesh().elements())
+      if (elementIsQuadratic(el.type))
+        order = 2;
+    _quad.points = order + 1;
+    _quad.automatic = false;
+  }
   _blocks.clear();
   for (const auto & b : _params.getStringList("block"))
     _blocks.insert(problem.mesh().blockId(b));
@@ -166,7 +204,7 @@ NodalBC::initialSetup(Problem & problem)
   ResidualObject::initialSetup(problem);
   std::set<Index> ids;
   for (const auto & b : _boundaries)
-    for (Index n : problem.mesh().boundaryNodes(b))
+    for (Index n : problem.boundaryEntities(b))
       ids.insert(n);
   _nodes.assign(ids.begin(), ids.end());
 }
@@ -179,7 +217,13 @@ NodalLoad::validParams()
   p.setClassDescription(
       "Concentrated source at nodes (point force or point heat source); the residual of the "
       "node's equation receives -value.");
-  p.addRequired("value", ParameterKind::Function, "Magnitude of the concentrated source.");
+  p.addRequired("value",
+                ParameterKind::Function,
+                "Magnitude of the concentrated source, in the units conjugate to the "
+                "variable: a force for a displacement, a heat rate in watts for a "
+                "temperature. The residual of the node's equation receives minus this value, "
+                "so a positive number acts along the positive direction of the variable or "
+                "adds heat to the body.");
   p.addOptional("boundary",
                 ParameterKind::StringList,
                 std::vector<std::string>{},
@@ -187,9 +231,19 @@ NodalLoad::validParams()
   p.addOptional("points",
                 ParameterKind::RealList,
                 std::vector<double>{},
-                "Coordinates (x, y, z triples, or x values in 1D) of points; the nearest "
-                "node of each receives the load.");
-  p.addOptional("scale_with_load", ParameterKind::Boolean, true, "Scale with the load factor.");
+                "Coordinates of the loaded points: three numbers per point in two and "
+                "three dimensions, one number per point in one dimension. Each point is "
+                "snapped to the nearest node, however far away that node is, without a "
+                "warning, so check that the mesh has a node where the load belongs. Points "
+                "that snap to the same node are merged and the load is applied once. Give "
+                "'points', 'boundary', or both; giving neither is an error.");
+  p.addOptional("scale_with_load",
+                ParameterKind::Boolean,
+                true,
+                "Multiply this load by the load factor during load stepping. Unlike the "
+                "framework default this is true, because an applied load is normally what is "
+                "ramped; set it to false for a preload that must stay fixed while the rest "
+                "of the loading is increased.");
   return p;
 }
 
@@ -202,8 +256,10 @@ NodalLoad::initialSetup(Problem & problem)
   _value = getFunction(problem, "value");
   std::set<Index> ids;
   for (const auto & b : _params.getStringList("boundary"))
-    for (Index n : problem.mesh().boundaryNodes(b))
+    for (Index n : problem.boundaryEntities(b))
       ids.insert(n);
+  _boundary_nodes.assign(ids.begin(), ids.end());
+  _point_nodes.clear();
   const auto pts = _params.getRealList("points");
   const int dim = problem.mesh().dimension();
   const int stride = dim == 1 ? 1 : 3;
@@ -215,9 +271,9 @@ NodalLoad::initialSetup(Problem & problem)
     Point p{pts[i], stride == 3 ? pts[i + 1] : 0.0, stride == 3 ? pts[i + 2] : 0.0};
     Index best = -1;
     double bd = std::numeric_limits<double>::infinity();
-    for (Index n = 0; n < problem.mesh().numNodes(); ++n)
+    for (Index n = 0; n < problem.numEntities(); ++n)
     {
-      const double d = norm(problem.mesh().node(n) - p);
+      const double d = norm(problem.entityPoint(n) - p);
       if (d < bd)
       {
         bd = d;
@@ -225,9 +281,27 @@ NodalLoad::initialSetup(Problem & problem)
       }
     }
     ids.insert(best);
+    _point_nodes.emplace_back(best, bd);
   }
   if (ids.empty())
     throw InputError("NodalLoad '" + _name + "' has no nodes: give 'boundary' or 'points'.");
+  _nodes.assign(ids.begin(), ids.end());
+}
+
+void
+NodalLoad::keepPoints(const std::vector<char> & keep)
+{
+  if (keep.size() != _point_nodes.size())
+    throw InputError("NodalLoad '" + _name + "': keepPoints needs one flag per requested point.");
+  std::set<Index> ids(_boundary_nodes.begin(), _boundary_nodes.end());
+  std::vector<std::pair<Index, double>> kept;
+  for (std::size_t i = 0; i < keep.size(); ++i)
+    if (keep[i])
+    {
+      ids.insert(_point_nodes[i].first);
+      kept.push_back(_point_nodes[i]);
+    }
+  _point_nodes = kept;
   _nodes.assign(ids.begin(), ids.end());
 }
 
@@ -335,7 +409,6 @@ Factory::Factory()
   registerFrameworkObjects(*this);
   registerHeatTransferObjects(*this);
   registerSolidMechanicsObjects(*this);
-  registerStructuralObjects(*this);
   registerFluidObjects(*this);
 }
 
@@ -346,8 +419,12 @@ Factory::entry(const std::string & type) const
   if (it == _entries.end())
   {
     std::ostringstream os;
-    os << "Unknown object type '" << type << "'. Registered types:";
+    std::vector<std::string> names;
     for (const auto & [n, _] : _entries)
+      names.push_back(n);
+    os << "Unknown object type '" << type << "'." << didYouMean(type, names)
+       << " Registered types:";
+    for (const auto & n : names)
       os << " " << n;
     throw InputError(os.str());
   }

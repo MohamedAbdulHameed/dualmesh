@@ -1,16 +1,20 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
-"""dualmesh: the dual mesh control domain method for computational mechanics.
+"""dualmesh: a multiphysics framework for heat transfer, solid mechanics and
+fluid dynamics.
 
-The package solves boundary value problems written in the canonical
-conservation form
+A problem is any number of fields, each governed by a conservation law in the
+canonical form
 
     -div F(u, grad u, x, t) + S(u, grad u, x, t) = 0,
 
-where ``F`` is the flux and ``S`` the source of each equation.  The same
-problem definition can be discretized either with the dual mesh control
-domain method (DMCDM) of J. N. Reddy, which enforces the balance law over
-node-centred control domains of a dual mesh, or with the standard Galerkin
-finite element method, so that the two can be compared directly.
+where ``F`` is the flux and ``S`` the source of each equation and ``u`` stands
+for all the fields, so that the equations may be coupled.  All the fields are
+solved together by Newton's method with an exact Jacobian from automatic
+differentiation.  The same problem definition can be discretized with the
+Galerkin finite element method (``method="fem"``), the vertex-centred or the
+cell-centred finite volume method (``"hfvm"``, ``"zfvm"``), or the dual mesh
+control domain method of J. N. Reddy (``"dmcdm"``), which enforces the balance
+law over node-centred control domains of a dual mesh.
 
 A minimal example (Reddy, *Computational Methods in Engineering*, Example
 5.3.1: a cooling fin governed by ``-u'' + 400 u = 0``)::
@@ -34,7 +38,7 @@ A minimal example (Reddy, *Computational Methods in Engineering*, Example
 from __future__ import annotations
 
 from . import _core as _core  # the compiled extension module
-from . import fgm, physics, postprocess
+from . import adaptivity, fgm, mms, parallel, physics, postprocess
 from ._core import (
     ADReal,
     InputParameters,
@@ -50,7 +54,14 @@ from ._core import (
     registered_types,
 )
 from .ad import abs, cos, exp, log, pow, sin, sqrt, tanh
-from .expressions import parsed_function
+from .adaptivity import (
+    mark_by_error_fraction,
+    mark_by_fraction,
+    mark_by_threshold,
+    refine_marked,
+    solve_with_adaptive_refinement,
+)
+from .expressions import ParsedFunction, parsed_function
 from .meshing import (
     annulus_coordinates,
     generate_annulus_mesh,
@@ -68,12 +79,14 @@ from .objects import (
     PythonMaterial,
     PythonNodalBoundaryCondition,
 )
+from .parallel import DistributedProblem, have_metis, have_mpi, is_root, num_ranks, partition_mesh
 from .problem import Problem, SolveResult
 
 __version__ = "0.1.0"
 
 __all__ = [
     "ADReal",
+    "DistributedProblem",
     "InputParameters",
     "IntegratedBC",
     "Kernel",
@@ -81,6 +94,7 @@ __all__ = [
     "Mesh",
     "NodalBC",
     "Problem",
+    "ParsedFunction",
     "PythonBoundaryCondition",
     "PythonKernel",
     "PythonMaterial",
@@ -88,6 +102,7 @@ __all__ = [
     "QpContext",
     "SolveResult",
     "abs",
+    "adaptivity",
     "annulus_coordinates",
     "cos",
     "describe_object",
@@ -97,16 +112,28 @@ __all__ = [
     "generate_box_mesh",
     "generate_line_mesh",
     "generate_rectangle_mesh",
+    "have_metis",
+    "have_mpi",
+    "is_root",
     "graded_coordinates",
     "log",
+    "mark_by_error_fraction",
+    "mark_by_fraction",
+    "mark_by_threshold",
     "mesh_from_arrays",
+    "mms",
+    "num_ranks",
     "object_category",
     "object_module",
     "postprocess",
+    "parallel",
     "parsed_function",
+    "partition_mesh",
     "physics",
     "pow",
     "read_mesh",
+    "refine_marked",
+    "solve_with_adaptive_refinement",
     "registered_types",
     "sin",
     "sqrt",

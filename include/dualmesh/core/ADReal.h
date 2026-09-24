@@ -17,15 +17,62 @@
 namespace dualmesh
 {
 
-/// Maximum number of local degrees of freedom per element that can be seeded.
-/// (Quad4 x 5 fields = 20, Hex8 x 3 fields = 24, Quad9 x 5 fields = 45.)
-inline constexpr int kMaxDerivatives = 48;
+/// Maximum number of local degrees of freedom per element that can be seeded
+/// for automatic differentiation.  An element contributes one slot per node
+/// per variable, so the limit is (nodes per element) x (number of variables):
+/// Quad4 with five fields needs 20, Hex8 with three needs 24, Quad9 with five
+/// needs 45, Hex27 with one needs 27 and with two needs 54.
+///
+/// Every ADReal carries an array this long, so raising the limit costs memory
+/// and assembly time for every problem, not only the large ones; that is why
+/// it is a compile-time constant rather than a run-time setting.  Configure
+/// with -DDUALMESH_MAX_AD_DERIVATIVES=<n> to raise it, for instance to solve a
+/// two-field problem on a Hex27 mesh.
+#ifndef DUALMESH_MAX_AD_DERIVATIVES
+#define DUALMESH_MAX_AD_DERIVATIVES 48
+#endif
+inline constexpr int kMaxDerivatives = DUALMESH_MAX_AD_DERIVATIVES;
+
+#if defined(__GNUC__) || defined(__clang__)
+#define DUALMESH_RESTRICT __restrict__
+#elif defined(_MSC_VER)
+#define DUALMESH_RESTRICT __restrict
+#else
+#define DUALMESH_RESTRICT
+#endif
 
 class ADReal
 {
 public:
   ADReal() : _value(0.0), _size(0) {}
   ADReal(double v) : _value(v), _size(0) {} // NOLINT(implicit)
+
+  // Copies move only the derivatives in use.  The array is sized for the
+  // largest element the build supports, but a typical element uses a
+  // fraction of it (12 of 48 slots for a linear tetrahedron with three
+  // displacement components), and temporaries are copied constantly in the
+  // expressions of a residual; copying the whole array made copying the
+  // dominant cost of assembly.
+  ADReal(const ADReal & o) : _value(o._value), _size(o._size)
+  {
+    std::copy_n(o._deriv.begin(), _size, _deriv.begin());
+  }
+  ADReal & operator=(const ADReal & o)
+  {
+    if (this != &o)
+    {
+      _value = o._value;
+      _size = o._size;
+      std::copy_n(o._deriv.begin(), _size, _deriv.begin());
+    }
+    return *this;
+  }
+  ADReal & operator=(double v)
+  {
+    _value = v;
+    _size = 0;
+    return *this;
+  }
 
   /// Construct an independent variable: derivative 1 in slot @p index.
   static ADReal independent(double v, int index, int size)
@@ -57,6 +104,14 @@ public:
 
   /// Drop all derivative information (used for lagged/Picard coefficients).
   ADReal detached() const { return ADReal(_value); }
+
+  /// this += s * b, value and derivatives, without a temporary.  This is the
+  /// operation of every sum over shape functions in an assembly loop.
+  void addScaledBy(const ADReal & b, double s)
+  {
+    _value += s * b._value;
+    addScaled(b, s);
+  }
 
   ADReal & operator+=(const ADReal & b)
   {
@@ -131,20 +186,36 @@ public:
 private:
   void scale(double s)
   {
-    for (int i = 0; i < _size; ++i)
-      _deriv[i] *= s;
+    double * DUALMESH_RESTRICT d = _deriv.data();
+    const int n = _size;
+    for (int i = 0; i < n; ++i)
+      d[i] *= s;
   }
+  // The derivative loops are the innermost loops of every assembly: forming
+  // an element Jacobian by forward differentiation costs a multiply-add per
+  // derivative slot for every term of every residual entry.  The restrict
+  // qualifiers tell the compiler that the two arrays do not overlap, which
+  // lets it vectorise the loops.  The one call that could alias them,
+  // a += a, is a *= 2 and is handled first.
   void addScaled(const ADReal & b, double s)
   {
     if (b._size == 0)
       return;
+    if (&b == this)
+    {
+      scale(1.0 + s);
+      return;
+    }
     if (_size < b._size)
     {
       std::fill(_deriv.begin() + _size, _deriv.begin() + b._size, 0.0);
       _size = b._size;
     }
-    for (int i = 0; i < b._size; ++i)
-      _deriv[i] += s * b._deriv[i];
+    double * DUALMESH_RESTRICT d = _deriv.data();
+    const double * DUALMESH_RESTRICT e = b._deriv.data();
+    const int n = b._size;
+    for (int i = 0; i < n; ++i)
+      d[i] += s * e[i];
   }
 
   double _value;
