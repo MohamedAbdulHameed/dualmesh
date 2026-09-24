@@ -19,6 +19,7 @@ given in :doc:`foundations`.
 .. contents::
    :local:
    :depth: 2
+   :class: this-will-duplicate-information-and-it-is-still-useful-here
 
 What a finite volume method is
 ------------------------------

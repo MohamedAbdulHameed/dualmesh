@@ -11,6 +11,7 @@ the integrals, and the elements that generate the dual mesh, are the subject of
 .. contents::
    :local:
    :depth: 2
+   :class: this-will-duplicate-information-and-it-is-still-useful-here
 
 The canonical form of a problem
 -------------------------------

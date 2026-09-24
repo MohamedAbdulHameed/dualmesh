@@ -9,6 +9,7 @@ is stepped, and what the linear solvers cost.
 .. contents::
    :local:
    :depth: 2
+   :class: this-will-duplicate-information-and-it-is-still-useful-here
 
 Nonlinear problems
 ------------------

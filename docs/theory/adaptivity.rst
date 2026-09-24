@@ -4,6 +4,7 @@ Adaptive mesh refinement
 .. contents::
    :local:
    :depth: 2
+   :class: this-will-duplicate-information-and-it-is-still-useful-here
 
 Why adapt at all
 ----------------
