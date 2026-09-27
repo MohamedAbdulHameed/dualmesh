@@ -1,0 +1,263 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+"""Run the CRP-6 TRISO benchmark cases 1 to 8 and compare with the participants.
+
+The benchmark is the coordinated research project on TRISO fuel of the
+IAEA, reported in IAEA-TECDOC-1674 (2012), section 9.2.  Cases 1 to 4c have
+closed form solutions, given in the report (Eqs. 9.24 to 9.29).  Cases 4d to
+8 are compared with the curves of the eight participating codes, read from
+the vector figures of the report into ``crp6_participants.csv``.
+
+Usage::
+
+    python run_crp6.py [output directory for the figures]
+
+The default output directory is ``docs/_static/figures/crp6`` of the
+repository.  The script prints a table of the key values and writes
+``crp6_results.csv`` beside itself.
+"""
+
+from __future__ import annotations
+
+import csv
+import sys
+from pathlib import Path
+
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt  # noqa: E402
+import numpy as np  # noqa: E402
+from dualmesh.fuel import triso  # noqa: E402
+
+HERE = Path(__file__).resolve().parent
+ROOT = HERE.parents[2]
+
+# Colours of the reference categorical palette (validated for colour vision
+# deficiency with the dataviz skill): dualmesh in slot 1, the closed form
+# solutions in slot 2, participants in a recessive grey.
+DUALMESH = "#2a78d6"
+ANALYTIC = "#eb6834"
+PARTICIPANT = "#a3a29c"
+INK = "#0b0b0b"
+MUTED = "#52514e"
+
+# Closed form solutions of the report, section 9.2.3 (MPa).
+ANALYTIC_VALUES = {
+    ("1", "SiC", "start"): 125.19,
+    ("2", "IPyC", "start"): 50.20,
+    ("3", "IPyC", "start"): 8.8,
+    ("3", "SiC", "start"): 104.4,
+    ("3", "IPyC/SiC", "start"): -18.8,
+    ("4a", "IPyC", "end"): 926.80,
+    ("4a", "SiC", "end"): -845.71,
+    ("4b", "IPyC", "end"): -25.0,
+    ("4b", "SiC", "end"): 139.34,
+    ("4c", "IPyC", "end"): 26.05,
+    ("4c", "SiC", "end"): 86.5,
+}
+
+QUANTITY = {
+    "IPyC_tangential": ("IPyC", "tangential"),
+    "SiC_tangential": ("SiC", "tangential"),
+    "interface_radial": ("IPyC/SiC", "radial"),
+}
+
+
+def load_participants():
+    path = HERE / "crp6_participants.csv"
+    data: dict[tuple, dict[str, list]] = {}
+    with path.open() as fh:
+        rows = csv.DictReader(line for line in fh if not line.startswith("#"))
+        for row in rows:
+            if row["participant"].startswith("unlabelled"):
+                continue
+            key = (row["case"], row["quantity"])
+            curve = data.setdefault(key, {}).setdefault(row["participant"], [[], []])
+            curve[0].append(float(row["fluence"]))
+            curve[1].append(float(row["stress"]))
+    return data
+
+
+def _break_jumps(f, s):
+    """Insert gaps where the digitised points of a curve jump back in fluence.
+
+    Where two participants share a line style in the report their points are
+    joined into one sequence.  A gap at every backward jump keeps the plot
+    from drawing a line between the two curves.
+    """
+    jumps = np.where((np.diff(f) < -0.02) | (np.diff(f) > 0.25))[0] + 1
+    return np.insert(f, jumps, np.nan), np.insert(s, jumps, np.nan)
+
+
+def series(result, quantity):
+    layer, kind = QUANTITY[quantity]
+    if kind == "radial":
+        values = result.interface_radial_stress[layer]
+    else:
+        values = result.inner_tangential_stress[layer]
+    return result.fluence * 1e-25, values * 1e-6
+
+
+def style_axes(ax, title, show_xlabel=True):
+    ax.set_title(title, loc="left", fontsize=10, color=INK)
+    if show_xlabel:
+        ax.set_xlabel(r"Fast fluence ($10^{25}$ n/m$^2$, $E > 0.18$ MeV)", color=MUTED)
+    ax.set_ylabel("Stress (MPa)", color=MUTED)
+    ax.grid(True, color="#e4e3df", linewidth=0.6)
+    for side in ("top", "right"):
+        ax.spines[side].set_visible(False)
+    for side in ("left", "bottom"):
+        ax.spines[side].set_color("#c3c2b7")
+    ax.tick_params(colors=MUTED, labelsize=8)
+    ax.set_xlim(0.0, 3.0)
+
+
+def plot_case(case, result, participants, out: Path):
+    quantities = ["IPyC_tangential", "SiC_tangential"]
+    if case.startswith("4"):
+        quantities.append("interface_radial")
+    titles = {
+        "IPyC_tangential": "IPyC, inner surface, tangential stress",
+        "SiC_tangential": "SiC, inner surface, tangential stress",
+        "interface_radial": "IPyC/SiC interface, radial stress",
+    }
+    fig, axes = plt.subplots(
+        1, len(quantities), figsize=(3.6 * len(quantities), 3.8), constrained_layout=True
+    )
+    for ax, quantity in zip(axes, quantities):
+        curves = participants.get((case, quantity), {})
+        for i, (_, (f, s)) in enumerate(sorted(curves.items())):
+            f, s = _break_jumps(np.asarray(f), np.asarray(s))
+            ax.plot(
+                f,
+                s,
+                color=PARTICIPANT,
+                linewidth=0.9,
+                label="CRP-6 participants" if i == 0 else None,
+            )
+        x, y = series(result, quantity)
+        ax.plot(x, y, color=DUALMESH, linewidth=2.0, label="dualmesh")
+        layer = QUANTITY[quantity][0]
+        ref = ANALYTIC_VALUES.get((case, layer, "end"))
+        if ref is not None and QUANTITY[quantity][1] == "tangential":
+            ax.plot(
+                [3.0],
+                [ref],
+                "o",
+                color=ANALYTIC,
+                markersize=8,
+                markeredgecolor="white",
+                markeredgewidth=1.5,
+                clip_on=False,
+                label="Closed form (report)",
+            )
+        style_axes(ax, titles[quantity])
+    axes[0].legend(
+        frameon=False,
+        fontsize=8,
+        labelcolor=INK,
+        loc="upper center",
+        bbox_to_anchor=(0.5, -0.25),
+        ncol=2,
+    )
+    fig.suptitle(f"CRP-6 case {case}", x=0.01, ha="left", fontsize=11, color=INK)
+    fig.savefig(out / f"crp6_case{case}.png", dpi=150)
+    plt.close(fig)
+
+
+def participant_range(participants, case, quantity, statistic):
+    values = []
+    for f, s in participants.get((case, quantity), {}).values():
+        f = np.asarray(f)
+        s = np.asarray(s)
+        if statistic == "start":
+            return None
+        if statistic == "end" and f.max() < 2.95:
+            continue  # the curve stops early in the report
+        if f.max() < 0.8:
+            continue  # stops before the extremes, which lie at 0.5 to 0.75
+        if statistic == "max":
+            values.append(s.max())
+        elif statistic == "min":
+            values.append(s.min())
+        else:
+            values.append(s[np.argmax(f)])
+    if not values:
+        return None
+    return min(values), max(values)
+
+
+def main():
+    out = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "docs/_static/figures/crp6"
+    out.mkdir(parents=True, exist_ok=True)
+    participants = load_participants()
+    rows = []
+    for case in ("1", "2", "3", "4a", "4b", "4c", "4d", "5", "6", "7", "8"):
+        particle, history = triso.crp6_case(case)
+        result = triso.solve_particle(particle, history)
+        for layer, values in result.inner_tangential_stress.items():
+            if layer == "OPyC":
+                continue
+            quantity = f"{layer}_tangential"
+            for statistic, value in (
+                ("start", values[0]),
+                ("max", values.max()),
+                ("min", values.min()),
+                ("end", values[-1]),
+            ):
+                if history.end_fluence == 0.0 and statistic != "start":
+                    continue
+                ref = ANALYTIC_VALUES.get((case, layer, statistic))
+                rng = participant_range(participants, case, quantity, statistic)
+                rows.append((case, layer, "tangential", statistic, value * 1e-6, ref, rng))
+        for name, values in result.interface_radial_stress.items():
+            if name != "IPyC/SiC":
+                continue
+            for statistic, value in (("start", values[0]), ("end", values[-1])):
+                if history.end_fluence == 0.0 and statistic != "start":
+                    continue
+                ref = ANALYTIC_VALUES.get((case, name, statistic))
+                rng = participant_range(participants, case, "interface_radial", statistic)
+                rows.append((case, name, "radial", statistic, value * 1e-6, ref, rng))
+        if history.end_fluence > 0.0:
+            plot_case(case, result, participants, out)
+
+    with (HERE / "crp6_results.csv").open("w", newline="") as fh:
+        writer = csv.writer(fh)
+        writer.writerow(
+            [
+                "case",
+                "location",
+                "component",
+                "statistic",
+                "dualmesh_MPa",
+                "closed_form_MPa",
+                "participants_low_MPa",
+                "participants_high_MPa",
+            ]
+        )
+        for case, loc, comp, stat, value, ref, rng in rows:
+            writer.writerow(
+                [
+                    case,
+                    loc,
+                    comp,
+                    stat,
+                    f"{value:.2f}",
+                    "" if ref is None else ref,
+                    "" if rng is None else f"{rng[0]:.1f}",
+                    "" if rng is None else f"{rng[1]:.1f}",
+                ]
+            )
+    print(
+        f"{'case':>4} {'where':>9} {'comp':>10} {'stat':>5} {'dualmesh':>9} "
+        f"{'closed':>8} {'participants':>16}"
+    )
+    for case, loc, comp, stat, value, ref, rng in rows:
+        r = "" if ref is None else f"{ref:.2f}"
+        p = "" if rng is None else f"{rng[0]:.1f} to {rng[1]:.1f}"
+        print(f"{case:>4} {loc:>9} {comp:>10} {stat:>5} {value:9.2f} {r:>8} {p:>16}")
+
+
+if __name__ == "__main__":
+    main()

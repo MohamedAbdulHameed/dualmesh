@@ -1,0 +1,95 @@
+name: Wheels
+
+# Binary wheels, so that `pip install dualmesh-multiphysics` needs no compiler.
+# (The PyPI distribution is dualmesh-multiphysics; the package is imported as
+# dualmesh and the command is dualmesh.)
+#
+# The wheels are built on every tag that starts with "v" and on demand, and are
+# kept as workflow artifacts.  Publishing to PyPI is the last job; it runs only
+# for a tag, and uses PyPI Trusted Publishing (OIDC): no token is stored in
+# GitHub.  The trusted publisher on pypi.org is project dualmesh-multiphysics,
+# owner MohamedAbdulHameed, repository dualmesh, workflow wheels.yml,
+# environment pypi (a GitHub environment of exactly that name must exist).
+#
+# Running this workflow by hand from main (Actions -> Wheels -> Run workflow) is
+# the release dry run: every wheel and the sdist are built and tested, and the
+# publish job is skipped because the ref is not a tag.  A tag is pushed only
+# after that run is green; scripts/release.py enforces the order.
+#
+# Lessons of v0.1.0, checked by scripts/release.py and
+# tests/python/test_release_script.py:
+# * the macOS 13 runner was retired and a job asking for it waits forever;
+#   macos-15-intel builds the x86_64 wheels and macos-14 the arm64 ones;
+# * cibuildwheel v2.21 built in an older manylinux image in which pip found
+#   no NumPy/SciPy wheels for the tests and failed building SciPy from source
+#   ("Dependency OpenBLAS not found"); v4.2.1 fixed it.  Check the official
+#   cibuildwheel documentation before changing the pin.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  wheels:
+    name: Wheels (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15-intel, macos-14, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pypa/cibuildwheel@v4.2.1
+        env:
+          CIBW_BUILD: "cp39-* cp310-* cp311-* cp312-* cp313-*"
+          CIBW_SKIP: "*-musllinux_* *-win32 *-manylinux_i686"
+          CIBW_TEST_EXTRAS: "test"
+          CIBW_TEST_COMMAND: >-
+            pytest {project}/tests/python -q -x
+            --ignore={project}/tests/python/test_mms.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.os }}
+          path: wheelhouse/*.whl
+
+  sdist:
+    name: Source distribution
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: The tag agrees with the package version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: python
+        run: |
+          import os, pathlib, re, sys
+          root = pathlib.Path(".")
+          tag = os.environ["GITHUB_REF_NAME"]
+          versions = {
+              "pyproject.toml": re.search(r'^version\s*=\s*"([^"]+)"', (root / "pyproject.toml").read_text(), re.M).group(1),
+              "python/dualmesh/__init__.py": re.search(r'^__version__\s*=\s*"([^"]+)"', (root / "python/dualmesh/__init__.py").read_text(), re.M).group(1),
+              "CITATION.cff": re.search(r'^version:\s*"?([^"\s]+)', (root / "CITATION.cff").read_text(), re.M).group(1),
+          }
+          print(tag, versions)
+          if any(f"v{v}" != tag for v in versions.values()):
+              sys.exit(f"tag {tag} does not match the package version {versions}")
+      - run: pipx run build --sdist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+
+  publish:
+    name: Publish to PyPI
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [wheels, sdist]
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: pypa/gh-action-pypi-publish@release/v1

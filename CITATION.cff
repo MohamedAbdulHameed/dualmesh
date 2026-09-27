@@ -1,0 +1,37 @@
+cff-version: 1.2.0
+title: "dualmesh: a multiphysics framework for heat transfer, solid mechanics and fluid dynamics"
+message: "If you use this software, please cite both the software and the method (see references)."
+type: software
+version: 0.2.0
+license: LGPL-2.1-or-later
+repository-code: "https://github.com/MohamedAbdulHameed/dualmesh"
+url: "https://dualmesh.readthedocs.io"
+abstract: >-
+  dualmesh is a multiphysics framework for heat transfer, solid mechanics and
+  fluid dynamics. Coupled problems are solved monolithically by Newton's method
+  with exact Jacobians from automatic differentiation, and the same problem
+  definition is discretised by the Galerkin finite element method, the
+  vertex-centred or cell-centred finite volume method, or the dual mesh control
+  domain method (DMCDM) of J. N. Reddy. The library is written in
+  C++17 with Python bindings, is organized as a modular framework of kernels,
+  boundary conditions and materials, and is verified against the published
+  results of Reddy's book and against OpenFOAM.
+keywords:
+  - dual mesh control domain method
+  - finite element method
+  - finite volume method
+  - fluid dynamics
+  - solid mechanics
+  - heat transfer
+  - multiphysics
+authors:
+  - name: "The dualmesh developers"
+references:
+  - type: book
+    title: "Computational Methods in Engineering: Finite Difference, Finite Volume, Finite Element, and Dual Mesh Control Domain Methods"
+    authors:
+      - family-names: Reddy
+        given-names: "J. N."
+    publisher:
+      name: "CRC Press"
+    year: 2024

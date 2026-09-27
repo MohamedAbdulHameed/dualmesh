@@ -1,0 +1,13 @@
+# Based on the MOOSE framework style.
+BasedOnStyle: LLVM
+AlwaysBreakAfterReturnType: TopLevelDefinitions
+AlignAfterOpenBracket: Align
+AllowShortFunctionsOnASingleLine: Inline
+BinPackArguments: false
+BinPackParameters: false
+BreakBeforeBraces: Allman
+ColumnLimit: 100
+IndentWidth: 2
+PointerAlignment: Middle
+SpaceAfterCStyleCast: true
+Standard: c++17
