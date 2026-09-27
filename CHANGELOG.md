@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-27
+
 ### Added
 
 - **Taylor-Hood element** for the finite element method
