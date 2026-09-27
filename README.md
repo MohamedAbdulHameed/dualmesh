@@ -1,6 +1,6 @@
 # dualmesh
 
-**A multiphysics framework for heat transfer, solid mechanics and fluid dynamics, with the dual mesh control domain method as an option.**
+**A multiphysics framework for heat transfer, solid mechanics, fluid dynamics, and nuclear fuel performance, with the dual mesh control domain method available as one of the discretization options.**
 
 `dualmesh` solves coupled boundary value problems: any number of fields
 (temperatures, displacements, velocities, or quantities of your own), each
