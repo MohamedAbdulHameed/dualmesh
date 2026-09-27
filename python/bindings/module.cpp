@@ -503,7 +503,7 @@ PYBIND11_MODULE(_core, m)
     constexpr double kMWdPerKgPerFima = 938.3;
     fm.def("uo2_conductivity",
            py::vectorize(
-               [](double T, double fima, double density_fraction, std::string model)
+               [kMWdPerKgPerFima](double T, double fima, double density_fraction, std::string model)
                {
                  const double porosity = 1.0 - density_fraction;
                  if (model == "fink")
