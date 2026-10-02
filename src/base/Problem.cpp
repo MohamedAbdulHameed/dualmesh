@@ -402,6 +402,7 @@ Problem::initialize()
   {
     m->initialSetup(*this);
     m->declareProperties(_props);
+    m->setupPropertyFactors(_props);
   }
   for (auto & k : _kernels)
     k->initialSetup(*this);
@@ -881,7 +882,10 @@ Problem::computeMaterials(QpContext & ctx) const
   ctx.properties.assign(_props.size(), ADReal(0.0));
   for (const auto & m : _materials)
     if (m->activeOnBlock(ctx.block))
+    {
       m->computeProperties(ctx);
+      m->applyPropertyFactors(ctx);
+    }
 }
 
 } // namespace dualmesh

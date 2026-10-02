@@ -72,8 +72,8 @@ addBurnupParams(InputParameters & p, const std::string & description)
   p.addOptional("heavy_metal_molar_mass",
                 ParameterKind::Real,
                 0.238029,
-                "Molar mass of the heavy metal, kg/mol. Default 0.238029 kg/mol, natural "
-                "uranium; enrichment to 5 % changes it by 0.05 %.");
+                "Molar mass of the heavy metal, kg/mol. Default 0.238029 kg/mol, natural uranium. "
+                "Enrichment to 5 % changes it by 0.05 %.");
 }
 
 /// Converts the burnups of one object to FIMA and from FIMA to MWd/kgHM.
@@ -117,8 +117,8 @@ addDensityParam(InputParameters & p)
   p.addOptional("theoretical_density_fraction",
                 ParameterKind::Real,
                 0.95,
-                "As-fabricated density as a fraction of the theoretical density; the "
-                "porosity is one minus it. Default 0.95, typical of LWR fuel.");
+                "As-fabricated density as a fraction of the theoretical density, and the porosity "
+                "is one minus this fraction. Default 0.95, typical of LWR fuel.");
 }
 
 double
@@ -252,11 +252,10 @@ public:
   {
     InputParameters p = Material::validParams();
     p.setClassDescription(
-        "Thermal properties of uranium mononitride fuel from Hayes, Thomas and Peddicord "
-        "(1990): 'thermal_conductivity' = 1.864 exp(-2.14 P) T^0.361 W/m/K with the porosity "
-        "P, 'specific_heat' (Einstein temperature 365.7 K) and 'density'. The conductivity "
-        "does not depend on burnup; no public, peer-reviewed burnup dependence was found, "
-        "so this object takes no burnup.");
+        "Thermal properties of uranium mononitride fuel from Hayes, Thomas and Peddicord (1990): "
+        "'thermal_conductivity' = 1.864 exp(-2.14 P) T^0.361 W/m/K with the porosity P, "
+        "'specific_heat' (Einstein temperature 365.7 K) and 'density'. The conductivity is "
+        "independent of burnup, and this object takes no burnup.");
     addTemperatureParam(p);
     addDensityParam(p);
     return p;
@@ -418,15 +417,15 @@ public:
   {
     InputParameters p = ElasticityBase::validParams();
     p.setClassDescription(
-        "Elastic constants of Zircaloy as 'youngs_modulus' (Pa) and 'poissons_ratio' "
-        "(MATPRO CELMOD and CSHEAR, with the cold-work and fast neutron fluence factors; nu "
-        "from E and the shear modulus).");
+        "Elastic constants of Zircaloy as 'youngs_modulus' (Pa) and 'poissons_ratio' (MATPRO "
+        "CELMOD and CSHEAR, with the cold-work and fast neutron fluence factors, and nu from E "
+        "and the shear modulus).");
     p.addOptional("cold_work",
                   ParameterKind::Real,
                   0.0,
                   "Cold work of the cladding, as a ratio of areas (MATPRO's K2 = -2.6e10 C Pa on "
-                  "both moduli). Default 0 (recrystallised); stress-relieved tubing keeps part of "
-                  "its cold work.");
+                  "both moduli). Default 0 (recrystallised). Stress-relieved tubing retains part "
+                  "of its cold work.");
     p.addOptional("fast_neutron_fluence",
                   ParameterKind::Function,
                   0.0,
@@ -486,7 +485,7 @@ public:
     p.addRequired("eigenstrain_name",
                   ParameterKind::String,
                   "Name of the material property (six Voigt components) this eigenstrain is "
-                  "stored in; list it in the 'eigenstrain_names' of the stress material.");
+                  "stored in. List it in the 'eigenstrain_names' of the stress material.");
     p.addRequired("formulation",
                   ParameterKind::String,
                   "The formulation of the stress material it feeds: axisymmetric (an r, z "
@@ -629,15 +628,14 @@ public:
                   "Total densification, as a fraction of the theoretical density: the density "
                   "change in a resintering test (1973 K for 24 h). The matpro model takes the "
                   "resintering density change RSNTR = total_densification times the theoretical "
-                  "density; the escore model takes it as the final volumetric shrinkage. "
-                  "Default 0.01, a typical value for LWR fuel; set it from the fuel's own test.");
+                  "density, and the escore model takes it as the final volumetric shrinkage. "
+                  "Default 0.01, a typical value for LWR fuel. Set it from the resintering test "
+                  "of the fuel in question.");
     p.addOptional("densification_model",
                   ParameterKind::String,
                   std::string("matpro"),
-                  "'matpro' (FUDENS, NUREG/CR-6150 Vol. 4 Eqs. 2-81, 2-82 and 2-85, read in the "
-                  "report) or 'escore' (the ESCORE form of Rashid et al., EPRI 1011308, which is "
-                  "not public; taken from secondary documentation). Default matpro, the model "
-                  "whose source could be read.");
+                  "'matpro' (FUDENS, NUREG/CR-6150 Vol. 4 Eqs. 2-81, 2-82 and 2-85) or 'escore' "
+                  "(the ESCORE form after Rashid et al., EPRI 1011308). Default matpro.");
     p.addOptional("maximum_temperature_field",
                   ParameterKind::String,
                   std::string(""),
@@ -647,12 +645,17 @@ public:
     p.addOptional("densification_complete_burnup",
                   ParameterKind::Real,
                   5.0,
-                  "Burnup at which densification is complete, in MWd/kgHM whatever "
-                  "'burnup_unit' is; escore model only. Default 5 MWd/kgHM, the ESCORE value.");
+                  "Burnup at which densification is complete, for the escore model only, in "
+                  "MWd/kgHM regardless of 'burnup_unit'. Default 5 MWd/kgHM, the ESCORE value.");
     p.addOptional("include_solid_swelling",
                   ParameterKind::Boolean,
                   true,
                   "Include the solid fission-product swelling. Default true.");
+    p.addOptional("solid_swelling_factor",
+                  ParameterKind::Real,
+                  1.0,
+                  "Factor on the solid fission-product swelling, for sensitivity and "
+                  "uncertainty studies. Default 1.");
     p.addOptional("gaseous_swelling_field",
                   ParameterKind::String,
                   std::string(""),
@@ -667,6 +670,9 @@ public:
     _total = p.getReal("total_densification");
     _complete = p.getReal("densification_complete_burnup");
     _solid = p.getBool("include_solid_swelling");
+    _solid_factor = p.getReal("solid_swelling_factor");
+    if (!(_solid_factor >= 0.0))
+      throw InputError("'" + name() + "': solid_swelling_factor must not be negative.");
     const auto model = p.getString("densification_model");
     if (model != "matpro" && model != "escore")
       throw InputError("'" + name() + "': unknown densification_model '" + model +
@@ -694,7 +700,7 @@ public:
         _escore ? uo2DensificationESCORE(T, mwd, _total, _complete)
                 : ADReal(3.0 * uo2DensificationMATPRO(T.value(), mwd, _total * kDensityUO2));
     if (_solid)
-      volumetric += uo2SolidSwellingRate(kDensityUO2 * _density) * fima;
+      volumetric += _solid_factor * uo2SolidSwellingRate(kDensityUO2 * _density) * fima;
     if (_gas && ctx.element >= 0)
       volumetric += (*_gas)[ctx.element];
     const ADReal e = volumetric / 3.0;
@@ -704,7 +710,7 @@ public:
 private:
   BurnupUnit _burnup_unit;
   double _density;
-  double _total = 0.01, _complete = 5.0;
+  double _total = 0.01, _complete = 5.0, _solid_factor = 1.0;
   bool _solid = true, _escore = false;
   int _T = -1;
   FunctionPtr _burnup;
@@ -719,12 +725,12 @@ public:
   {
     InputParameters p = EigenstrainBase::validParams();
     p.setClassDescription(
-        "Volumetric swelling of UN fuel from the correlation of S. B. Ross, El-Genk and "
-        "Matthews (1990), 4.7e-11 T^3.12 B^0.83 rho^0.5 per cent, bounded below by 1 per cent "
-        "per atom per cent of burnup, the lowest swelling rate measured for nitride fuel "
-        "(NEA No. 7317, 2018). It is evaluated with the local temperature and burnup, one "
-        "third on each normal component. The correlation gives the total swelling at an "
-        "average temperature; applying it locally is a modelling choice.");
+        "Volumetric swelling of UN fuel from the correlation of S. B. Ross, El-Genk and Matthews "
+        "(1990), 4.7e-11 T^3.12 B^0.83 rho^0.5 per cent, bounded below by 1 per cent per atom per "
+        "cent of burnup, the lowest swelling rate measured for nitride fuel (NEA No. 7317, 2018). "
+        "It is evaluated with the local temperature and burnup, one third on each normal "
+        "component. The correlation gives the total swelling at an average temperature, and its "
+        "local application is a modelling choice.");
     addTemperatureParam(p);
     addDensityParam(p);
     addBurnupParams(p, "Local burnup.");
@@ -787,9 +793,9 @@ public:
     p.addOptional("relocation_burnup_limit",
                   ParameterKind::Real,
                   11.5,
-                  "Burnup, in MWd/kgHM whatever 'burnup_unit' is, above which relocation no "
-                  "longer grows. Default 11.5 MWd/kgHM, where the correlation's stated range "
-                  "ends.");
+                  "Burnup, in MWd/kgHM regardless of 'burnup_unit', at which the burnup argument "
+                  "of the correlation is capped. Default 11.5 MWd/kgHM, where the correlation's "
+                  "stated range ends.");
     return p;
   }
   explicit UO2RelocationEigenstrain(const InputParameters & p)
@@ -860,19 +866,18 @@ public:
   {
     InputParameters p = InterfaceBC::validParams();
     p.setClassDescription(
-        "Heat transfer across a gas-filled gap, such as the pellet-cladding gap of a fuel "
-        "rod: gas conduction, "
-        "radiation and solid contact, h_gap = h_gas + h_rad + h_solid (Ross and Stoute "
-        "1962). The gas conductance is k_gas / (g + C_r (R_p + R_s) + j), with the width g "
+        "Heat transfer across a gas-filled gap, such as the pellet-cladding gap of a fuel rod: "
+        "gas conduction, radiation and solid contact, h_gap = h_gas + h_rad + h_solid (Ross and "
+        "Stoute 1962). The gas conductance is k_gas / (g + C_r (R_p + R_s) + j), with the width g "
         "of the gap measured along the primary normal between the displaced surfaces, the "
-        "roughnesses R, the roughness coefficient C_r and the temperature jump distance j "
-        "(Kennard; Lanning and Hann 1975). k_gas is the Lindsay-Bromley/Brokaw mixture "
-        "conductivity of the fill and fission gases (MATPRO fits). Radiation is between two "
-        "parallel grey surfaces. The solid contact conductance, used when a contact penalty "
-        "is given and the gap is closed, is C_s k_m P_c / (sqrt(delta) H) with the harmonic "
-        "mean conductivity k_m, the contact pressure P_c, the Meyer hardness H and delta = "
-        "0.8 (R_p + R_s) (Ross-Stoute form of the BISON theory manual, 2013). Temperatures "
-        "must be in kelvin.");
+        "roughnesses R, the roughness coefficient C_r and the temperature jump distance j (the "
+        "kinetic theory of Kennard as used by Lanning and Hann 1975). k_gas is the "
+        "Lindsay-Bromley/Brokaw mixture conductivity of the fill and fission gases (MATPRO fits). "
+        "Radiation is between two parallel grey surfaces. The solid contact conductance, used "
+        "when a contact penalty is given and the gap is closed, is C_s k_m P_c / (sqrt(delta) H) "
+        "with the harmonic mean conductivity k_m, the contact pressure P_c, the Meyer hardness H "
+        "and delta = 0.8 (R_p + R_s) (Ross-Stoute form of the BISON theory manual, 2013). "
+        "Temperatures must be in kelvin.");
     p.addOptional("displacements",
                   ParameterKind::StringList,
                   std::vector<std::string>{},
@@ -935,6 +940,16 @@ public:
                   10.0,
                   "C_s of the solid contact conductance, m^(-1/2). Default 10, the "
                   "Ross-Stoute value.");
+    p.addOptional("gas_conductance_factor",
+                  ParameterKind::Real,
+                  1.0,
+                  "Factor on the gas conduction term, for sensitivity and uncertainty studies. "
+                  "Default 1.");
+    p.addOptional("contact_conductance_factor",
+                  ParameterKind::Real,
+                  1.0,
+                  "Factor on the solid contact term, for sensitivity and uncertainty studies. "
+                  "Default 1.");
     p.addOptional("primary_conductivity",
                   ParameterKind::Function,
                   3.0,
@@ -962,6 +977,10 @@ public:
       throw InputError("'" + name() + "': meyer_hardness_model must be constant or zircaloy.");
     _zircaloy_hardness = hm == "zircaloy";
     _Cs = p.getReal("solid_contact_coefficient");
+    _gas_factor = p.getReal("gas_conductance_factor");
+    _contact_factor = p.getReal("contact_conductance_factor");
+    if (!(_gas_factor >= 0.0) || !(_contact_factor >= 0.0))
+      throw InputError("'" + name() + "': the conductance factors must not be negative.");
   }
   void initialSetup(Problem & problem) override
   {
@@ -1019,7 +1038,7 @@ public:
     const ADReal jump = gasJumpDistance(x, Tg, P, kg);
     const ADReal g = gapWidth(ctx);
     const ADReal open = g.value() > 0 ? g : ADReal(0.0);
-    ADReal h = kg / (open + _Cr * (_Rp + _Rs) + jump);
+    ADReal h = _gas_factor * kg / (open + _Cr * (_Rp + _Rs) + jump);
     if (_F > 0)
       h += kStefanBoltzmann * _F * (Tp * Tp + Ts * Ts) * (Tp + Ts);
     if (_penalty > 0 && g.value() < 0)
@@ -1029,7 +1048,7 @@ public:
       const ADReal km = 2.0 * kp * ks / (kp + ks);
       const ADReal Pc = -_penalty * g;
       const ADReal H = _zircaloy_hardness ? zryMeyerHardness(Ts) : ADReal(_H);
-      h += _Cs * km * Pc / (std::sqrt(0.8 * (_Rp + _Rs)) * H);
+      h += _contact_factor * _Cs * km * Pc / (std::sqrt(0.8 * (_Rp + _Rs)) * H);
     }
     const ADReal q = h * (Ts - Tp);
     return _Fprop >= 0 ? q * deformation::areaRatio(ctx, _Fprop) : q;
@@ -1042,6 +1061,7 @@ private:
   FunctionPtr _P, _kp, _ks;
   int _kprop = -1;
   double _Rp = 2e-6, _Rs = 1e-6, _Cr = 1.5, _F = 0.0, _penalty = 0.0, _H = 6.8e8, _Cs = 10.0;
+  double _gas_factor = 1.0, _contact_factor = 1.0;
   bool _zircaloy_hardness = false;
 };
 

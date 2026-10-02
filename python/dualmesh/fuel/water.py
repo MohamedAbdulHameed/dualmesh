@@ -18,7 +18,7 @@ This module evaluates, as functions of pressure and temperature:
   industrial recommendation of Sect. 3.1 (the thermodynamic properties from
   IF97 and the reference compressibility from Eq. 25).
 
-All the equations were read in the IAPWS releases, and the test module
+All the equations are taken from the IAPWS releases, and the test module
 checks the values of their verification tables (IF97 Tables 5 and 35;
 R12-08 Table 4; R15-11 Table 7).  Units are SI: Pa, K, J/kg, kg/m^3, Pa s and
 W/(m K).  The functions take and return numpy arrays or floats.

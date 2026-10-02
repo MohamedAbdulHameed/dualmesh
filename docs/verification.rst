@@ -3,11 +3,11 @@ Verification
 
 Every number this library produces for a published problem is checked against
 the published value.  The suite in ``tests/python`` reproduces the dual mesh
-control domain results of Reddy's book chapter by chapter; ``tests/cpp`` holds
-the structural tests that do not depend on a published table; a
-manufactured-solution study measures the order of convergence of every method
-on every element type; and :doc:`openfoam` compares the solvers with an
-independent code.
+control domain results of Reddy's book chapter by chapter.  The directory
+``tests/cpp`` holds the structural tests that do not depend on a published
+table.  A manufactured-solution study measures the order of convergence of
+every method on every element type, and :doc:`openfoam` compares the solvers
+with an independent code.
 
 .. code-block:: console
 
@@ -30,22 +30,24 @@ What is covered
      - nodal values (both cases)
    * - Example 5.3.1, Table 5.3.1
      - cooling fin :math:`-u'' + 400u = 0` with a convective end
-     - nodal values on 5, 10 and 20 elements; the heat flow :math:`Q(0)`
+     - nodal values on 5, 10 and 20 elements, and the heat flow :math:`Q(0)`
    * - Example 5.3.2
      - axisymmetric conduction in a cylinder with heat generation
-     - exact nodal values; :math:`Q(R_0) = \pi R_0^2 g_0`
+     - exact nodal values, and :math:`Q(R_0) = \pi R_0^2 g_0`
    * - Example 5.4.1, Table 5.4.1
-     - conduction in a 3a × 2a rectangle with insulated edges
-     - the 3 × 2 nodal values; the 6 × 4 and 12 × 8 tables; the identity of the
-       dual mesh and finite element solutions on triangles
+     - conduction in a :math:`3a \times 2a` rectangle with insulated edges
+     - the :math:`3 \times 2` nodal values, the :math:`6 \times 4` and
+       :math:`12 \times 8` tables, and the identity of the dual mesh and finite
+       element solutions on triangles
    * - Example 5.4.2, Table 5.4.2
      - conduction with a parabolic edge temperature
-     - both tabulated rows (8 × 8 mesh)
+     - both tabulated rows (:math:`8 \times 8` mesh)
    * - Example 5.4.3, Table 5.4.3
      - bus bar with heat generation and surface convection
      - both tabulated rows, to every printed digit
    * - Example 5.4.4, Table 5.4.4
-     - advection–diffusion at :math:`Pe = 75` on 50 × 50 and 100 × 100 meshes
+     - advection-diffusion at :math:`Pe = 75` on :math:`50 \times 50` and
+       :math:`100 \times 100` meshes
      - the diagonal profile, to :math:`2\times10^{-5}`
    * - Example 6.2.2
      - :math:`-u'' + 2u^3 = 0` with a nonlinear flux condition
@@ -64,7 +66,7 @@ What is covered
      - the linear and nonlinear nodal values
    * - Tables 7.5.1–7.5.4
      - pinned and clamped beams, three dual mesh models, four meshes
-     - centre deflections; the exact centre moment of the mixed models
+     - centre deflections, and the exact centre moment of the mixed models
    * - Table 7.5.3
      - functionally graded beams, seven power-law indices
      - normalized centre deflections for all three models
@@ -74,7 +76,7 @@ What is covered
        (:math:`\gamma = 0.35`)
    * - Table 8.6.1
      - hinged circular plate, five meshes
-     - centre deflection; agreement with the analytical solution
+     - centre deflection, and agreement with the analytical solution
    * - Table 8.6.2
      - clamped functionally graded circular plate, ten power-law indices
      - centre deflections (32 elements)
@@ -83,24 +85,26 @@ What is covered
      - displacements and element-centre stresses
    * - Example 9.8.1
      - uniform edge stress
-     - :math:`u = t_0 a / E` exactly; exactly uniform stress
+     - :math:`u = t_0 a / E` exactly, and an exactly uniform stress
    * - Table 9.8.2
-     - creeping flow squeezed between plates (20 × 16 graded mesh)
-     - the horizontal velocity profiles at two stations; the recovered pressure
+     - creeping flow squeezed between plates (:math:`20 \times 16` graded mesh)
+     - the horizontal velocity profiles at two stations, and the recovered
+       pressure
    * - Table 9.8.3
      - lid-driven cavity at :math:`Re = 0` and :math:`Re = 1000`
      - the centreline profile for both, by load stepping and by direct
        iteration
    * - Table 9.9.1
      - pressurized thick cylinder, quadrilateral and triangular meshes
-     - radial displacements; monotone convergence to the Lamé solution
+     - radial displacements, and monotone convergence to the Lamé solution
    * - Table 10.5.1
      - clamped functionally graded plate, six power-law indices, four meshes
      - normalized centre deflections
 
-Additional checks that do not come from a table: the patch test on distorted
-meshes of every element type, the geometric closure of the dual mesh (the
-control volumes tile each element and their interface areas balance), exactness
+Additional checks that do not depend on a published table are the patch test on
+distorted meshes of every element type, the geometric closure of the dual mesh
+(the control volumes partition each element and their interface areas balance),
+exactness
 of the automatic differentiation, exactness of the Gauss rules, global
 conservation of the reactions, the stress concentration factor of a plate with
 a hole, the transient solution against a Fourier series, the equivalence of the
@@ -114,13 +118,13 @@ Where the mesh and the data are fully specified, the code reproduces the
 published values to the last printed digit.  Two classes of small differences
 remain, both documented in the tests:
 
-* **Rounding.** The book prints four or five decimals; the tests therefore
-  accept a difference of one unit in the last printed digit (for example
-  :math:`1.1\times10^{-4}` for Table 7.5.1).
-* **Meshes that the text does not pin down.** For the pressurized cylinder
+* **Rounding.** The book prints four or five decimals, so the tests accept a
+  difference of one unit in the last printed digit (e.g., :math:`1.1\times10^{-4}`
+  for Table 7.5.1).
+* **Meshes that the text does not fully specify.** For the pressurized cylinder
   (Table 9.9.1) the book gives the number of subdivisions across the wall and
-  the total element count but not the exact circumferential distribution, and
-  for triangles it does not say how the quadrilaterals are split.  The tests
+  the total element count, without the exact circumferential distribution, and
+  for triangles it does not state how the quadrilaterals are split.  The tests
   therefore compare the quadrilateral results within half a percent and, in
   addition, check monotone convergence to the analytical solution for both
   element types.
@@ -128,8 +132,8 @@ remain, both documented in the tests:
 Two discrepancies in the book
 -----------------------------
 
-Two published values could not be reproduced, and in both cases the evidence
-points to the table rather than to the code.
+Two published values differ from the values computed by this code, and in both
+cases the evidence indicates an error in the book's table.
 
 1. **Table 5.4.2, last entry.**  The table gives the dual mesh temperature at
    :math:`(x, y) = (0.175, 0.05)` as 335.34 K.  Every other entry of that table
@@ -138,12 +142,13 @@ points to the table rather than to the code.
    element solution at every other point of the table.  This code gives
    335.545 K, which suggests that 335.34 is a typographical error for 335.54.
 
-2. **Table 5.4.3, caption.**  The table is captioned "20 × 10 mesh", but
-   Fig. 5.4.15(b) shows a 10 × 5 primal mesh, and Example 6.3.2 quotes the same
-   numbers for its 10 × 5 mesh.  On a 10 × 5 mesh this code reproduces all
-   eighteen tabulated values to every printed digit; on a 20 × 10 mesh the
-   values differ in the second decimal.  The data therefore come from the
-   10 × 5 mesh of the figure.
+2. **Table 5.4.3, caption.**  The table is captioned
+   ":math:`20 \times 10` mesh", but Fig. 5.4.15(b) shows a :math:`10 \times 5`
+   primal mesh, and Example 6.3.2 quotes the same numbers for its
+   :math:`10 \times 5` mesh.  On a :math:`10 \times 5` mesh this code reproduces
+   all eighteen tabulated values to every printed digit.  On a
+   :math:`20 \times 10` mesh the values differ in the second decimal.  The data
+   therefore come from the :math:`10 \times 5` mesh of the figure.
 
 Order of accuracy: manufactured solutions
 -----------------------------------------
@@ -152,7 +157,7 @@ A published table checks a discretisation at one mesh.  Whether it converges,
 and at the rate its theory predicts, is checked by the **method of
 manufactured solutions** [Roache2002]_ [SalariKnupp2000]_.  A smooth function
 :math:`u^\star(\mathbf{x}, t)` is chosen, which need not satisfy any physical
-problem; the governing operator is applied to it symbolically, and the result,
+problem.  The governing operator is applied to it symbolically, and the result,
 :math:`f = -\nabla \cdot \mathbf{F}(u^\star) + S(u^\star)`, is added to the
 problem as a source, so that :math:`u^\star` is its exact solution.  The
 boundary values are taken from :math:`u^\star` as well.  Solving on a sequence
@@ -197,25 +202,26 @@ Method                :math:`L^2` error  :math:`H^1` seminorm
 The first row is classical finite element theory, the extra order in
 :math:`L^2` coming from the duality argument of Aubin and Nitsche
 [Aubin1967]_ [Nitsche1968]_.  The control volume methods are optimal in the
-energy seminorm but do not gain that extra order on quadratic elements,
+energy seminorm, but their :math:`L^2` order remains 2 on quadratic elements,
 because a control volume balance is not a Galerkin projection
-(:doc:`theory/elements` explains where the interfaces sit and why that
-matters).  The cell-centred method carries one value per cell whatever the
+(:doc:`theory/elements` explains where the interfaces lie and why their
+position matters).  The cell-centred method carries one value per cell whatever the
 element and reconstructs a linear field from it, so the element order improves
 only its geometry.
 
-**Coverage.**  ``tests/python/test_mms.py`` runs 161 convergence studies: the
-four methods on every element type each accepts, in one, two and three
-dimensions; Cartesian, axisymmetric and spherical coordinates; variable,
-solution-dependent (nonlinear) and constant coefficients; advection in the
-conservative and the non-conservative form with reaction; the transient
-problem with the time step refined with the mesh (Crank-Nicolson,
-:math:`\Delta t = h/4`); and plane-strain, plane-stress, axisymmetric and
-three-dimensional elasticity.  Every mesh sequence is a structured grid bent by
-a smooth map, so that no element is a parallelogram and the rates are those of
-a general mesh.  A rate is accepted within 0.2 below and 0.4 above the
-expected one; the upper margin allows for the pre-asymptotic behaviour of a
-method converging to a lower order.
+**Coverage.**  ``tests/python/test_mms.py`` runs 161 convergence studies.  They
+cover the four methods on every element type each accepts, in one, two and
+three dimensions, and in Cartesian, axisymmetric and spherical coordinates.
+They include variable, solution-dependent (nonlinear) and constant
+coefficients, advection in the conservative and the non-conservative form with
+reaction, the transient problem with the time step refined with the mesh
+(Crank-Nicolson, :math:`\Delta t = h/4`), and plane-strain, plane-stress,
+axisymmetric and three-dimensional elasticity.  Every mesh sequence is a
+structured grid mapped by a smooth nonlinear transformation, so that no element
+is a parallelogram and the rates are those of a general mesh.  A rate is
+accepted within 0.2 below and 0.4 above the expected one.  The upper margin
+allows for the pre-asymptotic behaviour of a method converging to a lower
+order.
 
 **Results.**  The observed orders on the finest pair of meshes for the diffusion
 problem with a variable coefficient, as :math:`L^2` / :math:`H^1`, are:
@@ -226,34 +232,27 @@ Element       ``fem``        ``dmcdm``      ``hfvm``       ``zfvm``
 ``Tri3``      1.99 / 1.00    1.99 / 1.00    1.99 / 1.00    2.00 / 1.00
 ``Quad4``     2.00 / 1.00    2.00 / 1.00    1.99 / 1.00    2.00 / 1.00
 ``Tri6``      3.00 / 1.99    2.01 / 1.99    2.04 / 1.99    2.00 / 1.00
-``Quad8``     3.00 / 2.00    --             --             2.00 / 1.00
+``Quad8``     3.00 / 2.00    n/a            n/a            2.00 / 1.00
 ``Quad9``     3.00 / 2.00    2.05 / 2.00    2.23 / 2.00    2.00 / 1.00
 ``Tet4``      1.94 / 0.98    1.96 / 0.98    1.96 / 0.98    1.97 / 0.98
 ``Hex8``      1.99 / 1.01    2.00 / 1.01    1.98 / 1.01    1.97 / 0.99
 ``Wedge6``    1.95 / 0.98    1.96 / 0.98    1.96 / 0.98    1.98 / 0.99
-``Pyramid5``  1.99 / 1.00    --             --             1.98 / 0.99
+``Pyramid5``  1.99 / 1.00    n/a            n/a            1.98 / 0.99
 ``Tet10``     3.00 / 1.96    2.66 / 1.96    2.86 / 1.89    1.95 / 0.97
-``Hex20``     3.06 / 2.08    --             --             1.94 / 0.98
+``Hex20``     3.06 / 2.08    n/a            n/a            1.94 / 0.98
 ``Hex27``     2.99 / 2.00    2.72 / 2.00    2.96 / 2.00    1.94 / 0.98
 ============  =============  =============  =============  =============
 
-The two-dimensional sequences use :math:`4, 8, 16, 32` elements per side; the
-three-dimensional ones :math:`3, 6, 12` for the linear elements and
-:math:`2, 4, 8` for the quadratic ones, which is why the quadratic control
-volume rates in three dimensions are still on their way down from the
-finite element method's 3 to their asymptote of 2 (the two-dimensional
-sequences, which reach finer meshes, show it at 2.0).  Every entry agrees with
-the table of expected orders.
+The two-dimensional sequences use :math:`4, 8, 16, 32` elements per side.  The
+three-dimensional sequences use :math:`3, 6, 12` for the linear elements and
+:math:`2, 4, 8` for the quadratic ones.  On these coarser three-dimensional
+meshes the quadratic control volume rates are pre-asymptotic: they lie between
+the finite element method's 3 and their asymptotic value of 2, which the
+two-dimensional sequences, reaching finer meshes, show at 2.0.  Every entry
+agrees with the table of expected orders.  The complete study runs in about
+80 seconds.
 
-The study found two defects, both now fixed.  The old-time part of the
-:math:`\theta` method was evaluated at the new time, which cost the
-Crank-Nicolson scheme its second order in time when the coefficients or the
-sources depend on time (the observed order was 1.27); and the cell-centred
-method's Jacobian omitted the dependence of the non-orthogonal correction on
-the neighbours' values, which made Newton's method converge linearly on skewed
-meshes.  The study also measures cost: it runs in about 80 seconds.
-
-A study of your own takes a few lines:
+A user-defined study requires only a few lines:
 
 .. code-block:: python
 

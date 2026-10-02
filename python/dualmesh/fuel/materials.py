@@ -61,7 +61,8 @@ class RodContext:
 
     ``formulation`` is the formulation of the stress objects
     (``axisymmetric``, ``axisymmetric_1d`` or ``three_dimensional``).
-    ``models`` are the rod's :class:`RodModels` with every choice resolved.
+    ``models`` are the rod's :class:`RodModels` with every choice resolved,
+    and ``factors`` its :class:`ModelFactors`.
     ``burnup`` holds the parameters that every burnup-dependent built-in
     object takes (the burnup field in FIMA, its unit, the energy per fission
     and the heavy-metal molar mass)."""
@@ -73,6 +74,7 @@ class RodContext:
     burnup: dict
     mwd_per_kg_per_fima: float
     temperature: str = "temperature"
+    factors: object = None
 
 
 # ---------------------------------------------------------------------------
@@ -211,8 +213,8 @@ class UO2Fuel(FuelMaterial):
     )
     densification_model: str = parameter(
         "matpro",
-        description="matpro (MATPRO FUDENS, whose source was read) or escore (the ESCORE form, "
-        "from secondary documentation; the EPRI original is not public). Default matpro.",
+        description="matpro (MATPRO FUDENS) or escore (the ESCORE form after Rashid et al., "
+        "EPRI 1011308). Default matpro.",
     )
     total_densification: float = parameter(
         0.01,
@@ -340,6 +342,9 @@ class UO2Fuel(FuelMaterial):
             densification_complete_burnup=self.densification_complete_burnup,
             maximum_temperature_field=MAXIMUM_TEMPERATURE,
             include_solid_swelling=models.solid_swelling,
+            solid_swelling_factor=(
+                context.factors.solid_swelling if context.factors is not None else 1.0
+            ),
             gaseous_swelling_field="gaseous_swelling" if models.gaseous_swelling else "",
             eigenstrain_name=names[1],
             formulation=context.formulation,

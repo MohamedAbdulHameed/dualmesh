@@ -32,10 +32,10 @@ repeated indices are summed.  In vector form this is
 :math:`-\nabla\cdot\boldsymbol{\sigma} = \mathbf{b}`, the divergence being
 taken row by row.  Balance of angular momentum makes the stress tensor
 symmetric, :math:`\sigma_{ij} = \sigma_{ji}`, which is why the module stores
-six independent components rather than nine.
+only the six independent components of the stress.
 
-Equation :eq:`elasticity-equilibrium` is not one equation but one per
-displacement component, and that is how the library treats it.  Every equation
+Equation :eq:`elasticity-equilibrium` comprises one equation per displacement
+component, and the library treats it as such.  Every equation
 in the framework is written in the canonical conservation form
 
 .. math::
@@ -54,8 +54,8 @@ taking, for the equation of the displacement component :math:`u_i`,
    \qquad S_i = -h\,b_i ,
 
 so that the flux of the :math:`i` equation is the :math:`i` th row of the
-stress tensor and its source is minus the corresponding body force component;
-the factor :math:`h` is the out-of-plane thickness treated at the end of this
+stress tensor and its source is minus the corresponding body force component.
+The factor :math:`h` is the out-of-plane thickness treated at the end of this
 chapter.  Substituting :eq:`elasticity-flux` into :eq:`elasticity-canonical`
 and dividing by :math:`h` recovers :eq:`elasticity-equilibrium`, which fixes
 the sign convention: a positive body force component drives the corresponding
@@ -67,26 +67,27 @@ traction component is the natural partner of the displacement component with
 no further construction.
 
 The module splits the work between two kinds of object.  The **material**,
-``linear_elastic_stress``, knows nothing about equilibrium: given the
-displacement gradients at an integration point it computes the strain and the
-stress and publishes them as the properties ``stress``, ``strain`` and
-``volumetric_strain``.  The **kernel**, ``stress_divergence``, knows nothing
-about the constitutive law: it is told which component :math:`i` it
+``linear_elastic_stress``, is independent of the equilibrium statement: given
+the displacement gradients at an integration point it computes the strain and
+the stress and provides them as the properties ``stress``, ``strain`` and
+``volumetric_strain``.  The **kernel**, ``stress_divergence``, is independent
+of the constitutive law: it receives the index of the component :math:`i` it
 represents, reads the stress property, and returns the flux
 :eq:`elasticity-flux` together with the axisymmetric source described below.
 One kernel instance is added per displacement variable, with ``component`` set
 to ``0`` for :math:`x` or :math:`r`, ``1`` for :math:`y` or :math:`z`, and
 ``2`` for :math:`z` in three dimensions.  That index must agree with the
-component the kernel's ``variable`` actually represents; the agreement is not
-checked, and a mismatch assembles the wrong row of the stress silently.
+component the kernel's ``variable`` actually represents.  The agreement is not
+checked, and a mismatch silently assembles the wrong row of the stress.
 
-The separation earns its keep three times over.  One kernel serves all four
+The separation has three advantages.  First, one kernel serves all four
 formulations and both the dual mesh control domain method and the finite
 element method, because equilibrium is the same statement in every case and
-only the stress differs.  A new constitutive model needs only a material that
-declares a ``stress`` property in the same layout, with no change to the
-equilibrium code.  And because materials and kernels are written in the
-forward-mode automatic differentiation type used throughout the framework, the
+only the stress differs.  Second, a new constitutive model needs only a
+material that declares a ``stress`` property in the same layout, with no change
+to the equilibrium code.  Third, because materials and kernels are written in
+the forward-mode automatic differentiation type used throughout the framework,
+the
 derivative of the stress with respect to every degree of freedom is carried
 through the constitutive law, so the Newton Jacobian stays exact even when the
 stress depends on another field such as the temperature.
@@ -114,7 +115,7 @@ of the displacement gradient,
 
 which is the appropriate measure when displacements and rotations are small
 enough that the difference between deformed and undeformed geometry can be
-ignored; equilibrium is then written on the undeformed body.  Symmetric
+ignored.  Equilibrium is then written on the undeformed body.  Symmetric
 tensors are stored as six-component arrays in the Voigt ordering
 
 .. math::
@@ -137,8 +138,10 @@ shear slots hold **engineering** shear strains, twice the tensor components,
    \gamma_{xz} = \frac{\partial u}{\partial z} + \frac{\partial w}{\partial x} ,
 
 with :math:`(u, v, w)` the variables named in ``displacements``.  The
-distinction matters because the shear stiffness is then the shear modulus
-itself rather than twice it.  The property ``volumetric_strain`` holds
+distinction matters because the shear stiffness that relates a shear stress to
+an engineering shear strain is the shear modulus :math:`G` itself, whereas the
+stiffness that relates it to a tensor shear strain is :math:`2G`.  The
+property ``volumetric_strain`` holds
 :math:`\varepsilon_{xx} + \varepsilon_{yy} + \varepsilon_{zz}`, the sum of the
 normal slots, which is the relative change of volume.
 
@@ -166,7 +169,7 @@ singular as :math:`\nu \to 1/2`, so a nearly incompressible material needs
 care, and the default :math:`\nu = 0`, which gives no transverse coupling at
 all, is rarely the material intended.  Which stiffness is built is chosen by
 ``formulation``, one of ``plane_stress``, ``plane_strain``, ``axisymmetric``
-or ``three_dimensional``; any other string is an error.  The number of names
+or ``three_dimensional``.  Any other string is an error.  The number of names
 in ``displacements`` and the dimension of the mesh must match the choice: two
 of each for the plane and axisymmetric formulations, three for the
 three-dimensional one.
@@ -177,7 +180,8 @@ Plane stress
 Plane stress models a thin plate loaded in its own plane, thin enough that the
 free faces force :math:`\sigma_{zz} = \sigma_{yz} = \sigma_{xz} = 0` through
 the thickness.  The material contracts freely through the thickness, so
-:math:`\varepsilon_{zz}` is not zero, but it does no work and is eliminated,
+:math:`\varepsilon_{zz}` is in general non-zero, but it does no work and is
+eliminated,
 leaving
 
 .. math::
@@ -212,9 +216,9 @@ Because the out-of-plane strain vanishes while the out-of-plane stress does
 not, the material also fills the :math:`zz` row with :math:`C_{20} = C_{21} =
 f\nu` and :math:`C_{22} = f(1-\nu)`.  With :math:`\varepsilon_{zz} = 0` that
 row returns :math:`\sigma_{zz} = f\nu\,(\varepsilon_{xx} + \varepsilon_{yy}) =
-\nu\,(\sigma_{xx} + \sigma_{yy})`, post-computed for reporting; it plays no
-part in the two in-plane equations, the :math:`zz` column of the in-plane rows
-being zero.
+\nu\,(\sigma_{xx} + \sigma_{yy})`, post-computed for reporting.  It plays no
+part in the two in-plane equations, because the :math:`zz` column of the
+in-plane rows is zero.
 
 Axisymmetric
 ^^^^^^^^^^^^
@@ -232,7 +236,7 @@ Three strains are the familiar ones, :math:`\varepsilon_{rr} = \partial
 u_r/\partial r`, :math:`\varepsilon_{zz} = \partial u_z/\partial z` and
 :math:`\gamma_{rz} = \partial u_r/\partial z + \partial u_z/\partial r`, but
 there is a fourth that arises purely from the geometry.  A material circle of
-radius :math:`r` about the axis has circumference :math:`2\pi r`; after
+radius :math:`r` about the axis has circumference :math:`2\pi r`.  After
 deformation its radius is :math:`r + u_r`, so its relative change of length is
 
 .. math::
@@ -258,8 +262,8 @@ so that :math:`\sigma_{rr} = (\lambda + 2\mu)\varepsilon_{rr} +
 stay at zero because axisymmetry forbids :math:`r\theta` and :math:`z\theta`
 shear.
 
-The hoop stress does not enter equilibrium as part of a flux, and the reason
-is worth spelling out.  Radial equilibrium in cylindrical coordinates,
+The hoop stress enters equilibrium as a source term, for the following
+reason.  Radial equilibrium in cylindrical coordinates,
 :math:`\partial\sigma_{rr}/\partial r + \partial\sigma_{rz}/\partial z +
 (\sigma_{rr} - \sigma_{\theta\theta})/r + b_r = 0`, regroups as
 
@@ -276,23 +280,24 @@ they are supplied by the flux :eq:`elasticity-flux` unchanged: the factor
 :math:`r` is already in the integration measure the coordinate system
 provides.  The hoop term is different.  Since nothing varies with
 :math:`\theta`, the hoop stress is differentiated with respect to a direction
-the mesh does not resolve, and what it contributes to the radial balance
-survives as an algebraic term rather than as the divergence of anything on the
-:math:`(r, z)` mesh.  Comparison with :eq:`elasticity-canonical` shows that it
-must be carried as the source :math:`S_r = \sigma_{\theta\theta}/r`, which
-``stress_divergence`` adds to the radial equation and to that equation alone;
-the axial equation has no such term.  Setting
+the mesh does not resolve, and its contribution to the radial balance remains
+as an algebraic term that cannot be written as the divergence of a vector on
+the :math:`(r, z)` mesh.  Comparison with :eq:`elasticity-canonical` shows that
+it must be carried as the source :math:`S_r = \sigma_{\theta\theta}/r`, which
+``stress_divergence`` adds to the radial equation and to that equation alone.
+The axial equation has no such term.  Setting
 ``axisymmetric_hoop_term=False`` removes it, which isolates its effect but
-leaves a body with no hoop stiffness and is not the intended model.
+leaves a body with no hoop stiffness.  The resulting model does not represent
+a physical axisymmetric body.
 
 On the axis :math:`r = 0` both :eq:`elasticity-hoop-strain` and the source are
 indeterminate, and each is handled explicitly.  A regular solution has
 :math:`u_r(0) = 0`, so the limit of :math:`u_r/r` as :math:`r \to 0` is
 :math:`\partial u_r/\partial r`, and that derivative is what the material uses
-whenever an integration point falls exactly on the axis; there the hoop strain
-and the radial strain coincide.  The kernel returns a zero source at
+whenever an integration point falls exactly on the axis.  There the hoop
+strain and the radial strain coincide.  The kernel returns a zero source at
 :math:`r = 0`, which is consistent because the measure :math:`2\pi r` of the
-surrounding control domain vanishes there as well.  Neither device supplies
+surrounding control domain vanishes there as well.  Neither treatment supplies
 the symmetry condition itself: a mesh reaching the axis still needs
 :math:`u_r = 0` prescribed there, as a boundary condition like any other.
 
@@ -308,8 +313,9 @@ uses the full isotropic stiffness,
    \qquad C_{33} = C_{44} = C_{55} = \mu ,
 
 which is :math:`\sigma_{ij} = \lambda\,\varepsilon_{kk}\,\delta_{ij} +
-2\mu\,\varepsilon_{ij}` in Voigt form; the shear rows carry :math:`\mu` rather
-than :math:`2\mu` precisely because the shear slots hold engineering strains.
+2\mu\,\varepsilon_{ij}` in Voigt form.  The shear rows carry :math:`\mu`,
+where the tensor form has :math:`2\mu`, because the shear slots hold
+engineering strains.
 Three displacement variables and a three-dimensional mesh are required, and
 the thickness must be left at one.
 
@@ -332,7 +338,7 @@ Here :math:`c_{11}` and :math:`c_{22}` are the direct stiffnesses along the
 two material axes, :math:`c_{12}` is the coupling term, placed symmetrically
 so that the stiffness stays symmetric, and :math:`c_{66}` is the in-plane
 shear stiffness relating :math:`\sigma_{xy}` to the engineering shear strain
-:math:`\gamma_{xy}` rather than to :math:`\varepsilon_{xy}`.  The material
+:math:`\gamma_{xy} = 2\varepsilon_{xy}`.  The material
 axes are assumed to coincide with the mesh axes, so a laminate whose fibres
 run at an angle needs stiffnesses already rotated into the mesh frame.
 
@@ -340,14 +346,14 @@ Giving a non-zero ``stiffness_c11`` is what selects the orthotropic branch:
 the four reduced stiffnesses are then used as given and ``youngs_modulus`` and
 ``poissons_ratio`` are ignored, while a zero value leaves the isotropic
 stiffness of the chosen formulation in force.  There is no separate switch, so
-a model intended as orthotropic that leaves :math:`c_{11}` unset silently
-becomes isotropic with whatever :math:`E` and :math:`\nu` are set.  The branch
-carries three limitations, each of which can change an answer without
+a model intended as orthotropic that leaves :math:`c_{11}` unset becomes
+isotropic without warning, with whatever :math:`E` and :math:`\nu` are set.
+The branch has three limitations, two of which can change an answer without
 producing an error message.
 
 * The reduced stiffnesses apply to ``plane_stress`` and ``plane_strain`` only,
-  and both then give the same matrix, because the constants are taken as
-  supplied rather than derived from an out-of-plane condition; the caller
+  and both then give the same matrix, because the constants are used exactly
+  as supplied, with no out-of-plane condition applied to them.  The caller
   supplies reduced plane-stress or reduced plane-strain constants, whichever
   the problem needs.
 * Supplying them with ``three_dimensional`` is reported as an error, because a
@@ -356,19 +362,19 @@ producing an error message.
   warning, because that formulation always builds its stiffness from :math:`E`
   and :math:`\nu`.
 
-One further consequence deserves stating plainly: in the orthotropic branch
-the out-of-plane row of the stiffness is left at zero, so the plane-strain
-:math:`\sigma_{zz}` is not recovered and slot 2 of the ``stress`` property
-reports zero whatever the in-plane strains are.  The in-plane solution is
-unaffected, that row never entering equilibrium, but post-processing that uses
+One further consequence follows.  In the orthotropic branch the out-of-plane
+row of the stiffness is left at zero, so the plane-strain :math:`\sigma_{zz}`
+is not recovered and slot 2 of the ``stress`` property reports zero whatever
+the in-plane strains are.  The in-plane solution is unaffected, because that
+row never enters equilibrium, but post-processing that uses
 :math:`\sigma_{zz}`, such as a three-dimensional yield or failure measure,
-will be wrong there.
+gives incorrect results in this case.
 
 Thermal strain
 --------------
 
 A temperature change makes an unconstrained body expand without producing
-stress; stress arises only from the part of the strain not accounted for by
+stress.  Stress arises only from the part of the strain not accounted for by
 that free expansion.  With :math:`\alpha` the coefficient of thermal
 expansion per degree, :math:`T` the temperature field and
 :math:`T_{\mathrm{ref}}` the temperature at which the body is free of stress,
@@ -394,24 +400,24 @@ should.  Columns of the stiffness that are zero contribute nothing to the
 thermal term, so in plane strain, where the :math:`zz` column of the in-plane
 rows is zero, the in-plane thermal stress is :math:`-(c_{11} +
 c_{12})\,\alpha\,(T - T_{\mathrm{ref}})` with :math:`c_{11} = f(1-\nu)` and
-:math:`c_{12} = f\nu`; a reader comparing against a textbook plane-strain
+:math:`c_{12} = f\nu`.  A reader comparing against a textbook plane-strain
 thermoelastic formula that also carries the out-of-plane column should be
 aware of the difference.  Thermal strain is applied only when
-``thermal_expansion_coefficient`` and ``temperature`` are both set; giving one
-without the other is accepted and does nothing, and the default
+``thermal_expansion_coefficient`` and ``temperature`` are both set.  Giving one
+without the other is accepted and has no effect, and the default
 ``reference_temperature`` of zero turns the whole temperature field into a
-thermal load, which is seldom what is meant.
+thermal load, which is seldom the intended behaviour.
 
-The ``temperature`` parameter names an ordinary variable of the problem rather
-than a separate field, which has a useful consequence.  If that variable is
-itself being solved for, by a heat conduction kernel elsewhere in the same
-problem, the thermal stress depends on an unknown of the system; because the
-material is written in the automatic differentiation type, the derivative of
-the stress with respect to the temperature degrees of freedom is carried
-through :eq:`elasticity-thermal` alongside the derivatives with respect to the
-displacements.  The thermo-mechanical coupling is therefore differentiated
-exactly and Newton's method converges at its usual rate on the fully coupled
-system, with nothing lagged or iterated by hand.  A prescribed temperature
+The ``temperature`` parameter names an ordinary variable of the problem, and
+this has a useful consequence.  If that variable is itself being solved for,
+by a heat conduction kernel elsewhere in the same problem, the thermal stress
+depends on an unknown of the system.  Because the material is written in the
+automatic differentiation type, the derivative of the stress with respect to
+the temperature degrees of freedom is carried through :eq:`elasticity-thermal`
+alongside the derivatives with respect to the displacements.  The
+thermo-mechanical coupling is therefore differentiated exactly and Newton's
+method converges at its usual rate on the fully coupled system, with nothing
+lagged or iterated by hand.  A prescribed temperature
 field can be supplied as a variable fixed by a Dirichlet condition, in which
 case the coupling contributes nothing to the Jacobian.
 
@@ -432,48 +438,49 @@ condition at all for a component has the natural condition with a zero value,
 Prescribed displacement
 ^^^^^^^^^^^^^^^^^^^^^^^
 
-``Dirichlet_boundary_condition`` prescribes the primary variable, :math:`u_i = g(\mathbf{x},
-t)` at every node of the named boundary, replacing that node's equilibrium
-equation.  A zero value is a rigid support in that direction and a non-zero
-value a prescribed settlement or stretch; prescribing one component and
-leaving the other free is a roller support, and prescribing all of them is a
-clamp.  By default a prescribed displacement is held fixed while loads are
-ramped through load steps, and ``scale_with_load=True`` makes it ramp with
-them instead, as a displacement-controlled test requires.
+``Dirichlet_boundary_condition`` prescribes the primary variable,
+:math:`u_i = g(\mathbf{x}, t)` at every node of the named boundary, replacing
+that node's equilibrium equation.  A zero value is a rigid support in that
+direction and a non-zero value a prescribed settlement or stretch.  Prescribing
+one component and leaving the other free is a roller support, and prescribing
+all of them is a clamp.  By default a prescribed displacement is held fixed
+while loads are ramped through load steps, and ``scale_with_load=True`` makes
+it ramp with them, as a displacement-controlled test requires.
 
 Prescribed traction
 ^^^^^^^^^^^^^^^^^^^
 
-``traction_boundary_condition`` prescribes the secondary variable directly: the component of
-the surface traction, in force per unit area, conjugate to the variable the
-object is attached to.  Because that variable determines the component, the
-object has no ``component`` parameter and is added once per displacement
-variable on the loaded boundary; the value may be a constant or a function of
-position and time.  The sign convention is tied to the coordinate axes and not
-to the surface, so a positive value acts along the positive direction of that
-variable's axis whichever way the outward normal points, and one positive
-value pulls on a right-hand edge while pushing on a left-hand edge.  The value
+``traction_boundary_condition`` prescribes the secondary variable directly:
+the component of the surface traction, in force per unit area, conjugate to
+the variable the object is attached to.  Because that variable determines the
+component, the object has no ``component`` parameter and is added once per
+displacement variable on the loaded boundary.  The value may be a constant or
+a function of position and time.  The sign convention is tied to the
+coordinate axes, independently of the orientation of the surface, so a
+positive value acts along the positive direction of that variable's axis
+whichever way the outward normal points, and one positive value pulls on a
+right-hand edge while pushing on a left-hand edge.  The value
 is multiplied by the thickness before it enters the residual.
 
 Pressure
 ^^^^^^^^
 
-``pressure_boundary_condition`` applies a load that does follow the surface.  A fluid pressure
-:math:`p` acts normal to the surface and towards the body, so the traction it
-exerts is
+``pressure_boundary_condition`` applies a load that follows the orientation of
+the surface.  A fluid pressure :math:`p` acts normal to the surface and
+towards the body, so the traction it exerts is
 
 .. math::
    :label: elasticity-pressure
 
    t_i = -p\, n_i ,
 
-with :math:`\mathbf{n}` the outward unit normal.  The minus sign is the whole
-of the convention: a positive pressure presses inward, against the outward
+with :math:`\mathbf{n}` the outward unit normal.  The convention is contained
+entirely in the minus sign: a positive pressure presses inward, against the outward
 normal, and a negative value is a suction.  Because each component of the
 normal multiplies the pressure separately, this object does take a
 ``component`` parameter, and one instance is added per displacement variable
 with its own component, as for the kernels.  The component must agree with the
-component the object's ``variable`` represents; a mismatch is not detected and
+component the object's ``variable`` represents.  A mismatch is not detected and
 applies the pressure along the wrong axis.  The pressure is multiplied by the
 thickness in plane problems.
 
@@ -482,7 +489,7 @@ Concentrated force
 
 ``point_source`` applies a concentrated force at one or more nodes, either by
 naming a boundary whose nodes all receive the load or by giving coordinates
-that are snapped to the nearest node.  The magnitude is a force, in the units
+that are assigned to the nearest node.  The magnitude is a force, in the units
 conjugate to the displacement, and a positive value acts along the positive
 direction of that variable's axis.  A concentrated force is an idealisation
 that produces an unbounded stress at the loaded point in the continuum
@@ -505,12 +512,12 @@ the node's control domain lying on the boundary,
 which is the force the support transmits to the body at that node, positive
 along the positive direction of the variable's axis.  This is what
 :meth:`dualmesh.Problem.reactions` returns node by node and the quantity to
-compare against a hand-calculated support reaction; summing over a boundary
+compare against a hand-calculated support reaction.  Summing over a boundary
 with :meth:`dualmesh.Problem.total_reaction` gives the resultant support force
 there, which for a body in equilibrium balances the applied loading.
 
-A warning belongs here, because the mistake is natural and its result looks
-plausible.  The reaction stored at a node is the whole of the support force at
+The following error is easy to make, and its result appears plausible.  The
+reaction stored at a node is the whole of the support force at
 that node, gathered from every part of the boundary touching its control
 domain.  A node at the corner where two constrained boundaries meet therefore
 belongs to both and appears in the list returned for each, so adding the
@@ -526,10 +533,11 @@ The thickness parameter
 The ``thickness`` parameter :math:`h` is the out-of-plane dimension of a plane
 problem: the thickness of the sheet in plane stress, or the length of the
 slice being modelled in plane strain.  It multiplies the entire equilibrium
-equation, which is to say the flux :eq:`elasticity-flux` assembled by
-``stress_divergence``, the traction assembled by ``traction_boundary_condition`` and the
-pressure assembled by ``pressure_boundary_condition``, converting stresses per unit area into
-forces per unit length of the cross-section so that every residual has the
+equation, i.e., the flux :eq:`elasticity-flux` assembled by
+``stress_divergence``, the traction assembled by
+``traction_boundary_condition`` and the pressure assembled by
+``pressure_boundary_condition``, converting stresses per unit area into forces
+per unit length of the cross-section so that every residual has the
 dimensions of a force.  It applies to ``plane_stress`` and ``plane_strain``
 only: in three dimensions there is no out-of-plane dimension to account for,
 and in the axisymmetric case the measure :math:`2\pi r` already supplies the
@@ -537,23 +545,25 @@ circumferential extent of the material surrounding each control domain, so in
 both cases the value must be left at its default of one.  Another value is
 accepted there and produces a wrong answer with no diagnostic.
 
-The consistency requirement is the point to remember.  Because :math:`h`
-multiplies both sides of the balance, the value given to every
-``stress_divergence`` kernel and the value given to every ``traction_boundary_condition`` and
-``pressure_boundary_condition`` of the same model must be identical.  A consistent thickness
-scales stiffness and distributed loading alike and so cancels out of the
-displacement solution of a linear problem; an inconsistent one produces a
-model whose loading is scaled by one thickness and whose stiffness is scaled
-by another, which changes the answer by their ratio and is difficult to spot
-afterwards.  The ``add_plane_elasticity`` helper removes the risk for the
-kernels and the body force by passing one value to all of them, but boundary
-conditions are added separately and must be given the same value by hand.
+The thickness must be consistent throughout a model.  Because
+:math:`h` multiplies both sides of the balance, the value given to every
+``stress_divergence`` kernel and the value given to every
+``traction_boundary_condition`` and ``pressure_boundary_condition`` of the same
+model must be identical.  A consistent thickness scales stiffness and
+distributed loading alike and so cancels out of the displacement solution of a
+linear problem.  An inconsistent one produces a model whose loading is scaled
+by one thickness and whose stiffness is scaled by another, which changes the
+answer by their ratio and is difficult to detect afterwards.  The
+``add_plane_elasticity`` helper removes the risk for the kernels and the body
+force by passing one value to all of them, but boundary conditions are added
+separately and must be given the same value by hand.
 
-One load is deliberately outside this rule.  A ``point_source`` is **not**
-scaled by the thickness, because a concentrated load is a force and not a
-force per unit area, so the value supplied must already be the total force
-acting through the whole thickness: a line load of :math:`q` per unit length
-along the out-of-plane direction becomes a point force of :math:`q h`.
+One load is deliberately excluded from this rule.  A ``point_source`` is
+applied **without** the thickness factor, because a concentrated load is a
+total force, whereas the traction and the pressure are forces per unit area.
+The value supplied must therefore already be the total force acting through
+the whole thickness: a line load of :math:`q` per unit length along the
+out-of-plane direction becomes a point force of :math:`q h`.
 
 Verification
 ------------
@@ -568,9 +578,9 @@ one, two, four and eight elements a side, both for the corner displacements
 and for the stress at the centre of the element nearest the support.  The
 thick-walled cylinder under internal pressure of Section 9.9.4.1, solved as a
 plane-strain quadrant of an annulus with symmetry conditions on the straight
-edges and ``pressure_boundary_condition`` on the bore, reproduces the quadrilateral columns of
-Table 9.9.1 to about half a percent, which is the accuracy the book's
-statement of the mesh permits, converges monotonically to the analytical
-solution of Eq. (9.9.24) on quadrilateral and triangular meshes alike, and
-agrees to within a fifth of a percent with the same cylinder solved as an
+edges and ``pressure_boundary_condition`` on the bore, reproduces the
+quadrilateral columns of Table 9.9.1 to about 0.5 %, which is the accuracy the
+book's statement of the mesh permits, converges monotonically to the
+analytical solution of Eq. (9.9.24) on quadrilateral and triangular meshes
+alike, and agrees to within 0.2 % with the same cylinder solved as an
 axisymmetric problem.

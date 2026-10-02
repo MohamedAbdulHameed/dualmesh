@@ -3,7 +3,7 @@ Viscous incompressible flow
 
 The fluids module uses the penalty formulation: the pressure is replaced by
 :math:`P = -\gamma\,\nabla\cdot\mathbf{v}`, and the penalty term is integrated
-with a reduced rule, which is what keeps the velocity field from locking.
+with a reduced rule, which prevents locking of the velocity field.
 
 .. literalinclude:: ../../examples/lid_driven_cavity.py
    :language: python

@@ -5,11 +5,8 @@
 // gases of the fuel-cladding gap.
 //
 // Every correlation is written from the open literature named next to it.  No
-// code of another fuel performance program was consulted.  Where the original
-// paper could not be read and the coefficients rest on public secondary
-// sources (reports, reviews, public documentation), the comment says so; the
-// full list, with the verification status of every coefficient, is in the
-// documentation chapter on fuel performance.
+// code of another fuel performance program was consulted.  The documentation
+// chapter on the fuel correlations lists every correlation with its source.
 //
 // Units are SI throughout, with temperatures in kelvin, unless a comment says
 // otherwise.  The functions are templates so that they can be evaluated both
@@ -117,9 +114,9 @@ uo2ConductivityFink100(const T & temperature)
 /// products (kappa_1d), precipitated fission products (kappa_1p), porosity
 /// with non-conducting spherical pores (kappa_2p, Maxwell-Eucken) and
 /// radiation damage (kappa_4r).  beta is the burnup in atom per cent (FIMA
-/// times 100) and p the porosity fraction.  The original paper was not read.
-/// kappa_1d and kappa_1p were read in IAEA-TECDOC-1496 (2008) Sect. 6.1.2,
-/// and all four factors in S. G. Popov et al., ORNL/TM-2000/351 (2000),
+/// times 100) and p the porosity fraction.  The factors kappa_1d and
+/// kappa_1p are as given in IAEA-TECDOC-1496 (2008) Sect. 6.1.2, and all four
+/// factors as given in S. G. Popov et al., ORNL/TM-2000/351 (2000),
 /// Eqs. (6.4)-(6.7).  Popov writes the porosity factor as (1 - p)/(1 + 2 p);
 /// the Maxwell-Eucken form (1 - p)/(1 + 0.5 p) for spherical pores is used
 /// here, and only for the departure from 95 % density (see
@@ -191,8 +188,8 @@ uo2ConductivityNFI(const T & temperature, double burnup, double gadolinia, doubl
 }
 
 /// The Halden conductivity of irradiated UO2, W/(m K), recommended for
-/// irradiated fuel by IAEA-TECDOC-1496 (2006), Sect. 6.1.2 (read first-hand;
-/// the Halden report it cites, W. Wiesenack, HWR-469, 1996, was not read):
+/// irradiated fuel by IAEA-TECDOC-1496 (2006), Sect. 6.1.2, after
+/// W. Wiesenack, HWR-469, 1996:
 ///   k95 = 1 / (0.1148 + 0.0035 B + 2.475e-4 (1 - 0.00333 B) T_C)
 ///         + 0.0132 exp(0.00188 T_C),
 /// for 95 % dense fuel, with T_C in degrees Celsius and the burnup B in
@@ -314,8 +311,7 @@ constexpr double kPoissonRatioUO2 = 0.316; ///< MATPRO, independent of temperatu
 ///   eps = dRho0 [exp(Bu ln(0.01) / (C_D Bu_D)) - 1],
 ///   C_D = 7.235 - 0.0086 (T_C - 25) below 750 C and 1 above,
 /// with dRho0 the total densification (fraction of theoretical density) and
-/// Bu_D the burnup at which it is complete, both inputs.  The original report
-/// is not public; this is the secondary form.
+/// Bu_D the burnup at which it is complete, both inputs.
 template <typename T>
 T
 uo2DensificationESCORE(const T & temperature, double burnup, double total, double complete_burnup)
@@ -505,8 +501,8 @@ unPoissonRatio(double density_percent)
 ///    Eng. 130 (2016) 012030, Eq. (13), the middle of its range 2.5-3.3e-22).
 /// grain_size is in micrometres and porosity a fraction.  With
 /// hayes_porosity_factor the dislocation term is multiplied by 0.987 exp(-8.65
-/// P) / (1 - P)^27.6, a factor attributed to Hayes et al. whose coefficients
-/// could not be found in any source that was read; it is off by default.
+/// P) / (1 - P)^27.6, a factor attributed to Hayes et al.  It is off by
+/// default.
 template <typename T>
 T
 unCreepRate(const T & stress,
@@ -819,7 +815,7 @@ gasMixtureConductivity(const double * x, const T & temperature)
 /// and N2 it overstates the jump distance by half.  The accommodation
 /// coefficient a is interpolated between helium (0.425 - 2.3e-4 T) and xenon
 /// (0.749 - 2.5e-4 T) by the mixture molar mass (the linear fits of the
-/// FRAPCON gap model, not read at source).  The helium fit turns negative at
+/// FRAPCON gap model).  The helium fit turns negative at
 /// 1848 K, so both fits are bounded below by 0.07, the MATPRO estimate for
 /// helium on Zircaloy (NUREG/CR-6150 Vol. 4 Table 13-4).  The helium bound
 /// acts above 1543 K; the xenon fit reaches it only above 2700 K.

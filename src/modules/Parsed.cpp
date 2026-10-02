@@ -237,8 +237,8 @@ public:
                   std::string("three_dimensional"),
                   "Formulation of the stress material, which fixes which component is axial: "
                   "axisymmetric (the second, z), axisymmetric_1d (the second, z), plane_strain "
-                  "(the third) or three_dimensional (the third, z). Default three_dimensional; "
-                  "it matters only for an axial or transverse direction.");
+                  "(the third) or three_dimensional (the third, z). Default three_dimensional. "
+                  "The formulation matters only for an axial or transverse direction.");
     p.addOptional("stress_free_state_names",
                   ParameterKind::StringList,
                   std::vector<std::string>{},

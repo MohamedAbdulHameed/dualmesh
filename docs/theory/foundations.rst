@@ -40,7 +40,7 @@ expressible.  Examples, all of which appear in the modules:
    * - Steady conduction :math:`-\nabla\cdot(k\nabla T) = q'''`
      - :math:`k \nabla T`
      - :math:`-q'''`
-   * - Advection–diffusion
+   * - Advection-diffusion
      - :math:`k \nabla u` (and :math:`-\mathbf{v}u` in conservative form)
      - :math:`\mathbf{v}\cdot\nabla u`
    * - Elasticity, component :math:`i`
@@ -49,7 +49,7 @@ expressible.  Examples, all of which appear in the modules:
    * - Penalty Stokes, component :math:`i`
      - :math:`\mu(\nabla v_i + (\nabla \mathbf{v})_i) + \gamma (\nabla\cdot\mathbf{v})\,\mathbf{e}_i`
      - :math:`-f_i`
-   * - Mixed Euler–Bernoulli beam, :math:`w` equation
+   * - Mixed Euler-Bernoulli beam, :math:`w` equation
      - :math:`\mathrm{d}M/\mathrm{d}x + N\,\mathrm{d}w/\mathrm{d}x`
      - :math:`c_f w - q`
 
@@ -69,7 +69,7 @@ The primal mesh and the dual mesh
 ---------------------------------
 
 The **primal mesh** is a mesh of finite elements.  Supported element types are
-``Edge2``, ``Tri3``, ``Quad4``, ``Tet4``, and ``Hex8``; all field variables use
+``Edge2``, ``Tri3``, ``Quad4``, ``Tet4``, and ``Hex8``.  All field variables use
 the corresponding (multi-)linear Lagrange interpolation,
 
 .. math::
@@ -90,14 +90,14 @@ by
   dimensions),
 * the element centroid.
 
-Consequently
+Consequently:
 
 * in one dimension the control domain of an interior node is the union of the
-  two half-elements on either side of it;
+  two half-elements on either side of it,
 * for a rectangle the control domains are the bisecting rectangles used
-  throughout Chapter 5 of the book;
+  throughout Chapter 5 of the book,
 * for a general quadrilateral or a triangle it is the construction of Section
-  9.9 of the book;
+  9.9 of the book, and
 * at a boundary node the control domain is truncated by the domain boundary
   (a half control domain in one dimension, a quarter of one at a corner).
 
@@ -137,15 +137,15 @@ anywhere.
 Assembly is element by element.  For an element :math:`e` the code
 
 1. builds the integration points of the sub-cells (volume terms) and of the
-   interfaces (surface terms) from the reference description of the dual mesh;
+   interfaces (surface terms) from the reference description of the dual mesh,
 2. evaluates :math:`u`, :math:`\nabla u`, and the material properties at those
-   points from the element's nodal values;
+   points from the element's nodal values, and
 3. adds :math:`\int S \,\mathrm{d}V` to the owning node's equation and
    :math:`\mp \mathbf{F}\cdot\mathbf{n}\,\Delta S` to the two nodes that share
    each interface.
 
 There are no element stiffness matrices and no element-by-element assembly of
-a bilinear form; the element loop is only a device for visiting the sub-cells.
+a bilinear form.  The element loop serves only to visit the sub-cells.
 
 Boundary control domains and secondary variables
 ------------------------------------------------
@@ -160,9 +160,9 @@ given by the boundary condition.  For a Robin condition,
 integral, which contributes to the Jacobian as well.
 
 *Essential (Dirichlet) boundary:* the primary variable is known, and the
-node's equation is replaced by :math:`u_I = \hat{u}_I`.  The equation that was
-replaced is not discarded: evaluated at the converged solution it returns the
-secondary variable, i.e. the *reaction*
+node's equation is replaced by :math:`u_I = \hat{u}_I`.  The replaced equation
+is retained: evaluated at the converged solution it returns the secondary
+variable, i.e., the *reaction*
 
 .. math::
 
@@ -188,12 +188,14 @@ Galerkin weak form of the same canonical equation,
        - \oint_{\partial\Omega} \psi_I \, q_n \, \mathrm{d}S = 0 ,
 
 so the two methods are driven by the same kernels, the same materials, the same
-boundary conditions, and the same solvers.  Two consequences are worth
-remembering, and both are checked in the test suite:
+boundary conditions, and the same solvers.  Two consequences follow, and both
+are checked in the test suite:
 
 * for linear triangles and tetrahedra with constant coefficients the two
-  methods produce **identical** algebraic equations (Section 5.4 of the book;
-  see ``test_triangles_make_the_dual_mesh_method_equal_the_finite_element_method``);
+  methods produce **identical** algebraic equations (Section 5.4 of the book and
+  the test
+  ``test_triangles_make_the_dual_mesh_method_equal_the_finite_element_method``),
+  and
 * for quadrilaterals the two differ slightly, and the dual mesh results are
   usually the more accurate of the two (Tables 5.4.1–5.4.3 of the book).
 
@@ -220,11 +222,11 @@ system:
      - a one-dimensional radial mesh
 
 With ``"axisymmetric"`` the reaction returned at a boundary node is therefore a
-heat flow per unit length (or a force), not a flux density; Example 5.3.2 of
-the book, where :math:`Q(R_0) = \pi R_0^2 g_0 = 2\pi\times 10^4` W/m, is
-reproduced to machine precision.
+heat flow per unit length (or a force).  Example 5.3.2 of the book, where
+:math:`Q(R_0) = \pi R_0^2 g_0 = 2\pi\times 10^4\ \mathrm{W/m}`, is reproduced to
+machine precision.
 
-Properties worth knowing
+Properties of the method
 ------------------------
 
 * **Local conservation.** The discrete balance holds over every control domain
@@ -232,7 +234,7 @@ Properties worth knowing
 * **Patch test.** A linear field is reproduced exactly on arbitrary distorted
   meshes of all supported element types (``test_patch_test_linear_field``).
 * **Exact nodal values in special cases.** For the radial conduction problem of
-  Example 5.3.2 the method reproduces the exact solution at the nodes; for the
+  Example 5.3.2 the method reproduces the exact solution at the nodes.  For the
   mixed beam models the bending moment at the load centre is exact on any mesh
   (Table 7.5.2).
 * **Equivalence with the finite element method** on simplicial meshes with

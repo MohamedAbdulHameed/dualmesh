@@ -25,7 +25,7 @@ for any nonlinearity, including nonlinear boundary conditions.
 
 **Direct (Picard) iteration** freezes the nonlinear coefficients at the
 previous iterate.  A kernel asks for the lagged value with
-``ctx.coefficient_value(variable)`` — in Newton mode the same call returns the
+``ctx.coefficient_value(variable)``.  In Newton mode the same call returns the
 current AD value, so one kernel serves both schemes.  With
 ``nonlinear_solver="picard"`` the iteration is that of Section 6.2 of the book,
 and the acceleration (relaxation) parameter of Eq. (6.2.15),
@@ -41,10 +41,10 @@ with :math:`\gamma = 0.5`.
 **Load stepping** applies the loads in increments, taking the converged
 solution of one step as the initial guess of the next.  Objects whose
 contribution scales with the load (body forces, tractions, distributed loads,
-point loads) are multiplied by the load factor; a Dirichlet condition can be
-ramped too by setting ``scale_with_load=True``.  The lid-driven cavity at
+point loads) are multiplied by the load factor.  A Dirichlet condition can be
+ramped as well by setting ``scale_with_load=True``.  The lid-driven cavity at
 :math:`Re = 1000` does not converge from rest with Newton's method but does
-converge in a handful of load steps, and the nonlinear beams of Table 7.6.1 use
+converge in a few load steps, and the nonlinear beams of Table 7.6.1 use
 increments of :math:`\Delta q_0 = 1`.
 
 Convergence is declared when the residual norm drops below
@@ -70,19 +70,19 @@ Transient problems use the :math:`\theta` method.  With
    + (1-\theta)\, R_{\text{ss}}(U^{n}, t^{n}) = 0 ,
 
 so :math:`\theta = 1` is the backward Euler method, :math:`\theta = 1/2` the
-Crank–Nicolson method, and :math:`\theta = 0` the forward Euler method.  A
+Crank-Nicolson method, and :math:`\theta = 0` the forward Euler method.  A
 time-derivative kernel with ``quadrature="nodal"`` gives the lumped capacity
-matrix, which in the dual mesh method is simply the measure of the control
-domain times the nodal rate.
+matrix, which in the dual mesh method is the measure of the control domain
+times the nodal rate.
 
 Solvers and complexity
 ----------------------
 
-The linear systems are solved with Eigen [Eigen]_: by default
-(``linear_solver="automatic"``) with a sparse LU factorisation where that is
-cheap and with BiCGSTAB preconditioned by an incomplete LU factorisation
-without fill where it is not, the choice and its reasons being given in
-:ref:`the choice of linear solver <linear-solver-choice>`; GMRES and the
-conjugate gradient method (for symmetric problems) are also available.  The unknowns are
-ordered node by node (``dof = node * num_variables + variable``), which keeps
-the couplings of a multi-field model close to the diagonal.
+The linear systems are solved with Eigen [Eigen]_.  By default
+(``linear_solver="automatic"``) they are solved with a sparse LU factorisation
+where that is cheap, and with BiCGSTAB preconditioned by an incomplete LU
+factorisation without fill where it is not.  The choice and its reasons are
+given in :ref:`the choice of linear solver <linear-solver-choice>`.  GMRES and
+the conjugate gradient method (for symmetric problems) are also available.  The
+unknowns are ordered node by node (``dof = node * num_variables + variable``),
+which keeps the couplings of a multi-field model close to the diagonal.

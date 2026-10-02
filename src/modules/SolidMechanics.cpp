@@ -63,14 +63,14 @@ public:
   {
     InputParameters p = Material::validParams();
     p.setClassDescription(
-        "Linear elastic stress from the displacement gradients. Declares the material "
-        "properties 'stress' and 'strain' (Voigt order xx, yy, zz, yz, xz, xy) and "
-        "'volumetric_strain'. Isotropic by default; for an orthotropic plane problem give "
-        "the reduced stiffnesses c11, c12, c22, c66 instead.");
+        "Linear elastic stress from the displacement gradients. Declares the material properties "
+        "'stress' and 'strain' (Voigt order xx, yy, zz, yz, xz, xy) and 'volumetric_strain'. The "
+        "material is isotropic by default. For an orthotropic plane problem, give the reduced "
+        "stiffnesses c11, c12, c22 and c66.");
     p.addRequired("displacements",
                   ParameterKind::StringList,
-                  "Displacement variables (2 names in 2D, 3 in 3D; in the axisymmetric case "
-                  "the radial and axial displacements).");
+                  "Displacement variables (2 names in 2D and 3 in 3D, which in the axisymmetric "
+                  "case are the radial and axial displacements).");
     p.addOptional("formulation",
                   ParameterKind::String,
                   std::string("plane_stress"),
@@ -83,17 +83,16 @@ public:
     p.addOptional("youngs_modulus",
                   ParameterKind::Real,
                   1.0,
-                  "Young's modulus E, in a force-per-area unit consistent with the mesh and "
-                  "the loads. It is ignored in the orthotropic branch; see "
-                  "'stiffness_c11'.");
+                  "Young's modulus E, in a force-per-area unit consistent with the mesh and the "
+                  "loads. It is ignored in the orthotropic branch (see 'stiffness_c11').");
     p.addOptional("poissons_ratio",
                   ParameterKind::Real,
                   0.0,
                   "Poisson's ratio nu, which must satisfy -1 < nu < 0.5. The plane-strain, "
                   "axisymmetric and three-dimensional stiffnesses become singular as nu "
-                  "approaches 0.5, so a nearly incompressible material needs care. The "
-                  "default 0 gives no transverse coupling at all and is almost never the "
-                  "material intended, so set it explicitly.");
+                  "approaches 0.5, so a nearly incompressible material requires care. The default "
+                  "0 gives no transverse coupling at all and rarely represents the intended "
+                  "material, so the value should be set explicitly.");
     p.addOptional("stiffness_c11",
                   ParameterKind::Real,
                   0.0,
@@ -118,10 +117,9 @@ public:
                   ParameterKind::Real,
                   0.0,
                   "Reduced in-plane shear stiffness c66, relating the shear stress to the "
-                  "engineering shear strain gamma_xy rather than to eps_xy. Used only when "
-                  "'stiffness_c11' is non-zero. In the orthotropic branch the out-of-plane "
-                  "row of the stiffness is left at zero, so the plane-strain sigma_zz is "
-                  "not recovered.");
+                  "engineering shear strain gamma_xy = 2 eps_xy. Used only when 'stiffness_c11' "
+                  "is non-zero. In the orthotropic branch the out-of-plane row of the stiffness "
+                  "is left at zero, so the plane-strain sigma_zz is not recovered.");
     p.addOptional("thermal_expansion_coefficient",
                   ParameterKind::Real,
                   0.0,
@@ -133,11 +131,10 @@ public:
     p.addOptional("temperature",
                   ParameterKind::String,
                   std::string(""),
-                  "Name of an existing variable to use as the temperature in the thermal "
-                  "strain alpha (T - T_reference). Thermal strain is applied only when this "
-                  "and 'thermal_expansion_coefficient' are both set; setting one without "
-                  "the other is accepted and does nothing. Leave it empty for an isothermal "
-                  "analysis.");
+                  "Name of an existing variable to use as the temperature in the thermal strain "
+                  "alpha (T - T_reference). Thermal strain is applied only when this and "
+                  "'thermal_expansion_coefficient' are both set. Setting one without the other is "
+                  "accepted and has no effect. Leave it empty for an isothermal analysis.");
     p.addOptional("stress_free_temperature",
                   ParameterKind::Real,
                   0.0,
@@ -316,22 +313,21 @@ public:
     p.addRequired(
         "component",
         ParameterKind::Integer,
-        "Index of the displacement component whose equilibrium equation this instance "
-        "assembles: 0 for x or r, 1 for y or z, 2 for z. It must agree with the component "
-        "that 'variable' represents; the agreement is not checked, and a mismatch silently "
-        "assembles the wrong row. Add one instance per displacement variable.");
+        "Index of the displacement component whose equilibrium equation this instance assembles: "
+        "0 for x or r, 1 for y or z, 2 for z. It must agree with the component that 'variable' "
+        "represents. The agreement is not checked, and a mismatch assembles the wrong row without "
+        "a warning. Add one instance per displacement variable.");
     p.addOptional("thickness",
                   ParameterKind::Real,
                   1.0,
-                  "Out-of-plane thickness h multiplying the whole equilibrium equation, for "
-                  "plane stress and plane strain only. Leave it at 1 in the "
-                  "three-dimensional case and in the axisymmetric case, where the "
-                  "integration measure already carries the factor 2 pi r; any other value "
-                  "there is accepted and gives a wrong answer. It must match the thickness "
-                  "given to every traction_boundary_condition and pressure_boundary_condition of "
-                  "the same model. A point_source "
-                  "is not scaled by it, so a concentrated load must already be the total "
-                  "force through the thickness.");
+                  "Out-of-plane thickness h multiplying the whole equilibrium equation, for plane "
+                  "stress and plane strain only. Leave it at 1 in the three-dimensional case and "
+                  "in the axisymmetric case, where the integration measure already carries the "
+                  "factor 2 pi r. Any other value is accepted in those cases and gives a wrong "
+                  "result. It must match the thickness given to every traction_boundary_condition "
+                  "and pressure_boundary_condition of the same model. A point_source is not "
+                  "scaled by it, so a concentrated load must already be the total force through "
+                  "the thickness.");
     p.addOptional("stress_property",
                   ParameterKind::String,
                   std::string("stress"),
@@ -415,16 +411,15 @@ public:
   {
     InputParameters p = Material::validParams();
     p.setClassDescription(
-        "Small-strain stress of an isotropic material: sigma = lambda tr(eps_e) I + 2 mu "
-        "eps_e of the elastic strain eps_e = eps - sum of the eigenstrains - creep strain, "
-        "with Young's modulus and Poisson's ratio taken from material properties (for "
-        "instance those of UO2_elasticity) or given as constants, and optional creep. "
-        "Formulations: axisymmetric (r, z mesh), axisymmetric_1d (a radial slice of a long "
-        "body in generalized plane strain, whose uniform axial strain is given by "
-        "'axial_strain'), plane_strain and three_dimensional. Declares 'stress', 'strain', "
-        "'elastic_strain' (Voigt order xx, yy, zz, yz, xz, xy, with engineering shears; "
-        "axisymmetric order r, z, theta) and 'von_mises_stress', and with creep "
-        "'creep_strain' and 'equivalent_creep_strain'.");
+        "Small-strain stress of an isotropic material: sigma = lambda tr(eps_e) I + 2 mu eps_e of "
+        "the elastic strain eps_e = eps - sum of the eigenstrains - creep strain, with Young's "
+        "modulus and Poisson's ratio taken from material properties (for instance those of "
+        "UO2_elasticity) or given as constants, and optional creep. Formulations: axisymmetric "
+        "(r, z mesh), axisymmetric_1d (a radial slice of a long body in generalized plane strain, "
+        "whose uniform axial strain is given by 'axial_strain'), plane_strain and "
+        "three_dimensional. Declares 'stress', 'strain', 'elastic_strain' (in the Voigt order xx, "
+        "yy, zz, yz, xz, xy with engineering shears, or r, z, theta in the axisymmetric case) and "
+        "'von_mises_stress', and with creep 'creep_strain' and 'equivalent_creep_strain'.");
     p.addRequired("displacements", ParameterKind::StringList, "Displacement variables.");
     p.addRequired("formulation",
                   ParameterKind::String,
@@ -492,7 +487,7 @@ public:
     p.addOptional("temperature",
                   ParameterKind::String,
                   std::string(""),
-                  "The temperature variable (kelvin); required with creep.");
+                  "The temperature variable (kelvin), required with creep.");
     p.addOptional("fission_rate",
                   ParameterKind::Function,
                   0.0,
@@ -524,8 +519,9 @@ public:
     p.addOptional("creep_rate_factor",
                   ParameterKind::Real,
                   1.0,
-                  "Factor on the creep rate of creep_model = uo2 or un, for example for a doped "
-                  "fuel whose creep is measured to be faster. Default 1.");
+                  "Factor on the creep rate of every creep model, for example for a doped fuel "
+                  "whose creep is measured to be faster, or for sensitivity and uncertainty "
+                  "studies. Default 1.");
     return p;
   }
   int stateSize() const override { return _creep == Creep::None ? 0 : 7; }
@@ -648,20 +644,25 @@ public:
     // temperature from a cold initial guess, where exp(-Q/RT) has no
     // derivative.
     const T temperature = fuel::correlationTemperature(temperature_in);
+    return _creep_factor * baseCreepRate(sigma, temperature, ctx);
+  }
+  /// Creep rate of the chosen model, before creep_rate_factor.
+  template <typename T>
+  T baseCreepRate(const T & sigma, const T & temperature, const QpContext & ctx) const
+  {
     switch (_creep)
     {
     case Creep::UO2:
-      return _creep_factor *
-             fuel::uo2CreepRate(
-                 sigma, temperature, _fission->value(ctx.x, ctx.time), 100.0 * _density, _grain);
+      return fuel::uo2CreepRate(
+          sigma, temperature, _fission->value(ctx.x, ctx.time), 100.0 * _density, _grain);
     case Creep::UN:
-      return _creep_factor * fuel::unCreepRate(sigma,
-                                               temperature,
-                                               _fission->value(ctx.x, ctx.time),
-                                               1.0 - _density,
-                                               _grain,
-                                               _un_coble,
-                                               false);
+      return fuel::unCreepRate(sigma,
+                               temperature,
+                               _fission->value(ctx.x, ctx.time),
+                               1.0 - _density,
+                               _grain,
+                               _un_coble,
+                               false);
     case Creep::Zircaloy:
       return fuel::zryCreepRate(
           sigma, temperature, _flux->value(ctx.x, ctx.time), _fluence->value(ctx.x, ctx.time));
@@ -965,22 +966,21 @@ public:
   {
     InputParameters p = SmallStrainStress::validParams();
     p.setClassDescription(
-        "Stress of an isotropic material at finite (large) strain, for equations written on "
-        "the undeformed mesh (the total Lagrangian form). The deformation gradient "
-        "F = I + grad u is taken with respect to the undeformed coordinates, and the stress "
-        "that the equilibrium equation needs is the first Piola-Kirchhoff stress "
-        "P = J sigma F^-T, declared as 'first_piola_kirchhoff_stress' (nine components, "
-        "row by row) for stress_divergence. 'stress' is the Cauchy (true) stress. "
-        "stress_update = rotated_small_strain (the default) applies the small-strain law "
-        "of small_strain_stress, with the same eigenstrains and creep, to strain "
-        "increments measured in a frame that rotates with the material (the Hughes-Winget "
-        "midpoint rule), so that rotations produce no stress; it suits metals and ceramics, "
-        "whose elastic strains stay small while their total strains need not. "
-        "stress_update = neo_Hookean is the compressible neo-Hookean hyperelastic law "
-        "P = mu (F - F^-T) + lambda ln(J) F^-T, exact for any deformation and without "
-        "creep, applied to the part of F left after the eigenstrains (F = F_e F_eig). "
-        "Also declares 'deformation_gradient' (nine components) and "
-        "'green_lagrange_strain' (Voigt, engineering shears).");
+        "Stress of an isotropic material at finite (large) strain, for equations written on the "
+        "undeformed mesh (the total Lagrangian form). The deformation gradient F = I + grad u is "
+        "taken with respect to the undeformed coordinates, and the stress that the equilibrium "
+        "equation needs is the first Piola-Kirchhoff stress P = J sigma F^-T, declared as "
+        "'first_piola_kirchhoff_stress' (nine components, row by row) for stress_divergence. "
+        "'stress' is the Cauchy (true) stress. stress_update = rotated_small_strain (the default) "
+        "applies the small-strain law of small_strain_stress, with the same eigenstrains and "
+        "creep, to strain increments measured in a frame that rotates with the material (the "
+        "Hughes-Winget midpoint rule), so that rotations produce no stress. This update suits "
+        "metals and ceramics, whose elastic strains stay small while their total strains may be "
+        "large. stress_update = neo_Hookean is the compressible neo-Hookean hyperelastic law P = "
+        "mu (F - F^-T) + lambda ln(J) F^-T, exact for any deformation and without creep, applied "
+        "to the part of F left after the eigenstrains (F = F_e F_eig). Also declares "
+        "'deformation_gradient' (nine components) and 'green_lagrange_strain' (Voigt, engineering "
+        "shears).");
     p.addOptional("stress_update",
                   ParameterKind::String,
                   std::string("rotated_small_strain"),
@@ -1347,10 +1347,9 @@ public:
   {
     InputParameters p = IntegratedBC::validParams();
     p.setClassDescription(
-        "Prescribed component of the surface traction, in force per unit area. The "
-        "component is the one belonging to the equation named by 'variable', so the object "
-        "is added once per displacement variable; unlike pressure_boundary_condition it has no "
-        "'component' "
+        "Prescribed component of the surface traction, in force per unit area. The component is "
+        "the one belonging to the equation named by 'variable', so the object is added once per "
+        "displacement variable. Unlike pressure_boundary_condition, it has no 'component' "
         "parameter.");
     p.addOptional("traction",
                   ParameterKind::Function,
@@ -1369,10 +1368,10 @@ public:
     p.addOptional("scale_with_load",
                   ParameterKind::Boolean,
                   true,
-                  "Multiply this contribution by the load factor during load stepping. Unlike "
-                  "the framework default this is true, because applied loading is normally "
-                  "what is ramped; set it to false for a part of the loading that must stay "
-                  "fixed while the rest is increased.");
+                  "Multiply this contribution by the load factor during load stepping. This "
+                  "parameter defaults to true, unlike the framework default, because the applied "
+                  "loading is normally the quantity that is ramped. Set it to false for a part of "
+                  "the loading that must stay fixed while the rest is increased.");
     return p;
   }
   explicit TractionBC(const InputParameters & p)
@@ -1407,12 +1406,11 @@ public:
         "displacement variable, each with its own 'component'.");
     p.addRequired("component",
                   ParameterKind::Integer,
-                  "Index of the displacement component this instance contributes to: 0 for "
-                  "x or r, 1 for y or z, 2 for z. It selects which component of the outward "
-                  "normal multiplies the pressure, so it must agree with the component that "
-                  "'variable' represents; a mismatch is not detected and applies the "
-                  "pressure along the wrong axis. Add one instance per displacement "
-                  "variable.");
+                  "Index of the displacement component this instance contributes to: 0 for x or "
+                  "r, 1 for y or z, 2 for z. It selects which component of the outward normal "
+                  "multiplies the pressure, so it must agree with the component that 'variable' "
+                  "represents. A mismatch is not detected and applies the pressure along the "
+                  "wrong axis. Add one instance per displacement variable.");
     p.addOptional("pressure",
                   ParameterKind::Function,
                   0.0,
@@ -1436,10 +1434,10 @@ public:
     p.addOptional("scale_with_load",
                   ParameterKind::Boolean,
                   true,
-                  "Multiply this contribution by the load factor during load stepping. Unlike "
-                  "the framework default this is true, because applied loading is normally "
-                  "what is ramped; set it to false for a part of the loading that must stay "
-                  "fixed while the rest is increased.");
+                  "Multiply this contribution by the load factor during load stepping. This "
+                  "parameter defaults to true, unlike the framework default, because the applied "
+                  "loading is normally the quantity that is ramped. Set it to false for a part of "
+                  "the loading that must stay fixed while the rest is increased.");
     return p;
   }
   explicit PressureBC(const InputParameters & p)

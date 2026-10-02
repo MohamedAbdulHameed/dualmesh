@@ -40,7 +40,13 @@ diffusivity of Eq. 16 of the report.
 
 Usage::
 
-    python run_ifa716.py [output directory for the figures]
+    python run_ifa716.py [output directory for the figures] [--plot-only]
+
+The calculations are saved in ``run_ifa716_cache.npz``, and ``--plot-only``
+redraws the figures (and rewrites ``ifa716_results.csv``) from it.  The
+power, the centre temperature and the release are drawn in
+``ifa716_rod1_power.png``, ``ifa716_rod1_temperature.png`` and
+``ifa716_rod1_fgr.png``.
 """
 
 from __future__ import annotations
@@ -48,25 +54,19 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import matplotlib
-
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt  # noqa: E402
-import numpy as np  # noqa: E402
-from dualmesh import fuel  # noqa: E402
+import numpy as np
+from dualmesh import fuel
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import plotstyle  # noqa: E402
 from halden_history import insert_shutdowns, shutdown_days  # noqa: E402
+from plotstyle import DUALMESH, INK, MEASURED, MUTED, REFERENCE_GREY, SECOND  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
+CACHE = plotstyle.cache_path(__file__)
 DAY = 86400.0
-DUALMESH = "#2a78d6"
-SECOND = "#1baf7a"
-REFERENCE_GREY = "#a3a29c"
-MEASURED = "#eb6834"
-INK = "#0b0b0b"
-MUTED = "#52514e"
 
 PELLET_DIAMETER = 9.12e-3
 CLAD_OD = 10.75e-3
@@ -167,21 +167,17 @@ def read_csv(name):
     return np.array(rows, dtype=float)
 
 
-def style(ax, xlabel, ylabel, title):
-    ax.set_title(title, loc="left", fontsize=10, color=INK)
-    ax.set_xlabel(xlabel, color=MUTED)
-    ax.set_ylabel(ylabel, color=MUTED)
-    ax.grid(True, color="#e4e3df", linewidth=0.6)
-    for side in ("top", "right"):
-        ax.spines[side].set_visible(False)
-    for side in ("left", "bottom"):
-        ax.spines[side].set_color("#c3c2b7")
-    ax.tick_params(colors=MUTED, labelsize=8)
+# Legend labels of the three calculations (every fuel is the doped UO2).
+LEGEND = {
+    "doped, case A (best estimate)": "dualmesh, case A (best estimate)",
+    "doped, case B (upper limit)": "dualmesh, case B (upper limit)",
+    "doped, CASL Eq. 16 (as BISON)": "dualmesh, CASL Eq. 16 (as BISON)",
+}
 
 
-def main():
-    out = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "docs/_static/figures/doped_uo2"
-    out.mkdir(parents=True, exist_ok=True)
+def compute():
+    """The three calculations with solid pellets and the drilled calculation
+    of case A: {"results": {name: run(...)}, "tc_run": run(...)}."""
     common = dict(enrichment=0.049, theoretical_density_fraction=DENSITY / 10963.0)
     cases = {
         "doped, case A (best estimate)": fuel.DopedUO2Fuel(grain_radius=35e-6, **common),
@@ -195,6 +191,17 @@ def main():
     results = {name: run(material) for name, material in cases.items()}
     # The thermocouple sits in the drilled top section: an annular pellet.
     tc_run = run(fuel.DopedUO2Fuel(grain_radius=35e-6, **common), bore_diameter=1.8e-3)
+    return dict(results=results, tc_run=tc_run)
+
+
+def main():
+    out, plot_only = plotstyle.parse_args(sys.argv[1:], ROOT / "docs/_static/figures/doped_uo2")
+    if plot_only:
+        cached = plotstyle.load_cache(CACHE)
+    else:
+        cached = compute()
+        plotstyle.save_cache(CACHE, cached)
+    results, tc_run = cached["results"], cached["tc_run"]
 
     measured_tc = read_csv("ifa716_rod1_thermocouple.csv")
     bison_tc = read_csv("ifa716_rod1_bison_tc.csv")
@@ -263,32 +270,40 @@ def main():
     (HERE / "ifa716_results.csv").write_text("\n".join(lines) + "\n")
     print("\n".join(lines))
 
-    fig, axes = plt.subplots(1, 3, figsize=(13.0, 4.8), constrained_layout=True)
-    ax = axes[0]
+    fig, ax = plotstyle.new_figure()
     ax.plot(t / DAY, q / 1e3, color=MUTED, linewidth=1.0)
-    style(ax, "Time (days)", "Linear heat rate (kW/m)", "Rod average power")
+    plotstyle.style(
+        ax, "Time (days)", "Linear heat rate (kW/m)", "IFA-716.1 rod 1: rod average power"
+    )
     ax.set_xlim(0, 700)
     ax.set_ylim(0, 36)
+    plotstyle.save(fig, out / "ifa716_rod1_power.png")
 
-    ax = axes[1]
+    fig, ax = plotstyle.new_figure()
     ax.plot(measured_tc[:, 0], measured_tc[:, 1], color=MEASURED, linewidth=1.0, label="Measured")
     ax.plot(bison_tc[:, 0], bison_tc[:, 1], color=INK, linewidth=0.8, label="BISON (CASL report)")
     ax.plot(
         tc_run["days"], tc_run["centre"] + 273.15, color=DUALMESH, linewidth=1.6, label="dualmesh"
     )
-    style(ax, "Time (days)", "Temperature (K)", "Centre temperature at the thermocouple")
+    plotstyle.style(
+        ax,
+        "Time (days)",
+        "Temperature (K)",
+        "IFA-716.1 rod 1: centre temperature at the thermocouple",
+    )
     ax.set_xlim(0, 700)
     ax.set_ylim(700, 1600)
-    ax.legend(frameon=False, fontsize=7.5, loc="upper center", bbox_to_anchor=(0.5, -0.25), ncol=3)
+    plotstyle.legend_below(ax, ncol=3)
+    plotstyle.save(fig, out / "ifa716_rod1_temperature.png")
 
-    ax = axes[2]
-    ax.plot(mb, measured_fgr[:, 1], color=MEASURED, linewidth=1.6, label="Measured (rod pressure)")
+    fig, ax = plotstyle.new_figure()
+    ax.plot(mb, measured_fgr[:, 1], color=MEASURED, linewidth=1.8, label="Measured (rod pressure)")
     ax.plot(
         bison19_fgr[:, 0],
         bison19_fgr[:, 1],
         "-.",
         color=INK,
-        linewidth=0.8,
+        linewidth=0.9,
         label="BISON 2019 (CASL Eq. 16)",
     )
     for case, ls in (("A", "-"), ("B", ":")):
@@ -299,17 +314,21 @@ def main():
             curve[order, 1],
             ls,
             color=INK,
-            linewidth=0.7,
+            linewidth=0.8,
             label=f"BISON 2021, case {case}",
         )
     styles = [(DUALMESH, "-"), (DUALMESH, ":"), (SECOND, "-"), (REFERENCE_GREY, "--")]
     for (name, r), (colour, ls) in zip(results.items(), styles):
-        ax.plot(r["burnup"], r["fgr"], ls, color=colour, linewidth=1.8, label=f"dualmesh, {name}")
-    style(ax, "Rod average burnup (MWd/kgU)", "Fission gas release (%)", "Fission gas release")
+        ax.plot(r["burnup"], r["fgr"], ls, color=colour, linewidth=2.0, label=LEGEND[name])
+    plotstyle.style(
+        ax,
+        "Rod average burnup (MWd/kgU)",
+        "Fission gas release (%)",
+        "IFA-716.1 rod 1: fission gas release",
+    )
     ax.set_xlim(0, 31)
-    ax.legend(frameon=False, fontsize=7, loc="upper center", bbox_to_anchor=(0.5, -0.25), ncol=2)
-    fig.savefig(out / "ifa716_rod1.png", dpi=150)
-    plt.close(fig)
+    plotstyle.legend_below(ax, ncol=2)
+    plotstyle.save(fig, out / "ifa716_rod1_fgr.png")
 
 
 if __name__ == "__main__":

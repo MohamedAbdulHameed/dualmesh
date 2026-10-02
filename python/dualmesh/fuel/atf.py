@@ -18,7 +18,7 @@ provides the concepts for which open-literature property correlations exist:
                           diffusion)
 ========================  ====================================================
 
-The correlations were read in the sources named with each class, and every
+The correlations are taken from the sources named with each class, and every
 default states where it comes from.  Where a source gives no value for a
 property a rod model needs, the property is a required input (no default),
 so that no guess enters a calculation unannounced.  All the materials are
@@ -329,8 +329,8 @@ class SiCCladding(_ExpressionCladding):
       irradiation;
     * specific heat of monolithic SiC (the handbook's Section 3.1.4 and
       Fig. 4), :math:`c_p = 925.65 + 0.3772 T - 7.9259\times10^{-5} T^2 -
-      3.1946\times10^{7}/T^2` J/(kg K), the correlation of Snead et al. (2007,
-      not read) as given in IAEA-TECDOC-1921 Eq. 17; it agrees with the
+      3.1946\times10^{7}/T^2` J/(kg K), the correlation of Snead et al. (2007)
+      as given in IAEA-TECDOC-1921 Eq. 17.  It agrees with the
       NIST-JANAF table of beta-SiC within 1.6 % from 298 to 2000 K;
     * through-thickness thermal conductivity :math:`1/k = 1/k_0 + c_R S`: the
       unirradiated :math:`k_0` is 8.0 - 1.32e-3 (T - 293) W/(m K), a linear fit
@@ -586,13 +586,13 @@ class CoatedCladding(CladdingMaterial):
 @dataclass
 class U3Si2Fuel(_Delegating, FuelMaterial):
     r"""Uranium silicide fuel.  The correlations are those of the LANL U3Si2
-    property handbook (J. T. White, LA-UR-18-28719, 2018, not read) as
+    property handbook (J. T. White, LA-UR-18-28719, 2018) as
     reproduced in CASL-U-2019-1870 (Gamble et al. 2019) and IAEA-TECDOC-1921
     (2020), and those of INL/EXT-16-40059 (Gamble et al. 2016) and
     INL/EXT-20-59969 (Gamble, Pastore and Cooper 2020):
 
     * :math:`k = 4.996 + 0.0118 T` W/(m K), 300 to 1773 K, 5 %: the fit of the
-      corrigendum of White et al. (J. Nucl. Mater. 484, 2017, not read),
+      corrigendum of White et al. (J. Nucl. Mater. 484, 2017),
       CASL-U-2019-1870 Eq. 23 and IAEA-TECDOC-1921 Eq. 11.  The uncorrected
       2015 fit, 6.004 + 0.0151 T, is 23-27 % higher.  No irradiation
       dependence is known;
@@ -616,7 +616,7 @@ class U3Si2Fuel(_Delegating, FuelMaterial):
       LWR conditions exists.  It is therefore off by default;
     * creep as the sum of Nabarro-Herring, Coble and dislocation-climb terms
       (Eqs. 3.3 to 3.6 of the 2020 report, whose journal version is Cooper et
-      al., J. Nucl. Mater. 555 (2021) 153129, not read), with the grain size
+      al., J. Nucl. Mater. 555 (2021) 153129), with the grain size
       :math:`d = 2 a`; it reproduces the compressive creep tests of Yingling
       et al. (INL/JOU-20-58799, Table 1) within a factor of 2.3;
     * fission gas by diffusion out of the grains with the xenon diffusivity
@@ -734,7 +734,7 @@ class U3Si2Fuel(_Delegating, FuelMaterial):
 # Cr2O3-doped UO2
 # ---------------------------------------------------------------------------
 #: Table 2.1 of INL/EXT-20-59969, identical to Table 3 of Cooper et al., J.
-#: Nucl. Mater. 545 (2021) 152590 (case A and case B, read first-hand):
+#: Nucl. Mater. 545 (2021) 152590 (case A and case B):
 #: (T1 = T2 in K, dH1 in eV, dH2 in eV).
 _DOPED_DIFFUSIVITY = {
     "best_estimate": (1773.0, 0.3198, -0.3345),

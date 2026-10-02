@@ -2,17 +2,17 @@ Meshes
 ======
 
 Every problem in ``dualmesh`` begins with a mesh.  This chapter explains what a
-mesh is in this library, how to generate one, how to read one that another tool
-wrote, and how to name, bend and refine it before handing it to a
+mesh is in this library, how to generate one, how to read one written by another
+program, and how to name, transform and refine it before it is passed to a
 :class:`~dualmesh.Problem`.
 
 A mesh is independent of the discretisation.  The same mesh can be given to the
 dual mesh control domain method, to the Galerkin finite element method and to
-either finite volume method, and none of them modifies it; that is what makes
-the comparisons of :doc:`/verification` meaningful.  The dual mesh of control
+either finite volume method, and none of them modifies it, which makes the
+comparisons of :doc:`/verification` meaningful.  The dual mesh of control
 domains is never stored: it is reconstructed element by element from the
-reference element definitions whenever a residual is assembled, so there is
-nothing for you to build or keep consistent.
+reference element definitions whenever a residual is assembled, so that the
+user has no dual mesh to build or to keep consistent.
 
 .. contents::
    :local:
@@ -22,7 +22,7 @@ nothing for you to build or keep consistent.
 What a mesh contains
 --------------------
 
-A :class:`dualmesh.Mesh` holds five things.
+A :class:`dualmesh.Mesh` holds five kinds of data.
 
 **Nodes** are points in space.  Every node carries three coordinates whatever
 the dimension of the mesh, with the unused ones set to zero, so a
@@ -36,27 +36,28 @@ and carries a block number.  The element provides the interpolation of the
 unknowns and the geometry from which the control domains are cut.
 
 **Blocks**, called subdomains in some codes, are integer labels on elements.
-They are how a problem is given more than one material: an object added with
+They allow a problem to have more than one material: an object added with
 ``block="steel"`` acts only on that block's elements, and an object added
 without a ``block`` acts everywhere.  ``set_block_name`` attaches a name, and
 both the name and the integer written as text are accepted wherever a block is
 named.
 
 **Side sets** are lists of boundary *faces*, each stored as a pair
-``(element, local side)`` rather than as a list of nodes, so a side set knows
-which element it belongs to and therefore which way its outward normal points.
-Every boundary condition that prescribes a *flux* — ``Neumann_boundary_condition``,
-``Robin_boundary_condition``, ``convective_heat_flux_boundary_condition``, ``traction_boundary_condition``, ``pressure_boundary_condition`` — needs a
+``(element, local side)``, so that a side set records the element to which each
+face belongs and therefore the direction of its outward normal.  Every boundary
+condition that prescribes a *flux* (``Neumann_boundary_condition``,
+``Robin_boundary_condition``, ``convective_heat_flux_boundary_condition``,
+``traction_boundary_condition`` and ``pressure_boundary_condition``) needs a
 side set, because a flux must be integrated over an area and that integral
 needs the face, its Jacobian and its normal.
 
 **Node sets** are plain lists of node numbers and carry no geometry.  A
-condition that prescribes a *value*, such as ``Dirichlet_boundary_condition``, needs nothing
-more and so accepts either kind.  Every place that asks for a boundary name
-looks first for a node set of that name and then for a side set, taking the
-nodes of its faces; that is what ``mesh.boundary_nodes(name)`` does.  The rule
-is therefore short: use a side set unless you have a reason not to, because a
-side set can always act as a node set but never the reverse.
+condition that prescribes a *value*, such as ``Dirichlet_boundary_condition``,
+needs nothing more and so accepts either kind.  Every place that asks for a
+boundary name looks first for a node set of that name and then for a side set,
+taking the nodes of its faces, which is what ``mesh.boundary_nodes(name)``
+does.  A side set is therefore the default choice, because a side set can always
+act as a node set, while a node set cannot act as a side set.
 
 .. code-block:: python
 
@@ -75,7 +76,7 @@ side set can always act as a node set but never the reverse.
 The node list above is derived from the side set on demand.  The
 one-dimensional generator is the one exception: it stores ``left`` and
 ``right`` as both a side set and a node set, because in one dimension a face is
-a single node and the distinction has no content.
+a single node and the distinction is immaterial.
 
 Element types
 -------------
@@ -107,8 +108,9 @@ finite volume methods accept every type.  The dual mesh and vertex-centred
 finite volume methods need the element to be divided into node-centred control
 domains, which is not defined for the serendipity elements (they have no
 interior node to own the centre of the element) or for the pyramid (its apex
-is shared by four edges), so they refuse ``Quad8``, ``Hex20`` and ``Pyramid5``
-with the reason; :doc:`/theory/elements` gives the details.
+is shared by four edges), so they reject ``Quad8``, ``Hex20`` and ``Pyramid5``
+with an error that states the reason.  :doc:`/theory/elements` gives the
+details.
 
 The generators
 --------------
@@ -125,14 +127,15 @@ The generators
                                      element_type="Edge3")
    print(quadratic.num_nodes, quadratic.num_elements)          # 11 5
 
-``start`` and ``end`` bound the interval and ``num_elements`` counts elements,
-not nodes.  ``bias`` defaults to ``1.0``, which is uniform spacing; any other
-positive value applies the geometric grading described under :ref:`grading`.
-``coordinates`` replaces all three and takes the node positions directly, in
-increasing order.  ``element_type`` is ``"Edge2"`` by default and may be
-``"Edge3"``; ``num_elements`` counts elements whichever you choose, so the
-quadratic mesh above has the same five elements and eleven rather than six
-nodes.  Side sets and node sets ``left`` and ``right`` are always created.
+``start`` and ``end`` bound the interval, and ``num_elements`` is the number of
+elements.  ``bias`` defaults to ``1.0``, which gives uniform spacing, and any
+other positive value applies the geometric grading described under
+:ref:`grading`.  ``coordinates`` replaces all three and takes the node
+positions directly, in increasing order.  ``element_type`` is ``"Edge2"`` by
+default and may be ``"Edge3"``.  ``num_elements`` is the number of elements for
+either type, so the quadratic mesh above has the same five elements as the
+linear mesh, and eleven nodes compared with six.  Side sets and node sets
+``left`` and ``right`` are always created.
 
 ``generate_rectangle_mesh``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -152,15 +155,14 @@ nodes.  Side sets and node sets ``left`` and ``right`` are always created.
 
 The four bounds and two element counts define a tensor grid.  ``element_type``
 is ``"Quad4"`` by default and may be ``"Tri3"``, ``"Quad8"``, ``"Quad9"`` or
-``"Tri6"``; a quadratic type is built by generating the linear mesh and
-promoting it, so the
-element count is unchanged and only the node count grows.  ``diagonal`` applies
-to the triangular types and decides how each quadrilateral is cut:
-``"right"``, the default, draws every diagonal the same way, and
-``"alternate"`` flips it from cell to cell, which removes the directional bias
-a single diagonal direction introduces.  Prefer ``"alternate"`` unless you are
-reproducing a published result that used a fixed diagonal.  Side sets ``left``,
-``right``, ``bottom`` and ``top`` are created.
+``"Tri6"``.  A quadratic type is built by generating the linear mesh and
+promoting it, so the element count is unchanged and only the node count grows.
+``diagonal`` applies to the triangular types and determines how each
+quadrilateral is divided: ``"right"``, the default, draws every diagonal the
+same way, and ``"alternate"`` flips it from cell to cell, which removes the
+directional bias that a single diagonal direction introduces.  ``"alternate"``
+is preferable, except when a published result that used a fixed diagonal is
+reproduced.  Side sets ``left``, ``right``, ``bottom`` and ``top`` are created.
 
 .. _grading:
 
@@ -173,9 +175,9 @@ element is ``x_bias`` times as long as the first, the third ``x_bias`` times as
 long as the second, and the whole set is scaled to span the interval exactly.
 A bias of ``1.0``, the default, is uniform.  A bias greater than one makes the
 elements grow towards the upper bound, so the mesh is fine near the lower
-bound; a bias smaller than one does the opposite.  Use it to resolve a boundary
-layer, a re-entrant corner or a stress concentration without paying for a
-uniformly fine mesh.
+bound, and a bias smaller than one does the opposite.  Use it to resolve a
+boundary layer, a re-entrant corner or a stress concentration without the cost
+of a uniformly fine mesh.
 
 .. code-block:: python
 
@@ -189,18 +191,18 @@ uniformly fine mesh.
    print(np.round(np.diff(y), 4))
    # [0.3184 0.2228 0.156  0.1092 0.0764 0.0535 0.0375 0.0262]
 
-A bias grades monotonically across the whole axis, which is blunt.  When you
-want two boundary layers, a fine band in the interior, or a jump at a material
-interface, give the coordinates explicitly.  ``x_coordinates`` and
+A bias grades the mesh monotonically across the whole axis.  When two boundary
+layers, a fine band in the interior or a jump at a material interface are
+needed, give the coordinates explicitly.  ``x_coordinates`` and
 ``y_coordinates`` replace the bounds, the count and the bias for their axis and
-are simply the node positions in increasing order.  Two helpers build such
-lists.  :func:`dualmesh.graded_coordinates` (``start``, ``end``,
-``num_elements``, ``bias``) returns exactly the list the bias arguments would
-have produced, so it is the way to grade one axis while leaving another
-explicit.  ``coordinates_from_spacings`` accumulates element sizes from a
-starting point, which is the natural form when a drawing gives you the
-thicknesses of a stack of layers; the interval is whatever the spacings add up
-to, since nothing is normalised.
+are the node positions in increasing order.  Two helpers build such lists.
+:func:`dualmesh.graded_coordinates` (``start``, ``end``, ``num_elements``,
+``bias``) returns exactly the list that the bias arguments would have produced,
+so that one axis can be graded while another is given explicitly.
+``coordinates_from_spacings`` accumulates element sizes from a starting point,
+which suits a drawing that gives the thicknesses of a stack of layers.  The
+spacings are used without normalisation, so the length of the interval is
+their sum.
 
 .. code-block:: python
 
@@ -227,7 +229,7 @@ to, since nothing is normalised.
    print(box.sideset_names())
    # ['back', 'bottom', 'front', 'left', 'right', 'top']
 
-This is the rectangle generator with a third axis.  ``element_type`` is
+This generator extends the rectangle generator to a third axis.  ``element_type`` is
 ``"Hex8"`` by default and may be ``"Tet4"``, ``"Wedge6"``, ``"Pyramid5"``,
 ``"Hex20"``, ``"Hex27"`` or ``"Tet10"``.  Each hexahedral cell of the grid is
 split into six tetrahedra for the tetrahedral types, which is why the 64-cell
@@ -252,11 +254,11 @@ exactly as in two dimensions.  The six side sets are ``left`` and ``right``
    print(annulus.sideset_names())
    # ['bottom', 'end', 'inner', 'left', 'outer', 'right', 'start', 'top']
 
-This generates an annular sector: the mesh for a thick pressurised cylinder and
-for the quarter plate with a central hole.  ``inner_radius`` and
+This generates an annular sector, i.e., the mesh used for a thick pressurised
+cylinder and for the quarter plate with a central hole.  ``inner_radius`` and
 ``outer_radius`` bound it radially and ``num_radial_elements`` divides that
 span.  ``start_angle`` and ``end_angle`` are in **degrees** measured from the
-:math:`x` axis and default to a quarter turn; ``num_angular_elements`` divides
+:math:`x` axis and default to a quarter turn.  ``num_angular_elements`` divides
 the arc uniformly, and there is no angular bias.  ``radial_bias`` grades the
 radial direction exactly as ``x_bias`` does, and ``radial_coordinates``
 replaces the bias and the count with an explicit list of radii.
@@ -265,18 +267,19 @@ generator.
 
 The four geometric side sets are ``inner``, ``outer``, ``start`` (the straight
 edge at ``start_angle``) and ``end``.  Because the generator builds a rectangle
-in the :math:`(r, \theta)` plane and bends it, the rectangle's own names
-``left``, ``right``, ``bottom`` and ``top`` survive as aliases for the same
-faces; they are harmless, but use the geometric names.  The generator promotes
-to second order *before* bending, which is why a ``Quad9`` annulus is genuinely
-isoparametric: the mid-side nodes land on the true circle.  The same care is
-needed when you do this yourself; see :ref:`transforming`.
+in the :math:`(r, \theta)` plane and maps it onto the sector, the rectangle's
+own names ``left``, ``right``, ``bottom`` and ``top`` remain as aliases for the
+same faces.  These aliases are harmless, but the geometric names are
+preferable.  The generator promotes to second order *before* the mapping, so
+that a ``Quad9`` annulus is isoparametric: the mid-side nodes lie on the exact
+circle.  The same order of operations is needed when a mesh is transformed by
+hand (see :ref:`transforming`).
 
 Building a mesh from arrays
 ---------------------------
 
-When the geometry comes from elsewhere — an analytical construction, a NumPy
-computation, another library — hand the arrays to
+When the geometry comes from elsewhere (an analytical construction, a NumPy
+computation or another library), pass the arrays to
 :func:`dualmesh.mesh_from_arrays`.
 
 .. code-block:: python
@@ -301,21 +304,22 @@ mesh of mixed element types is built:
        [("Tri3", [[0, 1, 2], [0, 2, 3]])])
    print(mixed.num_elements)                                   # 2
 
-``blocks`` gives one block number per element in the order the elements are
-added; omitted, every element goes into block 0.  ``dimension`` overrides the
-spatial dimension, which is otherwise the largest among the element types
-given — set it when a mesh of ``Edge2`` elements is meant to be a plane truss
-rather than a one-dimensional bar.  :meth:`~dualmesh.Mesh.fix_orientation` is
-called for you, so the winding order of your connectivity does not matter.
+``blocks`` gives one block number per element in the order in which the
+elements are added, and when it is omitted every element goes into block 0.
+``dimension`` overrides the spatial dimension, which is otherwise the largest
+among the element types given.  Set it when a mesh of ``Edge2`` elements
+represents a plane truss, which the default would treat as a one-dimensional
+bar.  :meth:`~dualmesh.Mesh.fix_orientation` is called automatically, so the
+winding order of the connectivity is irrelevant.
 
 A mesh built this way has **no** side sets and no node sets, so nothing can be
-prescribed on it yet.  The quickest repair, when the domain is a box, is
+prescribed on it yet.  When the domain is a box, the simplest remedy is
 :meth:`~dualmesh.Mesh.add_bounding_box_sidesets`, which computes the bounding
 box and creates the standard ``left``/``right``/``bottom``/``top`` (and, in
 three dimensions, ``back``/``front``) side sets from the exterior faces whose
 centroids lie on each face of that box, within a ``tolerance`` defaulting to
-:math:`10^{-10}`.  It helps only when the domain is aligned with the axes; on a
-curved or inclined boundary, use the predicates below.
+:math:`10^{-10}`.  It is useful only for a domain aligned with the axes.  On a
+curved or inclined boundary, use the predicates described below.
 
 .. code-block:: python
 
@@ -328,11 +332,11 @@ Reading and writing files
 :func:`dualmesh.read_mesh` and :func:`dualmesh.write_mesh` go through
 `meshio <https://github.com/nschloe/meshio>`_ [meshio]_, so every format meshio
 handles is available: Gmsh ``.msh`` [Gmsh2009]_, Exodus II ``.e`` and ``.exo``,
-VTK and VTU, Abaqus ``.inp``, MED and the rest.  meshio picks the format from
-the extension; ``file_format`` overrides that when the extension is unhelpful.
-Some formats need an optional meshio dependency that is not installed by
-default — Exodus needs ``netCDF4``, MED needs ``h5py`` — and a missing one
-raises a plain :class:`ModuleNotFoundError` naming the package.
+VTK and VTU, Abaqus ``.inp``, MED and the rest.  meshio selects the format from
+the extension, and ``file_format`` overrides that choice when the extension is
+ambiguous.  Some formats need an optional meshio dependency that is not
+installed by default (Exodus needs ``netCDF4`` and MED needs ``h5py``), and a
+missing one raises a plain :class:`ModuleNotFoundError` naming the package.
 
 .. code-block:: python
 
@@ -343,11 +347,11 @@ raises a plain :class:`ModuleNotFoundError` naming the package.
    dm.write_mesh(mesh, "with_field.vtu", temperature=temperature)
 
 Any further keyword argument to :func:`~dualmesh.write_mesh` is written as a
-nodal field of that name.  In practice you will more often use
-:meth:`Problem.write_vtu <dualmesh.Problem.write_vtu>`, which does this for
-every variable of a solved problem; see :doc:`output`.
+nodal field of that name.  In practice
+:meth:`Problem.write_vtu <dualmesh.Problem.write_vtu>` is used more often,
+because it writes every variable of a solved problem (see :doc:`output`).
 
-Only the ten supported cell types are read.  Cells of the mesh dimension become
+Only the fourteen supported cell types are read.  Cells of the mesh dimension become
 elements, and cells one dimension lower become **side sets**, which is how a
 Gmsh model transfers its boundary names.  Reading applies these rules:
 
@@ -356,15 +360,15 @@ Gmsh model transfers its boundary names.  Reading applies these rules:
   becomes the element's block number.  Untagged cells go into block 0.
 * Each group of lower-dimensional cells sharing a tag becomes one side set and
   one node set, named after the physical name the file gives that tag, or
-  ``"boundary_<tag>"`` when the file names it not at all.
-* ``boundary_names`` renames them on the way in, as a mapping from the name the
-  file used to the name you want.
-* If the file carried no boundary cells, or if you pass
-  ``add_bounding_box_sidesets=True``, the bounding-box side sets are added, so
-  a bare volume mesh is still usable.
+  ``"boundary_<tag>"`` when the file gives the tag no name.
+* ``boundary_names`` renames them during reading, as a mapping from the name
+  in the file to the new name.
+* If the file carries no boundary cells, or if
+  ``add_bounding_box_sidesets=True`` is passed, the bounding-box side sets are
+  added, so that a volume mesh without boundary cells remains usable.
 
 For a Gmsh model whose physical groups are called ``fluid``, ``inlet`` and
-``outlet``, that gives:
+``outlet``, the result is:
 
 .. code-block:: python
 
@@ -377,20 +381,21 @@ For a Gmsh model whose physical groups are called ``fluid``, ``inlet`` and
 
 .. warning::
 
-   Writing does not round-trip block numbers.
+   Block numbers are lost when a mesh is written and read back.
    :func:`~dualmesh.write_mesh` stores them as cell data named ``block``, but
    :func:`~dualmesh.read_mesh` looks only at the four tag names listed above,
    so a multi-block mesh written by ``dualmesh`` and read back has every
-   element in block 0.  Side sets are not written at all.  Treat file output as
-   a way of getting results to a visualiser, and keep the generating script, or
-   the original Gmsh file, as the definition of a mesh you intend to reuse.
+   element in block 0.  Side sets are not written.  File output is therefore
+   intended for visualisation, and the generating script, or the original Gmsh
+   file, should be kept as the definition of a mesh that is to be reused.
 
-Naming boundaries after the fact
---------------------------------
+Naming boundaries of an existing mesh
+-------------------------------------
 
-When a mesh arrives without the boundary names you need, add them
+When a mesh lacks the boundary names that a problem needs, they can be added
 geometrically.  Both predicates take a Python function of ``(x, y, z)`` and are
-evaluated once, when you call them, not during the solve.
+evaluated once, at the time of the call, and are not re-evaluated during the
+solve.
 
 .. code-block:: python
 
@@ -408,30 +413,33 @@ evaluated once, when you call them, not during the solve.
 
 :meth:`~dualmesh.Mesh.add_sideset_by_predicate` tests the **centroid of each
 exterior face** and collects the faces that pass.  Only exterior faces are
-considered, so a predicate true in the interior selects nothing — which is what
-you want, since a flux condition on an interior face is meaningless.
+considered, so a predicate that is true only in the interior selects no faces,
+as intended, because a flux condition on an interior face is meaningless.
 :meth:`~dualmesh.Mesh.add_nodeset_by_predicate` tests **every node**, interior
-nodes included, which is how ``centre_line`` picks up a line through the middle
-of the domain.  That is the other reason to reach for a node set: prescribing a
-symmetry condition on an interior plane.
+nodes included, which is how ``centre_line`` collects a line through the middle
+of the domain.  This is the second reason to use a node set: it allows a
+symmetry condition to be prescribed on an interior plane.
 
-Write the tolerance into the predicate yourself, loosely enough for
-floating-point arithmetic.  ``x > 2.0 - 1e-9`` is safe; ``x == 2.0`` is not,
-because the coordinate was computed by ``linspace``.
+The predicate must contain a tolerance that is large enough for floating-point
+round-off.  ``x > 2.0 - 1e-9`` is safe, while ``x == 2.0`` is unsafe, because
+the coordinate was computed by ``linspace``.
+:doc:`/tutorials/wrench` applies both ways, physical groups of a Gmsh file and
+predicates, to a three-dimensional wrench.
 :meth:`~dualmesh.Mesh.alias_sideset` gives an existing side set a second name,
-which is useful when a file calls a boundary something your input does not.
+which is useful when a file and an input file use different names for the same
+boundary.
 
 .. _transforming:
 
-Bending a generated mesh
-------------------------
+Transforming a generated mesh
+-----------------------------
 
 :meth:`~dualmesh.Mesh.transform_nodes` applies a map to every node in place.
 The function receives ``(x, y, z)`` and returns up to three coordinates.
-Elements, blocks, side sets and node sets are untouched, so a boundary named
+Elements, blocks, side sets and node sets are unchanged, so a boundary named
 before the transformation keeps its name after it.  This is how a curved domain
 is built from a structured grid: generate a rectangle in the parameter plane,
-name its edges, and bend it.
+name its edges, and map it onto the curved domain.
 
 .. code-block:: python
 
@@ -453,19 +461,19 @@ name its edges, and bend it.
 
 .. warning::
 
-   **Promote to second order before transforming, never after.**
+   **Always promote to second order before the transformation.**
    :meth:`~dualmesh.Mesh.second_order` places each added node at the midpoint
-   of the edge, face or cell it belongs to.  If the mesh has already been bent,
-   that midpoint is the midpoint of the straight *chord* between two corners
-   which now lie on a circle, and the mid-side node sits inside the true
-   boundary instead of on it.  The element is then subparametric, and the
-   geometric error introduced is of the same order as the discretisation error
-   you promoted the mesh to remove.
+   of the edge, face or cell it belongs to.  If the mesh has already been
+   transformed, that midpoint is the midpoint of the straight *chord* between
+   two corners which now lie on a circle, and the mid-side node lies inside the
+   true boundary.  The element is then subparametric, and the geometric error
+   introduced is of the same order as the discretisation error that the
+   promotion was meant to reduce.
 
    Moving the ``second_order()`` call in the example above to *after* the
    ``transform_nodes()`` call changes the smallest radius in the mesh from
-   1.0 to 0.991445: the inner boundary should sit at radius 1, and half its
-   nodes have ended up nearly one per cent inside the domain.  No refinement in
+   1.0 to 0.991445: the inner boundary lies at radius 1, and half of its
+   nodes are displaced by nearly 1 % inside the domain.  No refinement in
    the angular direction removes that error faster than first order.
 
 Refining and promoting
@@ -473,11 +481,11 @@ Refining and promoting
 
 :meth:`~dualmesh.Mesh.refined` returns a new mesh in which every linear
 element has been split into :math:`2^{d}` children, :math:`d` being the
-dimension; a prism becomes eight prisms, and a pyramid becomes six pyramids and
-four tetrahedra, because a pyramid cannot be split into pyramids alone.  Side
-sets and node sets carry over, so boundary conditions written against the
+dimension.  A prism becomes eight prisms, and a pyramid becomes six pyramids
+and four tetrahedra, because a pyramid cannot be split into pyramids alone.
+Side sets and node sets carry over, so boundary conditions written for the
 coarse mesh work unchanged on the fine one, and the original is not modified,
-which makes a convergence study a one-line loop.
+so that a convergence study requires only a short loop.
 
 .. code-block:: python
 
@@ -493,20 +501,20 @@ which makes a convergence study a one-line loop.
    print(quadratic.element_type(0), quadratic.num_elements,
          quadratic.num_nodes)                          # Quad9 16 81
 
-Only linear meshes can be refined; refining a quadratic mesh raises an error
-telling you to refine the linear mesh first and promote the result.  For
+Only linear meshes can be refined.  Refining a quadratic mesh raises an error
+that instructs the user to refine the linear mesh first and promote the result.  For
 *adaptive* refinement, where only the elements an error indicator marks are
 split, see :func:`dualmesh.refine_marked` and the marking strategies described
 in :doc:`/theory/adaptivity`.
 
 :meth:`~dualmesh.Mesh.second_order` returns a copy with quadratic elements:
 ``Edge2`` becomes ``Edge3``, ``Tri3`` becomes ``Tri6``, ``Quad4`` becomes
-``Quad9``, ``Tet4`` becomes ``Tet10`` and ``Hex8`` becomes ``Hex27``; with
+``Quad9``, ``Tet4`` becomes ``Tet10`` and ``Hex8`` becomes ``Hex27``.  With
 ``serendipity=True``, ``Quad4`` becomes ``Quad8`` and ``Hex8`` becomes
-``Hex20`` instead.  There is no quadratic prism or pyramid, and a mesh
-containing either cannot be promoted.  The
-corner nodes keep their numbers and positions, so the domain does not change
-shape and any node index recorded earlier is still valid.  Side sets carry over
+``Hex20``.  There is no quadratic prism or pyramid, and a mesh containing
+either cannot be promoted.  The corner nodes keep their numbers and positions,
+so the domain does not change shape and any node index recorded earlier is
+still valid.  Side sets carry over
 unchanged, since they refer to element sides, which still exist, and node sets
 gain the added nodes lying between two members.
 
@@ -515,12 +523,12 @@ Orientation
 
 :meth:`~dualmesh.Mesh.fix_orientation` renumbers the nodes of any element whose
 Jacobian determinant is negative, so that every element is wound consistently
-and every volume is positive.  A negative Jacobian is not merely untidy: the
-control domain volumes would come out negative, the assembled matrix would be
-wrong, and the failure would be silent.  You rarely call it yourself, because
+and every volume is positive.  A negative Jacobian is a serious defect: the
+control domain volumes would be negative, the assembled matrix would be wrong,
+and the failure would be silent.  An explicit call is rarely needed, because
 the generators, :func:`~dualmesh.mesh_from_arrays` and
-:func:`~dualmesh.read_mesh` all call it already, which is why a deliberately
-reversed quadrilateral comes back in the conventional order:
+:func:`~dualmesh.read_mesh` all call it, which is why a deliberately reversed
+quadrilateral is returned in the conventional order:
 
 .. code-block:: python
 
@@ -530,10 +538,11 @@ reversed quadrilateral comes back in the conventional order:
    print(flipped.element_nodes(0))                             # [0, 1, 2, 3]
 
 Call it after :meth:`~dualmesh.Mesh.transform_nodes`, and after any
-``add_element`` calls on a mesh you are assembling by hand.  It cannot repair
-an element that is genuinely tangled — one whose Jacobian changes sign inside
-it — and no reordering of nodes can; that is a meshing error to fix upstream.
+``add_element`` calls on a mesh assembled by hand.  It cannot repair a tangled
+element, i.e., one whose Jacobian changes sign inside it, and no reordering of
+nodes can.  Such an element is a meshing error that must be corrected where
+the mesh is generated.
 
-With a mesh in hand, :doc:`problem_setup` explains how to attach variables and
-physics to it, :doc:`solving` covers the solvers, and :doc:`output` covers
-getting the answers back out.
+Once a mesh is available, :doc:`problem_setup` explains how to attach variables
+and physics to it, :doc:`solving` describes the solvers, and :doc:`output`
+describes the extraction of results.

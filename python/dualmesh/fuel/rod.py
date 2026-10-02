@@ -39,6 +39,7 @@ they are held fixed within a step.
 
 from __future__ import annotations
 
+import dataclasses
 import time as wall_clock
 import warnings
 
@@ -48,13 +49,20 @@ from .. import _core
 from ..problem import Problem
 from . import report
 from .fields import TimeHistory, irradiation_fields, normalized_axial_profile
-from .materials import MAXIMUM_TEMPERATURE, CladdingMaterial, FuelMaterial, RodContext
+from .materials import (
+    MAXIMUM_TEMPERATURE,
+    CladdingMaterial,
+    FuelMaterial,
+    RodContext,
+    UO2Fuel,
+)
 from .mesh import axisymmetric_rod_mesh, radial_slice_mesh, three_dimensional_rod_mesh
 from .result import SECONDS_PER_DAY, RodResult
 from .specification import (
     GASES,
     FillGas,
     ForcedConvection,
+    ModelFactors,
     PowerHistory,
     PrescribedCladdingTemperature,
     RodGeometry,
@@ -95,6 +103,7 @@ class FuelRod:
         models: RodModels | None = None,
         numerics: RodNumerics | None = None,
         output: RodOutput | None = None,
+        factors: ModelFactors | None = None,
     ):
         _check_type("geometry", geometry, RodGeometry)
         _check_type("fuel", fuel, FuelMaterial)
@@ -115,6 +124,8 @@ class FuelRod:
         _check_type("models", self.models, RodModels)
         _check_type("numerics", self.numerics, RodNumerics)
         _check_type("output", self.output, RodOutput)
+        self.factors = factors if factors is not None else ModelFactors()
+        _check_type("factors", self.factors, ModelFactors)
         # The cladding blocks of the mesh: the cladding, and a coating on it.
         coated = geometry.clad_coating_thickness > 0
         self.clad_blocks = ("clad", "coating") if coated else ("clad",)
@@ -125,6 +136,7 @@ class FuelRod:
             )
         # The models with the fuel-dependent defaults filled in.
         self.active_models = self.models.resolved(fuel)
+        self._check_factors()
         self.formulation = FORMULATIONS[self.numerics.model]
         if (
             self.numerics.model == "three_dimensional"
@@ -160,6 +172,15 @@ class FuelRod:
                 burnup,
                 power_history.linear_heat_rate,
                 self.fima_per_joule_per_metre,
+                axial,
+                power_history.radial_profile,
+            )
+
+        if self.factors.linear_heat_rate != 1.0:
+            # The same times, the power scaled: the burnup grows with it.
+            self.history = TimeHistory(
+                self.history.time,
+                self.history.linear_heat_rate * self.factors.linear_heat_rate,
                 axial,
                 power_history.radial_profile,
             )
@@ -285,8 +306,11 @@ class FuelRod:
             z = np.linspace(0.0, top, 41)
         values = np.array([self.coolant_temperature(z, tk) for tk in t])  # [t, z]
         if quantity == "heat_transfer_coefficient":
-            values = self.coolant.heat_transfer_coefficient_for(
-                self.geometry.clad_outer_radius, values
+            values = (
+                self.factors.coolant_heat_transfer
+                * self.coolant.heat_transfer_coefficient_for(
+                    self.geometry.clad_outer_radius, values
+                )
             )
         data = np.repeat(values[:, :, None], 2, axis=2)
         return _core.CylinderTableFunction(
@@ -329,7 +353,60 @@ class FuelRod:
             stress_free_temperature=self.fill_gas.temperature,
             burnup=self._burnup_parameters(),
             mwd_per_kg_per_fima=self.converter.mwd_per_kg_per_fima,
+            factors=self.factors,
         )
+
+    def _check_factors(self):
+        """Refuse a factor that has no effect on this rod, which would
+        otherwise pass silently through a sensitivity study."""
+        f, fuel, models = self.factors, self.fuel, self.active_models
+        problems = []
+        if f.densification != 1.0 and not (
+            models.densification and hasattr(fuel, "total_densification")
+        ):
+            problems.append("densification (no densification model)")
+        if f.solid_swelling != 1.0 and not (models.solid_swelling and isinstance(fuel, UO2Fuel)):
+            problems.append("solid_swelling (UO2 fuels with solid swelling only)")
+        if f.gaseous_swelling != 1.0 and not models.gaseous_swelling:
+            problems.append("gaseous_swelling (no gaseous swelling model)")
+        if f.relocation != 1.0 and not models.relocation:
+            problems.append("relocation (no relocation model)")
+        mech = ("fuel_thermal_expansion", "fuel_creep", "cladding_creep", "gap_contact_conductance")
+        if not models.mechanics:
+            problems += [f"{n} (no mechanics)" for n in mech if getattr(f, n) != 1.0]
+        if not models.creep:
+            problems += [
+                f"{n} (no creep)" for n in ("fuel_creep", "cladding_creep") if getattr(f, n) != 1.0
+            ]
+        if f.coolant_heat_transfer != 1.0 and not isinstance(self.coolant, ForcedConvection):
+            problems.append("coolant_heat_transfer (the cladding temperature is prescribed)")
+        gas = (
+            "fission_gas_temperature",
+            "grain_radius",
+            "intragranular_diffusivity",
+            "resolution",
+            "grain_boundary_diffusivity",
+        )
+        if models.fission_gas_release != "booth":
+            problems += [f"{n} (no Booth fission gas model)" for n in gas if getattr(f, n) != 1.0]
+        if problems:
+            raise ValueError(
+                "ModelFactors: these factors have no effect on this rod: "
+                + "; ".join(problems)
+                + "."
+            )
+
+    def _scale(self, p, block_list, properties, name):
+        """Multiply properties computed by the materials added so far."""
+        props = [(n, v) for n, v in properties if v != 1.0]
+        if props:
+            p.add_material(
+                "property_scaling",
+                name,
+                block=list(block_list),
+                scaled_properties=[n for n, _ in props],
+                property_factors=[float(v) for _, v in props],
+            )
 
     def _make_problem(self, mesh, slice_axial_position: float) -> Problem:
         g, fuel, formulation = self.geometry, self.fuel, self.formulation
@@ -369,6 +446,19 @@ class FuelRod:
         fuel.add_thermal_material(p, "fuel", context)
         for block in self.clad_blocks:
             self.cladding.add_thermal_material(p, block, context)
+        f = self.factors
+        self._scale(
+            p,
+            ["fuel"],
+            [("thermal_conductivity", f.fuel_thermal_conductivity)],
+            "fuel_conductivity_factor",
+        )
+        self._scale(
+            p,
+            self.clad_blocks,
+            [("thermal_conductivity", f.cladding_thermal_conductivity)],
+            "clad_conductivity_factor",
+        )
         # The heat equation on the deformed body needs the deformation
         # gradient of the mechanics (see RodNumerics.heat_conduction_configuration).
         deformed = (
@@ -410,6 +500,10 @@ class FuelRod:
             secondary_roughness=self.cladding.surface_roughness,
             **{f"{gas}_fraction": f"{gas}_fraction" for gas in GASES},
         )
+        if self.factors.gap_gas_conductance != 1.0:
+            gap["gas_conductance_factor"] = self.factors.gap_gas_conductance
+        if self.factors.gap_contact_conductance != 1.0:
+            gap["contact_conductance_factor"] = self.factors.gap_contact_conductance
         hardness = self.cladding.meyer_hardness
         if isinstance(hardness, str):
             gap["meyer_hardness_model"] = "zircaloy"
@@ -451,12 +545,39 @@ class FuelRod:
         # ---- elasticity, eigenstrains and stresses, from the materials ----
         context = self._context()
         fuel.add_elasticity(p, "fuel", context)
+        f = self.factors
+        if f.densification != 1.0:
+            fuel = dataclasses.replace(
+                fuel, total_densification=fuel.total_densification * f.densification
+            )
         eigenstrains = {"fuel": fuel.add_eigenstrains(p, "fuel", context)}
+        names = eigenstrains["fuel"]
+        self._scale(
+            p,
+            ["fuel"],
+            [
+                (n, v)
+                for n, v in (
+                    ("fuel_thermal_strain", f.fuel_thermal_expansion),
+                    ("fuel_relocation_strain", f.relocation),
+                )
+                if n in names
+            ],
+            "fuel_strain_factors",
+        )
         creep = {"fuel": fuel.creep_parameters(context) if models.creep else {}}
         for block in self.clad_blocks:
             self.cladding.add_elasticity(p, block, context)
             eigenstrains[block] = self.cladding.add_eigenstrains(p, block, context)
             creep[block] = self.cladding.creep_parameters(context, block) if models.creep else {}
+        for block, factor in [("fuel", f.fuel_creep)] + [
+            (b, f.cladding_creep) for b in self.clad_blocks
+        ]:
+            if creep[block] and factor != 1.0:
+                creep[block] = dict(creep[block])
+                creep[block]["creep_rate_factor"] = (
+                    creep[block].get("creep_rate_factor", 1.0) * factor
+                )
         axial = {}
         if formulation == "axisymmetric_1d":
             # One axial strain for the fuel and one for the cladding, which a
@@ -631,9 +752,20 @@ class FuelRod:
         context = self._context()
         for p in self.problems:
             ids, volumes, centroids, nodes = self._fuel_elements(p)
-            model = self.fuel.fission_gas_model(len(ids), context)
+            f = self.factors
+            fuel = self.fuel
+            if f.grain_radius != 1.0:
+                fuel = dataclasses.replace(fuel, grain_radius=fuel.grain_radius * f.grain_radius)
+            model = fuel.fission_gas_model(len(ids), context)
             if hasattr(model, "mwd_per_kg_per_fima"):
                 model.mwd_per_kg_per_fima = self.converter.mwd_per_kg_per_fima
+            if model is not None and hasattr(model, "set_factors"):
+                model.set_factors(
+                    temperature=f.fission_gas_temperature,
+                    diffusivity=f.intragranular_diffusivity,
+                    resolution=f.resolution,
+                    grain_boundary_diffusivity=f.grain_boundary_diffusivity,
+                )
             self._fuel_regions.append((p, ids, volumes, centroids, nodes, model))
 
     @staticmethod
@@ -688,11 +820,14 @@ class FuelRod:
                     # The volume of the gas model's bubbles (set, not added);
                     # without a fission gas model there are no bubbles.
                     if hasattr(model, "gaseous_swelling"):
-                        field[ids] = model.gaseous_swelling()
+                        field[ids] = self.factors.gaseous_swelling * model.gaseous_swelling()
                 else:
                     burnup_old = self._at_centroids(fields.burnup, centroids, t_old)
-                    field[ids] += self.fuel.gaseous_swelling_increment(
-                        temperature, burnup_old, np.maximum(burnup_new - burnup_old, 0.0)
+                    field[ids] += (
+                        self.factors.gaseous_swelling
+                        * self.fuel.gaseous_swelling_increment(
+                            temperature, burnup_old, np.maximum(burnup_new - burnup_old, 0.0)
+                        )
                     )
                 p.set_element_field("gaseous_swelling", field)
         released = released_atoms / AVOGADRO
@@ -816,7 +951,7 @@ class FuelRod:
         q = float(self.history.linear_heat_rate_at(t)) * shape
         fima = float(self.history.energy_at(t)[0]) * self.fima_per_joule_per_metre * shape
         burnup = np.asarray(self.converter.from_fima(fima, "MWd/kgHM"), dtype=float)
-        return np.asarray(
+        return self.factors.relocation * np.asarray(
             _core.fuel.uo2_relocation_strain(
                 q, burnup, 2.0 * g.pellet_outer_radius, 2.0 * g.radial_gap
             ),

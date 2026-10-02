@@ -8,9 +8,9 @@ Chapter 3 of [Reddy2024]_ develops.  The code calls them ``"hfvm"`` and
 formulation, whose unknowns sit at the mesh nodes, and the *zero-thickness
 control volume* formulation, whose unknowns sit at the cell centroids.  They
 are available through the ``method`` argument of :class:`dualmesh.Problem` and
-they consume exactly the same problem definition — the same kernels, the same
-materials, the same boundary conditions and the same solvers — as the other
-two methods, which is what makes a comparison between them meaningful.
+they use exactly the same problem definition as the other two methods (the
+same kernels, the same materials, the same boundary conditions and the same
+solvers), which makes a comparison between them meaningful.
 
 This chapter states what each of the two computes.  It assumes the canonical
 form of a problem and the construction of the dual mesh, both of which are
@@ -50,14 +50,13 @@ No weight function appears.  Because each interior face of the partition is
 shared by exactly two control volumes, and the flux through it is computed once
 and added to one balance with each sign, the sum of all the discrete equations
 retains only the fluxes through :math:`\partial\Omega`.  This is *local
-conservation*, and it holds for every union of control volumes, not only for
+conservation*, and it holds for every union of control volumes as well as for
 the whole domain.  It is the property that makes the family attractive for
 transport problems [Patankar1980]_.
 
-Equation :eq:`fv_balance` is also, word for word, the equation of the dual mesh
-control domain method.  The three discretisations of this library are not
-distinguished by the balance they enforce, which is the same, but by two
-choices:
+Equation :eq:`fv_balance` is also, term for term, the equation of the dual mesh
+control domain method.  The three discretisations of this library enforce the
+same balance and differ in two choices:
 
 Where the unknowns sit.
    The dual mesh control domain method and the vertex-centred finite volume
@@ -75,14 +74,14 @@ How the flux at a face is obtained.
    by a two-point difference between the two nodal values.  The cell-centred
    method has no interpolation to differentiate at all and must reconstruct a
    gradient from the surrounding cell values.  The finite element method never
-   forms a face flux; it multiplies :eq:`fv_canonical` by a shape function and
-   integrates by parts, which spreads :math:`\mathbf{F}` over the element
+   forms a face flux.  It multiplies :eq:`fv_canonical` by a shape function and
+   integrates by parts, which distributes :math:`\mathbf{F}` over the element
    interior.
 
-The finite element method is therefore the outlier of the four: it is the only
-one that is not locally conservative in the sense above.  The other three
-differ only in the second choice, the one that decides how a gradient is found
-at a face.
+The finite element method therefore stands apart from the other three: it is
+the only one of the four that is not locally conservative in the sense above.
+The other three differ only in the second choice, which decides how a gradient
+is found at a face.
 
 The vertex-centred method (``"hfvm"``)
 --------------------------------------
@@ -96,7 +95,7 @@ of the sub-cells and of the interfaces, and the same assembly loop, serve both
 methods (``src/base/ProblemAssembly.cpp``).  In the book's language the control
 volume of an interior node in one dimension is the union of the two half
 elements on either side of it, which is where the name *half control volume*
-comes from; at a boundary node the control volume is truncated by
+comes from.  At a boundary node the control volume is truncated by
 :math:`\partial\Omega` and only one half element remains.
 
 The method belongs to the older family of control volume finite element
@@ -138,8 +137,8 @@ correction
 
 Read :eq:`hfvm_correction` component by component.  The quantity
 :math:`\nabla u \cdot \mathbf{d}` is the change in the interpolant predicted
-along the edge; the quantity :math:`U_N - U_O` is the change that the two nodal
-values actually record.  Their difference is the error the interpolation makes
+along the edge, and the quantity :math:`U_N - U_O` is the change that the two
+nodal values actually record.  Their difference is the error the interpolation makes
 along the edge, and dividing it by :math:`\lvert\mathbf{d}\rvert^{2}` and
 multiplying by :math:`\mathbf{d}` turns it into the gradient increment that
 removes that error.  Taking the dot product of the corrected gradient with
@@ -153,65 +152,67 @@ That transverse part is the **non-orthogonal correction**.  It is needed
 because the flux through the interface is :math:`\mathbf{F}\cdot\mathbf{n}`,
 and on a general mesh the interface normal :math:`\mathbf{n}` is not parallel
 to :math:`\mathbf{d}`.  A pure two-point difference gives only the derivative
-along :math:`\mathbf{d}`; on a mesh whose edges are not orthogonal to the faces
-they cross, the missing transverse derivative contributes to
+along :math:`\mathbf{d}`.  On a mesh whose edges are not orthogonal to the
+faces they cross, the missing transverse derivative contributes to
 :math:`\mathbf{n}\cdot\nabla u` at first order, and a scheme that omits it is
-not even consistent.  Keeping the interpolated transverse part restores
-consistency, and it costs nothing here because the interpolation was evaluated
-anyway.  The treatment follows the standard practice of the finite volume
-literature [Jasak1996]_ [DemirdzicMuzaferija1995]_, with one simplification:
-because the transverse part comes from a finite element interpolation rather
-than from a reconstruction on the cell stencil, it is available as an exact,
+inconsistent.  Keeping the interpolated transverse part restores consistency,
+and it adds no computational cost here, because the interpolated gradient has
+already been evaluated.  The treatment follows the standard practice of the
+finite volume literature [Jasak1996]_ [DemirdzicMuzaferija1995]_, with one
+simplification: because the transverse part comes from a finite element
+interpolation, which requires no reconstruction on the cell stencil, it is
+available as an exact,
 differentiated function of the element's nodal values, and the Jacobian of the
 corrected flux is exact.
 
-Two consequences follow immediately.  The correction vanishes whenever the
-interpolant is linear along the edge, because then
-:math:`\nabla u \cdot \mathbf{d} = U_N - U_O` exactly; the method therefore
+Two consequences follow immediately.  First, the correction vanishes whenever
+the interpolant is linear along the edge, because then
+:math:`\nabla u \cdot \mathbf{d} = U_N - U_O` exactly.  The method therefore
 passes the patch test on arbitrarily distorted meshes, which the test suite
 checks for ``Quad4`` and ``Tri3`` in two dimensions and for ``Hex8`` in three,
-to :math:`10^{-8}` and :math:`10^{-10}` respectively.  And on a mesh whose
-edges are parallel to the interface normals — a one-dimensional mesh, or a
-rectangular grid — the transverse term drops out of
+to :math:`10^{-8}` and :math:`10^{-10}` respectively.  Second, on a mesh whose
+edges are parallel to the interface normals (a one-dimensional mesh, or a
+rectangular grid), the transverse term drops out of
 :math:`\mathbf{n}\cdot\nabla u` and the scheme is exactly the two-point formula
 of Eqs. (3.2.16) and (3.4.6) of [Reddy2024]_.
 
 The correction is applied only at interfaces between two control domains.  At
 the part of a boundary control domain's surface that lies on
-:math:`\partial\Omega` there is no second node to difference against, so the
-interpolated gradient is used unchanged, and the boundary treatment — natural
-conditions integrated over the boundary patch, essential conditions replacing
-the node's equation, reactions recovered from the discarded equation — is
-exactly that of the dual mesh control domain method, described in
+:math:`\partial\Omega` there is no second node with which to form a difference,
+so the interpolated gradient is used unchanged, and the boundary treatment
+(natural conditions integrated over the boundary patch, essential conditions
+replacing the node's equation, reactions recovered from the discarded
+equation) is exactly that of the dual mesh control domain method, described in
 :doc:`foundations`.
 
 One dimension: the two methods coincide
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 In one dimension the vertex-centred finite volume method and the dual mesh
-control domain method are the same method.  The reason is that
-:eq:`hfvm_correction` has nothing to do: on an ``Edge2`` element the
+control domain method are the same method.  The reason is that the correction
+:eq:`hfvm_correction` vanishes: on an ``Edge2`` element the
 interpolant is linear, so its derivative at the interface already equals
 :math:`(U_N - U_O)/h`, the correction term is identically zero, and the two
 assemblies produce the same algebraic equations.  The same is true on an
 ``Edge3`` element, for the reason given in :doc:`elements`: the derivative of
 the quadratic interpolant, evaluated at the control domain interface
-:math:`\xi = \pm 1/2`, collapses to the two-point difference across the half
+:math:`\xi = \pm 1/2`, reduces to the two-point difference across the half
 element.
 
-This is not merely an asymptotic statement.  Solving
+The coincidence is exact.  Solving
 :math:`-u'' = 10 \cos x` on :math:`(0,1)` with six elements, once with
 ``method="hfvm"`` and once with ``method="dmcdm"``, gives nodal values whose
 largest difference is exactly zero in double precision, and the same holds on a
 quadratic ``Edge3`` mesh.  The test suite asserts the agreement to
 :math:`10^{-12}`
-(``test_half_control_volume_is_the_dual_mesh_method_in_one_dimension``).  It is
-the computational statement of Section 5.1 of [Reddy2024]_, where the dual mesh
-control domain method is said to reduce to the half control volume formulation
-in one dimension.
+(``test_half_control_volume_is_the_dual_mesh_method_in_one_dimension``).  This
+result is the computational counterpart of Section 5.1 of [Reddy2024]_, where
+the dual mesh control domain method is stated to reduce to the half control
+volume formulation in one dimension.
 
-In two dimensions the two separate, because the interpolated gradient along an
-edge of a quadrilateral is not the two-point difference.  On the
+In two dimensions the two methods differ, because the interpolated gradient
+along an edge of a quadrilateral generally differs from the two-point
+difference.  On the
 :math:`3a \times 2a` conduction problem of Example 3.4.1 of [Reddy2024]_,
 discretised with a :math:`3 \times 2` mesh, the largest difference between the
 two nodal solutions is :math:`1.7 \times 10^{-2}` on a solution whose range is
@@ -228,15 +229,16 @@ The unknowns
 
 The cell-centred method places one unknown at the centroid of every element and
 one more at the centroid of every boundary face.  The cell unknowns are the
-usual finite volume degrees of freedom; the boundary unknowns are what the book
-calls the *zero-thickness control volumes*.  A boundary control volume has no
-interior — its measure is zero — so it can carry no source and no accumulation,
-and its discrete equation reduces to the statement that the flux arriving from
-the adjacent cell equals the flux specified by the boundary condition.  Its
-purpose is to give the boundary value somewhere to live: it is a degree of
-freedom like any other, so a Dirichlet condition fixes it, a Neumann or Robin
-condition leaves it free and determines it from the balance, and the value it
-takes is the method's estimate of :math:`u` on the boundary.
+usual finite volume degrees of freedom, and the boundary unknowns are what the
+book calls the *zero-thickness control volumes*.  A boundary control volume has
+no interior (its measure is zero), so it can carry no source and no
+accumulation, and its discrete equation reduces to the statement that the flux
+arriving from the adjacent cell equals the flux specified by the boundary
+condition.  Its purpose is to represent the boundary value as an unknown of the
+system.  It is a degree of freedom like any other, so a Dirichlet condition
+fixes it, a Neumann or Robin condition leaves it free and determines it from
+the balance, and the value it takes is the method's estimate of :math:`u` on
+the boundary.
 
 The data structure is the owner/neighbour face list that every production
 finite volume code is built on, and which ``dualmesh`` shares with OpenFOAM
@@ -258,18 +260,18 @@ Why a reconstructed gradient is needed
 A cell-centred method stores one number per cell and nothing else.  There is no
 interpolation whose derivative could be taken, so the gradient that the flux
 :math:`\mathbf{F}(u, \nabla u)` needs at a face must be *reconstructed* from
-the surrounding cell values.  The obvious two-point difference between the two
-cell centroids is not enough for the same reason as in the vertex-centred
-method: the line joining the two centroids is not parallel to the face normal
-unless the mesh is orthogonal, and on a triangular or a skewed mesh it never
-is.  A transverse contribution is therefore missing, and it must come from a
+the surrounding cell values.  The two-point difference between the two cell
+centroids is insufficient for the same reason as in the vertex-centred method:
+the line joining the two centroids is parallel to the face normal only when the
+mesh is orthogonal, and a triangular or a skewed mesh is never orthogonal in
+this sense.  A transverse contribution is therefore missing, and it must come from a
 reconstructed gradient.
 
 Least-squares reconstruction
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 ``dualmesh`` reconstructs the gradient of cell :math:`c` by a weighted
-least-squares fit over the entities that share a face with it — the
+least-squares fit over the entities that share a face with it: the
 neighbouring cells, and the zero-thickness boundary nodes of any faces of
 :math:`c` that lie on :math:`\partial\Omega`.  Write :math:`\mathbf{x}_c` for
 the centroid of :math:`c`, :math:`U_c` for its value, and, for each neighbour
@@ -313,27 +315,27 @@ as one coefficient vector per neighbour, so that the gradient of any field is
    \qquad
    \mathbf{c}_i = w_i \, \mathbf{A}^{-1} \mathbf{d}_i .
 
-The property that makes :eq:`lsq_stencil` trustworthy is that it is **exact for
-a linear field on any mesh, however distorted**.  If :math:`u` is linear with
+The property that justifies :eq:`lsq_stencil` is that it is **exact for a
+linear field on any mesh, however distorted**.  If :math:`u` is linear with
 gradient :math:`\mathbf{G}`, then :math:`U_i - U_c = \mathbf{G} \cdot
 \mathbf{d}_i` for every :math:`i`, every residual in :eq:`lsq_objective`
 vanishes at :math:`\mathbf{g} = \mathbf{G}`, the minimum is zero, and the fit
 returns :math:`\mathbf{G}` whatever the weights and whatever the arrangement of
-the neighbours.  The construction is that of [BarthJespersen1989]_; the
-higher-order generalisation is [Barth1993]_.  The Green–Gauss gradient, the
-other common choice, does *not* have this property, because it needs a value at
-the face centroid and the value obtained by interpolating between the two cell
-centroids does not sit at the face centroid on a skewed mesh.
+the neighbours.  The construction is that of [BarthJespersen1989]_, and its
+higher-order generalisation is given in [Barth1993]_.  The Green-Gauss
+gradient, the other common choice, lacks this property, because it needs a
+value at the face centroid, and on a skewed mesh the value obtained by
+interpolating between the two cell centroids lies away from the face centroid.
 
-The consequence is checked directly.  On the patch test — a linear field
-imposed on all four sides of a unit square, solved for the interior — the
+The consequence is checked directly.  In the patch test, a linear field is
+imposed on all four sides of a unit square and the interior is solved for.  The
 cell-centred method reproduces the field at every cell centroid and every
 boundary node to about :math:`10^{-10}`: on a :math:`4\times4` mesh the
 measured maximum error is :math:`9 \times 10^{-16}` on a regular ``Quad4``
 mesh, :math:`1.7 \times 10^{-10}` on the same mesh distorted so that no element
 is a parallelogram, and :math:`4 \times 10^{-11}` to :math:`1.1 \times 10^{-10}`
-on ``Tri3`` meshes.  The residual is the tolerance of the nonlinear iteration,
-not a discretisation error.
+on ``Tri3`` meshes.  The remaining error is set by the tolerance of the
+nonlinear iteration.
 
 The face flux
 ^^^^^^^^^^^^^
@@ -378,27 +380,26 @@ least-squares gradient is a linear combination of the values of the cell and
 of the cells in its stencil, so :math:`\bar{\mathbf{g}}` at a face depends on
 the owner, the neighbour and all of their stencil neighbours, and the
 automatic differentiation carries a derivative slot for every one of them.
-The Jacobian is therefore exact on any mesh, and Newton's method solves a
-linear problem in one iteration and converges quadratically on a nonlinear one,
-skewed mesh or not (``test_the_cell_centred_jacobian_is_exact_on_a_skewed_mesh``).
-The price is a wider matrix: a face couples its two cells to their stencil
-neighbours, not only to each other.  Many codes instead *lag* the
-non-orthogonal part -- evaluate it at the previous iterate and leave it out of
-the Jacobian, the deferred correction of [Jasak1996]_ -- which keeps the matrix
-as compact as a finite-difference matrix but makes the Jacobian inexact on a
-non-orthogonal mesh.  On a hybrid hexahedron and pyramid mesh the lagged
-form contracts the error of Newton's iteration by only 1.3 per cent per
-step.  The lagged form survives in one place: when a
-face's stencil needs more derivative slots than the automatic differentiation
-provides (``DUALMESH_MAX_AD_DERIVATIVES``, 96 by default), that face falls back
-to it.  On a mesh whose centroid line is parallel to the face normal,
-:math:`\bar{\mathbf{g}}` contributes nothing to
+The Jacobian is therefore exact on any mesh, skewed or not, and Newton's method
+solves a linear problem in one iteration and converges quadratically on a
+nonlinear one (``test_the_cell_centred_jacobian_is_exact_on_a_skewed_mesh``).
+The cost is a wider matrix: a face couples its two cells to each other and to
+their stencil neighbours.  Many codes *lag* the non-orthogonal part, i.e., they
+evaluate it at the previous iterate and leave it out of the Jacobian, which is
+the deferred correction of [Jasak1996]_.  This keeps the matrix as compact as a
+finite-difference matrix but makes the Jacobian inexact on a non-orthogonal
+mesh.  On a hybrid hexahedron and pyramid mesh the lagged form contracts the
+error of Newton's iteration by only 1.3 % per step.  The lagged form is
+retained in one case: when a face's stencil needs more derivative slots than
+the automatic differentiation provides (``DUALMESH_MAX_AD_DERIVATIVES``, 96 by
+default), the lagged form is used on that face.  On a mesh whose centroid line
+is parallel to the face normal, :math:`\bar{\mathbf{g}}` contributes nothing to
 :math:`\mathbf{n} \cdot \nabla u`, and the scheme is exactly Eqs. (3.2.16)
 and (3.4.26) of [Reddy2024]_.
 
 Sources are integrated over the cell, with the quadrature rule the kernel asks
-for; the rules that are meaningful only for a node-centred control domain
-(``nodal``, ``interface``, ``control_domain_trapezoid``) collapse to the
+for.  The rules that are meaningful only for a node-centred control domain
+(``nodal``, ``interface``, ``control_domain_trapezoid``) reduce to the
 one-point Gauss rule on each patch of the element, which is the cell-centred
 meaning of lumping a term.  A source may depend on the gradient, as the
 convective inertia :math:`\rho\, \mathbf{v} \cdot \nabla u_i` of a flow
@@ -408,15 +409,15 @@ with respect to the stencil values are the weights :math:`\mathbf{a}_e` and
 minus their sum, and they are carried into the Jacobian like the face
 gradients above.  Without them Newton's method on a Navier-Stokes problem
 contracts the error by only a factor of about ten per iteration
-(``test_newton_converges_quadratically``).  The same derivative budget
-applies: a cell whose stencil does not fit keeps its gradient lagged.
+(``test_newton_converges_quadratically``).  The same limit on derivative slots
+applies: a cell whose stencil exceeds it keeps its gradient lagged.
 
 On the axis of an axisymmetric problem, and at the centre of a spherical one,
 the coordinate factor :math:`r` of a boundary face vanishes.  The equation of
 the boundary unknown on such a face states that the flux arriving from the
-cell equals the prescribed one, and since the scale of that statement is
-immaterial it is weighted by 1 instead of :math:`r`; weighting it by
-:math:`r = 0` would leave the unknown with an empty equation and the matrix
+cell equals the prescribed one.  Because the scale of that statement is
+immaterial, the equation is weighted by 1 in place of :math:`r`.  Weighting it
+by :math:`r = 0` would leave the unknown with an empty equation and the matrix
 singular.  The axis therefore needs no boundary condition, as symmetry
 requires (``test_cell_centred_axis_needs_no_boundary_condition``).
 
@@ -475,12 +476,12 @@ which on a uniform one-dimensional mesh of spacing :math:`h`, where
 :math:`s_1 = h/2` and :math:`s_2 = 3h/2`, reduces to the familiar
 :math:`(8 U_b - 9 U_O + U_2)/(3h)`, Eq. (3.2.14) of [Reddy2024]_.
 
-The tildes in :eq:`zfvm_second_order` are the part that is *not* in the book,
-and they matter.  Equation (3.2.14) is derived for a one-dimensional mesh, in
-which the two cell centres lie on the normal through the face centre.  On an
-unstructured mesh they do not: a cell centroid is displaced sideways as well as
-inwards.  The code therefore moves each cell value onto the normal line before
-using it, with the cell's own reconstructed gradient:
+The tildes in :eq:`zfvm_second_order` mark an extension of the book's formula,
+and this extension is essential.  Equation (3.2.14) is derived for a
+one-dimensional mesh, in which the two cell centres lie on the normal through
+the face centre.  On an unstructured mesh a cell centroid is displaced sideways
+as well as inwards.  The code therefore moves each cell value onto the normal
+line before using it, with the cell's own reconstructed gradient:
 
 .. math::
 
@@ -493,9 +494,9 @@ where :math:`\mathbf{t}` is the tangential (skew) part of the offset.  This is
 a first-order Taylor correction of the value from the centroid to its
 projection on the normal, and without it the one-sided quadratic would not
 reproduce even a linear field on a triangular mesh, so the patch test would
-fail.  With it, :eq:`zfvm_second_order` is the generalisation of Eq. (3.2.14)
-of [Reddy2024]_ to unstructured meshes; the generalisation is this library's,
-not the book's.
+fail.  With it, :eq:`zfvm_second_order` generalises Eq. (3.2.14) of
+[Reddy2024]_ to unstructured meshes.  This generalisation was developed for
+this library.
 
 The full face gradient is then assembled from the one-sided normal derivative
 and the transverse part of the averaged reconstruction,
@@ -506,22 +507,22 @@ and the transverse part of the averaged reconstruction,
    + \bigl[ \bar{\mathbf{g}} - (\bar{\mathbf{g}} \cdot \hat{\mathbf{n}})
             \hat{\mathbf{n}} \bigr] .
 
-Two honest qualifications belong here.  The second-order
-formula is used only when the owner has an interior face opposed to the
-boundary normal and the geometry is sane, that is, when :math:`s_1 > 0` and
-:math:`s_2 > s_1`; when it is not — for a cell wedged in a corner of the
-domain, or one whose second centroid is not farther from the face than its own
-— the code falls back silently to the first-order difference on that face, so
-the boundary treatment of a mesh may be mixed.
-And the second-order formula widens the stencil of every boundary face from two
-entities to three, which slightly increases the bandwidth of the matrix.
+Two qualifications apply.  First, the second-order formula is used only when
+the owner has an interior face opposed to the boundary normal and the geometry
+is admissible, that is, when :math:`s_1 > 0` and :math:`s_2 > s_1`.  Otherwise,
+for example for a cell in a corner of the domain or for one whose second
+centroid is no farther from the face than its own, the code reverts without
+warning to the first-order difference on that face, so the boundary treatment
+of a mesh may be mixed.  Second, the second-order formula widens the stencil of
+every boundary face from two entities to three, which slightly increases the
+bandwidth of the matrix.
 
-The gain is real.  On :math:`-u'' = 10 \cos x` over :math:`(0,1)` with eight
-cells and a trapezoidal source rule, the maximum error against the exact
-solution falls from :math:`1.9 \times 10^{-2}` with the first-order boundary
-gradient to :math:`1.2 \times 10^{-3}` with the second-order one, a factor of
-fifteen at no change in the number of unknowns.  The test suite asserts a
-factor of at least :math:`2.5`
+The improvement in accuracy is substantial.  On :math:`-u'' = 10 \cos x` over
+:math:`(0,1)` with eight cells and a trapezoidal source rule, the maximum error
+against the exact solution falls from :math:`1.9 \times 10^{-2}` with the
+first-order boundary gradient to :math:`1.2 \times 10^{-3}` with the
+second-order one, a factor of fifteen with the same number of unknowns.  The
+test suite asserts a factor of at least :math:`2.5`
 (``test_second_order_boundary_gradient_is_more_accurate``).  Both variants are
 verified against Example 3.3.1 of [Reddy2024]_ node by node: with four cells
 the book's Eq. (7) gives cell values :math:`0.5686, 1.0906, 1.0356, 0.4777` for
@@ -534,8 +535,8 @@ Choosing between them
 ---------------------
 
 The three control volume methods solve the same problems and agree as the mesh
-is refined.  What differs is cost, convenience and where the accuracy comes
-from.
+is refined.  They differ in cost, in convenience and in the source of their
+accuracy.
 
 The **dual mesh control domain method** is the default and is usually the right
 choice for a diffusion-dominated problem on a mesh of good quality.  It needs
@@ -543,51 +544,51 @@ no reconstruction at all, its Jacobian is exact because every quantity in the
 residual is a differentiated function of the nodal values, and on simplicial
 meshes with constant coefficients it produces the same algebraic equations as
 the Galerkin finite element method.  Its limitation is stated in
-:doc:`elements`: it does not gain an order of accuracy from quadratic elements.
+:doc:`elements`: on quadratic elements it remains second-order accurate.
 
-The **vertex-centred finite volume method** costs the same as the dual mesh
-control domain method — the same unknowns, the same sparsity, the same assembly
-loop — and differs only in :eq:`hfvm_correction`.  The reason to choose it is
+The **vertex-centred finite volume method** has the same cost as the dual mesh
+control domain method (the same unknowns, the same sparsity, the same assembly
+loop) and differs only in :eq:`hfvm_correction`.  The reason to choose it is
 that it is the scheme of Chapter 3 of [Reddy2024]_ and of the classical finite
 volume literature, so it is the right method to run when the object is to
-reproduce those results or to compare against a code that uses them.  It is not
-more accurate than the dual mesh control domain method: on the conduction
-problem of Example 3.4.1, refined through three meshes, the maximum nodal error
+reproduce those results or to compare against a code that uses them.  Its
+accuracy is at best equal to that of the dual mesh control domain method: on
+the conduction problem of Example 3.4.1, refined through three meshes, the
+maximum nodal error
 of the vertex-centred method is about twice that of the dual mesh control
 domain method on the same mesh (:math:`1.13\times10^{-2}` against
 :math:`5.93\times10^{-3}`, then :math:`2.90\times10^{-3}` against
 :math:`1.47\times10^{-3}`, then :math:`7.28\times10^{-4}` against
-:math:`3.65\times10^{-4}`), and in one dimension it is not different from it at
-all.
+:math:`3.65\times10^{-4}`), and in one dimension the two methods are identical.
 
 The **cell-centred finite volume method** is the layout of production
 computational fluid dynamics, and it is the method to use when the point of
 comparison is such a code, or when the problem is transport-dominated.  Its
 face-based structure makes the flux through any surface directly available, and
 it accepts every element type, including the serendipity elements and the
-pyramid that the node-based methods refuse.  It costs more unknowns on a
-simplicial mesh — a two-dimensional triangulation has about twice as many
-triangles as nodes, and a tetrahedral mesh about five to six times as many
-cells as nodes — and its exact Jacobian couples each cell to the stencils of
-its neighbours, so its matrix is wider than those of the node-based methods;
-the automatic linear solver's preconditioned iteration handles it well in
-three dimensions.  It is
-also the only one of the three whose accuracy depends on a reconstruction and
-therefore on the quality of the cell stencils: a cell with few or badly placed
-neighbours has a poor gradient, and the boundary is where that shows first,
-which is the reason the second-order boundary gradient exists.
+pyramid, which the node-based methods do not accept.  It requires more unknowns
+on a simplicial mesh, because a two-dimensional triangulation has about twice
+as many triangles as nodes, and a tetrahedral mesh about five to six times as
+many cells as nodes.  Its exact Jacobian couples each cell to the stencils of
+its neighbours, so its matrix is wider than those of the node-based methods.
+The preconditioned iteration of the automatic linear solver solves systems with
+this matrix efficiently in three dimensions.  It is also the only one of the
+three whose accuracy depends on a reconstruction and therefore on the quality
+of the cell stencils: a cell with few or badly placed neighbours has an
+inaccurate reconstructed gradient.  The effect appears first at the boundary,
+which is the reason the library provides the second-order boundary gradient.
 
-A cost that applies to all three: the matrices of the dual mesh and finite
-volume methods are in general **not symmetric**, even for a self-adjoint
-operator such as :math:`-\nabla\cdot(k\nabla u)`.  The equation of a control
-volume is a balance, not a weighted residual with the shape function of its
-node, so there is nothing to make the coefficient coupling :math:`I` to
-:math:`J` equal the one coupling :math:`J` to :math:`I`; the Galerkin method,
-whose bilinear form is symmetric, does give a symmetric matrix.  The conjugate
-gradient method is therefore unavailable with the three control volume methods:
-use ``linear_solver="automatic"`` (the default), ``"lu"``, ``"bicgstab"`` or
-``"gmres"``, which is what the
-error message says if the conjugate gradient solver is asked for and fails.
+One cost applies to all three methods: the matrices of the dual mesh and
+finite volume methods are in general **not symmetric**, even for a
+self-adjoint operator such as :math:`-\nabla\cdot(k\nabla u)`.  The equation
+of a control volume is an unweighted balance over that volume, so no property
+of the discretisation makes the coefficient coupling :math:`I` to :math:`J`
+equal the one coupling :math:`J` to :math:`I`.  The Galerkin method, whose
+bilinear form is symmetric, gives a symmetric matrix.  The conjugate gradient
+method is therefore unavailable with the three control volume methods.  Use
+``linear_solver="automatic"`` (the default), ``"lu"``, ``"bicgstab"`` or
+``"gmres"``, which are the alternatives that the error message lists when the
+conjugate gradient solver is requested and fails.
 
 Verification
 ------------
@@ -597,11 +598,11 @@ The two finite volume methods are checked against Chapter 3 of [Reddy2024]_ in
 3.3.1 is reproduced node by node for both formulations and for both boundary
 gradients, including the secondary variables at the two ends, which
 Table 3.3.1 of the book gives as :math:`-q(0) = 4.5898` and :math:`q(1) =
-3.7888` for the half control volume formulation with four subdivisions; the
+3.7888` for the half control volume formulation with four subdivisions.  The
 two-dimensional conduction problem of Example 3.4.1 is reproduced for the
 :math:`3 \times 2` mesh of the book's Eqs. (9) and (14).  Beyond the book, the
 tests check the patch test on distorted meshes in two and three dimensions,
 second-order convergence in the maximum nodal error, a nonlinear conduction
 problem against its closed-form Kirchhoff solution with both Newton and Picard
 iteration, a transient slab against its analytical decay, and a convecting fin,
-which fixes the sign of the Robin condition.
+which verifies the sign of the Robin condition.

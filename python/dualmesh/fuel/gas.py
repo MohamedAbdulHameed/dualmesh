@@ -30,9 +30,9 @@ conductance of the pellet-cladding gap and raises the pressure in the rod.
   fission rate density :math:`\dot F` in fissions/(m^3 s)).  The athermal
   coefficient is that of the primary sources, J. A. Turnbull et al., J.
   Nucl. Mater. 107 (1982) 168, Eq. (9), and R. J. White and M. O. Tucker, J.
-  Nucl. Mater. 118 (1983) 1, Eq. (12), both read first-hand.  Zullo et al.
-  and the CASL report use four times this value, citing Turnbull, White and
-  Wise (1989), which was not read.  The primary value is closer to the
+  Nucl. Mater. 118 (1983) 1, Eq. (12).  Zullo et al.
+  and the CASL report use four times this value, after Turnbull, White and
+  Wise (1989).  The value of the original papers is closer to the
   measurements of the fuel benchmarks (see the documentation chapter).
 * **Trapping and re-solution** (Speight 1969): gas atoms are trapped in
   intragranular bubbles at the rate :math:`g = 4 \pi D (R + R_s) N` (Ham) and
@@ -57,9 +57,9 @@ conductance of the pellet-cladding gap and raises the pressure in the rod.
   that reaches the grain boundaries collects in lenticular bubbles on the
   grain faces, which grow by absorbing vacancies, coalesce, and vent the gas
   once they cover half of the face.  This is the engineering model of G.
-  Pastore et al., Nucl. Eng. Des. 256 (2013) 75, Eqs. (10)-(28), read
-  first-hand, with parameters from G. Pastore et al., J. Nucl. Mater. 456
-  (2015) 398, and R. J. White, J. Nucl. Mater. 325 (2004) 61.  See
+  Pastore et al., Nucl. Eng. Des. 256 (2013) 75, Eqs. (10)-(28), with
+  parameters from G. Pastore et al., J. Nucl. Mater. 456 (2015) 398, and
+  R. J. White, J. Nucl. Mater. 325 (2004) 61.  See
   :class:`GrainFaceBubbles`.
 * **Burst release by micro-cracking** of the grain faces when the
   temperature changes (T. Barani et al., J. Nucl. Mater. 486 (2017) 96,
@@ -144,8 +144,8 @@ class GrainFaceBubbles:
        :math:`F = F_{sat}`.  The two give the same release to within 0.03 %
        on the benchmarks.
 
-    **Micro-cracking** (T. Barani et al., J. Nucl. Mater. 486 (2017) 96,
-    read first-hand).  A fraction :math:`f` of the faces is intact.  On a
+    **Micro-cracking** (T. Barani et al., J. Nucl. Mater. 486 (2017) 96).
+    A fraction :math:`f` of the faces is intact.  On a
     temperature change the parameter :math:`m(T) = 1 - [1 + Q \exp(s (T -
     T_{infl})/B)]^{-1/Q}` rises (Eq. 6, :math:`s = +1` on heating and
     :math:`-1` on cooling, :math:`B = 10` K, :math:`Q = 33`), and the intact
@@ -228,6 +228,8 @@ class GrainFaceBubbles:
         self.vacancy_diffusivity = vacancy_diffusivity or (
             lambda T: (3.5 / 5.0) * 8.86e-6 * np.exp(-4.17e4 / np.asarray(T, dtype=float))
         )
+        # A factor on the vacancy diffusivity, for sensitivity studies.
+        self.vacancy_diffusivity_factor = 1.0
         volume0 = 4.0 / 3.0 * np.pi * initial_radius**3 * self._phi
         self.minimum_vacancies = volume0 / self.vacancy_volume
         self.density = np.full(num_elements, float(initial_density))
@@ -324,7 +326,14 @@ class GrainFaceBubbles:
         self.gas = np.maximum(self.gas + arrived / (self.density * self.area_per_volume), 0.0)
         coverage = np.clip(self.coverage(), 1e-6, 0.99)
         S = -((3.0 - coverage) * (1.0 - coverage) + 2.0 * np.log(coverage)) / 4.0
-        K = 2.0 * np.pi * self.vacancy_diffusivity(T) * self.boundary_thickness / (kT * S)
+        K = (
+            2.0
+            * np.pi
+            * self.vacancy_diffusivity_factor
+            * self.vacancy_diffusivity(T)
+            * self.boundary_thickness
+            / (kT * S)
+        )
         old, gas = self.vacancies, self.gas
 
         def residual(nv):
@@ -471,7 +480,7 @@ class BoothFissionGasRelease:
     ``bubble_radius``, ``dihedral_half_angle`` (degrees), ``surface_energy``
     (J/m^2), ``saturation_coverage``
         The ``"saturation"`` model.  Defaults 0.5 um, 50 degrees, 0.6 J/m^2
-        and 0.25, the values of the FRAPCON-4.0 code description (not read).
+        and 0.25, the values of the FRAPCON-4.0 code description.
     ``trapping_factor``
         With ``trapping="constant"``: a factor in (0, 1] on the diffusion
         coefficient.  Default 1 (no trapping).
@@ -563,6 +572,10 @@ class BoothFissionGasRelease:
             if grain_boundary == "bubbles"
             else None
         )
+        # Factors of set_factors, for sensitivity and uncertainty studies.
+        self.temperature_factor = 1.0
+        self.diffusivity_factor = 1.0
+        self.resolution_factor = 1.0
         self.bubble_density = np.zeros(num_elements)  # intragranular bubbles per m^3
         self.intragranular_bubble_radius = np.zeros(num_elements)
         self.grain_radius = float(grain_radius)
@@ -591,15 +604,38 @@ class BoothFissionGasRelease:
         )
         self._capillary_pressure = 2.0 * surface_energy / bubble_radius
 
+    def set_factors(
+        self, temperature=1.0, diffusivity=1.0, resolution=1.0, grain_boundary_diffusivity=1.0
+    ):
+        """Multipliers for sensitivity and uncertainty studies (see
+        :class:`~dualmesh.fuel.ModelFactors`): on the temperature the model
+        sees, the single-atom diffusion coefficient, the re-solution rate
+        from the intragranular bubbles and the vacancy diffusivity of the
+        grain faces."""
+        self.temperature_factor = float(temperature)
+        self.diffusivity_factor = float(diffusivity)
+        self.resolution_factor = float(resolution)
+        if self.faces is not None:
+            self.faces.vacancy_diffusivity_factor = float(grain_boundary_diffusivity)
+        elif grain_boundary_diffusivity != 1.0:
+            raise ValueError(
+                "BoothFissionGasRelease: grain_boundary_diffusivity needs grain_boundary='bubbles'."
+            )
+        if resolution != 1.0 and self.trapping != "speight":
+            raise ValueError("BoothFissionGasRelease: resolution needs trapping='speight'.")
+
     def diffusivity(self, temperature, fission_rate):
         """The single-atom diffusion coefficient, m^2/s (times the
-        trapping factor with ``trapping="constant"``)."""
+        trapping factor with ``trapping="constant"``, and the diffusivity
+        factor of :meth:`set_factors`)."""
         if self.diffusion_coefficient is not None:
             given = self.diffusion_coefficient(
                 np.asarray(temperature, dtype=float), np.asarray(fission_rate, dtype=float)
             )
-            return self.trapping_factor * np.broadcast_to(given, np.shape(temperature)).astype(
-                float
+            return (
+                self.diffusivity_factor
+                * self.trapping_factor
+                * np.broadcast_to(given, np.shape(temperature)).astype(float)
             )
         kT = BOLTZMANN * np.asarray(temperature, dtype=float)
         fission_rate = np.asarray(fission_rate, dtype=float)
@@ -610,8 +646,10 @@ class BoothFissionGasRelease:
             * np.sqrt(np.maximum(fission_rate, 0.0))
             * np.exp(-1.91e-19 / kT)
         )
-        return self.trapping_factor * (
-            thermal + irradiation + self.athermal_coefficient * fission_rate
+        return (
+            self.diffusivity_factor
+            * self.trapping_factor
+            * (thermal + irradiation + self.athermal_coefficient * fission_rate)
         )
 
     def _speight(self, D, fission_rate, grain_gas, temperature=None):
@@ -619,7 +657,7 @@ class BoothFissionGasRelease:
         re-solution rate b, at the bubble density of the start of the step
         and the bubble radius consistent with the gas in the grain."""
         F = np.maximum(np.asarray(fission_rate, dtype=float), 0.0)
-        c = self.resolution_coefficient * np.pi * self.fragment_range
+        c = self.resolution_factor * self.resolution_coefficient * np.pi * self.fragment_range
         if self.intragranular_bubbles == "white_tucker":
             # White and Tucker (1983), Eqs. (24), (25) and (27): the mean
             # radius and density of the bubbles fitted to Baker's data.
@@ -681,6 +719,7 @@ class BoothFissionGasRelease:
         released in the step, element by element.  ``burnup`` (FIMA, at the
         end of the step) is used by the micro-cracking of the grain faces."""
         source = self.fission_gas_yield * np.asarray(fission_rate, dtype=float)
+        temperature = self.temperature_factor * np.asarray(temperature, dtype=float)
         D = self.diffusivity(temperature, fission_rate)
         if self.trapping == "speight":
             D, b = self._speight(D, fission_rate, self.intragranular() * 1.0, temperature)

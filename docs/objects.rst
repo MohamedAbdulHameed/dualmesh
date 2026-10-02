@@ -9,9 +9,10 @@ does not have.
 
 Each page gives the object's purpose, its required parameters, its optional
 parameters with their defaults, and prose on how the object is used and what
-its keywords mean.  The four parameters every object accepts — ``block``,
-``quadrature``, ``reduced_integration`` and ``scale_with_load`` — are explained
-once, in :doc:`/user_guide/problem_setup`, rather than repeated on every page.
+its keywords mean.  The four parameters that every object accepts (``block``,
+``quadrature``, ``reduced_integration`` and ``scale_with_load``) are explained
+once, in :doc:`/user_guide/problem_setup`, and are omitted from the individual
+pages.
 
 The same information is available at the prompt:
 

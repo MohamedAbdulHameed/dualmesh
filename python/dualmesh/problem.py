@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import difflib
+import re
 import time
 from collections.abc import Iterable, Sequence
 
@@ -241,8 +242,30 @@ class Problem:
         return self._add(self._problem.add_kernel, kernel, name, parameters)
 
     def add_boundary_condition(self, condition, name: str | None = None, **parameters):
-        """Add a boundary condition (essential or natural)."""
+        """Add a boundary condition (essential or natural).
+
+        When ``boundary`` is not given, the name of the condition is taken as
+        its boundary, so that a condition named after a side set acts on that
+        side set::
+
+            problem.add_boundary_condition(
+                "Dirichlet_boundary_condition", "left", variable="u", value=0.0)
+
+        Several conditions on one boundary need different names and an
+        explicit ``boundary``."""
         if isinstance(condition, str):
+            if "boundary" not in parameters and name:
+                mesh = self._mesh
+                known = set(mesh.sideset_names()) | set(mesh.nodeset_names())
+                if name in known:
+                    parameters["boundary"] = [name]
+                elif re.search(
+                    r"^\s+boundary \([^)]*required", _core.describe_object(condition), re.M
+                ):
+                    raise ValueError(
+                        f"Boundary condition '{name}': give 'boundary', or name the condition "
+                        f"after a boundary of the mesh ({', '.join(sorted(known)) or 'none'})."
+                    )
             category = _core.object_category(condition)
             if category == "nodal_boundary_condition":
                 return self._problem.add_object(condition, name or "", **parameters)

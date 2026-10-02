@@ -10,7 +10,9 @@
 #include "dualmesh/base/QpContext.h"
 
 #include <map>
+#include <set>
 #include <string>
+#include <tuple>
 #include <vector>
 
 namespace dualmesh
@@ -59,10 +61,19 @@ public:
   const std::set<int> & blocks() const { return _blocks; }
   bool activeOnBlock(int b) const { return _blocks.empty() || _blocks.count(b); }
 
+  /// Resolve 'scaled_properties' against the registry, once this material
+  /// has declared its properties.
+  void setupPropertyFactors(const MaterialPropertyRegistry & registry);
+  /// Multiply the scaled properties by their factors; called by the problem
+  /// right after computeProperties().
+  void applyPropertyFactors(QpContext & ctx) const;
+
 protected:
   int coupledVariable(Problem & problem, const std::string & param) const;
   std::set<int> _blocks;
   int _state_offset = 0;
+  /// (storage offset, components, factor) of each scaled property.
+  std::vector<std::tuple<int, int, double>> _property_factors;
 };
 
 } // namespace dualmesh

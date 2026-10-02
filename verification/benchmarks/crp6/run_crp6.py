@@ -9,11 +9,14 @@ the vector figures of the report into ``crp6_participants.csv``.
 
 Usage::
 
-    python run_crp6.py [output directory for the figures]
+    python run_crp6.py [output directory for the figures] [--plot-only]
 
 The default output directory is ``docs/_static/figures/crp6`` of the
 repository.  The script prints a table of the key values and writes
-``crp6_results.csv`` beside itself.
+``crp6_results.csv`` beside itself.  The solutions are saved in
+``run_crp6_cache.npz``, and ``--plot-only`` redraws the figures (and rewrites
+the table) from it.  Each stress is drawn in a figure of its own,
+``crp6_case<case>_<quantity>.png``.
 """
 
 from __future__ import annotations
@@ -21,25 +24,25 @@ from __future__ import annotations
 import csv
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
-import matplotlib
+import numpy as np
+from dualmesh.fuel import triso
 
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt  # noqa: E402
-import numpy as np  # noqa: E402
-from dualmesh.fuel import triso  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import plotstyle  # noqa: E402
+from plotstyle import DUALMESH  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
+CACHE = plotstyle.cache_path(__file__)
+CASES = ("1", "2", "3", "4a", "4b", "4c", "4d", "5", "6", "7", "8")
 
-# Colours of the reference categorical palette (validated for colour vision
-# deficiency with the dataviz skill): dualmesh in slot 1, the closed form
-# solutions in slot 2, participants in a recessive grey.
-DUALMESH = "#2a78d6"
-ANALYTIC = "#eb6834"
-PARTICIPANT = "#a3a29c"
-INK = "#0b0b0b"
-MUTED = "#52514e"
+# Colours of the reference categorical palette: dualmesh in slot 1, the
+# closed form solutions in the slot of the measurements, participants in a
+# recessive grey.
+ANALYTIC = plotstyle.MEASURED
+PARTICIPANT = plotstyle.REFERENCE_GREY
 
 # Closed form solutions of the report, section 9.2.3 (MPa).
 ANALYTIC_VALUES = {
@@ -98,33 +101,27 @@ def series(result, quantity):
     return result.fluence * 1e-25, values * 1e-6
 
 
-def style_axes(ax, title, show_xlabel=True):
-    ax.set_title(title, loc="left", fontsize=10, color=INK)
-    if show_xlabel:
-        ax.set_xlabel(r"Fast fluence ($10^{25}$ n/m$^2$, $E > 0.18$ MeV)", color=MUTED)
-    ax.set_ylabel("Stress (MPa)", color=MUTED)
-    ax.grid(True, color="#e4e3df", linewidth=0.6)
-    for side in ("top", "right"):
-        ax.spines[side].set_visible(False)
-    for side in ("left", "bottom"):
-        ax.spines[side].set_color("#c3c2b7")
-    ax.tick_params(colors=MUTED, labelsize=8)
-    ax.set_xlim(0.0, 3.0)
+FLUENCE_LABEL = r"Fast fluence ($10^{25}$ n/m$^2$, $E > 0.18$ MeV)"
+TITLES = {
+    "IPyC_tangential": "IPyC, inner surface, tangential stress",
+    "SiC_tangential": "SiC, inner surface, tangential stress",
+    "interface_radial": "IPyC/SiC interface, radial stress",
+}
+SUFFIX = {
+    "IPyC_tangential": "ipyc_tangential",
+    "SiC_tangential": "sic_tangential",
+    "interface_radial": "interface_radial",
+}
 
 
 def plot_case(case, result, participants, out: Path):
+    """One figure per stress: the IPyC and SiC tangential stresses, and for
+    cases 4a to 4d the radial stress at the IPyC/SiC interface."""
     quantities = ["IPyC_tangential", "SiC_tangential"]
     if case.startswith("4"):
         quantities.append("interface_radial")
-    titles = {
-        "IPyC_tangential": "IPyC, inner surface, tangential stress",
-        "SiC_tangential": "SiC, inner surface, tangential stress",
-        "interface_radial": "IPyC/SiC interface, radial stress",
-    }
-    fig, axes = plt.subplots(
-        1, len(quantities), figsize=(3.6 * len(quantities), 3.8), constrained_layout=True
-    )
-    for ax, quantity in zip(axes, quantities):
+    for quantity in quantities:
+        fig, ax = plotstyle.new_figure()
         curves = participants.get((case, quantity), {})
         for i, (_, (f, s)) in enumerate(sorted(curves.items())):
             f, s = _break_jumps(np.asarray(f), np.asarray(s))
@@ -132,11 +129,11 @@ def plot_case(case, result, participants, out: Path):
                 f,
                 s,
                 color=PARTICIPANT,
-                linewidth=0.9,
+                linewidth=1.0,
                 label="CRP-6 participants" if i == 0 else None,
             )
         x, y = series(result, quantity)
-        ax.plot(x, y, color=DUALMESH, linewidth=2.0, label="dualmesh")
+        ax.plot(x, y, color=DUALMESH, linewidth=2.2, label="dualmesh")
         layer = QUANTITY[quantity][0]
         ref = ANALYTIC_VALUES.get((case, layer, "end"))
         if ref is not None and QUANTITY[quantity][1] == "tangential":
@@ -145,24 +142,17 @@ def plot_case(case, result, participants, out: Path):
                 [ref],
                 "o",
                 color=ANALYTIC,
-                markersize=8,
+                markersize=9,
                 markeredgecolor="white",
                 markeredgewidth=1.5,
                 clip_on=False,
+                zorder=5,
                 label="Closed form (report)",
             )
-        style_axes(ax, titles[quantity])
-    axes[0].legend(
-        frameon=False,
-        fontsize=8,
-        labelcolor=INK,
-        loc="upper center",
-        bbox_to_anchor=(0.5, -0.25),
-        ncol=2,
-    )
-    fig.suptitle(f"CRP-6 case {case}", x=0.01, ha="left", fontsize=11, color=INK)
-    fig.savefig(out / f"crp6_case{case}.png", dpi=150)
-    plt.close(fig)
+        plotstyle.style(ax, FLUENCE_LABEL, "Stress (MPa)", f"CRP-6 case {case}: {TITLES[quantity]}")
+        ax.set_xlim(0.0, 3.0)
+        plotstyle.legend_below(ax, ncol=3)
+        plotstyle.save(fig, out / f"crp6_case{case}_{SUFFIX[quantity]}.png")
 
 
 def participant_range(participants, case, quantity, statistic):
@@ -187,14 +177,39 @@ def participant_range(participants, case, quantity, statistic):
     return min(values), max(values)
 
 
-def main():
-    out = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "docs/_static/figures/crp6"
-    out.mkdir(parents=True, exist_ok=True)
-    participants = load_participants()
-    rows = []
-    for case in ("1", "2", "3", "4a", "4b", "4c", "4d", "5", "6", "7", "8"):
+def compute():
+    """Solve the eleven cases: {case: {end_fluence, fluence, tangential,
+    radial}} with the arrays of ``triso.ParticleResult``."""
+    solutions = {}
+    for case in CASES:
         particle, history = triso.crp6_case(case)
         result = triso.solve_particle(particle, history)
+        solutions[case] = dict(
+            end_fluence=history.end_fluence,
+            fluence=result.fluence,
+            tangential=result.inner_tangential_stress,
+            radial=result.interface_radial_stress,
+        )
+    return solutions
+
+
+def main():
+    out, plot_only = plotstyle.parse_args(sys.argv[1:], ROOT / "docs/_static/figures/crp6")
+    if plot_only:
+        solutions = plotstyle.load_cache(CACHE)
+    else:
+        solutions = compute()
+        plotstyle.save_cache(CACHE, solutions)
+    participants = load_participants()
+    rows = []
+    for case in CASES:
+        cached = solutions[case]
+        history = SimpleNamespace(end_fluence=cached["end_fluence"])
+        result = SimpleNamespace(
+            fluence=cached["fluence"],
+            inner_tangential_stress=cached["tangential"],
+            interface_radial_stress=cached["radial"],
+        )
         for layer, values in result.inner_tangential_stress.items():
             if layer == "OPyC":
                 continue

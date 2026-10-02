@@ -35,7 +35,12 @@ documentation):
 
 Usage::
 
-    python run_ifa677.py [output directory for the figures]
+    python run_ifa677.py [output directory for the figures] [--plot-only]
+
+The twelve calculations are saved in ``run_ifa677_cache.npz``, and
+``--plot-only`` redraws the figures (and rewrites ``ifa677_results.csv``)
+from it.  Each rod has three figures, ``ifa677_rod<n>_temperature.png``,
+``ifa677_rod<n>_pressure.png`` and ``ifa677_rod<n>_fgr.png``.
 """
 
 from __future__ import annotations
@@ -44,25 +49,20 @@ import os
 import sys
 from pathlib import Path
 
-import matplotlib
-
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt  # noqa: E402
-import numpy as np  # noqa: E402
-from dualmesh import fuel  # noqa: E402
+import numpy as np
+from dualmesh import fuel
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import plotstyle  # noqa: E402
 from halden_history import insert_shutdowns  # noqa: E402
 from halden_history import shutdown_days as read_shutdown_days  # noqa: E402
+from plotstyle import DUALMESH, INK, MEASURED, SECOND  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
+CACHE = plotstyle.cache_path(__file__)
 DAY = 86400.0
-DUALMESH = "#2a78d6"
-SECOND = "#1baf7a"
-MEASURED = "#eb6834"
-INK = "#0b0b0b"
-MUTED = "#52514e"
 
 PELLET_DIAMETER = 9.13e-3
 CLAD_OD = 10.75e-3
@@ -239,32 +239,17 @@ def read_fgr():
     return {k: np.array(v) for k, v in out.items()}
 
 
-def style(ax, xlabel, ylabel, title):
-    ax.set_title(title, loc="left", fontsize=10, color=INK)
-    ax.set_xlabel(xlabel, color=MUTED)
-    ax.set_ylabel(ylabel, color=MUTED)
-    ax.grid(True, color="#e4e3df", linewidth=0.6)
-    for side in ("top", "right"):
-        ax.spines[side].set_visible(False)
-    for side in ("left", "bottom"):
-        ax.spines[side].set_color("#c3c2b7")
-    ax.tick_params(colors=MUTED, labelsize=8)
+CASES = {
+    "case A (best estimate)": "best_estimate",
+    "case B (upper limit)": "upper_limit",
+    "CASL Eq. 16 (as BISON)": "casl_2019",
+}
 
 
-def main():
+def compute():
+    """The twelve calculations (rods 1 and 5, three diffusivities, solid and
+    drilled pellets), in that order: {"0": run(...), ..., "11": run(...)}."""
     from concurrent.futures import ProcessPoolExecutor
-
-    out = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "docs/_static/figures/doped_uo2"
-    out.mkdir(parents=True, exist_ok=True)
-    digitised = read_fgr()
-    thermocouples = read_thermocouples()
-    pressures = read_pressures()
-    events = shutdown_days()
-    cases = {
-        "case A (best estimate)": "best_estimate",
-        "case B (upper limit)": "upper_limit",
-        "CASL Eq. 16 (as BISON)": "casl_2019",
-    }
 
     def material(rod, case):
         spec = ROD[rod]
@@ -278,7 +263,7 @@ def main():
     jobs = [
         (rod, material(rod, case), bore)
         for rod in (1, 5)
-        for case in cases.values()
+        for case in CASES.values()
         for bore in (False, True)
     ]
     # The twelve calculations run in parallel, one per processor
@@ -289,13 +274,28 @@ def main():
             runs = list(pool.map(_run, jobs))
     else:
         runs = [_run(job) for job in jobs]
+    return {str(i): r for i, r in enumerate(runs)}
+
+
+def main():
+    out, plot_only = plotstyle.parse_args(sys.argv[1:], ROOT / "docs/_static/figures/doped_uo2")
+    if plot_only:
+        cached = plotstyle.load_cache(CACHE)
+    else:
+        cached = compute()
+        plotstyle.save_cache(CACHE, cached)
+    runs = [cached[str(i)] for i in range(len(cached))]
+    digitised = read_fgr()
+    thermocouples = read_thermocouples()
+    pressures = read_pressures()
+    events = shutdown_days()
+    cases = CASES
     results = {}
     for i, (rod, case) in enumerate((r, c) for r in (1, 5) for c in cases):
         results[(rod, case)] = combined(runs[2 * i], runs[2 * i + 1], rod)
 
     lines = ["rod,quantity,dualmesh,bison,measured"]
-    fig, axes = plt.subplots(3, 2, figsize=(11.0, 12.5), constrained_layout=True)
-    for column, rod in enumerate((1, 5)):
+    for rod in (1, 5):
         # Thermocouples: the drilled calculation of case A against both
         # thermocouples, and BISON on the same days.
         ours = results[(rod, "case A (best estimate)")]
@@ -313,19 +313,20 @@ def main():
                 f"{rod},{position} thermocouple rms K,{np.sqrt(np.mean(d_ours**2)):.0f},"
                 f"{np.sqrt(np.mean(d_bison**2)):.0f},0"
             )
-        ax = axes[0, column]
+        fig, ax = plotstyle.new_figure()
         m = thermocouples[(rod, "upper", "measured")]
-        ax.plot(m[:, 0], m[:, 1], color=MEASURED, linewidth=0.6, label="Measured, upper")
+        ax.plot(m[:, 0], m[:, 1], color=MEASURED, linewidth=0.7, label="Measured, upper")
         b = thermocouples[(rod, "upper", "BISON")]
-        ax.plot(b[:, 0], b[:, 1], color=INK, linewidth=0.8, label="BISON (CASL 2019)")
-        ax.plot(ours["days"], ours["centre"], color=DUALMESH, linewidth=1.4, label="dualmesh")
-        style(ax, "Time (days)", "Temperature (K)", f"IFA-677.1 rod {rod}: upper thermocouple")
-        ax.set_ylim(1100, 1950)
-        ax.legend(
-            frameon=False, fontsize=7, loc="upper center", bbox_to_anchor=(0.5, -0.25), ncol=3
+        ax.plot(b[:, 0], b[:, 1], color=INK, linewidth=0.9, label="BISON (CASL 2019)")
+        ax.plot(ours["days"], ours["centre"], color=DUALMESH, linewidth=1.6, label="dualmesh")
+        plotstyle.style(
+            ax, "Time (days)", "Temperature (K)", f"IFA-677.1 rod {rod}: upper thermocouple"
         )
+        ax.set_ylim(1100, 1950)
+        plotstyle.legend_below(ax, ncol=3)
+        plotstyle.save(fig, out / f"ifa677_rod{rod}_temperature.png")
         # Pressure.
-        ax = axes[1, column]
+        fig, ax = plotstyle.new_figure()
         pm, pb = pressures[(rod, "measured")], pressures[(rod, "BISON")]
         on = pm[:, 1] > 2.5
         d_ours = np.interp(pm[on, 0], ours["days"], ours["pressure"]) - pm[on, 1]
@@ -334,16 +335,17 @@ def main():
             f"{rod},rod pressure bias MPa (median),{np.median(d_ours):.2f},"
             f"{np.median(d_bison):.2f},0"
         )
-        ax.plot(pm[:, 0], pm[:, 1], color=MEASURED, linewidth=0.8, label="Measured")
-        ax.plot(pb[:, 0], pb[:, 1], color=INK, linewidth=0.8, label="BISON (CASL 2019)")
-        ax.plot(ours["days"], ours["pressure"], color=DUALMESH, linewidth=1.4, label="dualmesh")
-        style(ax, "Time (days)", "Rod pressure (MPa)", f"IFA-677.1 rod {rod}: rod pressure")
-        ax.set_ylim(1.5, 6.0)
-        ax.legend(
-            frameon=False, fontsize=7, loc="upper center", bbox_to_anchor=(0.5, -0.25), ncol=2
+        ax.plot(pm[:, 0], pm[:, 1], color=MEASURED, linewidth=0.9, label="Measured")
+        ax.plot(pb[:, 0], pb[:, 1], color=INK, linewidth=0.9, label="BISON (CASL 2019)")
+        ax.plot(ours["days"], ours["pressure"], color=DUALMESH, linewidth=1.6, label="dualmesh")
+        plotstyle.style(
+            ax, "Time (days)", "Rod pressure (MPa)", f"IFA-677.1 rod {rod}: rod pressure"
         )
+        ax.set_ylim(1.5, 6.0)
+        plotstyle.legend_below(ax, ncol=3)
+        plotstyle.save(fig, out / f"ifa677_rod{rod}_pressure.png")
         # Release.
-        ax = axes[2, column]
+        fig, ax = plotstyle.new_figure()
         measured = digitised[(rod, "measured")]
         bison = digitised[(rod, "BISON")]
         end = measured[-1, 0]
@@ -351,13 +353,13 @@ def main():
             measured[:, 0],
             measured[:, 1],
             color=MEASURED,
-            linewidth=1.6,
+            linewidth=1.8,
             label="Measured (rod pressure)",
         )
-        ax.plot(bison[:, 0], bison[:, 1], color=INK, linewidth=0.8, label="BISON (CASL 2019)")
+        ax.plot(bison[:, 0], bison[:, 1], color=INK, linewidth=0.9, label="BISON (CASL 2019)")
         if (rod, "puncture") in digitised:
             p = digitised[(rod, "puncture")][0]
-            ax.plot([p[0]], [p[1]], "s", color=MEASURED, label="Measured (puncture)")
+            ax.plot([p[0]], [p[1]], "s", color=MEASURED, markersize=7, label="Measured (puncture)")
         on = measured[:, 1] > 0.0
         bison_rms = np.sqrt(
             np.mean((np.interp(measured[on, 0], bison[:, 0], bison[:, 1]) - measured[on, 1]) ** 2)
@@ -376,14 +378,16 @@ def main():
                 f"{rod},FGR rms against the measured curve % ({name}),{rms:.2f},{bison_rms:.2f},"
             )
             lines.append(f"{rod},end burnup MWd/kgU ({name}),{r['burnup'][-1]:.2f},,{end:.2f}")
-            ax.plot(r["burnup"], r["fgr"], color=colour, linewidth=1.8, label=f"dualmesh, {name}")
-        style(ax, "Rod average burnup (MWd/kgU)", "Fission gas release (%)", f"IFA-677.1 rod {rod}")
-        ax.set_xlim(0, 31)
-        ax.legend(
-            frameon=False, fontsize=7, loc="upper center", bbox_to_anchor=(0.5, -0.25), ncol=2
+            ax.plot(r["burnup"], r["fgr"], color=colour, linewidth=2.0, label=f"dualmesh, {name}")
+        plotstyle.style(
+            ax,
+            "Rod average burnup (MWd/kgU)",
+            "Fission gas release (%)",
+            f"IFA-677.1 rod {rod}: fission gas release",
         )
-    fig.savefig(out / "ifa677_rods_1_5.png", dpi=150)
-    plt.close(fig)
+        ax.set_xlim(0, 31)
+        plotstyle.legend_below(ax, ncol=2)
+        plotstyle.save(fig, out / f"ifa677_rod{rod}_fgr.png")
     (HERE / "ifa677_results.csv").write_text("\n".join(lines) + "\n")
     print("\n".join(lines))
 

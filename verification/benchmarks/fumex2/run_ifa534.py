@@ -46,7 +46,12 @@ the base irradiation was removed when the rod was refabricated.
 
 Usage::
 
-    python run_ifa534.py [output directory for the figures]
+    python run_ifa534.py [output directory for the figures] [--plot-only]
+
+The calculations are saved in ``run_ifa534_cache.npz``, and ``--plot-only``
+redraws the figures (and rewrites ``ifa534_results.csv``) from it.  The
+release over the life of the rods is drawn in ``fumex2_ifa534_cumulative_fgr.png``
+and the release during the Halden irradiation in ``fumex2_ifa534_halden_fgr.png``.
 """
 
 from __future__ import annotations
@@ -54,22 +59,19 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import matplotlib
+import numpy as np
+from dualmesh import fuel
 
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt  # noqa: E402
-import numpy as np  # noqa: E402
-from dualmesh import fuel  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import plotstyle  # noqa: E402
+from plotstyle import DUALMESH, INK, MEASURED  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
+CACHE = plotstyle.cache_path(__file__)
 
 DAY = 86400.0
 HOUR = 3600.0
-DUALMESH = "#2a78d6"
-MEASURED = "#eb6834"
-INK = "#0b0b0b"
-MUTED = "#52514e"
 
 REFAB_BURNUP = 52.0  # MWd/kgUO2, Fig. 20
 # Measured release during the Halden irradiation (%).  The text of the report
@@ -198,21 +200,19 @@ def run(rod_number):
     )
 
 
-def style(ax, xlabel, ylabel):
-    ax.set_xlabel(xlabel, color=MUTED)
-    ax.set_ylabel(ylabel, color=MUTED)
-    ax.grid(True, color="#e4e3df", linewidth=0.6)
-    for side in ("top", "right"):
-        ax.spines[side].set_visible(False)
-    for side in ("left", "bottom"):
-        ax.spines[side].set_color("#c3c2b7")
-    ax.tick_params(colors=MUTED, labelsize=8)
+def compute():
+    """The two rods: {"18": run(18), "19": run(19)}."""
+    return {str(n): run(n) for n in (18, 19)}
 
 
 def main():
-    out = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "docs/_static/figures/fumex2"
-    out.mkdir(parents=True, exist_ok=True)
-    results = {n: run(n) for n in (18, 19)}
+    out, plot_only = plotstyle.parse_args(sys.argv[1:], ROOT / "docs/_static/figures/fumex2")
+    if plot_only:
+        cached = plotstyle.load_cache(CACHE)
+    else:
+        cached = compute()
+        plotstyle.save_cache(CACHE, cached)
+    results = {n: cached[str(n)] for n in (18, 19)}
     for n, r in results.items():
         print(
             f"rod {n}: base FGR {r['base_fgr']:.2f} %, Halden FGR {r['halden_fgr']:.2f} % "
@@ -221,8 +221,7 @@ def main():
     ratio = results[18]["halden_fgr"] / max(results[19]["halden_fgr"], 1e-9)
     print(f"ratio rod 19 / rod 18: {1 / ratio:.2f} (measured {8.89 / 4.68:.2f})")
 
-    fig, axes = plt.subplots(1, 2, figsize=(9.0, 4.0), constrained_layout=True)
-    ax = axes[0]
+    fig, ax = plotstyle.new_figure()
     for n, colour, style_ in ((18, DUALMESH, "-"), (19, DUALMESH, "--")):
         r = results[n]
         grain = ROD[n]["grain_diameter"] * 1e6
@@ -231,15 +230,20 @@ def main():
             r["fgr"],
             style_,
             color=colour,
-            linewidth=2.0,
+            linewidth=2.2,
             label=f"dualmesh, rod {n} ({grain:g} $\\mu$m)",
         )
     ax.set_xlim(0, 56)
-    ax.set_title("Cumulative release over the life of the rod", loc="left", fontsize=10, color=INK)
-    style(ax, "Rod average burnup (MWd/kgUO$_2$)", "Fission gas release (%)")
-    ax.legend(frameon=False, fontsize=8, loc="upper center", bbox_to_anchor=(0.5, -0.25), ncol=2)
+    plotstyle.style(
+        ax,
+        "Rod average burnup (MWd/kgUO$_2$)",
+        "Fission gas release (%)",
+        "IFA-534.14: release over the life of the rods",
+    )
+    plotstyle.legend(ax, loc="upper left")
+    plotstyle.save(fig, out / "fumex2_ifa534_cumulative_fgr.png")
 
-    ax = axes[1]
+    fig, ax = plotstyle.new_figure()
     x = np.arange(2)
     width = 0.36
     measured = [MEASURED_FGR[18], MEASURED_FGR[19]]
@@ -247,18 +251,18 @@ def main():
     ax.bar(x - width / 2 - 0.01, measured, width, color=MEASURED, label="Measured (puncture)")
     ax.bar(x + width / 2 + 0.01, computed, width, color=DUALMESH, label="dualmesh")
     for xi, v in zip(x - width / 2 - 0.01, measured):
-        ax.text(xi, v + 0.2, f"{v:.2f}", ha="center", fontsize=8, color=INK)
+        ax.text(xi, v + 0.2, f"{v:.2f}", ha="center", fontsize=plotstyle.TICK_SIZE, color=INK)
     for xi, v in zip(x + width / 2 + 0.01, computed):
-        ax.text(xi, v + 0.2, f"{v:.2f}", ha="center", fontsize=8, color=INK)
+        ax.text(xi, v + 0.2, f"{v:.2f}", ha="center", fontsize=plotstyle.TICK_SIZE, color=INK)
     ax.set_xticks(x, ["Rod 18 (22.1 $\\mu$m)", "Rod 19 (8.5 $\\mu$m)"])
     ax.set_xlim(-0.6, 1.6)
     ax.set_ylim(0, 1.25 * max(measured + computed))
-    ax.set_title("Release during the Halden irradiation", loc="left", fontsize=10, color=INK)
-    style(ax, "", "Fission gas release (%)")
+    plotstyle.style(
+        ax, "", "Fission gas release (%)", "IFA-534.14: release during the Halden irradiation"
+    )
     ax.grid(False, axis="x")
-    ax.legend(frameon=False, fontsize=8, loc="upper center", bbox_to_anchor=(0.5, -0.25), ncol=2)
-    fig.savefig(out / "fumex2_ifa534.png", dpi=150)
-    plt.close(fig)
+    plotstyle.legend(ax, loc="upper left")
+    plotstyle.save(fig, out / "fumex2_ifa534_halden_fgr.png")
 
     lines = ["rod,base_fgr_percent,halden_fgr_percent,measured_halden_fgr_percent"]
     for n, r in results.items():

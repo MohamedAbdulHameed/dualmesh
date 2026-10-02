@@ -35,12 +35,11 @@ MOOSE input files)::
         heat_source: 1.0e6
 
     boundary_conditions:
-      left:  {type: Dirichlet_boundary_condition, variable: temperature, boundary: left, value: 40}
-      right: {type: Dirichlet_boundary_condition, variable: temperature, boundary: right, value: 10}
-      top:
+      left:  {type: Dirichlet_boundary_condition, variable: temperature, value: 40}
+      right: {type: Dirichlet_boundary_condition, variable: temperature, value: 10}
+      top:                     # a condition named after a side set acts on it
         type: convective_heat_flux_boundary_condition
         variable: temperature
-        boundary: top
         heat_transfer_coefficient: 75.0
 
     executioner:
@@ -59,6 +58,7 @@ MOOSE input files)::
 Usage::
 
     dualmesh run input.yaml
+    dualmesh run study.yaml                 # a file with a uq block: an uncertainty study
     mpirun -n 4 dualmesh run input.yaml     # distributed, when built with MPI
     dualmesh list --category kernel
     dualmesh describe heat_conduction
@@ -350,6 +350,15 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         with open(arguments.input_file) as stream:
             document = yaml.safe_load(stream)
+        if isinstance(document, dict) and "uq" in document:
+            # An uncertainty study of the model in the rest of the file (or
+            # in the file its 'model' entry names).
+            from pathlib import Path
+
+            from .uq._input import run_study
+
+            run_study(document, Path(arguments.input_file).parent, verbose=not arguments.quiet)
+            return 0
         run(document, verbose=not arguments.quiet)
         return 0
     if arguments.command == "list":

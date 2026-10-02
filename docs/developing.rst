@@ -62,9 +62,9 @@ Register it in the module's registration function, for example
    }
 
 and it becomes available by name from Python, from input files, and in
-``dualmesh list``.  Registration is explicit (rather than by static
-initialization) so that nothing is dropped when the library is linked
-statically.
+``dualmesh list``.  Registration is made by an explicit call so that no object
+is dropped when the library is linked statically, as can happen with
+registration by static initialization.
 
 Writing kernels correctly
 -------------------------
@@ -73,13 +73,13 @@ Writing kernels correctly
   derivatives, and ``ctx.coefficient_value(v)`` /
   ``ctx.coefficient_gradient(v)`` inside nonlinear *coefficients*.  The latter
   return the current iterate under Newton's method and the previous iterate
-  under direct iteration, which is what makes one kernel serve both schemes.
+  under direct iteration, so that one kernel serves both schemes.
 * Never compare AD numbers to decide a branch that depends on the unknown
-  unless the derivative of the branch is what you intend.
+  unless the derivative of the branch is intended.
 * Material properties are requested by name with
   ``problem.propertyRegistry().id("stress")`` in ``initialSetup`` and read with
-  ``ctx.property(id, component)``; list them in ``requiredProperties()`` so a
-  missing material is reported before the solve starts.
+  ``ctx.property(id, component)``.  List them in ``requiredProperties()`` so
+  that a missing material is reported before the solve starts.
 
 Adding a kernel in Python
 -------------------------
@@ -110,20 +110,21 @@ Testing
   differentiation, the quadrature rules, the geometric closure of the dual
   mesh, and the patch test.
 * ``tests/python`` holds the verification suite.  Every value in it comes from
-  a published table; when adding a case, cite the table in a comment.
+  a published table, and a new case must cite its table in a comment.
 * Run both with ``ctest --test-dir build`` and ``pytest``.
 
 Style
 -----
 
 C++ follows the MOOSE conventions (two-space indentation, ``_member``
-variables, ``camelCase`` functions, ``PascalCase`` types); Python follows PEP 8
-with descriptive, unabbreviated parameter names.  ``.clang-format`` and the
-``ruff`` configuration in ``pyproject.toml`` encode both.
+variables, ``camelCase`` functions, ``PascalCase`` types), and Python follows
+PEP 8 with descriptive, unabbreviated parameter names.  ``.clang-format`` and
+the ``ruff`` configuration in ``pyproject.toml`` encode both.
 Formatting is checked in continuous integration by clang-format **18** (the
-version on the ``ubuntu-latest`` runner); other major versions format some
+version on the ``ubuntu-latest`` runner).  Other major versions format some
 constructs differently, so format with version 18 (``brew install llvm@18`` on
-macOS, ``apt install clang-format-18`` on Ubuntu).  The exact gate is
+macOS, ``apt install clang-format-18`` on Ubuntu).  The check applied in
+continuous integration is
 
 .. code-block:: console
 
@@ -135,7 +136,7 @@ No output means success.
 Making a release
 ----------------
 
-The package is published on PyPI as ``dualmesh-multiphysics``; it is imported
+The package is published on PyPI as ``dualmesh-multiphysics``.  It is imported
 as ``dualmesh`` and its command is ``dualmesh``.  The repository
 (``MohamedAbdulHameed/dualmesh``), the Read the Docs project (``dualmesh``,
 https://dualmesh.readthedocs.io), the import name and the command all keep the
@@ -161,16 +162,16 @@ time without requiring a new version.
 
 The gates, in order:
 
-1. ``origin`` is ``git@github-personal:MohamedAbdulHameed/dualmesh.git``, the
-   personal SSH alias (identity ``~/.ssh/id_ed25519_mohamed``).
+1. ``origin`` is the SSH remote of the GitHub repository
+   ``MohamedAbdulHameed/dualmesh``.
 2. The branch is ``main``.
 3. ``git fetch`` and ``git pull --ff-only origin main`` succeed: the branch is
    not behind ``origin/main`` and has not diverged from it.
 4. The working tree is clean and no tracked file contains a genuine merge
-   conflict.  ``git diff --check`` is not used for this, because it reports
+   conflict.  ``git diff --check`` is unsuitable for this, because it reports
    every reStructuredText title underline of seven ``=`` (``Solving`` over
-   ``=======``) as a leftover conflict marker; a line of ``=`` counts only
-   between ``<<<<<<<`` and ``>>>>>>>``.
+   ``=======``) as a leftover conflict marker.  The gate counts a line of ``=``
+   as a marker only between ``<<<<<<<`` and ``>>>>>>>``.
 5. ``pyproject.toml`` names the distribution ``dualmesh-multiphysics``, the
    command ``dualmesh = "dualmesh.cli:main"`` and the documentation URL.
 6. The version is the same in ``pyproject.toml``, ``python/dualmesh/__init__.py``
@@ -178,11 +179,11 @@ The gates, in order:
    and ``CHANGELOG.md`` has a ``## [X.Y.Z] - YYYY-MM-DD`` section.
 7. The tag ``vX.Y.Z`` exists neither locally nor on ``origin``.
 
-   A further static gate checks that the fixes of v0.1.0 are still in place:
-   the wheel matrix ``[ubuntu-latest, macos-15-intel, macos-14,
-   windows-latest]`` (no retired macOS 13 runner), cibuildwheel v4.2.1 or
-   later, the ``workflow_dispatch`` trigger, the tag guard and the ``pypi``
-   environment of the publish job, Trusted Publishing without a stored token,
+   A further static gate checks the release configuration: the wheel matrix
+   ``[ubuntu-latest, macos-15-intel, macos-14, windows-latest]`` (which
+   excludes the retired macOS 13 runner), cibuildwheel v4.2.1 or later, the
+   ``workflow_dispatch`` trigger, the tag guard and the ``pypi`` environment
+   of the publish job, Trusted Publishing without a stored token,
    and the Furo class on every ``.. contents::`` directive.
 8. clang-format 18 ``--dry-run --Werror`` on every C++ file.
 9. The C++ library is configured, built and tested with CTest.
@@ -202,14 +203,15 @@ The gates, in order:
     and ``dualmesh --version`` all report the version.
 16. ``main`` is pushed, fast-forward only.
 17. The CI workflow passes on the pushed commit.
-18. The Wheels workflow is run by hand from ``main`` (the dry run: with the
-    GitHub CLI the script starts it, otherwise Actions → Wheels → Run
-    workflow → main), and every wheel job and the sdist pass on the same
-    commit.
+18. The Wheels workflow is run by hand from ``main`` as a dry run, and every
+    wheel job and the sdist pass on the same commit.  The script starts the
+    run with the GitHub CLI when it is installed.  Otherwise the run is started
+    in the GitHub web interface by selecting Actions, Wheels, Run workflow and
+    the branch ``main``.
 19. The Publish to PyPI job of that run is *skipped*.
 20. Only then is the annotated tag created (``git tag -a vX.Y.Z -m "dualmesh
     vX.Y.Z"``), checked to point to ``HEAD``, and pushed alone.
-21. The tag-triggered Wheels run is followed; its first job checks that the
+21. The tag-triggered Wheels run is followed.  Its first job checks that the
     tag matches the package version.
 22. The Publish to PyPI job must succeed (Trusted Publishing, with
     attestations).
@@ -218,22 +220,23 @@ The gates, in order:
     dualmesh-multiphysics==X.Y.Z`` in a fresh environment must import and run.
 24. The temporary environment is deleted, and its deletion is checked.
 
-What not to do, whatever a failure suggests:
+The following actions are prohibited, whatever a failure suggests:
 
-* never ``git push --force`` main, and never resolve a divergence with a
+* Never ``git push --force`` main, and never resolve a divergence with a
   global ``--ours`` or ``--theirs``.  When ``git push`` is rejected with
   "fetch first" (for example after a documentation edit made in the GitHub web
   interface), run ``git fetch origin`` and ``git rebase origin/main``, resolve
-  file by file, rerun the checks and push normally;
-* never tag a dirty tree, a commit that is not on ``origin/main``, or a commit
-  whose Wheels dry run has not passed;
-* never upload with ``twine upload`` or a stored PyPI token: publication is by
-  Trusted Publishing from ``wheels.yml`` in the ``pypi`` environment;
-* never delete and re-push the tag of a version that reached PyPI (PyPI does
-  not accept a file twice); fix forward with a new patch version;
-* do not rename the repository, the Read the Docs project, the import or the
-  command, and do not change the distribution name back to ``dualmesh``;
-* do not remove the ``:class: this-will-duplicate-information-and-it-is-still-useful-here``
+  file by file, rerun the checks and push normally.
+* Never tag a dirty tree, a commit that is not on ``origin/main``, or a commit
+  whose Wheels dry run has not passed.
+* Never upload with ``twine upload`` or a stored PyPI token.  Publication is by
+  Trusted Publishing from ``wheels.yml`` in the ``pypi`` environment.
+* Never delete and re-push the tag of a version that reached PyPI, because
+  PyPI does not accept a file twice.  Release the correction as a new patch
+  version.
+* Do not rename the repository, the Read the Docs project, the import or the
+  command, and do not change the distribution name back to ``dualmesh``.
+* Do not remove the ``:class: this-will-duplicate-information-and-it-is-still-useful-here``
   option of the inline ``.. contents::`` blocks: Furo shows an error-style
   warning for an inline table of contents without it, and the inline tables
   are kept on purpose.

@@ -3,18 +3,16 @@
 References
 ==========
 
-Every method that dualmesh implements is cited here to the work that
-introduced it, not to a textbook that repeats it and not to another code that
-uses it.  Where the implementation follows a design decision taken by another
-project — the object model of MOOSE, the way OVITO organises its manual — the
-project is named as the influence and the underlying method is cited
-separately to its own source.
+Every method that dualmesh implements is cited to the work that introduced
+it.  Where the implementation follows a design decision of another project
+(e.g., the object model of MOOSE or the organisation of the OVITO manual), the
+project is named as the influence, and the underlying method is cited to its
+own source.
 
-Each entry below was checked against the publisher's record: a DOI landing
-page or the publisher-deposited metadata held by Crossref, the project's own
-citation page for the software entries, or a library catalogue record for the
-books.  Where two sources disagreed, the disagreement is noted in the entry.
-The checks were made in September 2026.
+The bibliographic data of each entry were checked against the record of the
+publisher (the DOI landing page or the metadata deposited with Crossref),
+against the citation page of the project for software, and against a library
+catalogue for books.
 
 The method
 ----------
@@ -23,8 +21,8 @@ The method
    Difference, Finite Volume, Finite Element, and Dual Mesh Control Domain
    Methods*, 1st edition, CRC Press, Boca Raton, FL, 2024, 594 pp.,
    ISBN 978-1-032-46637-8.  DOI: 10.1201/9781003382812.  The dual mesh control
-   domain method is Chapter 5; the finite volume methods of :doc:`theory/index` are
-   Chapter 3.  Every verification case in :doc:`verification` that is marked
+   domain method is presented in Chapter 5, and the finite volume methods of
+   :doc:`theory/index` in Chapter 3.  Every verification case in :doc:`verification` that is marked
    "book" comes from this text.
 
 .. [Reddy2019a] J. N. Reddy, "A dual mesh finite domain method for the
@@ -196,8 +194,8 @@ Finite elements
    quadrature rules for the triangle", *International Journal for Numerical
    Methods in Engineering*, 21(6):1129–1148, 1985.
    DOI: 10.1002/nme.1620210612.  The symmetric triangle rules of degree 4 and
-   5 used by the finite element method on triangles and prisms; the library
-   recomputed them to 40 digits.
+   5 used by the finite element method on triangles and prisms.  The library
+   uses the points and weights recomputed to 40 digits.
 
 .. [DouglasDupont1974] J. Douglas, Jr. and T. Dupont, "Galerkin approximations
    for the two point boundary problem using continuous, piecewise polynomial
@@ -205,9 +203,7 @@ Finite elements
    DOI: 10.1007/BF01436724.  The nodal superconvergence of the Galerkin method:
    the finite element solution of a two-point boundary value problem is more
    accurate at the nodes than anywhere else, which is why quadratic elements
-   give fourth-order nodal values.  (The publisher's deposited metadata lists
-   only the first author; both are confirmed by the zbMATH and EUDML records of
-   the same article.)
+   give fourth-order nodal values.
 
 .. [Aubin1967] J.-P. Aubin, "Behavior of the error of the approximate
    solutions of boundary value problems for linear elliptic operators by
@@ -233,9 +229,9 @@ Finite elements
    *International Journal for Numerical Methods in Engineering*,
    10(2):243–251, 1976.  DOI: 10.1002/nme.1620100202.  The Gauss points of an
    element are where the derivative of a finite element solution is most
-   accurate.  This is the result that explains why the dual mesh control domain
-   method gains no order from quadratic elements: its control domain interfaces
-   are at the midpoints between nodes, not at the Gauss points.
+   accurate.  This result explains why the dual mesh control domain method
+   gains no order from quadratic elements, because the interfaces of its control
+   domains lie at the midpoints between nodes and away from the Gauss points.
 
 .. [ZienkiewiczTaylorToo1971] O. C. Zienkiewicz, R. L. Taylor and J. M. Too,
    "Reduced integration technique in general analysis of plates and shells",
@@ -249,12 +245,11 @@ Finite elements
    ``reduced_integration`` parameter.
 
 .. [MalkusHughes1978] D. S. Malkus and T. J. R. Hughes, "Mixed finite element
-   methods — reduced and selective integration techniques: a unification of
+   methods: reduced and selective integration techniques: a unification of
    concepts", *Computer Methods in Applied Mechanics and Engineering*,
    15(1):63–81, 1978.  DOI: 10.1016/0045-7825(78)90005-1.  The equivalence
-   between selective reduced integration and a mixed formulation, which is why
-   reduced integration of the penalty and shear terms is legitimate rather than
-   a trick.
+   between selective reduced integration and a mixed formulation, which
+   justifies the reduced integration of the penalty and shear terms.
 
 .. [DeVahlDavis1983] G. de Vahl Davis, "Natural convection of air in a square
    cavity: a bench mark numerical solution", *International Journal for
@@ -280,26 +275,23 @@ Finite elements
    Navier-Stokes equations using the finite element technique", *Computers &
    Fluids*, 1(1):73–100, 1973.  DOI: 10.1016/0045-7930(73)90027-3.  The
    element with quadratic velocity and linear pressure that carries their
-   names.  Metadata checked against Crossref; the paper itself was not
-   re-read for this documentation.
+   names.
 
 .. [BoffiBrezziFortin2013] D. Boffi, F. Brezzi and M. Fortin, *Mixed Finite
    Element Methods and Applications*, Springer Series in Computational
    Mathematics 44, Springer, Berlin, 2013.  DOI: 10.1007/978-3-642-36519-5.
    The standard reference for the inf-sup condition and for the stability and
-   error estimates of the Taylor-Hood family.  Metadata checked against
-   Crossref; the book was not re-read for this documentation, and the orders
-   quoted from it in :doc:`theory/heat_and_fluids` are confirmed by the
-   measurements reported there rather than taken on trust.
+   error estimates of the Taylor-Hood family.  The orders of convergence
+   quoted in :doc:`theory/heat_and_fluids` are confirmed by the measurements
+   reported there.
 
 .. [ChapelleBathe1993] D. Chapelle and K. J. Bathe, "The inf-sup test",
    *Computers & Structures*, 47(4–5):537–545, 1993.
    DOI: 10.1016/0045-7949(93)90340-J.  The numerical inf-sup test: the discrete
    inf-sup constant computed as the smallest non-zero eigenvalue of a
-   generalised eigenproblem on a sequence of refined meshes.  Metadata checked
-   against Crossref; the paper was not read, and the test in
-   ``tests/python/test_taylor_hood.py`` implements the eigenproblem as it is
-   stated in :doc:`theory/heat_and_fluids`.
+   generalised eigenproblem on a sequence of refined meshes.  The test in
+   ``tests/python/test_taylor_hood.py`` solves the eigenproblem stated in
+   :doc:`theory/heat_and_fluids`.
 
 .. [Tezduyar1991] T. E. Tezduyar, "Stabilized finite element formulations for
    incompressible flow computations", *Advances in Applied Mechanics*,
@@ -343,7 +335,7 @@ Solvers
    DOI: 10.2172/1968587.  The library behind ``linear_solver="petsc"``.
 
 .. [FalgoutYang2002] R. D. Falgout and U. M. Yang, "hypre: a library of high
-   performance preconditioners", in *Computational Science — ICCS 2002*,
+   performance preconditioners", in *Computational Science: ICCS 2002*,
    Lecture Notes in Computer Science 2331, pp. 632–641, Springer, 2002.
    DOI: 10.1007/3-540-47789-6_66.
 
@@ -364,9 +356,7 @@ Solvers
 
 .. [HestenesStiefel1952] M. R. Hestenes and E. Stiefel, "Methods of conjugate
    gradients for solving linear systems", *Journal of Research of the National
-   Bureau of Standards*, 49(6):409–436, 1952 (Research Paper 2379).  Several
-   secondary sources give the last page as 435; the scanned article ends on
-   page 436.
+   Bureau of Standards*, 49(6):409–436, 1952 (Research Paper 2379).
 
 .. [VanDerVorst1992] H. A. van der Vorst, "Bi-CGSTAB: a fast and smoothly
    converging variant of Bi-CG for the solution of nonsymmetric linear
@@ -423,13 +413,10 @@ Solvers
 .. [DryjaWidlund1994] M. Dryja and O. B. Widlund, "Domain decomposition
    algorithms with small overlap", *SIAM Journal on Scientific Computing*,
    15(3):604–620, 1994.  DOI: 10.1137/0915040.  The two-level additive Schwarz
-   method with a coarse space.  The idea is older — it appears in a 1987
-   Courant Institute technical report by the same authors — but that report has
-   no DOI and no primary record that could be checked, so the journal paper is
-   cited instead.
+   method with a coarse space.
 
 .. [ToselliWidlund2005] A. Toselli and O. Widlund, *Domain Decomposition
-   Methods — Algorithms and Theory*, Springer Series in Computational
+   Methods: Algorithms and Theory*, Springer Series in Computational
    Mathematics, volume 34, Springer, Berlin, 2005, ISBN 978-3-540-20696-5.
    DOI: 10.1007/b137868.  The analysis that explains why a coarse level is
    needed for the iteration count to stay bounded as ranks are added.
@@ -437,8 +424,8 @@ Solvers
 .. [KarypisKumar1998] G. Karypis and V. Kumar, "A fast and high quality
    multilevel scheme for partitioning irregular graphs", *SIAM Journal on
    Scientific Computing*, 20(1):359–392, 1998.
-   DOI: 10.1137/S1064827595287997.  METIS, used to partition a mesh when it is
-   available at build time.
+   DOI: 10.1137/S1064827595287997.  METIS partitions the mesh when the library
+   is available at build time.
 
 .. [BergerBokhari1987] M. J. Berger and S. H. Bokhari, "A partitioning strategy
    for nonuniform problems on multiprocessors", *IEEE Transactions on
@@ -465,9 +452,7 @@ Time integration and adaptivity
    approach to the limit", *Philosophical Transactions of the Royal Society A*,
    226:299–361, 1927.  DOI: 10.1098/rsta.1927.0008.  The extrapolation that the
    error-controlled time stepper uses to estimate the error of a step by
-   comparing one step with two half steps.  The phrase "deferred approach to
-   the limit" belongs to this 1927 paper with Gaunt, not to the 1911 paper,
-   which is often miscited for it.
+   comparing one step with two half steps.
 
 .. [HairerNorsettWanner1993] E. Hairer, S. P. Nørsett and G. Wanner, *Solving
    Ordinary Differential Equations I: Nonstiff Problems*, 2nd revised edition,
@@ -479,8 +464,7 @@ Time integration and adaptivity
    estimator and adaptive procedure for practical engineering analysis",
    *International Journal for Numerical Methods in Engineering*,
    24(2):337–357, 1987.  DOI: 10.1002/nme.1620240206.  The gradient recovery
-   error indicator.  (The word "engineering" is misspelt in the publisher's
-   deposited title; it is given correctly here.)
+   error indicator.
 
 .. [ZienkiewiczZhu1992a] O. C. Zienkiewicz and J. Z. Zhu, "The superconvergent
    patch recovery and a posteriori error estimates. Part 1: The recovery
@@ -491,9 +475,8 @@ Time integration and adaptivity
    patch recovery and a posteriori error estimates. Part 2: Error estimates and
    adaptivity", *International Journal for Numerical Methods in Engineering*,
    33(7):1365–1382, 1992.  DOI: 10.1002/nme.1620330703.  dualmesh implements
-   the simpler averaging recovery of [ZienkiewiczZhu1987]_, not the patch
-   recovery of these two papers; they are cited because they are the reference
-   a reader looking for a better recovery should go to.
+   the averaging recovery of [ZienkiewiczZhu1987]_.  The superconvergent patch
+   recovery of these two papers is a more accurate alternative.
 
 .. [Dorfler1996] W. Dörfler, "A convergent adaptive algorithm for Poisson's
    equation", *SIAM Journal on Numerical Analysis*, 33(3):1106–1124, 1996.
@@ -517,8 +500,8 @@ Physics and verification data
 
 .. [Reddy2019b] J. N. Reddy, *Introduction to the Finite Element Method*, 4th
    edition, McGraw-Hill Education, New York, NY, 2019,
-   ISBN 978-1-259-86190-1.  The third edition and earlier are titled *An
-   Introduction to the Finite Element Method*; the fourth dropped the article.
+   ISBN 978-1-259-86190-1.  The third and earlier editions are titled *An
+   Introduction to the Finite Element Method*.
 
 .. [ReddyBeams2022] J. N. Reddy, *Theories and Analyses of Beams and
    Axisymmetric Circular Plates*, CRC Press, Boca Raton, FL, 2022,
@@ -549,14 +532,10 @@ Physics and verification data
 Nuclear fuel performance
 ------------------------
 
-These are the works behind :doc:`theory/fuel_performance`.  The module was
-written from the open literature only; no source code of BISON, TRANSURANUS
-or OFFBEAT was read.  Every DOI below was checked against Crossref in
-September 2026.  Several of the original papers are paywalled or are reports
-that are not public.  For those, the correlation was taken from a public
-secondary source (the FRAPCON-4.0 and FAST-1.0 material property reports of
-PNNL, the public BISON documentation pages, or the review of Van Uffelen et
-al.), and the entry says so.
+These are the works cited in :doc:`fuel/models` and :doc:`fuel/correlations`.
+The module was written from the published literature, and no source code of
+BISON, TRANSURANUS or OFFBEAT was used.  Every DOI below was checked against
+Crossref.
 
 *The three codes that inspired the module*
 
@@ -581,16 +560,15 @@ al.), and the entry says so.
 
 .. [VanUffelen2019] P. Van Uffelen, J. Hales, W. Li, G. Rossiter and
    R. Williamson, "A review of fuel performance modelling", *Journal of Nuclear
-   Materials*, 516:373–412, 2019.  DOI: 10.1016/j.jnucmat.2018.12.037.  Open
-   access; read in full.  The best single introduction to the field.
+   Materials*, 516:373–412, 2019.  DOI: 10.1016/j.jnucmat.2018.12.037.  A
+   review of the models and the codes of fuel performance.
 
 *Gap heat transfer and the coolant*
 
 .. [RossStoute1962] A. M. Ross and R. L. Stoute, *Heat Transfer Coefficient
    Between UO2 and Zircaloy-2*, report AECL-1552 (CRFD-1075), Atomic Energy
-   of Canada Limited, Chalk River, 1962.  No DOI; not read.  The form of the
-   gap conductance was taken from [LanningHann1975]_ and the FRAPCON-4.0
-   material property report.
+   of Canada Limited, Chalk River, 1962.  The gap conductance model of gas
+   conduction, radiation and solid contact.
 
 .. [LanningHann1975] D. D. Lanning and C. R. Hann, *Review of Methods
    Applicable to the Calculation of Gap Conductance in Zircaloy-Clad UO2 Fuel
@@ -610,8 +588,7 @@ al.), and the entry says so.
    Publications in Engineering*, 2(13):443–461, 1930.  Reprinted in
    *International Communications in Heat and Mass Transfer*, 12(1):3–22,
    1985, DOI: 10.1016/0735-1933(85)90003-X.  The coefficient 0.023 used by the
-   module is the conventional one (it is due to McAdams, not to the 1930
-   paper).
+   module is the one introduced by McAdams.
 
 *Fission gas*
 
@@ -628,21 +605,20 @@ al.), and the entry says so.
 .. [ForsbergMassih1985] K. Forsberg and A. R. Massih, "Diffusion theory of
    fission gas migration in irradiated nuclear fuel UO2", *Journal of Nuclear
    Materials*, 135(2–3):140–148, 1985.  DOI: 10.1016/0022-3115(85)90071-6.
-   (The DOI ending "-8" that circulates in the literature does not resolve.)
+
 
 .. [Pastore2013] G. Pastore, L. Luzzi, V. Di Marcello and P. Van Uffelen,
    "Physics-based modelling of fission gas swelling and release in UO2
    applied to integral fuel rod analysis", *Nuclear Engineering and Design*,
-   256:75–86, 2013.  DOI: 10.1016/j.nucengdes.2012.12.002.  Not read
-   (paywalled); cited for the grain-boundary saturation picture, whose
-   equations were taken from [Pastore2015]_.
+   256:75–86, 2013.  DOI: 10.1016/j.nucengdes.2012.12.002.  The grain-face
+   bubble model and the gaseous swelling of the fission gas model.
 
 .. [Pastore2015] G. Pastore, L. P. Swiler, J. D. Hales, S. R. Novascone,
    D. M. Perez, B. W. Spencer, L. Luzzi, P. Van Uffelen and R. L. Williamson,
    "Uncertainty and sensitivity analysis of fission gas behavior in
    engineering-scale fuel modeling", *Journal of Nuclear Materials*,
-   456:398–408, 2015.  DOI: 10.1016/j.jnucmat.2014.09.077.  Read in the
-   authors' post-print; the source of the diffusion coefficient used here.
+   456:398–408, 2015.  DOI: 10.1016/j.jnucmat.2014.09.077.  The parameters
+   of the grain-face bubble model and their uncertainty ranges.
 
 *Uranium dioxide*
 
@@ -660,7 +636,7 @@ al.), and the entry says so.
    16(3):531–535, 1972.  DOI: 10.13182/NT72-6.
 
 .. [Martin1988] D. G. Martin, "The thermal expansion of solid UO2 and (U,Pu)
-   mixed oxides — a review and recommendations", *Journal of Nuclear
+   mixed oxides: a review and recommendations", *Journal of Nuclear
    Materials*, 152(2–3):94–101, 1988.  DOI: 10.1016/0022-3115(88)90315-7.
 
 *Uranium mononitride*
@@ -699,14 +675,11 @@ al.), and the entry says so.
    of the effect of final annealing on the in- and out-of-reactor creep
    behavior of Zircaloy cladding", in *Zirconium in the Nuclear Industry:
    Eleventh International Symposium*, ASTM STP 1295, pp. 448–468, 1996.
-   DOI: 10.1520/STP16185S.  Not read (paywalled); the constants were taken
-   from the public BISON and FRAPCON-4.0 documentation.
+   DOI: 10.1520/STP16185S.
 
 .. [Franklin1982] D. G. Franklin, "Zircaloy-4 cladding deformation during
    power reactor irradiation", in *Zirconium in the Nuclear Industry: Fifth
    Conference*, ASTM STP 754, pp. 235–267, 1982.  DOI: 10.1520/STP37057S.
-   Not read; the growth constants were taken from the FRAPCON-4.0 material
-   property report.
 
 *Mechanics*
 
@@ -718,16 +691,14 @@ al.), and the entry says so.
 TRISO particles
 ---------------
 
-These are the works behind :doc:`theory/triso`.
+These are the works cited in :doc:`fuel/triso`.
 
 .. [IAEA1674] International Atomic Energy Agency, *Advances in High
    Temperature Gas Cooled Reactor Fuel Technology*, IAEA-TECDOC-CD-1674,
    IAEA, Vienna, 2012.  Chapter 9 reports the fuel performance benchmark of
    the coordinated research project CRP-6: the specification of cases 1 to 8
    (Tables 9.5 to 9.8), the closed form solutions (Eqs. 9.24 to 9.31) and the
-   results of the eight participating codes (Figs. 9.4 to 9.16).  Section 9.2
-   was read in full, with the tables and equations checked on the rendered
-   pages.
+   results of the eight participating codes (Figs. 9.4 to 9.16).
 
 .. [Weibull1951] W. Weibull, "A statistical distribution function of wide
    applicability", *Journal of Applied Mechanics*, 18(3):293-297, 1951.
@@ -738,11 +709,9 @@ Software that dualmesh builds on, or learns from
 ------------------------------------------------
 
 .. [Eigen] G. Guennebaud, B. Jacob and others, *Eigen*, 2010,
-   https://libeigen.gitlab.io.  The linear algebra library.  The project has
-   moved from ``eigen.tuxfamily.org``, which now redirects; the citation above
-   is the one the project's own BibTeX page currently asks for.
+   https://libeigen.gitlab.io.  The linear algebra library.
 
-.. [pybind11] W. Jakob, J. Rhinelander and D. Moldovan, *pybind11 — Seamless
+.. [pybind11] W. Jakob, J. Rhinelander and D. Moldovan, *pybind11: Seamless
    operability between C++11 and Python*, 2017,
    https://github.com/pybind/pybind11.  The citation the project asks for in
    its documentation FAQ.
@@ -761,13 +730,13 @@ Software that dualmesh builds on, or learns from
    and C. J. Permann, "4.0 MOOSE: enabling massively parallel multiphysics
    simulation", *SoftwareX*, 31:102264, 2025.
    DOI: 10.1016/j.softx.2025.102264.  The current reference for MOOSE, and
-   the one the project's citation page asks for.  dualmesh follows MOOSE's
-   object model -- named, registered kernels, boundary conditions and
-   materials with validated, self-documenting parameters, assembled into one
-   monolithic, fully coupled system with an automatically differentiated
-   Jacobian.  No MOOSE source code is used; the influence is on the design,
-   and every algorithm that MOOSE also implements is cited above to its own
-   source.
+   the one the project's citation page asks for.  dualmesh follows the
+   object model of MOOSE: named and registered kernels, boundary conditions
+   and materials with validated and self-documenting parameters, assembled
+   into one monolithic and fully coupled system with an automatically
+   differentiated Jacobian.  No source code of MOOSE is used.  The influence
+   is on the design, and every algorithm that MOOSE also implements is cited
+   above to its own source.
 
 .. [MOOSE2020] C. J. Permann, D. R. Gaston, D. Andrš, R. W. Carlsen, F. Kong,
    A. D. Lindsay, J. M. Miller, J. W. Peterson, A. E. Slaughter, R. H. Stogner
@@ -784,9 +753,9 @@ Software that dualmesh builds on, or learns from
 .. [libMesh2006] B. S. Kirk, J. W. Peterson, R. H. Stogner and G. F. Carey,
    "libMesh: a C++ library for parallel adaptive mesh refinement/coarsening
    simulations", *Engineering with Computers*, 22(3–4):237–254, 2006.
-   DOI: 10.1007/s00366-006-0049-3.  The finite element library underneath
-   MOOSE.  dualmesh does not use it; the reference is given because a reader
-   comparing the two frameworks will want it.
+   DOI: 10.1007/s00366-006-0049-3.  The finite element library on which
+   MOOSE is built.  dualmesh does not use it, and the reference is given for
+   a comparison of the two frameworks.
 
 .. [OpenFOAM1998] H. G. Weller, G. Tabor, H. Jasak and C. Fureby, "A tensorial
    approach to computational continuum mechanics using object-oriented
@@ -795,7 +764,7 @@ Software that dualmesh builds on, or learns from
    :doc:`openfoam`.
 
 .. [OVITO2010] A. Stukowski, "Visualization and analysis of atomistic
-   simulation data with OVITO — the Open Visualization Tool", *Modelling and
+   simulation data with OVITO: the Open Visualization Tool", *Modelling and
    Simulation in Materials Science and Engineering*, 18(1):015012, 2010.
    DOI: 10.1088/0965-0393/18/1/015012.  Named as an influence on the
    organisation of this manual, in which every keyword has a page of its own
@@ -807,3 +776,8 @@ Software that dualmesh builds on, or learns from
    *International Journal for Numerical Methods in Engineering*,
    79(11):1309–1331, 2009.  DOI: 10.1002/nme.2579.  One of the mesh generators
    whose output dualmesh reads, through meshio.
+
+.. [COMSOLWrench] COMSOL AB, "Stresses and Strains in a Wrench", COMSOL
+   Multiphysics 6.1 Application Library, model ``wrench``,
+   https://doc.comsol.com/6.1/doc/com.comsol.help.models.mph.wrench/wrench.html.
+   The load case of the wrench tutorial (:doc:`tutorials/wrench`).

@@ -1,16 +1,16 @@
 Theory manual
 =============
 
-This part of the manual states exactly what the code computes.  It is meant to
-be read rather than searched: each chapter gives the background, then the
-equations, then what the implementation does with them, and says plainly where
-a method has a limitation.
+This part of the manual states what the code computes.  Each chapter gives the
+background, the governing equations and their discretisation, and the
+limitations of each method.
 
 The notation follows J. N. Reddy, *Computational Methods in Engineering*
 [Reddy2024]_, referred to throughout as "the book".
 
-The first chapter is the one to read first: everything else in the library is
-built on the canonical conservation form it introduces.
+The first chapter introduces the canonical conservation form on which the rest
+of the library is built, and it should be read before the others.  The models
+of the fuel performance module are described in :doc:`/fuel/models`.
 
 .. toctree::
    :maxdepth: 2
@@ -34,7 +34,3 @@ built on the canonical conservation form it introduces.
 
    heat_and_fluids
    solid_mechanics
-   fuel_performance
-   correlations
-   fuel_benchmarks
-   triso

@@ -7,11 +7,12 @@ Requirements
 * a C++17 compiler (GCC 9+, Clang 10+, MSVC 2019+)
 * CMake 3.18 or newer
 * Python 3.9 or newer
-* `Eigen <https://eigen.tuxfamily.org>`_ 3.3 or newer — found automatically if
-  installed, otherwise downloaded during the build.  On macOS
-  ``brew install eigen cmake`` is the quickest route; on Debian or Ubuntu,
-  ``apt install libeigen3-dev cmake``
-* `pybind11 <https://pybind11.readthedocs.io>`_ — pulled in by the build
+* `Eigen <https://eigen.tuxfamily.org>`_ 3.3 or newer, which is found
+  automatically if installed and is otherwise downloaded during the build.  On
+  macOS it is installed with ``brew install eigen cmake``, and on Debian or
+  Ubuntu with ``apt install libeigen3-dev cmake``
+* `pybind11 <https://pybind11.readthedocs.io>`_, which is obtained automatically
+  by the build
 
 Optional at run time: `meshio <https://github.com/nschloe/meshio>`_ for reading
 and writing mesh files, `PyYAML <https://pyyaml.org>`_ for input files, and
@@ -32,8 +33,8 @@ imported as ``dualmesh`` and the command-line program is ``dualmesh``.
    python -c "import dualmesh; print(dualmesh.__version__)"
    dualmesh --version
 
-The wheels are built without MPI and PETSc; for those, build from source as
-described below.
+The wheels are built without MPI and PETSc.  To use either, build from source
+as described below.
 
 From source
 -----------
@@ -70,8 +71,8 @@ Optional: MPI and PETSc
 
 The distributed solver needs MPI, and ``linear_solver="petsc"`` needs PETSc,
 which is itself built on MPI.  Both are switched on at build time.  On Debian
-or Ubuntu the packages are ``libopenmpi-dev`` and ``libpetsc-real-dev``;
-PETSc is found with ``pkg-config``, so a PETSc built from source is found by
+or Ubuntu the packages are ``libopenmpi-dev`` and ``libpetsc-real-dev``.
+PETSc is located with ``pkg-config``, so a PETSc built from source is found by
 adding ``$PETSC_DIR/$PETSC_ARCH/lib/pkgconfig`` to ``PKG_CONFIG_PATH``.  PETSc
 and dualmesh must use the same MPI.
 
@@ -93,7 +94,7 @@ Running the tests
    pytest                                       # verification against the book
 
 The Python suite reproduces the published dual mesh results of every worked
-example of the book that has tabulated values; see :doc:`verification`.
+example of the book that has tabulated values (see :doc:`verification`).
 
 Checking the installation
 -------------------------

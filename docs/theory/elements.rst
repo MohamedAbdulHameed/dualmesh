@@ -7,12 +7,13 @@ description held once per reference element
 (``include/dualmesh/fe/ReferenceElement.h``, ``src/fe/ReferenceElement.cpp``).
 This chapter states which elements exist, which discretisations accept them,
 what their shape functions are, how the control domains inside them are
-constructed, which quadrature rules are available, and — at some length,
-because it is the result a reader is least likely to expect — what accuracy the
-quadratic elements actually buy the dual mesh control domain method.  The notation of :doc:`foundations` is used
-throughout: :math:`\boldsymbol{\xi}` denotes reference coordinates,
-:math:`\psi_a` the shape function of local node :math:`a`, and the
-isoparametric map :math:`\mathbf{x}(\boldsymbol{\xi}) = \sum_a \mathbf{x}_a
+constructed and which quadrature rules are available.  It then examines at some
+length, because the result is unexpected, the accuracy that the quadratic
+elements give the dual mesh control domain method.  The notation of
+:doc:`foundations` is used throughout: :math:`\boldsymbol{\xi}` denotes
+reference coordinates, :math:`\psi_a` the shape function of local node
+:math:`a`, and the isoparametric map
+:math:`\mathbf{x}(\boldsymbol{\xi}) = \sum_a \mathbf{x}_a
 \psi_a(\boldsymbol{\xi})` [Irons1966]_ carries every reference construction
 into physical space.
 
@@ -27,10 +28,10 @@ The element families
 Fourteen element types are supported.  The **linear** elements interpolate
 with polynomials of degree one in each reference direction (the pyramid with a
 rational function, below).  The **quadratic** elements add a node at the
-midpoint of every edge and interpolate with polynomials of degree two; the
+midpoint of every edge and interpolate with polynomials of degree two.  The
 *Lagrange* quadratic elements ``Quad9`` and ``Hex27`` also have nodes at the
-face and element centres, and the *serendipity* elements ``Quad8`` and
-``Hex20`` do without them.
+face and element centres, while the *serendipity* elements ``Quad8`` and
+``Hex20`` omit them.
 
 =============  ===  =====  =====  ================================================
 Type           Dim  Nodes  Order  Node set
@@ -58,8 +59,8 @@ functions.  The dual mesh control domain method and the vertex-centred finite
 volume method also need the element to be divided into node-centred control
 domains, and three types cannot be: the two serendipity elements and the
 pyramid (see `Which methods accept which elements`_).  A mesh may mix types
-freely -- hexahedra, prisms, pyramids and tetrahedra in one mesh, for instance
--- and the methods apply to it element by element.
+freely (hexahedra, prisms, pyramids and tetrahedra in one mesh, for instance),
+and the methods apply to it element by element.
 
 The tensor elements
 ^^^^^^^^^^^^^^^^^^^
@@ -94,20 +95,20 @@ coordinates,
 
    \psi_a(\boldsymbol{\xi}) = \prod_{d=1}^{n_{\mathrm{dim}}} L_{k_d}(\xi_d) ,
 
-and its gradient is obtained by differentiating one factor at a time.  This is
-literally how ``ReferenceElement::shape`` computes them: one routine serves the
-linear and the quadratic elements, the only difference being the grid :math:`c`
-it is given.
+and its gradient is obtained by differentiating one factor at a time.
+``ReferenceElement::shape`` computes them in exactly this way: one routine
+serves the linear and the quadratic elements, which differ only in the grid
+:math:`c` passed to it.
 
 The reference nodes are ordered as VTK orders them, for every element type,
 so that a mesh read from or written to a file needs no renumbering.  Corners
 come first.  ``Quad4`` has its corners at :math:`(-1,-1)`, :math:`(1,-1)`,
-:math:`(1,1)`, :math:`(-1,1)`; ``Quad8`` adds the edge midpoints
+:math:`(1,1)`, :math:`(-1,1)`.  ``Quad8`` adds the edge midpoints
 :math:`(0,-1)`, :math:`(1,0)`, :math:`(0,1)`, :math:`(-1,0)`, and ``Quad9``
 adds after them the centre :math:`(0,0)`.  ``Hex8`` takes the four corners of
-the face :math:`\xi_3 = -1` and then the four of :math:`\xi_3 = +1`;
-``Hex20`` adds the twelve edge midpoints -- the four of the bottom face, the
-four of the top face, then the four vertical edges -- and ``Hex27`` adds after
+the face :math:`\xi_3 = -1` and then the four of :math:`\xi_3 = +1`.
+``Hex20`` adds the twelve edge midpoints (the four of the bottom face, the
+four of the top face, then the four vertical edges), and ``Hex27`` adds after
 them the six face centres in the order :math:`\xi_1 = -1`,
 :math:`\xi_1 = +1`, :math:`\xi_2 = -1`, :math:`\xi_2 = +1`,
 :math:`\xi_3 = -1`, :math:`\xi_3 = +1`, and finally the centre
@@ -149,7 +150,7 @@ and for the quadratic ones they are
 
 ``Tri6`` takes its edges as :math:`(0,1)`, :math:`(1,2)`, :math:`(2,0)`, so
 nodes 3, 4, 5 sit at :math:`(\tfrac12, 0)`, :math:`(\tfrac12, \tfrac12)`,
-:math:`(0, \tfrac12)`; ``Tet10`` takes its six edges as :math:`(0,1)`,
+:math:`(0, \tfrac12)`.  ``Tet10`` takes its six edges as :math:`(0,1)`,
 :math:`(1,2)`, :math:`(0,2)`, :math:`(0,3)`, :math:`(1,3)`, :math:`(2,3)`, so
 nodes 4 to 9 sit at :math:`(\tfrac12,0,0)`, :math:`(\tfrac12,\tfrac12,0)`,
 :math:`(0,\tfrac12,0)`, :math:`(0,0,\tfrac12)`, :math:`(\tfrac12,0,\tfrac12)`,
@@ -227,25 +228,27 @@ domain, and every node owns one.  The median dual makes that assignment from
 the node set, and it is not defined for three of the elements.
 
 * A **serendipity** element has mid-edge nodes and nothing in the interior.
-  The region around the element centre then belongs to no node: there is no
-  centre node to give it to, and handing it to a corner or a mid-edge node
-  instead would destroy the symmetry of the partition, make the control domains
-  depend on the node numbering, and break the property on which the method
-  rests, that the control domains tile the element and their surfaces close.
+  The region around the element centre then belongs to no node, because there
+  is no centre node to receive it.  Assigning it to a corner or a mid-edge node
+  would destroy the symmetry of the partition, make the control domains depend
+  on the node numbering, and break the property on which the method rests,
+  namely that the control domains tile the element and their surfaces close.
 
-* The **pyramid**'s apex is shared by four edges rather than three.  The median
-  sub-cell of the apex is then not a hexahedral patch like every other
-  sub-cell in the library, and the non-tensor decomposition that would match
-  the control domain interfaces exactly is not implemented.
+* The apex of the **pyramid** is shared by four edges, whereas each vertex of a
+  tetrahedron, a prism or a hexahedron is shared by three.  The median sub-cell
+  of the apex is then a polyhedron that differs from the hexahedral patches
+  used for every other sub-cell in the library, and the library does not
+  implement the non-tensor decomposition that would match the control domain
+  interfaces exactly.
 
-The finite element and cell-centred finite volume methods need no partition --
-the first integrates over the element and the second over the cell -- so they
-accept all fourteen types.  The check is made when a problem is created: a
-dual-mesh method on a mesh containing one of the three types raises an error
-that names the type, gives the reason above, and says which methods do accept
-it (``test_element_types.py``).  Promoting a linear mesh to the serendipity
-elements is ``mesh.second_order(serendipity=True)``, and the generators accept
-``Quad8`` and ``Hex20`` directly.
+The finite element and cell-centred finite volume methods need no partition,
+because the first integrates over the element and the second over the cell.
+They therefore accept all fourteen types.  The check is made when a problem is
+created: a dual-mesh method on a mesh containing one of the three types raises
+an error that names the type, gives the reason above, and lists the methods
+that accept it (``test_element_types.py``).  A linear mesh is promoted to the
+serendipity elements by ``mesh.second_order(serendipity=True)``, and the
+generators accept ``Quad8`` and ``Hex20`` directly.
 
 How the dual mesh is built inside an element
 --------------------------------------------
@@ -253,7 +256,7 @@ How the dual mesh is built inside an element
 The control domains and their interfaces are never meshed explicitly.  Each is
 described once, in reference coordinates of the parent element, as a
 tensor-product *patch* of dimension zero to three, and is carried into physical
-space by the element's own isoparametric map; the same description therefore
+space by the element's own isoparametric map.  The same description therefore
 serves a straight element, a distorted one and a quadratic one whose edges are
 curved.  Two constructions are needed, because the nodes of a tensor element
 lie on a grid and admit an exact box construction while the nodes of a simplex
@@ -263,8 +266,8 @@ Tensor elements: boxes
 ^^^^^^^^^^^^^^^^^^^^^^
 
 For a tensor element, the control domain of a node is the box bounded, in each
-direction, by the planes half way to its neighbours on the grid; at the edge of
-the element the box stops at the element boundary.  If node :math:`a` has grid
+direction, by the planes half way to its neighbours on the grid.  At the edge
+of the element the box stops at the element boundary.  If node :math:`a` has grid
 index :math:`k` in direction :math:`d`, its box spans
 
 .. math::
@@ -286,16 +289,16 @@ owns a box such as :math:`[-1,-\tfrac12]^2`, a sixteenth of the reference area,
 each mid-edge node an eighth, and the centre node
 :math:`[-\tfrac12,\tfrac12]^2`, a quarter.
 The shares sum to one, as they must.  The position :math:`\xi = \pm\tfrac12`
-of the interfaces is not incidental; it is the subject of the accuracy section
-below.
+of the interfaces determines the accuracy of the method on quadratic elements,
+which is the subject of a section below.
 
 Simplices: sub-simplices and median sub-cells
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-A simplex has no grid, so the box construction does not apply.  Instead the
-element is first written as a set of **linear sub-simplices**, and the median
+A simplex has no grid, so the box construction does not apply.  The element is
+therefore first written as a set of **linear sub-simplices**, and the median
 dual of each sub-simplex is accumulated onto its vertices.  A linear element is
-its own single sub-simplex; a quadratic one is subdivided.
+its own single sub-simplex, and a quadratic one is subdivided.
 
 Inside one linear sub-simplex with vertices :math:`X_0, \dots, X_{n}` and
 centroid :math:`X_c`, the median sub-cell of vertex :math:`X_i` is the region
@@ -340,26 +343,26 @@ joins nodes 4 and 9,
 
 The control domain of a node is then the **union of its median sub-cells over
 every sub-simplex that touches it**, which is why a control domain is stored as
-a list of patches rather than as one.  The arithmetic is worth doing once,
-because it shows how unequal the partition is.  On a ``Tri6`` of area :math:`A`
-each sub-triangle has area :math:`A/4` and each median sub-cell within it
-:math:`A/12`; a corner node belongs to one sub-triangle and owns :math:`A/12`,
-a mid-edge node belongs to three and owns :math:`A/4`, so the corner nodes
-share a quarter of the element and the mid-edge nodes three quarters.  On a
-``Tet10`` of volume :math:`V` every sub-tetrahedron has volume :math:`V/8` and
-every median sub-cell :math:`V/32`; a corner node owns :math:`V/32`, nodes 4
-and 9 belong to two corner tetrahedra and to all four inner ones and own
+a list of patches.  The measures of the control domains show how unequal the
+partition is.  On a ``Tri6`` of area :math:`A` each sub-triangle has area
+:math:`A/4` and each median sub-cell within it :math:`A/12`.  A corner node
+belongs to one sub-triangle and owns :math:`A/12`, and a mid-edge node belongs
+to three and owns :math:`A/4`, so the corner nodes share a quarter of the
+element and the mid-edge nodes three quarters.  On a ``Tet10`` of volume
+:math:`V` every sub-tetrahedron has volume :math:`V/8` and every median
+sub-cell :math:`V/32`.  A corner node owns :math:`V/32`, nodes 4 and 9 belong
+to two corner tetrahedra and to all four inner ones and own
 :math:`6V/32 = 3V/16` each, and the remaining four mid-edge nodes own
 :math:`4V/32 = V/8` each.  The shares sum to :math:`V`.
 
-The position of nodes 4 and 9 in that list is a genuine, if minor, defect: the
+The special role of nodes 4 and 9 is a minor defect of the construction.  The
 inner octahedron can be split along any of its three diagonals, the code always
-chooses :math:`4`–:math:`9`, and the two nodes on it receive larger control
-domains than the other four.  The partition is therefore not invariant under a
-renumbering of the element's nodes.  It remains a valid partition — it tiles
-and it closes — and the discretisation remains consistent, as the patch test
-confirms, but two differently numbered ``Tet10`` meshes of the same geometry
-will give slightly different numbers.
+chooses the diagonal that joins nodes 4 and 9, and the two nodes on it receive
+larger control domains than the other four.  The partition therefore depends on
+the numbering of the element's nodes.  It remains a valid partition, because
+it tiles the element and its surfaces close, and the discretisation remains
+consistent, as the patch test confirms.  Two differently numbered ``Tet10``
+meshes of the same geometry nevertheless give slightly different results.
 
 The prism: a product of duals
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -372,29 +375,28 @@ the node's side of the mid-plane :math:`\zeta = 0`, a hexahedral patch.  The
 interfaces are of two kinds: the median segments of the triangle times a half
 segment, between nodes on the same end face, and the median quadrilateral of a
 vertex in the mid-plane, between a node and the node above it.  The
-construction is exactly the general median construction -- bounded by edge
-midpoints, face centroids and the element centroid -- so on a triangular face
+construction is exactly the general median construction (bounded by edge
+midpoints, face centroids and the element centroid), so on a triangular face
 it matches the dual of a neighbouring tetrahedron and on a quadrilateral face
 that of a neighbouring hexahedron, and a mesh of hexahedra, prisms and
 tetrahedra has a conforming dual.
 
-Verification rather than citation
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Verification of the quadratic simplex construction
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 The median dual of a linear simplex and the box dual of a tensor element are
-standard; the construction just described for a *quadratic simplex* is not.  It
-is not a published construction, as far as is known here: it was devised for
-this library because the method needed one, the literature on the dual mesh
-control domain method having treated linear and tensor-product elements.  It is
-therefore offered as verified rather than as cited, and the verification is the
-pair of properties a partition must have:
+standard constructions.  The published descriptions of the dual mesh control
+domain method treat linear and tensor-product elements, and the construction
+described above for a *quadratic simplex* was developed for this library.  Its
+correctness is therefore established by verification of the two properties
+that every partition must have:
 
 * **Tiling.** The measures of an element's control domains, each integrated
   with a four-point Gauss rule on every patch, sum to the measure of the
   element.
 * **Closure.** For every node, the signed area vectors of all the surfaces
-  bounding its control domain — the interfaces it shares with the other nodes,
-  plus the parts of the element's sides that belong to it — sum to the zero
+  bounding its control domain (the interfaces it shares with the other nodes,
+  plus the parts of the element's sides that belong to it) sum to the zero
   vector.  This is the discrete divergence theorem applied to a constant field,
   and a discretisation whose control domains do not close cannot reproduce a
   constant flux.
@@ -404,8 +406,8 @@ so that no element is a parallelogram and no quadratic edge is straight
 (``dual_mesh_partitions_element``, ``quadratic_dual_mesh_partitions_element``
 and ``prism_dual_mesh_partitions_element`` in ``tests/cpp/unit_tests.cpp``).
 The tolerance is :math:`10^{-12}` for the linear elements and :math:`10^{-11}`
-for the quadratic ones, which is quadrature noise rather than a geometric
-discrepancy.  The patch test in ``tests/python/test_quadratic_elements.py``
+for the quadratic ones, which is the level of the numerical noise of the
+quadrature.  The patch test in ``tests/python/test_quadratic_elements.py``
 adds the analytic counterpart: a linear field is reproduced exactly on
 distorted ``Tri6``, ``Quad9``, ``Tet10`` and ``Hex27`` meshes, to
 :math:`10^{-11}` or better.
@@ -414,18 +416,18 @@ Quadrature
 ----------
 
 Every kernel names its own rule with the ``quadrature`` parameter, because in a
-control volume method the rule is part of the model and not only a numerical
-detail: a lumped source and a Gauss-integrated source are different
-discretisations of the same equation, not two approximations of the same
-discretisation.  The rules are one-dimensional rules applied as tensor products
-on each patch of a control domain, of an interface or of an element, except
-where a symmetric rule for the whole element is cheaper (below).
+control volume method the rule is part of the model as well as a numerical
+detail: a lumped source and a Gauss-integrated source are two different
+discretisations of the same equation.  The rules are one-dimensional rules
+applied as tensor products on each patch of a control domain, of an interface
+or of an element, except where a symmetric rule for the whole element is
+cheaper (below).
 
-``gauss1`` … ``gauss10``
-    Gauss–Legendre with that many points per direction, exact for polynomials
+``gauss1`` to ``gauss10``
+    Gauss-Legendre with that many points per direction, exact for polynomials
     of degree :math:`2n - 1`.  The points and weights are computed once, by
-    Newton iteration on the Legendre polynomial, and then looked up.  Asking
-    for more than ten is an error, and ``gauss`` without a number means
+    Newton iteration on the Legendre polynomial, and then looked up.  A request
+    for more than ten points is an error, and ``gauss`` without a number means
     ``gauss2``.
 
 ``midpoint`` (alias ``centroid``)
@@ -438,7 +440,7 @@ where a symmetric rule for the whole element is cheaper (below).
 ``trapezoid`` (alias ``trapezoidal``), ``simpson``
     The corner rule :math:`\{-1, +1\}` with weights :math:`\{1, 1\}`, and
     Simpson's rule :math:`\{-1, 0, +1\}` with weights
-    :math:`\{\tfrac13, \tfrac43, \tfrac13\}`, per direction; these reproduce
+    :math:`\{\tfrac13, \tfrac43, \tfrac13\}`, per direction.  These reproduce
     classical finite volume and finite difference source treatments.
 
 ``nodal`` (alias ``lumped``)
@@ -449,8 +451,8 @@ where a symmetric rule for the whole element is cheaper (below).
 
 ``interface``
     A single point at the corner of the control domain lying deepest inside the
-    element — the control domain interface in one dimension, the element
-    centroid in two and three — with the measure of the control domain as the
+    element (the control domain interface in one dimension, the element
+    centroid in two and three), with the measure of the control domain as the
     weight, which reproduces the trapezoidal source rule of the finite volume
     literature.
 
@@ -464,7 +466,7 @@ where a symmetric rule for the whole element is cheaper (below).
     book exactly.
 
 ``automatic`` (alias ``auto``, the default)
-    Gauss–Legendre with one more point per direction than the polynomial order
+    Gauss-Legendre with one more point per direction than the polynomial order
     of the mesh, which integrates a product of two shape functions exactly.  The
     choice is made once, when the object is set up and the mesh is known: **two
     points per direction on a linear mesh and three on a quadratic one**, a mesh
@@ -481,40 +483,41 @@ there is a cheaper choice on triangles, tetrahedra and prisms: a *symmetric*
 rule whose points form orbits of the symmetry group of the simplex.  ``gaussn``
 is then replaced by the symmetric rule exact to degree :math:`2n - 1`: 1, 6 and
 7 points on a triangle for :math:`n = 1, 2, 3` (the last two those of
-Dunavant [Dunavant1985]_), 1, 8 and 15 points on a tetrahedron, and the product of the triangle
-rule with a Gauss rule on a prism.  The default rule on a ``Tet4`` mesh uses 8
-points instead of the 27 of the collapsed rule, and the assembly is three times
-faster.  All the rules have positive weights and interior points, and a unit
-test (``simplex_quadrature_is_exact``) integrates every monomial up to the
-stated degree exactly.
+Dunavant [Dunavant1985]_), 1, 8 and 15 points on a tetrahedron, and the product
+of the triangle rule with a Gauss rule on a prism.  The default rule on a
+``Tet4`` mesh uses 8 points where the collapsed rule uses 27, and the assembly
+is three times faster.  All the rules have positive weights and interior
+points, and a unit test (``simplex_quadrature_is_exact``) integrates every
+monomial up to the stated degree exactly.
 
 The last three rules place their points by reference to a node-centred control
 domain, so they are meaningful only for volume terms.  On a control domain
-interface they are replaced by ``gauss2`` and on an element side by ``gauss3``;
-for a side, a ``nodal`` rule additionally collapses its points onto the node
+interface they are replaced by ``gauss2`` and on an element side by ``gauss3``.
+For a side, a ``nodal`` rule additionally collapses its points onto the node
 while preserving the total vector area, so that the boundary flux is still
 integrated exactly for a constant flux.
 
 The accuracy of the dual mesh method on quadratic elements
 -----------------------------------------------------------
 
-The finite element method gains a great deal from quadratic elements.  On a
-smooth problem its nodal values are fourth-order accurate — two orders better
-than the energy norm — which is the classical superconvergence of the Galerkin
-method and is what makes the extra unknowns worth paying for.
+The finite element method benefits substantially from quadratic elements.  On
+a smooth problem its nodal values are fourth-order accurate, two orders higher
+than its rate of convergence in the energy norm.  This is the classical
+superconvergence of the Galerkin method, and it justifies the cost of the extra
+unknowns.
 
 That the nodal values are better than the global rate is the result of
 Douglas and Dupont [DouglasDupont1974]_, and that the derivative is most
 accurate at the Gauss points is the result of Barlow [Barlow1976]_.  Both are
 needed below.
 
-**The dual mesh
-control domain method does not gain an order from quadratic elements.  It stays
-second order.**  This section explains why, proves it in one dimension, and
-gives the measured numbers in two.
+**On quadratic elements the dual mesh control domain method remains
+second-order accurate, which is the same order as on linear elements.**  This
+section gives the reason, proves the result in one dimension and reports the
+measured convergence rates in two.
 
-Why: where the interfaces sit
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+The position of the interfaces
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 The flux through a control domain interface is the flux function evaluated at
 the gradient of the interpolant *there*: for a diffusion problem it is
@@ -526,23 +529,24 @@ For a quadratic interpolant of a smooth function on an element of size
 :math:`h`, that derivative error is :math:`O(h^{2})` at a generic point but
 :math:`O(h^{3})` at the two Gauss points :math:`\xi = \pm 1/\sqrt{3}`, which
 are the *superconvergent points* of the derivative.  A method that samples the
-gradient there — as the Galerkin method effectively does, its element integrals
-being dominated by the Gauss points — inherits the extra order.
+gradient at these points inherits the extra order.  The Galerkin method does so
+in effect, because its element integrals are dominated by the Gauss points.
 
-The median dual does not sample there.  Its interfaces lie half way between the
-nodes, at :math:`\xi = \pm \tfrac12`, and
-:math:`\tfrac12 \neq 1/\sqrt{3} \approx 0.5774`.  At :math:`\xi = \pm\tfrac12`
+The interfaces of the median dual lie half way between the nodes, at
+:math:`\xi = \pm \tfrac12`, which differs from the Gauss point coordinate
+:math:`1/\sqrt{3} \approx 0.5774`.  At :math:`\xi = \pm\tfrac12`
 the gradient carries its generic :math:`O(h^{2})` error, the errors at the two
 interfaces bounding a control domain do not cancel beyond leading order, and
 the balance is left with a truncation error one order lower than the Galerkin
-method's.  Moving the interfaces to the Gauss points is not an option: their
+method's.  The interfaces cannot be moved to the Gauss points, because their
 position at :math:`\xi = \pm\tfrac12` is what makes the control domains tile
 the element and close, and shifting them would destroy the partition.
 
 The one-dimensional proof
 ^^^^^^^^^^^^^^^^^^^^^^^^^
 
-In one dimension the statement can be made exactly, with no asymptotics at all.
+In one dimension the statement can be proved exactly, without asymptotic
+arguments.
 Take an ``Edge3`` element with nodes at :math:`\xi = -1`, :math:`\xi = 0` and
 :math:`\xi = +1`, carrying values :math:`u_0`, :math:`u_m` and :math:`u_1`,
 where :math:`u_m` is the value at the midpoint node.  From
@@ -578,33 +582,33 @@ and at :math:`\xi = +\tfrac12`,
 
    p'\bigl(+\tfrac12\bigr) = 0 \cdot u_0 + 1 \cdot u_1 - u_m = u_1 - u_m .
 
-Both collapse to a **two-point difference across a half element**.  On a
+Both reduce to a **two-point difference across a half element**.  On a
 physical element of length :math:`h` the map gives
 :math:`\mathrm{d}u/\mathrm{d}x = (2/h)\,p'(\xi)`, so the gradient the method
 uses at the left interface is exactly :math:`(u_m - u_0)/(h/2)` and at the
-right interface :math:`(u_1 - u_m)/(h/2)`.  The quadratic term has vanished
-identically: at the interfaces the interpolant's derivative knows nothing about
-the curvature the third node contributes, and the node on the far side of the
-element has no influence at all.
+right interface :math:`(u_1 - u_m)/(h/2)`.  The quadratic term vanishes
+identically: at each interface the derivative of the interpolant is independent
+of the curvature contributed by the third node, and the node on the far side of
+the element has no influence on it.
 
-The consequence is exact, not asymptotic: the dual mesh discretisation of a
+The consequence is an exact identity: the dual mesh discretisation of a
 quadratic one-dimensional mesh produces, term by term, the same flux
 expressions as the dual mesh discretisation of the linear mesh on the same
 points, that is, of twice as many ``Edge2`` elements.  With the quadrature of
-the source held fixed, so that the ``automatic`` rule does not silently change
-with the element order, the two computations agree to machine precision:
+the source held fixed, so that the ``automatic`` rule does not change with the
+element order, the two computations agree to machine precision:
 solving :math:`-u'' = \pi^2 \sin \pi x` on :math:`(0,1)` with four ``Edge3``
 elements and with eight ``Edge2`` elements gives nodal values differing by
 :math:`2 \times 10^{-16}`
 (``test_one_dimensional_dual_mesh_on_quadratic_elements_equals_the_refined_linear_mesh``).
-In one dimension a quadratic element buys the method nothing beyond the
-refinement its extra nodes represent.
+In one dimension a quadratic element therefore gives the method exactly the
+accuracy of the linear mesh on the same nodes.
 
 The two-dimensional numbers
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-In two dimensions the algebra does not collapse so cleanly, but the order does
-not improve.  The measurements below solve
+In two dimensions the algebra yields no such exact identity, but the order of
+accuracy remains two.  The measurements below solve
 
 .. math::
 
@@ -625,14 +629,13 @@ Element    Method   :math:`4\times4`      :math:`8\times8`      :math:`16\times1
 ``Tri6``   fem      3.52e-3               2.29e-4               1.44e-5               3.95, 3.99
 =========  =======  ====================  ====================  ====================  ==========
 
-The rates are unambiguous: two for the dual mesh control domain method and four
+The observed rates are two for the dual mesh control domain method and four
 for the finite element method, on both element shapes.
 
-What the quadratic element does change for the dual mesh method is the
-constant, and the sign of the change depends on the element.  Compared at
-**equal node count** — a quadratic mesh of :math:`n \times n` elements has the
-nodes of a linear mesh of :math:`2n \times 2n` — the measured error ratios
-are
+For the dual mesh method the quadratic element changes the error constant, and
+the direction of the change depends on the element.  Compared at **equal node
+count** (a quadratic mesh of :math:`n \times n` elements has the nodes of a
+linear mesh of :math:`2n \times 2n` elements), the measured error ratios are
 
 ========================  ==============  ==============  ===============
 Ratio                     :math:`n = 4`   :math:`n = 8`   :math:`n = 16`
@@ -641,37 +644,37 @@ Ratio                     :math:`n = 4`   :math:`n = 8`   :math:`n = 16`
 ``Tri6`` over ``Tri3``    8.84            8.01            7.79
 ========================  ==============  ==============  ===============
 
-Promoting ``Quad4`` to ``Quad9`` divides the error by about three; promoting
-``Tri3`` to ``Tri6`` multiplies it by about eight.  Both ratios are steady
-under refinement, which is the statement that the order has not changed in
-either case.  The triangular result is the one to keep in mind: the median dual
-of a linear triangle is an unusually favourable configuration for this
-discretisation — it is also the case in which the method coincides with the
-Galerkin finite element method for constant coefficients — and the sub-cells of
-the red-refined triangle are not.  For the dual mesh control domain method,
-``Tri6`` is worse than ``Tri3`` at the same cost, and the honest advice is not
-to use it for accuracy.
+Promoting ``Quad4`` to ``Quad9`` divides the error by about three, while
+promoting ``Tri3`` to ``Tri6`` multiplies it by about eight.  Both ratios are
+nearly constant under refinement, which shows that the promotion leaves the
+order unchanged in both cases.  The triangular result has a practical
+consequence.  The median dual of a linear triangle is an unusually favourable
+configuration for this discretisation, and it is also the case in which the
+method coincides with the Galerkin finite element method for constant
+coefficients.  The sub-cells of the red-refined triangle form a less favourable
+configuration.  For the dual mesh control domain method, ``Tri6`` is therefore
+less accurate than ``Tri3`` at the same cost, and it is not recommended as a
+means of improving the accuracy of the solution.
 
-None of this applies to the finite element method, which gains its two extra
-orders on both element shapes, nor to the two finite volume methods, which are
-second-order schemes on any mesh.
+These observations concern the dual mesh control domain method alone.  The
+finite element method gains its two extra orders on both element shapes, and
+the two finite volume methods are second-order schemes on any mesh.
 
-What quadratic elements do buy: geometry
------------------------------------------
+The benefit of quadratic elements: geometry
+-------------------------------------------
 
 The reason to use a quadratic element with the dual mesh control domain method
-is not the interpolation of the solution; it is the interpolation of the
-*domain*.
+is the more accurate interpolation of the *domain*.
 
 An element edge on a curved boundary is a chord when the element is linear.
 When the element is quadratic and its mid-side node has been placed on the true
 boundary, the edge is the parabola through three points of the arc, and the
 isoparametric map carries the control domains and their interfaces onto that
-curved region; the error in the represented geometry drops from
-:math:`O(h^{2})` to :math:`O(h^{4})` and every integral over the domain
+curved region.  The error in the represented geometry drops from
+:math:`O(h^{2})` to :math:`O(h^{4})`, and every integral over the domain
 inherits the improvement.  The test measures this by integrating the constant
 :math:`1` over a quarter annulus of inner radius :math:`1` and outer radius
-:math:`2`, whose exact area is :math:`3\pi/4`; on meshes of
+:math:`2`, whose exact area is :math:`3\pi/4`.  On meshes of
 :math:`2\times2`, :math:`4\times4` and :math:`8\times8` elements the absolute
 error is
 
@@ -689,8 +692,9 @@ four for the quadratic ones, and on the coarsest mesh the quadratic element is
 already more than a hundred times more accurate
 (``test_curved_boundaries_are_resolved_to_fourth_order``).  For a problem on a
 cylinder, an annulus or a plate with a hole, this is usually the dominant error
-of a coarse linear mesh, and it is the reason the quadratic family exists in
-this library even though it does not raise the order of the discretisation.
+of a coarse linear mesh, and it is the reason the library provides the
+quadratic family, although that family leaves the order of the discretisation
+unchanged.
 
 Promotion, generation and file formats
 ---------------------------------------
@@ -698,12 +702,12 @@ Promotion, generation and file formats
 A linear mesh is promoted with :meth:`dualmesh.Mesh.second_order`
 (``Mesh::secondOrder``): ``Edge2`` becomes ``Edge3``, ``Tri3`` becomes
 ``Tri6``, ``Quad4`` becomes ``Quad9``, ``Tet4`` becomes ``Tet10`` and ``Hex8``
-becomes ``Hex27``.  The corner nodes keep their numbers and positions; each
+becomes ``Hex27``.  The corner nodes keep their numbers and positions.  Each
 added node is placed at the image, under the *linear* shape functions of the
 original element, of the point the quadratic reference element gives it, and is
 identified by the sorted set of corner nodes it interpolates, so elements that
 share an edge or a face share the node on it and the promoted mesh is
-conforming.  Side sets and node sets are carried over and now cover the new
+conforming.  Side sets and node sets are carried over and include the added
 mid-edge nodes.  Promoting a mesh that is already quadratic does nothing.  The
 generators ``generate_line_mesh``, ``generate_rectangle_mesh``,
 ``generate_box_mesh`` and ``generate_annulus_mesh`` accept a quadratic element
@@ -711,14 +715,14 @@ type directly: they build the linear mesh and promote it, so the element count
 is unchanged and only the node count grows.
 
 **A curved domain must be promoted before its coordinates are transformed.**
-Getting this ordering wrong silently costs the fourth-order geometry measured
-above.  A rectangular mesh in :math:`(r, \theta)` that is mapped to an annulus
-and only then promoted has its mid-side nodes at the midpoints of the straight
-chords, and its edges stay chords whatever element type it claims; promoted
-first, the mid-side nodes are created in :math:`(r,\theta)` space and the
-mapping carries them onto the true circle.  ``generate_annulus_mesh`` does it
-in the correct order, and a user who transforms nodes by hand must do the
-same.
+If the two steps are reversed, the fourth-order geometric accuracy measured
+above is lost without any warning.  A rectangular mesh in :math:`(r, \theta)`
+that is mapped to an annulus and only then promoted has its mid-side nodes at
+the midpoints of the straight chords, and its edges remain chords regardless
+of the declared element type.  When the mesh is promoted first, the mid-side
+nodes are created in :math:`(r,\theta)` space and the mapping carries them
+onto the true circle.  ``generate_annulus_mesh`` applies the two steps in the
+correct order, and a user who transforms nodes by hand must do the same.
 
 Uniform refinement and promotion do not commute and refinement is not offered
 on a quadratic mesh: :meth:`dualmesh.Mesh.refined` raises an error telling the
@@ -729,20 +733,20 @@ under their VTK cell types (``VTK_WEDGE``, ``VTK_PYRAMID``,
 ``VTK_QUADRATIC_QUAD`` and ``VTK_QUADRATIC_HEXAHEDRON`` among them), and
 because the library numbers the nodes of every type as VTK does, no
 permutation is applied in either direction: a mesh written and read back is
-the mesh that was written, node for node
+identical, node for node, to the mesh that was written
 (``test_quadratic_meshes_survive_a_file_round_trip`` and the round-trip test of
-``test_element_types.py``).  A mesh whose elements are inverted -- numbered
-clockwise where the convention is anticlockwise, as some generators produce --
+``test_element_types.py``).  A mesh whose elements are inverted (numbered
+clockwise where the convention is anticlockwise, as some generators produce)
 is repaired on reading by renumbering those elements.
 
-One practical limit belongs here.  The automatic differentiation that builds
-the Jacobian [Wengert1964]_ seeds one derivative slot per element node and
-variable, within a default budget of 96 slots, so a ``Hex27`` mesh spends 27
-slots on each variable and holds three.  The library detects an overflow when
-the variable that causes it is added and raises an error naming the element
-type, the number of slots needed and the build setting that raises the limit
-(``-DDUALMESH_MAX_AD_DERIVATIVES=<n>``), rather than failing obscurely during
-assembly.  The size of the budget costs little, because an automatic
-differentiation number copies and computes only the slots in use: the
-:math:`20^3` ``Hex8`` elasticity benchmark runs in the same time and the same
-peak memory with 48 slots and with 96.
+One practical limit depends on the element type.  The automatic
+differentiation that builds the Jacobian [Wengert1964]_ seeds one derivative
+slot per element node and variable, up to a default maximum of 96 slots, so a
+``Hex27`` mesh uses 27 slots for each variable and can carry three variables.
+The library detects an overflow when the variable that causes it is added,
+before assembly begins, and raises an error naming the element type, the
+number of slots needed and the build setting that raises the limit
+(``-DDUALMESH_MAX_AD_DERIVATIVES=<n>``).  A large maximum has little cost,
+because an automatic differentiation number copies and computes only the slots
+in use: the :math:`20^3` ``Hex8`` elasticity benchmark runs in the same time
+and with the same peak memory with 48 slots as with 96.

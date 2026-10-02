@@ -42,11 +42,11 @@ public:
     p.addOptional("extensional_stiffness",
                   ParameterKind::Real,
                   1.0,
-                  "Extensional stiffness A = integral of E dA over the cross-section, per "
-                  "unit width for plates. For every plate model give the plate stiffness, "
-                  "which already contains the factor 1/(1 - nu^2); the kernel does not add "
-                  "it. In the mixed models A does not appear on its own: only the "
-                  "combination Abar = (D A - B^2)/D enters.");
+                  "Extensional stiffness A = integral of E dA over the cross-section, per unit "
+                  "width for plates. For every plate model give the plate stiffness, which "
+                  "already contains the factor 1/(1 - nu^2), because the kernel does not add this "
+                  "factor. In the mixed models A enters only through the combination Abar = (D A "
+                  "- B^2)/D.");
     p.addOptional("coupling_stiffness",
                   ParameterKind::Real,
                   0.0,
@@ -76,10 +76,9 @@ public:
         "foundation_modulus",
         ParameterKind::Real,
         0.0,
-        "Winkler elastic foundation modulus, which contributes the source c_f w to the "
-        "transverse equation. Its units are force per unit deflection per unit length for a "
-        "beam and per unit area for a plate. It must be non-negative; the default 0 means "
-        "no foundation.");
+        "Winkler elastic foundation modulus, which contributes the source c_f w to the transverse "
+        "equation. Its units are force per unit deflection per unit length for a beam and per "
+        "unit area for a plate. It must be non-negative, and the default 0 means no foundation.");
     p.addOptional(
         "transverse_load",
         ParameterKind::Function,
@@ -108,11 +107,11 @@ public:
     p.addOptional("scale_with_load",
                   ParameterKind::Boolean,
                   true,
-                  "Multiply this kernel's contribution by the load factor during load "
-                  "stepping, which is how the distributed loads are ramped. It defaults to "
-                  "true here, unlike the framework default. Note that the weight applies to "
-                  "the whole contribution, stiffness terms included, so set it to false on "
-                  "any instance whose internal forces must not be ramped.");
+                  "Multiply this kernel's contribution by the load factor during load stepping, "
+                  "which is how the distributed loads are ramped. It defaults to true here, "
+                  "unlike the framework default. The weight applies to the whole contribution, "
+                  "stiffness terms included, so set it to false on any instance whose internal "
+                  "forces must not be ramped.");
     return p;
   }
 
@@ -204,11 +203,11 @@ public:
                   "the direction in which a positive transverse load acts.");
     p.addRequired("bending_moment",
                   ParameterKind::String,
-                  "Name of the variable carrying the bending moment. In a mixed formulation "
-                  "the moment is a genuine unknown, not a post-processed quantity, and it "
-                  "needs its own boundary conditions: leave it free at a clamped end, where "
-                  "the natural condition is the vanishing slope, and prescribe it to be "
-                  "zero with a Dirichlet_boundary_condition at a simply supported or free end.");
+                  "Name of the variable carrying the bending moment. In a mixed formulation the "
+                  "moment is an independent unknown of the problem, and it needs its own boundary "
+                  "conditions: leave it free at a clamped end, where the natural condition is the "
+                  "vanishing slope, and prescribe it to be zero with a "
+                  "Dirichlet_boundary_condition at a simply supported or free end.");
     return p;
   }
   explicit BeamEulerBernoulliMixed(const InputParameters & p) : StructuralKernel(p) {}
@@ -381,9 +380,9 @@ public:
     p.addRequired(
         "bending_moment",
         ParameterKind::String,
-        "Name of the variable carrying the bending moment. In a mixed formulation the moment is a "
-        "genuine unknown, not a post-processed quantity, and it needs its own boundary conditions: "
-        "leave it free at a clamped end, where the natural condition is the vanishing slope, and "
+        "Name of the variable carrying the bending moment. In a mixed formulation the moment is "
+        "an independent unknown of the problem, and it needs its own boundary conditions: leave "
+        "it free at a clamped end, where the natural condition is the vanishing slope, and "
         "prescribe it to be zero at a simply supported or free end.");
     return p;
   }
@@ -455,10 +454,10 @@ public:
   {
     InputParameters p = StructuralKernel::validParams();
     p.setClassDescription(
-        "First-order shear deformation (Mindlin) model of an axisymmetric circular plate in "
-        "terms of the radial displacement, the deflection, and the rotation. Use it on a "
-        "one-dimensional radial mesh with coordinates = 'axisymmetric'. Add it once per "
-        "variable; the stiffnesses are the plate stiffnesses (they contain 1 / (1 - nu^2)).");
+        "First-order shear deformation (Mindlin) model of an axisymmetric circular plate in terms "
+        "of the radial displacement, the deflection, and the rotation. Use it on a "
+        "one-dimensional radial mesh with coordinates = 'axisymmetric'. Add it once per variable. "
+        "The stiffnesses are the plate stiffnesses (they contain 1 / (1 - nu^2)).");
     p.addRequired("radial_displacement",
                   ParameterKind::String,
                   "Name of the variable holding the radial displacement u of the mid-plane.");
@@ -477,7 +476,8 @@ public:
         0.3,
         "Poisson's ratio nu, used here only to form the hoop and cross-coupling terms of the "
         "stress resultants. The magnitude of the response comes from A, B and D, which must "
-        "already contain the factor 1/(1 - nu^2); this parameter does not introduce it.");
+        "already contain the factor 1/(1 - nu^2), because this parameter does not introduce that "
+        "factor.");
     p.addOptional("shear_treatment",
                   ParameterKind::String,
                   std::string("include"),
@@ -631,13 +631,13 @@ public:
   {
     InputParameters p = StructuralKernel::validParams();
     p.setClassDescription(
-        "Mixed classical (Kirchhoff) plate model of an axisymmetric circular plate in terms "
-        "of the radial displacement, the deflection, and the radial bending moment "
-        "(Reddy's DM-CP(M) model). Use it on a one-dimensional radial mesh with "
-        "coordinates = 'axisymmetric'. Add it once per variable; the stiffnesses are the "
-        "plate stiffnesses (they contain 1 / (1 - nu^2)). The natural boundary quantities "
-        "are r N_rr, r V_r, and the slope dw/dr, so a clamped edge needs no condition on "
-        "the moment equation and a simply supported edge prescribes M_rr = 0.");
+        "Mixed classical (Kirchhoff) plate model of an axisymmetric circular plate in terms of "
+        "the radial displacement, the deflection, and the radial bending moment (Reddy's DM-CP(M) "
+        "model). Use it on a one-dimensional radial mesh with coordinates = 'axisymmetric'. Add "
+        "it once per variable. The stiffnesses are the plate stiffnesses (they contain 1 / (1 - "
+        "nu^2)). The natural boundary quantities are r N_rr, r V_r, and the slope dw/dr, so a "
+        "clamped edge needs no condition on the moment equation and a simply supported edge "
+        "prescribes M_rr = 0.");
     p.addRequired("radial_displacement",
                   ParameterKind::String,
                   "Name of the variable holding the radial displacement u of the mid-plane.");
@@ -649,15 +649,16 @@ public:
         "bending_moment",
         ParameterKind::String,
         "Name of the variable carrying the radial bending moment M_rr, the third unknown of the "
-        "mixed classical plate model. Prescribe it to be zero at a simply supported edge; leave it "
-        "free at a clamped edge, where the vanishing slope is the natural condition.");
+        "mixed classical plate model. Prescribe it to be zero at a simply supported edge, and "
+        "leave it free at a clamped edge, where the vanishing slope is the natural condition.");
     p.addOptional(
         "poissons_ratio",
         ParameterKind::Real,
         0.3,
         "Poisson's ratio nu, used here only to form the hoop and cross-coupling terms of the "
         "stress resultants. The magnitude of the response comes from A, B and D, which must "
-        "already contain the factor 1/(1 - nu^2); this parameter does not introduce it.");
+        "already contain the factor 1/(1 - nu^2), because this parameter does not introduce that "
+        "factor.");
     return p;
   }
   explicit CircularPlateClassicalMixed(const InputParameters & p)
@@ -798,7 +799,8 @@ public:
         0.3,
         "Poisson's ratio nu, used here only to form the hoop and cross-coupling terms of the "
         "stress resultants. The magnitude of the response comes from A, B and D, which must "
-        "already contain the factor 1/(1 - nu^2); this parameter does not introduce it.");
+        "already contain the factor 1/(1 - nu^2), because this parameter does not introduce that "
+        "factor.");
     p.addOptional("shear_treatment",
                   ParameterKind::String,
                   std::string("include"),

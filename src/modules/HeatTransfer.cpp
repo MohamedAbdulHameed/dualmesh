@@ -41,12 +41,12 @@ public:
                   ParameterKind::RealList,
                   std::vector<double>{1.0},
                   "Coefficients c0, c1, ... of a polynomial that multiplies the base "
-                  "conductivity, giving k(x, t) (c0 + c1 T + c2 T^2 + ...). It multiplies, it "
-                  "does not replace: the default {1} leaves the conductivity unchanged, so a "
-                  "list given here must include its own constant term. The temperature is the "
-                  "current iterate under Newton's method and the previous one under direct "
-                  "iteration, and the polynomial is written in the same temperature units as "
-                  "the variable rather than relative to a reference temperature.");
+                  "conductivity, giving k(x, t) (c0 + c1 T + c2 T^2 + ...). The default {1} "
+                  "leaves the conductivity unchanged, so a list given here must include its own "
+                  "constant term. The temperature is the current iterate under Newton's method "
+                  "and the previous one under direct iteration. The argument of the polynomial is "
+                  "the temperature itself, in the units of the variable, without subtraction of a "
+                  "reference temperature.");
     deformation::addParameter(
         p,
         "the heat conducts through the deformed body: the flux per unit undeformed area is "
@@ -110,18 +110,17 @@ public:
     p.addOptional("heat_source",
                   ParameterKind::Function,
                   0.0,
-                  "Volumetric heat generation rate in watts per cubic metre, as a constant "
-                  "or the name of a function of (x, y, z, t). A positive value adds heat to "
-                  "the body. It is a function of position and time only; generation that "
-                  "depends on the temperature belongs in a reaction kernel or in a kernel "
-                  "of your own.");
+                  "Volumetric heat generation rate in watts per cubic metre, as a constant or the "
+                  "name of a function of (x, y, z, t). A positive value adds heat to the body. It "
+                  "is a function of position and time only. A generation rate that depends on the "
+                  "temperature requires a reaction kernel or a user-written kernel.");
     p.addOptional("scale_with_load",
                   ParameterKind::Boolean,
                   true,
-                  "Multiply this contribution by the load factor during load stepping. Unlike "
-                  "the framework default this is true, because applied loading is normally "
-                  "what is ramped; set it to false for a part of the loading that must stay "
-                  "fixed while the rest is increased.");
+                  "Multiply this contribution by the load factor during load stepping. This "
+                  "parameter defaults to true, unlike the framework default, because the applied "
+                  "loading is normally the quantity that is ramped. Set it to false for a part of "
+                  "the loading that must stay fixed while the rest is increased.");
     return p;
   }
   explicit HeatSource(const InputParameters & p) : Kernel(p) {}
@@ -269,11 +268,11 @@ public:
   {
     InputParameters p = IntegratedBC::validParams();
     p.setClassDescription(
-        "Convection into a surrounding fluid, Newton's law of cooling: the natural "
-        "boundary quantity is set to n . (k grad T) = -h (T - T_ambient), so heat leaves "
-        "the body wherever the surface is hotter than the fluid. The condition is "
-        "nonlinear in nothing but the temperature itself and is differentiated exactly, "
-        "so it converges in one Newton step for a linear conduction problem.");
+        "Convection into a surrounding fluid, Newton's law of cooling: the natural boundary "
+        "quantity is set to n . (k grad T) = -h (T - T_ambient), so heat leaves the body wherever "
+        "the surface is hotter than the fluid. The condition is linear in the temperature and is "
+        "differentiated exactly, so it converges in one Newton step for a linear conduction "
+        "problem.");
     p.addRequired("heat_transfer_coefficient",
                   ParameterKind::Function,
                   "Film, or convection, coefficient h in watts per square metre per kelvin, "
@@ -284,12 +283,11 @@ public:
     p.addOptional("ambient_temperature",
                   ParameterKind::Function,
                   0.0,
-                  "Temperature of the surrounding fluid. Only the difference from the "
-                  "surface temperature enters, so any consistent scale works; this is "
-                  "unlike radiative_heat_flux_boundary_condition, which needs an absolute scale. "
-                  "The default 0 "
-                  "cools the surface towards zero, which is rarely intended when the "
-                  "variable is in degrees celsius.");
+                  "Temperature of the surrounding fluid. Only the difference from the surface "
+                  "temperature enters, so any consistent temperature scale may be used, whereas "
+                  "radiative_heat_flux_boundary_condition requires an absolute scale. The default "
+                  "0 cools the surface towards zero, which is rarely intended when the variable "
+                  "is in degrees celsius.");
     deformation::addParameter(
         p,
         "the flux is per unit deformed area and is multiplied by the area ratio da/dA = |J F^-T N| "
@@ -337,10 +335,10 @@ public:
     p.addOptional("scale_with_load",
                   ParameterKind::Boolean,
                   true,
-                  "Multiply this contribution by the load factor during load stepping. Unlike "
-                  "the framework default this is true, because applied loading is normally "
-                  "what is ramped; set it to false for a part of the loading that must stay "
-                  "fixed while the rest is increased.");
+                  "Multiply this contribution by the load factor during load stepping. This "
+                  "parameter defaults to true, unlike the framework default, because the applied "
+                  "loading is normally the quantity that is ramped. Set it to false for a part of "
+                  "the loading that must stay fixed while the rest is increased.");
     deformation::addParameter(
         p,
         "the flux is per unit deformed area and is multiplied by the area ratio da/dA = |J F^-T N| "
@@ -384,16 +382,15 @@ public:
     p.addOptional("stefan_boltzmann_constant",
                   ParameterKind::Real,
                   5.670374419e-8,
-                  "Stefan-Boltzmann constant, 5.670374419e-8 W/m^2/K^4 by default. Change "
-                  "it only to work in a different system of units; it is not a fitting "
-                  "parameter.");
+                  "Stefan-Boltzmann constant, 5.670374419e-8 W/m^2/K^4 by default. Change it only "
+                  "to work in a different system of units. It is a physical constant and must not "
+                  "be used as a fitting parameter.");
     p.addOptional("ambient_temperature",
                   ParameterKind::Function,
                   0.0,
-                  "Temperature of the surroundings, which must be on an absolute scale "
-                  "because it enters as its fourth power: a value in degrees celsius gives "
-                  "a silently wrong answer. The default 0 models radiation into deep "
-                  "space.");
+                  "Temperature of the surroundings, which must be on an absolute scale because it "
+                  "enters as its fourth power: a value in degrees celsius gives a wrong result "
+                  "without any warning. The default 0 models radiation into deep space.");
     deformation::addParameter(
         p,
         "the flux is per unit deformed area and is multiplied by the area ratio da/dA = |J F^-T N| "
@@ -456,8 +453,8 @@ public:
     p.addOptional("primary_emissivity",
                   ParameterKind::Real,
                   0.0,
-                  "Emissivity of the primary surface; radiation is included when both "
-                  "emissivities are positive. Temperatures must then be absolute.");
+                  "Emissivity of the primary surface. Radiation is included when both "
+                  "emissivities are positive, and the temperatures must then be absolute.");
     p.addOptional(
         "secondary_emissivity", ParameterKind::Real, 0.0, "Emissivity of the secondary surface.");
     p.addOptional("stefan_boltzmann_constant",

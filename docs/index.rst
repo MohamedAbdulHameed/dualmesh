@@ -2,31 +2,35 @@ dualmesh
 ========
 
 **dualmesh** is a multiphysics framework for **heat transfer**, **solid
-mechanics** and **fluid dynamics**.  A problem is any number of fields --
-temperatures, displacements, velocities, or quantities of your own -- each
-governed by a conservation law written as a sum of named terms, and every term
-may depend on every field.  All the fields are solved together, as one
-monolithic system, by Newton's method with an exact Jacobian computed by
-automatic differentiation, so the coupling between the physics is as exact as
-the physics itself.
+mechanics**, **fluid dynamics** and **nuclear fuel performance**.  A problem
+consists of any number of fields (e.g., temperatures, displacements,
+velocities, or quantities defined by the user), each governed by a
+conservation law written as a sum of named terms.  Every term may depend on
+every field.  All the fields are solved together as one monolithic system by
+Newton's method, with an exact Jacobian computed by automatic
+differentiation.  The coupling between the physics is therefore represented
+exactly in the Jacobian.
 
-The same problem description can be discretised by four methods, chosen by one
-keyword: the Galerkin **finite element method**, the vertex-centred and the
-cell-centred **finite volume methods**, and the **dual mesh control domain
-method** (DMCDM) of J. N. Reddy, which combines the finite element
-interpolation with the finite volume balance.  The finite element and finite
-volume methods are held to the same verification standard as the DMCDM, and an
-element or a physics that a method cannot handle is refused with an
-explanation rather than solved wrongly.
+The same problem description can be discretised by four methods, which are
+selected by one keyword: the Galerkin **finite element method**, the
+vertex-centred and the cell-centred **finite volume methods**, and the **dual
+mesh control domain method** (DMCDM) of J. N. Reddy, which combines the
+finite element interpolation with the finite volume balance.  All four
+methods are held to the same verification standard.  An element type or a
+physics that a method cannot treat correctly is refused with an explanation.
 
-The library is written in C++17 and driven from Python.  Its structure follows
-MOOSE [MOOSE2025]_: physics is added as *kernels*, *boundary conditions* and
-*materials*, which are registered objects with validated, self-documenting
-parameters; meshes are generated or read from standard files; and the solvers
-(Newton with exact automatic differentiation, direct iteration, load stepping,
-adaptive time integration, threaded and distributed linear algebra) are shared
-by every physics.  :doc:`scope` sets out how far that goes and how it compares
-with MOOSE and COMSOL Multiphysics.
+The library is written in C++17 and is driven from Python or from YAML input
+files.  Its structure follows MOOSE [MOOSE2025]_.  The physics is added as
+*kernels*, *boundary conditions* and *materials*, which are registered
+objects with validated and self-documenting parameters.  Meshes are generated
+by the library or read from standard file formats.  The solvers (Newton's
+method with exact derivatives, direct iteration, load stepping, adaptive time
+integration, and threaded and distributed linear algebra) are shared by every
+physics.  :doc:`scope` describes the coverage of the framework and compares
+it with MOOSE and COMSOL Multiphysics.
+
+A two-dimensional bus bar with internal heat generation, fixed temperatures on
+two sides and convection on the top (Example 5.4.3 of Reddy's book) reads:
 
 .. code-block:: python
 
@@ -41,137 +45,179 @@ with MOOSE and COMSOL Multiphysics.
    problem.add_kernel("heat_conduction", variable="temperature",
                       thermal_conductivity=20.0)
    problem.add_kernel("heat_source", variable="temperature", heat_source=1.0e6)
-   problem.add_boundary_condition("Dirichlet_boundary_condition", variable="temperature",
-                                  boundary="left", value=40.0)
-   problem.add_boundary_condition("Dirichlet_boundary_condition", variable="temperature",
-                                  boundary="right", value=10.0)
-   problem.add_boundary_condition("convective_heat_flux_boundary_condition", variable="temperature",
-                                  boundary="top", heat_transfer_coefficient=75.0)
+   problem.add_boundary_condition("Dirichlet_boundary_condition", "left",
+                                  variable="temperature", value=40.0)
+   problem.add_boundary_condition("Dirichlet_boundary_condition", "right",
+                                  variable="temperature", value=10.0)
+   problem.add_boundary_condition("convective_heat_flux_boundary_condition", "top",
+                                  variable="temperature", heat_transfer_coefficient=75.0)
    problem.solve()
 
    print(problem.sample("temperature", [[0.05, 0.0]]))   # 83.142 (Reddy, Table 5.4.3)
 
-What the method is
-------------------
+A boundary condition named after a side set of the mesh acts on that side
+set.  The same problem as a YAML input file is ``examples/bus_bar.yaml`` (see
+:doc:`input_files`).
 
-The dual mesh control domain method keeps two meshes.  The **primal mesh** is a
-mesh of finite elements and provides the interpolation of the unknowns.  The
-**dual mesh** is the set of node-centred *control domains* obtained by joining
-edge midpoints, face centroids, and element centroids.  The governing equation
-is then satisfied in the *integral* sense over each control domain, without a
-weight function:
+The dual mesh control domain method
+-----------------------------------
+
+The dual mesh control domain method uses two meshes.  The **primal mesh** is a
+mesh of finite elements, which provides the interpolation of the unknowns.
+The **dual mesh** is the set of node-centred *control domains* obtained by
+joining the edge midpoints, the face centroids and the element centroids.  The
+governing equation is satisfied in the integral sense over each control
+domain, without a weight function:
 
 .. math::
 
    \int_{CD_I} \left[ -\nabla \cdot \mathbf{F} + S \right] \, dV = 0
    \quad \Longrightarrow \quad
    -\oint_{\partial CD_I} \mathbf{F} \cdot \mathbf{n} \, dS
-   + \int_{CD_I} S \, dV = 0 .
+   + \int_{CD_I} S \, dV = 0,
 
-The surface integral makes the secondary variables (fluxes, forces, moments)
-appear naturally on the control domain interfaces, which is the physical
-appeal of the finite volume method, while the primal interpolation removes the
-ad-hoc gradient reconstructions that the finite volume method needs.  Chapter 5
-of Reddy's book develops the method; :doc:`theory/index` develops it in
-the form the code implements.
+where :math:`CD_I` is the control domain of node :math:`I`,
+:math:`\mathbf{F}` is the flux, :math:`S` is the source and :math:`\mathbf{n}`
+is the outward unit normal.  The secondary variables (fluxes, forces and
+moments) appear on the interfaces of the control domains, as in the finite
+volume method.  The gradients on these interfaces are evaluated from the
+finite element interpolation, so that no gradient reconstruction is needed.
+Chapter 5 of Reddy's book develops the method, and :doc:`theory/index`
+presents it in the form that the code implements.
 
-What it solves
---------------
+Physics modules
+---------------
 
-The physics comes in three modules, in order of coverage, plus the framework
-they are built on.
+**Heat transfer.**  Steady and transient conduction with constant, spatially
+varying and temperature-dependent conductivity, volumetric sources, the
+convection of heat by a computed flow, and prescribed temperature, prescribed
+flux, convection and radiation boundary conditions, in Cartesian,
+axisymmetric and spherical coordinates.
 
-**Heat transfer**: steady and transient conduction with constant, spatially
-varying and temperature-dependent conductivity, volumetric sources, convection
-of heat by a computed flow, and the full set of boundary conditions --
-prescribed temperature, prescribed flux, convection and radiation -- in
-Cartesian, axisymmetric and spherical coordinates.
+**Solid mechanics.**  Linear elasticity in plane stress, plane strain,
+axisymmetric and three-dimensional form, isotropic or orthotropic, with
+thermal strain, small or finite strain, and creep.  The reduced theories of
+structural members are included: Euler-Bernoulli and Timoshenko beams,
+classical and first-order shear deformation plates, and axisymmetric circular
+plates, with the von Kármán nonlinearity and sections functionally graded
+through the thickness [Reddy2000]_.
 
-**Solid mechanics**: the continuum -- linear elasticity in plane stress, plane
-strain, axisymmetric and three-dimensional form, isotropic or orthotropic, with
-thermal strain -- and the reduced theories of structural members:
-Euler-Bernoulli and Timoshenko beams, classical and first-order shear
-deformation plates, and axisymmetric circular plates, with the von Kármán
-nonlinearity and sections functionally graded through the thickness
-[Reddy2000]_.  Beams and plates are solid mechanics with the through-thickness
-behaviour integrated out, so they are one module, not two.
+**Fluid dynamics.**  Steady and transient viscous incompressible flow, in the
+penalty formulation of the Navier-Stokes equations [HughesLiuBrooks1979]_ or
+in the pressure-velocity formulation with Taylor-Hood elements or stabilised
+equal-order interpolation, with buoyancy in the Boussinesq approximation.
 
-**Fluid dynamics**: steady and transient viscous incompressible flow through
-the penalty formulation of the Navier-Stokes equations [HughesLiuBrooks1979]_,
-with buoyancy in the Boussinesq approximation.
+**Nuclear fuel performance.**  The thermal and mechanical behaviour of a fuel
+rod under a power history: UO2, Cr2O3-doped UO2, UN and U3Si2 fuels in
+Zircaloy, FeCrAl, SiC or chromium-coated cladding, with the gap heat transfer
+and pellet-cladding contact, thermal expansion, densification, swelling,
+relocation, creep, the rod internal pressure, and a physics-based model of
+fission gas release.  A rod is computed in axisymmetric (r-z), 1.5-dimensional
+or three-dimensional form.  The module also computes the stresses and the
+failure probability of TRISO coated particles.  The models are verified
+against the IAEA FUMEX-II and CRP-6 benchmarks and validated against Halden
+irradiations, in comparison with the published BISON results (see
+:doc:`fuel/index`).
 
-**Coupled problems** are built from the same pieces.  Natural convection in a
-heated cavity couples the flow and the energy equation in both directions
-(buoyancy and convection) and reproduces the benchmark of de Vahl Davis
-[DeVahlDavis1983]_ to within half a per cent in the Nusselt number with every
-node-based method; thermal stress couples the temperature to the displacement;
-and a kernel of your own can couple anything to anything, with its Jacobian
-blocks differentiated for you.  Any advection-diffusion-reaction equation that
-can be written as a flux and a source is available through the framework
-kernels, which is also how a new physics is added.
+**Coupled problems** are built from the same components.  Natural convection
+in a heated cavity couples the flow and the energy equation in both
+directions and reproduces the benchmark of de Vahl Davis [DeVahlDavis1983]_
+to within 0.2 % in the Nusselt number with every node-based method.  Thermal
+stress couples the temperature to the displacement.  A kernel written by the
+user can couple any field to any other, and its Jacobian is obtained by
+automatic differentiation.
 
-What it offers
---------------
+Capabilities
+------------
 
-**Four discretisations of the same problem description.**  The dual mesh
-control domain method, the Galerkin finite element method, and the
-vertex-centred and cell-centred finite volume methods of Chapter 3 of the book.
-Changing one keyword changes the method and nothing else, which is what makes a
-method-to-method comparison meaningful.
+**Four discretisations of one problem description.**  The dual mesh control
+domain method, the Galerkin finite element method, and the vertex-centred and
+cell-centred finite volume methods of Chapter 3 of Reddy's book.  Changing one
+keyword changes the method and leaves the rest of the problem unchanged,
+which makes a comparison between methods meaningful.
 
-**Arbitrary meshes.**  Fourteen element types -- ``Edge2``, ``Tri3``,
-``Quad4``, ``Tet4``, ``Hex8``, ``Wedge6`` (prism), ``Pyramid5``, and the
-quadratic ``Edge3``, ``Tri6``, ``Quad8``, ``Quad9``, ``Tet10``, ``Hex20`` and
-``Hex27`` -- generated by the library or read from any format meshio supports,
-and mixed freely in one mesh.  Each method accepts every element it can treat
-correctly; the dual mesh methods need a dual mesh, which the serendipity
-elements and the pyramid do not have, and they refuse those with the reason.
+**Arbitrary meshes.**  Fourteen element types (``Edge2``, ``Tri3``,
+``Quad4``, ``Tet4``, ``Hex8``, ``Wedge6``, ``Pyramid5``, and the quadratic
+``Edge3``, ``Tri6``, ``Quad8``, ``Quad9``, ``Tet10``, ``Hex20`` and
+``Hex27``), generated by the library or read from any format supported by
+meshio, and mixed freely in one mesh.  The dual mesh methods require a dual
+mesh, which the serendipity elements and the pyramid do not have, and these
+elements are refused by those methods.  Boundaries of an imported mesh are
+taken from its physical groups or defined geometrically (see
+:doc:`user_guide/meshes`).
 
-**Exact Jacobians.**  Every kernel is written in forward-mode automatic
-differentiation, so Newton's method converges quadratically and a new nonlinear
-term needs no hand differentiation.
+**Exact Jacobians.**  Every kernel is evaluated in forward-mode automatic
+differentiation.  Newton's method therefore converges quadratically, and a
+new nonlinear term requires no hand differentiation.
 
-**Steady, transient and nonlinear throughout.**  The :math:`\theta` family of
-time integrators with fixed, error-controlled and iteration-controlled adaptive
-stepping; Newton and direct iteration with relaxation; load stepping.
+**Steady, transient and nonlinear problems.**  The :math:`\theta` family of
+time integrators with fixed, error-controlled and iteration-controlled
+adaptive time steps, Newton's method and direct iteration with relaxation,
+and load stepping.
 
 **Adaptive mesh refinement.**  A gradient-recovery error indicator, three
 marking rules, and conforming longest-edge bisection.
 
-**Efficient linear algebra.**  A direct solver where a factorisation is cheap
-and a preconditioned Krylov solver where it is not, chosen automatically, and a
+**Linear algebra.**  A direct solver where a factorisation is inexpensive and a
+preconditioned Krylov solver otherwise, chosen automatically, and a
 distributed solver with a two-level overlapping Schwarz preconditioner whose
-iteration count does not grow with the number of processes.
+iteration count does not grow with the number of processes.  PETSc can be
+used for the linear and nonlinear solvers.
 
-**Parallel execution.**  Threaded assembly within a process and a distributed
-solver across processes.
+**Parallel execution.**  Threaded assembly within a process and a
+distributed solver across processes.
 
-**Verification, not assertion.**  Every claim above is checked by a test.  The
-tests reproduce published tables from the book, analytical solutions and
-independent runs of OpenFOAM, and a systematic method-of-manufactured-solutions
-study measures the order of convergence of every method on every element type
-it accepts, in one, two and three dimensions.  Where a method has a limitation, the
-documentation says so: see for instance the honest account in
-:doc:`theory/elements` of what quadratic elements do and do not buy the dual
-mesh method.
+**Verification.**  Every capability listed above is checked by a test.  The
+tests reproduce published tables of Reddy's book, analytical solutions and
+independent calculations with OpenFOAM.  A study by the method of
+manufactured solutions measures the order of convergence of every method on
+every element type it accepts, in one, two and three dimensions.  The
+limitations of each method are stated in the documentation, e.g., the effect
+of quadratic elements on the dual mesh method in :doc:`theory/elements`.
 
 Contents
 --------
 
 .. toctree::
    :maxdepth: 2
+   :caption: Getting started
 
    installation
    getting_started
    scope
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Using dualmesh
+
    user_guide/index
-   theory/index
    tutorials/index
    input_files
    objects
    api
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Nuclear fuel performance
+
+   fuel/index
+   fuel/models
+   fuel/correlations
+   fuel/benchmarks
+   fuel/triso
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Theory and verification
+
+   theory/index
    verification
    openfoam
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Project
+
    developing
    work_in_progress
    references
@@ -180,5 +226,5 @@ Citing
 ------
 
 If this software contributes to your work, please cite both the method and the
-software; see :doc:`references` and the ``CITATION.cff`` file in the
-repository.
+software (see :doc:`references` and the ``CITATION.cff`` file in the
+repository).

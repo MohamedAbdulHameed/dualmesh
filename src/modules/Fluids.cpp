@@ -86,15 +86,15 @@ public:
                   "Zero-based index into 'velocities' naming which momentum equation this "
                   "instance assembles: 0 for x, 1 for y, 2 for z. It must select the same "
                   "variable as 'variable'. The range is checked but the agreement is not, so a "
-                  "mismatch silently assembles one momentum equation into another. Add one "
-                  "instance per velocity variable.");
+                  "mismatch assembles one momentum equation into another without a warning. Add "
+                  "one instance per velocity variable.");
     p.addOptional("dynamic_viscosity",
                   ParameterKind::Function,
                   1.0,
                   "Dynamic viscosity mu in pascal seconds, as a constant or the name of a "
-                  "function of (x, y, z, t). Because it is evaluated from position and time "
-                  "only, this kernel is Newtonian; a shear-rate dependent viscosity needs a "
-                  "material and a kernel of your own.");
+                  "function of (x, y, z, t). Because it is evaluated from position and time only, "
+                  "this kernel describes a Newtonian fluid. A shear-rate dependent viscosity "
+                  "requires a user-written material and kernel.");
     return p;
   }
   explicit ViscousStress(const InputParameters & p)
@@ -146,11 +146,11 @@ public:
   {
     InputParameters p = Kernel::validParams();
     p.setClassDescription(
-        "The penalty term that replaces the pressure in the momentum equation. In the "
-        "canonical form -div F + S = 0 it contributes the flux F = gamma (div v) e_i, that "
-        "is, gamma (du/dx + dv/dy + dw/dz) in the direction of this instance's component "
-        "and zero in the others, with no source. It must be integrated with a reduced rule, "
-        "which is the default here; a fuller rule locks the velocity field.");
+        "The penalty term that replaces the pressure in the momentum equation. In the canonical "
+        "form -div F + S = 0 it contributes the flux F = gamma (div v) e_i, that is, gamma (du/dx "
+        "+ dv/dy + dw/dz) in the direction of this instance's component and zero in the others, "
+        "with no source. It must be integrated with a reduced rule, which is the default here. A "
+        "rule with more points locks the velocity field.");
     p.addRequired("velocities",
                   ParameterKind::StringList,
                   "Names of the velocity variables, exactly one per mesh dimension and in "
@@ -161,26 +161,27 @@ public:
                   ParameterKind::Real,
                   1.0e8,
                   "Penalty parameter gamma, which enforces incompressibility through the "
-                  "constitutive relation P = -gamma div v. Choose it roughly 10^4 to 10^7 "
-                  "times the dynamic viscosity: too small and the flow is measurably "
-                  "compressible, too large and the linear system becomes so ill-conditioned "
-                  "that the direct solver loses accuracy. The default suits a viscosity of "
-                  "order one. penalty_incompressibility and penalty_pressure each hold their own "
-                  "copy, and the recovered pressure is meaningless unless the two agree.");
+                  "constitutive relation P = -gamma div v. Choose it roughly 10^4 to 10^7 times "
+                  "the dynamic viscosity. A value that is too small leaves the flow measurably "
+                  "compressible, and a value that is too large makes the linear system so "
+                  "ill-conditioned that the direct solver loses accuracy. The default suits a "
+                  "viscosity of order one. The objects penalty_incompressibility and "
+                  "penalty_pressure each take their own value of gamma, and the recovered "
+                  "pressure is meaningful only when the two values agree.");
     p.addOptional("quadrature",
                   ParameterKind::String,
                   std::string("midpoint"),
-                  "Quadrature rule for the penalty term, taking the same values as "
-                  "elsewhere. The default midpoint rule is the one-point rule that the "
-                  "penalty formulation requires; a fuller rule locks the velocity field and "
-                  "should be used only to demonstrate that locking.");
+                  "Quadrature rule for the penalty term, which accepts the same values as the "
+                  "'quadrature' parameter of the other objects. The default midpoint rule is the "
+                  "one-point rule that the penalty formulation requires. A rule with more points "
+                  "locks the velocity field and should be used only to demonstrate that locking.");
     p.addOptional("reduced_integration",
                   ParameterKind::Boolean,
                   true,
                   "Evaluate the velocity gradients at the centroid of the element while "
-                  "integrating with the geometric rule above; this is selective reduced "
-                  "integration. It defaults to true here, unlike the framework default. Leave "
-                  "it on: turning it off locks the incompressibility constraint.");
+                  "integrating with the rule named by 'quadrature'. This is selective reduced "
+                  "integration. It defaults to true here, unlike the framework default. Keep it "
+                  "on, because turning it off locks the incompressibility constraint.");
     return p;
   }
   explicit PenaltyIncompressibility(const InputParameters & p)
@@ -259,7 +260,7 @@ public:
     p.setClassDescription(
         "Convective term rho (v . grad) u_i of the Navier-Stokes equations, added as a source. "
         "Under Picard iteration the transporting velocity is taken from the previous iterate, "
-        "which is the linearization used in the book.");
+        "which is the linearization used in Reddy's book.");
     p.addRequired("velocities",
                   ParameterKind::StringList,
                   "Names of the velocity variables, exactly one per mesh dimension and in "
@@ -269,10 +270,9 @@ public:
     p.addOptional("density",
                   ParameterKind::Function,
                   1.0,
-                  "Mass density rho in kilograms per cubic metre, as a constant or the name of "
-                  "a function. Together with the dynamic viscosity it fixes the Reynolds "
-                  "number. For a Stokes flow leave this kernel out altogether rather than "
-                  "setting the density to zero.");
+                  "Mass density rho in kilograms per cubic metre, as a constant or the name of a "
+                  "function. Together with the dynamic viscosity it fixes the Reynolds number. A "
+                  "Stokes flow is described by omitting this kernel altogether.");
     return p;
   }
   explicit ConvectiveInertia(const InputParameters & p)
@@ -312,12 +312,11 @@ public:
     InputParameters p = Kernel::validParams();
     p.setClassDescription(
         "Buoyancy in the Boussinesq approximation, for the momentum equation of one velocity "
-        "component. The density is taken as rho0 everywhere except in the gravity term, where "
-        "rho = rho0 (1 - beta (T - T0)); the constant part rho0 g is balanced by the "
-        "hydrostatic pressure, which leaves the body force f_i = -rho0 beta (T - T0) g_i, so "
-        "that fluid warmer than T0 rises. In the canonical form the source is S = -f_i. The "
-        "temperature is an unknown of the same problem, and the coupling is exact in "
-        "Newton's method.");
+        "component. The density is taken as rho0 everywhere except in the gravity term, where rho "
+        "= rho0 (1 - beta (T - T0)). The constant part rho0 g is balanced by the hydrostatic "
+        "pressure, which leaves the body force f_i = -rho0 beta (T - T0) g_i, so that fluid "
+        "warmer than T0 rises. In the canonical form the source is S = -f_i. The temperature is "
+        "an unknown of the same problem, and the coupling is exact in Newton's method.");
     p.addRequired("temperature",
                   ParameterKind::String,
                   "Name of the temperature variable. It must already exist on the problem.");
@@ -391,8 +390,8 @@ addMomentumResidualParams(InputParameters & p)
   p.addOptional("density",
                 ParameterKind::Function,
                 1.0,
-                "Mass density rho, as a constant or a function. It must be the value given to "
-                "the inertia kernels of the momentum equations; zero describes a Stokes flow.");
+                "Mass density rho, as a constant or a function. It must be the value given to the "
+                "inertia kernels of the momentum equations, and zero describes a Stokes flow.");
   p.addOptional("dynamic_viscosity",
                 ParameterKind::Function,
                 1.0,
@@ -404,8 +403,8 @@ addMomentumResidualParams(InputParameters & p)
                 "The body force f per unit volume that the momentum equations carry, one entry "
                 "per component, each a number, an expression in x, y, z and t, or the name of a "
                 "function. The stabilisation needs the whole momentum residual, so every force "
-                "added to the momentum equations must be repeated here; a missing one makes the "
-                "stabilisation push the flow against it.");
+                "added to the momentum equations must be repeated here. A force omitted here "
+                "produces a spurious stabilisation term that opposes that force.");
   p.addOptional("temperature",
                 ParameterKind::String,
                 std::string(),
@@ -442,7 +441,7 @@ addMomentumResidualParams(InputParameters & p)
                 ParameterKind::Boolean,
                 false,
                 "Multiply the Boussinesq force by the load factor, as Boussinesq_buoyancy does "
-                "when its own 'scale_with_load' is true; the two must agree.");
+                "when its own 'scale_with_load' is true. The two settings must agree.");
 }
 
 /// The strong momentum residual without its viscous part,
@@ -656,21 +655,20 @@ public:
     InputParameters p = Kernel::validParams();
     p.setClassDescription(
         "Conservation of mass of an incompressible flow, div v = 0, assembled on the pressure "
-        "variable as the flux F = -(v - tau r_m). The term tau r_m is the residual-based "
-        "pressure stabilisation (PSPG for the finite element method, momentum interpolation for "
-        "the control volume methods) that makes equal-order velocity and pressure stable; "
-        "r_m is the momentum residual without its viscous part and tau the parameter of "
-        "Tezduyar. Set 'stabilization' to false for Taylor-Hood elements, which are stable "
-        "without it. The boundary condition mass_flux_boundary_condition must be applied on every "
-        "boundary "
-        "where the pressure is not prescribed; dualmesh.physics.add_incompressible_flow does "
-        "it.");
+        "variable as the flux F = -(v - tau r_m). The term tau r_m is the residual-based pressure "
+        "stabilisation (PSPG for the finite element method, momentum interpolation for the "
+        "control volume methods) that makes equal-order velocity and pressure stable. Here r_m is "
+        "the momentum residual without its viscous part and tau is the parameter of Tezduyar. Set "
+        "'stabilization' to false for Taylor-Hood elements, which are stable without it. The "
+        "boundary condition mass_flux_boundary_condition must be applied on every boundary where "
+        "the pressure is not prescribed, and dualmesh.physics.add_incompressible_flow applies it "
+        "there.");
     addMomentumResidualParams(p);
     p.addOptional("stabilization",
                   ParameterKind::Boolean,
                   true,
-                  "Add the residual-based pressure stabilisation. Required for equal-order "
-                  "interpolation; leave it out for Taylor-Hood elements.");
+                  "Add the residual-based pressure stabilisation. It is required for equal-order "
+                  "interpolation and should be set to false for Taylor-Hood elements.");
     return p;
   }
   explicit MassConservation(const InputParameters & p)
@@ -738,12 +736,12 @@ public:
   {
     InputParameters p = Kernel::validParams();
     p.setClassDescription(
-        "Streamline-upwind stabilisation (SUPG, Brooks and Hughes 1982) of the momentum "
-        "equation of one velocity component, as the flux F = rho tau v (r_m)_i. For the "
-        "finite element method this is the SUPG term sum_e (rho tau (v . grad) w, r_m)_e; for "
-        "the control volume methods it is a streamline diffusion across the control volume "
-        "faces. It is consistent, because r_m vanishes for the exact solution, and it is "
-        "what keeps a convection-dominated flow free of wiggles on a coarse mesh.");
+        "Streamline-upwind stabilisation (SUPG, Brooks and Hughes 1982) of the momentum equation "
+        "of one velocity component, as the flux F = rho tau v (r_m)_i. For the finite element "
+        "method this is the SUPG term sum_e (rho tau (v . grad) w, r_m)_e, and for the control "
+        "volume methods it is a streamline diffusion across the control volume faces. It is "
+        "consistent, because r_m vanishes for the exact solution, and it suppresses the spurious "
+        "oscillations of a convection-dominated flow on a coarse mesh.");
     addMomentumResidualParams(p);
     p.addRequired("pressure", ParameterKind::String, "Name of the pressure variable.");
     p.addRequired("component", ParameterKind::Integer, "Component index of this equation.");

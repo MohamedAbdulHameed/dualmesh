@@ -29,17 +29,14 @@ boundary_conditions:
   left:
     type: Dirichlet_boundary_condition
     variable: temperature
-    boundary: left
     value: 40.0
   right:
     type: Dirichlet_boundary_condition
     variable: temperature
-    boundary: right
     value: 10.0
   top:
     type: convective_heat_flux_boundary_condition
     variable: temperature
-    boundary: top
     heat_transfer_coefficient: 75.0
     ambient_temperature: 0.0
 

@@ -33,8 +33,10 @@ Usage::
 
     python run_fumex2.py [output directory for the figures] [--plot-only]
 
-The calculations are saved in ``fumex2_runs.npz``; ``--plot-only`` redraws the
-figures from it.
+The calculations are saved in ``run_fumex2_cache.npz``, and ``--plot-only``
+redraws the figures (and rewrites ``fumex2_results.csv``) from it.  Each
+case is drawn in a figure of its own: ``fumex2_case27_2a_fgr.png``,
+``fumex2_case27_2b_fgr.png`` and ``fumex2_case27_1.png``.
 """
 
 from __future__ import annotations
@@ -43,22 +45,20 @@ import sys
 import time
 from pathlib import Path
 
-import matplotlib
+import numpy as np
+from dualmesh import fuel
 
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt  # noqa: E402
-import numpy as np  # noqa: E402
-from dualmesh import fuel  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import plotstyle  # noqa: E402
+from plotstyle import DUALMESH  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
+CACHE = plotstyle.cache_path(__file__)
 
 DAY = 86400.0
-DUALMESH = "#2a78d6"
-REFERENCE = "#eb6834"
-PARTICIPANT = "#a3a29c"
-INK = "#0b0b0b"
-MUTED = "#52514e"
+REFERENCE = plotstyle.MEASURED
+PARTICIPANT = plotstyle.REFERENCE_GREY
 
 
 def read_csv(path):
@@ -170,67 +170,72 @@ def participants():
     return {k: (np.array(v[0]), np.array(v[1])) for k, v in data.items()}
 
 
-def style(ax, xlabel, ylabel):
-    ax.set_xlabel(xlabel, color=MUTED)
-    ax.set_ylabel(ylabel, color=MUTED)
-    ax.grid(True, color="#e4e3df", linewidth=0.6)
-    for side in ("top", "right"):
-        ax.spines[side].set_visible(False)
-    for side in ("left", "bottom"):
-        ax.spines[side].set_color("#c3c2b7")
-    ax.tick_params(colors=MUTED, labelsize=8)
-
-
-def plot_fgr(ax, case, burnup, fgr, title, data, ymax):
+def plot_fgr(case, burnup, fgr, title, data, ymax, path):
+    fig, ax = plotstyle.new_figure()
     first = True
     for (c, _code, _piece), (x, y) in sorted(data.items()):
         if c != case:
             continue
-        ax.plot(x, y, color=PARTICIPANT, linewidth=0.9, label="FUMEX-II codes" if first else None)
+        ax.plot(x, y, color=PARTICIPANT, linewidth=1.0, label="FUMEX-II codes" if first else None)
         first = False
-    ax.plot(burnup, fgr, color=DUALMESH, linewidth=2.0, label="dualmesh")
+    ax.plot(burnup, fgr, color=DUALMESH, linewidth=2.2, label="dualmesh")
     ax.set_xlim(0, 100)
     ax.set_ylim(0, ymax)
-    ax.set_title(title, loc="left", fontsize=10, color=INK)
-    style(ax, "Rod average burnup (MWd/kgU)", "Fission gas release (%)")
-    ax.legend(frameon=False, fontsize=8, loc="upper center", bbox_to_anchor=(0.5, -0.25), ncol=2)
+    plotstyle.style(ax, "Rod average burnup (MWd/kgU)", "Fission gas release (%)", title)
+    plotstyle.legend(ax, loc="upper left")
+    plotstyle.save(fig, path)
+
+
+def compute():
+    t0 = time.time()
+    b2a, f2a, _ = case_2a()
+    b2b, f2b, _ = case_2b()
+    powers = [16, 17, 18, 19, 20, 22, 24, 27, 30, 34, 38, 43]
+    locus = case_1(powers)
+    print(f"wall time {time.time() - t0:.0f} s")
+    return dict(b2a=b2a, f2a=f2a, b2b=b2b, f2b=f2b, locus=locus)
 
 
 def main():
-    args = [a for a in sys.argv[1:] if not a.startswith("--")]
-    out = Path(args[0]) if args else ROOT / "docs/_static/figures/fumex2"
-    out.mkdir(parents=True, exist_ok=True)
+    out, plot_only = plotstyle.parse_args(sys.argv[1:], ROOT / "docs/_static/figures/fumex2")
     data = participants()
-    cache = HERE / "fumex2_runs.npz"
-    if "--plot-only" in sys.argv and cache.exists():
-        z = np.load(cache)
-        b2a, f2a, b2b, f2b, locus = z["b2a"], z["f2a"], z["b2b"], z["f2b"], z["locus"]
+    if plot_only:
+        z = plotstyle.load_cache(CACHE)
     else:
-        t0 = time.time()
-        b2a, f2a, _ = case_2a()
-        b2b, f2b, _ = case_2b()
-        powers = [16, 17, 18, 19, 20, 22, 24, 27, 30, 34, 38, 43]
-        locus = case_1(powers)
-        print(f"wall time {time.time() - t0:.0f} s")
-        np.savez(cache, b2a=b2a, f2a=f2a, b2b=b2b, f2b=f2b, locus=locus)
+        z = compute()
+        plotstyle.save_cache(CACHE, z)
+    b2a, f2a, b2b, f2b, locus = z["b2a"], z["f2a"], z["b2b"], z["f2b"], z["locus"]
 
-    fig, axes = plt.subplots(1, 2, figsize=(9.0, 4.0), constrained_layout=True)
-    plot_fgr(axes[0], "27(2a)", b2a, f2a, "27(2a): 15 kW/m constant", data, 40)
-    plot_fgr(axes[1], "27(2b)", b2b, f2b, "27(2b): 20 to 10 kW/m", data, 35)
-    fig.savefig(out / "fumex2_case27_2.png", dpi=150)
-    plt.close(fig)
+    plot_fgr(
+        "27(2a)",
+        b2a,
+        f2a,
+        "FUMEX-II case 27(2a): 15 kW/m constant",
+        data,
+        40,
+        out / "fumex2_case27_2a_fgr.png",
+    )
+    plot_fgr(
+        "27(2b)",
+        b2b,
+        f2b,
+        "FUMEX-II case 27(2b): 20 to 10 kW/m",
+        data,
+        35,
+        out / "fumex2_case27_2b_fgr.png",
+    )
 
-    fig, ax = plt.subplots(figsize=(5.4, 4.4), constrained_layout=True)
+    fig, ax = plotstyle.new_figure()
     first = True
     for (c, code, _piece), (x, y) in sorted(data.items()):
         if c != "27(1)" or code == "Vitanza":
             continue
-        ax.plot(x, y, color=PARTICIPANT, linewidth=0.9, label="FUMEX-II codes" if first else None)
+        ax.plot(x, y, color=PARTICIPANT, linewidth=1.0, label="FUMEX-II codes" if first else None)
         first = False
     vx, vy = data[("27(1)", "Vitanza", "0")]
     order = np.argsort(vx)
     ax.plot(
-        vx[order], vy[order], color=REFERENCE, linewidth=2.0, label="Vitanza threshold (Fig. 7)"
+        vx[order], vy[order], color=REFERENCE, linewidth=2.2, label="Vitanza threshold (Fig. 7)"
     )
     ok = np.isfinite(locus[:, 1])
     ax.plot(
@@ -238,18 +243,21 @@ def main():
         locus[ok, 2],
         "o-",
         color=DUALMESH,
-        linewidth=2.0,
-        markersize=5,
+        linewidth=2.2,
+        markersize=6,
         markeredgecolor="white",
         label="dualmesh",
     )
     ax.set_xlim(0, 100)
     ax.set_ylim(500, 1700)
-    ax.set_title("27(1): onset of 1 % fission gas release", loc="left", fontsize=10, color=INK)
-    style(ax, "Rod average burnup (MWd/kgU)", r"Centre temperature ($^\circ$C)")
-    ax.legend(frameon=False, fontsize=8, loc="upper center", bbox_to_anchor=(0.5, -0.25), ncol=3)
-    fig.savefig(out / "fumex2_case27_1.png", dpi=150)
-    plt.close(fig)
+    plotstyle.style(
+        ax,
+        "Rod average burnup (MWd/kgU)",
+        r"Centre temperature ($^\circ$C)",
+        "FUMEX-II case 27(1): onset of 1 % fission gas release",
+    )
+    plotstyle.legend_below(ax, ncol=3)
+    plotstyle.save(fig, out / "fumex2_case27_1.png")
 
     lines = ["case,quantity,burnup_MWd_kgU,dualmesh"]
     for b in (25, 50, 75, 100):

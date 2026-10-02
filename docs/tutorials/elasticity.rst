@@ -11,15 +11,16 @@ strain, axisymmetric, or three-dimensional form.  The helper
 
 Points to note:
 
-* Tractions are prescribed with ``traction_boundary_condition`` (a component of the traction
-  vector) or ``pressure_boundary_condition`` (a normal pressure), both of which are natural
-  conditions on the equations of the corresponding components.
+* Tractions are prescribed with ``traction_boundary_condition`` (a component of
+  the traction vector) or ``pressure_boundary_condition`` (a normal pressure),
+  both of which are natural conditions on the equations of the corresponding
+  components.
 * Stresses are material properties, evaluated wherever they are asked for:
   ``problem.property_at_centroids("stress")`` returns them at element centres,
   in the Voigt order :math:`(\sigma_{xx}, \sigma_{yy}, \sigma_{zz},
   \sigma_{yz}, \sigma_{xz}, \sigma_{xy})`, and ``write_vtu`` writes them as
   cell data.
 * For a thick cylinder under internal pressure the same set-up reproduces
-  Table 9.9.1 of the book; for an axisymmetric model use
+  Table 9.9.1 of the book.  For an axisymmetric model use
   ``coordinates="axisymmetric"`` and ``formulation="axisymmetric"``, which adds
   the hoop stress to the radial equation automatically.

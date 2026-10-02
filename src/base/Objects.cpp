@@ -60,33 +60,32 @@ ResidualObject::validParams()
   p.addOptional("block",
                 ParameterKind::StringList,
                 std::vector<std::string>{},
-                "Blocks (subdomains) this object acts on; empty means everywhere.");
+                "Blocks (subdomains) this object acts on. An empty list selects every block.");
   p.addOptional("quadrature",
                 ParameterKind::String,
                 std::string("automatic"),
-                "Quadrature rule used to integrate this term. The default, automatic, uses "
-                "Gauss-Legendre with as many points per direction as the polynomial order of "
-                "the mesh plus one, which is two points on a linear mesh and three on a "
-                "quadratic one. The choices are gauss1 to "
-                "gauss10 (Gauss-Legendre with that many points per direction), midpoint, "
-                "trapezoid, simpson, nodal (a single point at the owning node, which lumps "
-                "the term), interface (a single point at the control domain interface), and "
-                "control_domain_trapezoid (the trapezoidal rule over the whole control "
-                "domain, which is the source rule of the classical finite volume method). "
-                "The aliases trapezoidal, lumped, centroid and cd_trapezoid are accepted, a "
-                "bare gauss means gauss2, and the name is matched without regard to case. "
-                "The automatic default is enough for a smooth coefficient on a mildly "
-                "distorted element; raise it for strongly curved elements or a rapidly "
-                "varying coefficient, and use nodal to lump a capacity or mass term.");
+                "Quadrature rule for the integration of this term. The default, automatic, uses "
+                "Gauss-Legendre with as many points per direction as the polynomial order of the "
+                "mesh plus one, which is two points on a linear mesh and three on a quadratic "
+                "one. The choices are gauss1 to gauss10 (Gauss-Legendre with that many points per "
+                "direction), midpoint, trapezoid, simpson, nodal (a single point at the owning "
+                "node, which lumps the term), interface (a single point at the control domain "
+                "interface), and control_domain_trapezoid (the trapezoidal rule over the whole "
+                "control domain, which is the source rule of the classical finite volume method). "
+                "The aliases trapezoidal, lumped, centroid and cd_trapezoid are accepted, a bare "
+                "gauss means gauss2, and the name is matched without regard to case. The "
+                "automatic default is adequate for a smooth coefficient on a mildly distorted "
+                "element. Raise it for strongly curved elements or a rapidly varying coefficient, "
+                "and use nodal to lump a capacity or mass term.");
   p.addOptional("reduced_integration",
                 ParameterKind::Boolean,
                 false,
-                "Evaluate the solution and its gradients at the centroid of the element "
-                "while still integrating with the rule named by 'quadrature'; the geometry "
-                "is unaffected. This is selective reduced integration. Turn it on only for "
-                "the transverse shear terms of a thin beam or plate and for the penalty term "
-                "of an incompressible flow, where it removes locking. Using it on a bending "
-                "or diffusion term instead degrades the accuracy.");
+                "Evaluate the solution and its gradients at the centroid of the element while "
+                "still integrating with the rule named by 'quadrature'. The geometry is "
+                "unaffected. This is selective reduced integration. Turn it on only for the "
+                "transverse shear terms of a thin beam or plate and for the penalty term of an "
+                "incompressible flow, where it removes locking. Using it on a bending or "
+                "diffusion term degrades the accuracy.");
   p.addOptional("scale_with_load",
                 ParameterKind::Boolean,
                 false,
@@ -196,8 +195,8 @@ InterfaceBC::validParams()
   p.addOptional("secondary_variable",
                 ParameterKind::String,
                 std::string(),
-                "The equation on the secondary side that receives the opposite flux; empty "
-                "means 'variable'.");
+                "The equation on the secondary side that receives the opposite flux. An empty "
+                "value selects 'variable'.");
   return p;
 }
 
@@ -259,7 +258,7 @@ NodalLoad::validParams()
 {
   InputParameters p = ResidualObject::validParams();
   p.setClassDescription(
-      "Concentrated source at nodes (point force or point heat source); the residual of the "
+      "Concentrated source at nodes (point force or point heat source). The residual of the "
       "node's equation receives -value.");
   p.addRequired("value",
                 ParameterKind::Function,
@@ -275,19 +274,19 @@ NodalLoad::validParams()
   p.addOptional("points",
                 ParameterKind::RealList,
                 std::vector<double>{},
-                "Coordinates of the loaded points: three numbers per point in two and "
-                "three dimensions, one number per point in one dimension. Each point is "
-                "snapped to the nearest node, however far away that node is, without a "
-                "warning, so check that the mesh has a node where the load belongs. Points "
-                "that snap to the same node are merged and the load is applied once. Give "
-                "'points', 'boundary', or both; giving neither is an error.");
+                "Coordinates of the loaded points: three numbers per point in two and three "
+                "dimensions, one number per point in one dimension. Each point is snapped to the "
+                "nearest node, however far away that node is, without a warning, so check that "
+                "the mesh has a node where the load belongs. Points that snap to the same node "
+                "are merged and the load is applied once. Give 'points', 'boundary', or both. "
+                "Giving neither is an error.");
   p.addOptional("scale_with_load",
                 ParameterKind::Boolean,
                 true,
-                "Multiply this load by the load factor during load stepping. Unlike the "
-                "framework default this is true, because an applied load is normally what is "
-                "ramped; set it to false for a preload that must stay fixed while the rest "
-                "of the loading is increased.");
+                "Multiply this load by the load factor during load stepping. This parameter "
+                "defaults to true, unlike the framework default, because an applied load is "
+                "normally the quantity that is ramped. Set it to false for a preload that must "
+                "stay fixed while the rest of the loading is increased.");
   return p;
 }
 
@@ -401,11 +400,52 @@ Material::validParams()
   p.addOptional("block",
                 ParameterKind::StringList,
                 std::vector<std::string>{},
-                "Blocks (subdomains) where this material applies; empty means everywhere.");
+                "Blocks (subdomains) where this material applies. An empty list selects every "
+                "block.");
+  p.addOptional("scaled_properties",
+                ParameterKind::StringList,
+                std::vector<std::string>{},
+                "Properties computed by this material to multiply by the matching entries of "
+                "'property_factors', for sensitivity and uncertainty studies (for example "
+                "thermal_conductivity). Default none.");
+  p.addOptional("property_factors",
+                ParameterKind::RealList,
+                std::vector<double>{},
+                "Factors on the 'scaled_properties', one each. Default none.");
   return p;
 }
 
-Material::Material(const InputParameters & params) : Object(params) {}
+Material::Material(const InputParameters & params) : Object(params)
+{
+  if (_params.getStringList("scaled_properties").size() !=
+      _params.getRealList("property_factors").size())
+    throw InputError("'" + name() +
+                     "': 'scaled_properties' and 'property_factors' must have the same length.");
+}
+
+void
+Material::setupPropertyFactors(const MaterialPropertyRegistry & registry)
+{
+  _property_factors.clear();
+  const auto & names = _params.getStringList("scaled_properties");
+  const auto & factors = _params.getRealList("property_factors");
+  for (std::size_t i = 0; i < names.size(); ++i)
+  {
+    if (!registry.has(names[i]))
+      throw InputError("'" + name() + "': cannot scale '" + names[i] +
+                       "', which no material declares.");
+    _property_factors.emplace_back(
+        registry.id(names[i]), registry.components(names[i]), factors[i]);
+  }
+}
+
+void
+Material::applyPropertyFactors(QpContext & ctx) const
+{
+  for (const auto & [id, n, f] : _property_factors)
+    for (int c = 0; c < n; ++c)
+      ctx.property(id, c) *= f;
+}
 
 void
 Material::initialSetup(Problem & problem)

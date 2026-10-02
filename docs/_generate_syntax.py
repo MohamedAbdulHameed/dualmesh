@@ -87,8 +87,8 @@ is assumed to vary through the thickness in a prescribed way, and whose
 equilibrium equations have been integrated through it.  Beams, axisymmetric
 circular plates and rectangular plates are each available in more than one
 theory.  Every model is written as a system of *second-order* equations,
-because that is what the dual mesh control domain method can discretize; a
-theory whose natural statement is fourth order, such as the classical beam or
+because the dual mesh control domain method discretizes equations of that
+order.  A theory whose natural statement is fourth order, such as the classical beam or
 plate, is therefore recast in mixed form with the bending moment as an extra
 unknown.  All of them accept functionally graded section stiffnesses and the
 von Karman moderate-rotation nonlinearity.
@@ -124,8 +124,7 @@ CATEGORY_NOTES = {
         "solution, is the reaction."
     ),
     "nodal_load": (
-        "A **nodal load** is a concentrated source applied at a node rather than "
-        "distributed over an element or a side."
+        "A **nodal load** is a concentrated source applied at a single node."
     ),
     "material": (
         "A **material** computes named properties at every integration point, "
@@ -279,8 +278,7 @@ at run time.  The same information is available at the command line with
 ``dualmesh list`` and ``dualmesh describe <type>``, and from Python with
 ``dualmesh.describe("heat_conduction")``.
 
-Misspelling a parameter is an error, not a silently ignored keyword, and the
-error message lists the parameters the object does accept.  Omitting a required
+A misspelt parameter is reported as an error, and the error message lists the parameters the object does accept.  Omitting a required
 parameter is likewise an error, and names the object and the parameter.
 """
         ),

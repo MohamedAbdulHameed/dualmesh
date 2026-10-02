@@ -5,8 +5,8 @@ This chapter sets out the two continuum models implemented by the
 ``heat_transfer`` and ``fluids`` modules: conduction of heat in a solid, with a
 conductivity that may depend on the temperature, and the slow flow of a viscous
 incompressible fluid.  Both are developed from the underlying balance law,
-because the library never asks for a weak form or for element matrices.  It asks
-for the governing equation written in the canonical conservation form
+because the library requires neither a weak form nor element matrices.  Its
+input is the governing equation written in the canonical conservation form
 
 .. math::
    :label: canonical_hf
@@ -15,9 +15,9 @@ for the governing equation written in the canonical conservation form
    + S(u, \nabla u, \mathbf{x}, t) = 0 ,
 
 in which :math:`\mathbf{F}` is the flux of the conserved quantity and :math:`S`
-collects everything that is not a divergence.  A *kernel* supplies
-:math:`\mathbf{F}`, or :math:`S`, or both, and the discretizations consume that
-one statement: the dual mesh control domain method integrates it over the
+collects all terms outside the divergence.  A *kernel* supplies
+:math:`\mathbf{F}`, or :math:`S`, or both, and every discretization operates on
+that single statement: the dual mesh control domain method integrates it over the
 control domain of each node and turns the divergence into a contour integral,
 while the Galerkin finite element method multiplies it by a test function and
 integrates by parts.  Every equation below is therefore presented as a pair
@@ -45,7 +45,7 @@ inside it:
 Here :math:`T` is the temperature, :math:`\rho` the mass density, :math:`c_p`
 the specific heat capacity (so :math:`\rho c_p` is the energy stored per unit
 volume per degree), :math:`\mathbf{q}` the heat flux vector and :math:`q'''` the
-volumetric generation rate.  The minus sign on the surface integral is there
+volumetric generation rate.  The minus sign on the surface integral appears
 because :math:`\mathbf{q} \cdot \mathbf{n}` measures heat *leaving*, whereas the
 balance needs heat entering.  Fourier's law adds the constitutive statement that
 heat flows down the temperature gradient,
@@ -66,13 +66,14 @@ vector, and the source
 :math:`S = \rho c_p \, \partial T / \partial t - q'''`.  The code splits this
 across three kernels so that each piece carries its own coefficients and its own
 quadrature rule.  ``heat_conduction`` supplies the flux :math:`k \nabla T` and no
-source.  ``heat_source`` supplies no flux and the source :math:`S = -q'''`, the
-sign being what makes a positive generation rate add heat to the body.
-``heat_conduction_time_derivative`` supplies no flux and the discrete capacity term
+source.  ``heat_source`` supplies no flux and the source :math:`S = -q'''`,
+with the sign chosen so that a positive generation rate adds heat to the body.
+``heat_conduction_time_derivative`` supplies no flux and the discrete capacity
+term
 :math:`S = \rho c_p (T - T_{\text{old}}) / \Delta t`, with
 :math:`T_{\text{old}}` the temperature at the start of the step.  That kernel is
-marked as a *time kernel*, with two consequences worth knowing: it is omitted
-entirely from a steady solve, and it is not multiplied by the time-integration
+marked as a *time kernel*, with two consequences: it is omitted entirely from
+a steady solve, and it is not multiplied by the time-integration
 weight :math:`\theta`, which applies to the steady terms alone.  Only the
 product :math:`\rho c_p` enters, so a volumetric heat capacity known as one
 number is supplied by leaving the other factor at unity.
@@ -90,29 +91,29 @@ boundary, the divergence theorem leaves behind the normal component of the flux,
 
 on the part of the boundary belonging to that control domain.  This is the
 *secondary variable* of the energy equation and the quantity an integrated
-boundary condition prescribes.  Read the equality from right to left: because
+boundary condition prescribes.  The equality is read from right to left: because
 :math:`\mathbf{n}` points outwards, :math:`\mathbf{n} \cdot \mathbf{q}` is heat
 leaving, so :math:`q_n` is **the heat flux entering the body**, in watts per
-square metre, counted positive inwards.  The convention holds without exception
-across the library, in this module and in the reactions recovered at constrained
-nodes, and it is worth stating plainly because the opposite convention is at
-least as common elsewhere.  A positive prescribed flux heats the body, and a
+square metre, counted positive inwards.  The convention holds throughout the
+library, in this module and in the reactions recovered at constrained nodes.  It
+is stated explicitly here because the opposite convention is at least as common
+elsewhere.  A positive prescribed flux heats the body, and a
 reported reaction of :math:`+4817\ \mathrm{W}` at a fixed boundary means that
 much power flows inwards through it.
 
-The convention also explains behaviour that surprises some users: a boundary
-carrying no condition at all is insulated.  Nothing special is done to arrange
-this.  The term :math:`q_n` appears in the discrete equation of every boundary
-node, and if no object writes a value into it, it contributes nothing, which is
-the statement :math:`q_n = 0`.  Zero heat flux is an adiabatic surface, so a
-boundary left out of the input is not an error and not an open boundary but a
-perfectly insulated one.
+The convention also determines the behaviour of a boundary that carries no
+condition at all: such a boundary is insulated.  This follows from the
+discretization itself and requires no additional code.  The term :math:`q_n`
+appears in the discrete equation of every boundary node, and if no object writes
+a value into it, it contributes nothing, which is the statement :math:`q_n = 0`.
+Zero heat flux defines an adiabatic surface, so a boundary left out of the input
+is valid and represents a perfectly insulated surface.
 
 Boundary conditions
 ^^^^^^^^^^^^^^^^^^^
 
 Exactly one member of the pair :math:`(T, q_n)` is specified at every boundary
-point, and the module offers four ways to do it.
+point, and the module offers four ways of doing so.
 
 The **prescribed temperature**, or essential, condition sets
 :math:`T = g(\mathbf{x}, t)` and is imposed by replacing the discrete equation
@@ -125,12 +126,12 @@ The **prescribed flux**, or natural, condition sets
 :math:`\mathbf{n} \cdot (k \nabla T) = q(\mathbf{x}, t)`, with :math:`q` the
 heat entering per unit area.  Use it for a surface heated by a known source such
 as an electrical element, and use its default value of zero, or no condition at
-all, for an insulated or symmetry surface.  The object is ``heat_flux_boundary_condition``, the
-heat-transfer spelling of the generic ``Neumann_boundary_condition``, carrying the same sign
-convention.
+all, for an insulated or symmetry surface.  The object is
+``heat_flux_boundary_condition``, the heat-transfer name of the generic
+``Neumann_boundary_condition``, with the same sign convention.
 
 The **convection** condition applies Newton's law of cooling, which models the
-thermal resistance of the fluid boundary layer washing over the surface by one
+thermal resistance of the fluid boundary layer adjacent to the surface by one
 lumped coefficient:
 
 .. math::
@@ -140,13 +141,14 @@ lumped coefficient:
 
 Here :math:`h` is the film coefficient in watts per square metre per kelvin and
 :math:`T_\infty` the temperature of the surrounding fluid far from the surface.
-The minus sign is what makes the condition physical under the library's
+The minus sign makes the condition physically consistent with the library's
 convention: where the surface is hotter than the fluid the bracket is positive,
 the entering flux is negative, and heat leaves.  Only the temperature
-*difference* enters, so any consistent scale works, which is not true of
-radiation below.  The object is ``convective_heat_flux_boundary_condition``; it is nonlinear in
-nothing but :math:`T` itself and is differentiated exactly, so a linear
-conduction problem carrying it still converges in a single Newton step.  Its
+*difference* enters, so any consistent temperature scale may be used, unlike the
+radiation condition below.  The object is
+``convective_heat_flux_boundary_condition``.  It depends on no unknown other
+than :math:`T` itself and is differentiated exactly, so a linear conduction
+problem carrying it still converges in a single Newton step.  Its
 default ambient temperature is zero, which cools the surface towards zero and is
 rarely intended when the variable is in degrees Celsius.
 
@@ -163,23 +165,25 @@ where :math:`\varepsilon` is the total hemispherical emissivity, dimensionless
 and between zero and one, and
 :math:`\sigma = 5.670374419 \times 10^{-8}\ \mathrm{W/m^2/K^4}` is the
 Stefan-Boltzmann constant.  The two are multiplied together once when the object
-is constructed, so neither can be varied afterwards.  Two warnings belong here.
-The fourth powers demand an **absolute temperature scale**: a problem posed in
-degrees Celsius produces a silently wrong answer rather than an error, because
-nothing in the code can detect the mistake.  And :eq:`radiation` is strongly
-nonlinear, so radiation overwhelms conduction at high temperature and a poor
-initial guess can prevent convergence.  Under Newton's method the fourth power
-is differentiated exactly; under direct iteration the code instead factors the
-difference as
+is constructed, so neither can be varied afterwards.  Two cautions apply.
+First, the fourth powers require an **absolute temperature scale**.  A problem
+posed in degrees Celsius produces an incorrect answer without any error
+message, because nothing in the code can detect the mistake.  Second,
+:eq:`radiation` is strongly nonlinear, so radiation dominates conduction at high
+temperature and a poor initial guess can prevent convergence.  Under Newton's
+method the fourth power is differentiated exactly.  Under direct iteration the
+code factors the difference as
 :math:`T^4 - T_\infty^4 = ( T^2 + T_\infty^2 )( T + T_\infty )( T - T_\infty )`
 and evaluates the first two brackets at the previous iterate, leaving a term
-linear in the current temperature.  The object is ``radiative_heat_flux_boundary_condition``, and
-its default ambient temperature of zero models radiation into deep space.
+linear in the current temperature.  The object is
+``radiative_heat_flux_boundary_condition``, and its default ambient temperature
+of zero models radiation into deep space.
 
 Temperature-dependent conductivity
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Most materials conduct differently when hot.  ``heat_conduction`` expresses this
+The thermal conductivity of most materials varies with temperature.
+``heat_conduction`` expresses this
 by multiplying a base conductivity, itself allowed to vary with position and
 time, by a polynomial in the temperature:
 
@@ -190,28 +194,29 @@ time, by a polynomial in the temperature:
    \left( c_0 + c_1 T + c_2 T^2 + \cdots \right) .
 
 The base value :math:`k_0` is the ``thermal_conductivity`` parameter, or a
-material property when ``thermal_conductivity_property`` names one; naming a
+material property when ``thermal_conductivity_property`` names one.  Naming a
 property replaces :math:`k_0` alone, and the polynomial still multiplies it.
 The coefficients are the ``temperature_polynomial`` list, evaluated by Horner's
-rule from the highest downwards.  Two details of :eq:`kpoly` have caught users
-out.  The polynomial **multiplies** the base value rather than replacing it, so
-a list supplied by the user must carry its own constant term: the default list
-:math:`\{1\}` leaves the conductivity untouched, and a material with
-:math:`k = 20\,(1 + 0.01\,T)` is written as a base value of :math:`20` together
-with the list :math:`\{1, 0.01\}`.  Further, the polynomial is written in the
-same temperature units as the variable and not relative to a reference
-temperature, so its coefficients must be converted along with the rest of the
-problem if the scale changes.
+rule from the highest downwards.  Two details of :eq:`kpoly` require attention.
+The polynomial **multiplies** the base value, so a list supplied by the user
+must carry its own constant term: the default list :math:`\{1\}` leaves the
+conductivity unchanged, and a material with :math:`k = 20\,(1 + 0.01\,T)` is
+written as a base value of :math:`20` together with the list
+:math:`\{1, 0.01\}`.  Further, the argument of the polynomial is the
+temperature variable itself, in the units of that variable, with no reference
+temperature subtracted, so its coefficients must be converted along with the
+rest of the problem if the scale changes.
 
-For the solver the consequence is that :eq:`energy` is no longer linear in
-:math:`T`, the flux now containing the product of a function of :math:`T` with
-:math:`\nabla T`.  One linear solve no longer suffices, and which iteration
-replaces it decides where the temperature inside :eq:`kpoly` is taken from.
-Under Newton's method the polynomial sees the current iterate as a
-differentiated quantity, so the Jacobian gains the term
+For the solver, the consequence is that :eq:`energy` becomes nonlinear in
+:math:`T`, because the flux contains the product of a function of :math:`T`
+with :math:`\nabla T`.  A single linear solve is then insufficient, and the
+choice of iteration determines where the temperature inside :eq:`kpoly` is
+taken from.  Under Newton's method the polynomial is evaluated at the current
+iterate as a differentiated quantity, so the Jacobian gains the term
 :math:`(\partial k / \partial T) \nabla T` alongside the usual
 :math:`k \nabla \psi`, and convergence is quadratic.  Under direct iteration the
-polynomial sees the previous iterate as a constant, the matrix then resembles
+polynomial is evaluated at the previous iterate, which is treated as a
+constant, the matrix then resembles
 that of a linear problem with a spatially varying conductivity, and convergence
 is linear.  One accessor expresses the distinction: the conductivity is built
 from ``coefficientValue``, which returns the current iterate in Newton mode and
@@ -221,23 +226,24 @@ current differentiated one.
 Verification of the heat transfer module
 ----------------------------------------
 
-The module is checked against the published dual mesh results of Reddy's book
-rather than against itself, in ``tests/python/test_heat_transfer.py``.  The
-cooling fin of Example 5.3.1, a one-dimensional problem with a Robin condition
-at the tip, is reproduced on ten and twenty elements against the nodal
-temperatures and base heat flow of Table 5.3.1, the temperatures agreeing within
+The module is verified in ``tests/python/test_heat_transfer.py`` against the
+published dual mesh results of Reddy's book.  The cooling fin of
+Example 5.3.1, a one-dimensional problem with a Robin condition at the tip, is
+reproduced on ten and twenty elements against the nodal temperatures and base
+heat flow of Table 5.3.1, the temperatures agreeing within
 :math:`6\times10^{-3}\ \mathrm{K}` and the recovered reaction of
 :math:`4807\ \mathrm{W}` within three parts in ten thousand.  The bus bar of
 Example 5.4.3, which combines volumetric generation, two fixed edges and a
 convecting top surface, reproduces every printed digit of Table 5.4.3 on a
-:math:`10 \times 5` mesh; that table is captioned as :math:`20 \times 10`, but
+:math:`10 \times 5` mesh.  That table is captioned as :math:`20 \times 10`, but
 the accompanying figure shows the coarser mesh and its values agree with those
 quoted for :math:`10 \times 5` elsewhere in the book, so the test uses the mesh
-the numbers came from.  The nonlinear plate of Example 6.3.1, with
-:math:`k = k_0 (1 + 100\,T)`, matches the dual mesh column of Table 6.3.1 to
-within three hundredths of a degree by Newton's method and by direct iteration
-alike, that tolerance being set by the book's own convergence criterion of
-:math:`10^{-3}` relative rather than by the discretization.
+from which the tabulated values were obtained.  The nonlinear plate of
+Example 6.3.1, with :math:`k = k_0 (1 + 100\,T)`, matches the dual mesh column
+of Table 6.3.1 to within three hundredths of a degree by Newton's method and by
+direct iteration alike.  The size of this tolerance is governed by the relative
+convergence criterion of :math:`10^{-3}` used in the book, and the
+discretization error is smaller.
 
 Viscous incompressible flow
 ---------------------------
@@ -276,44 +282,43 @@ a particle being carried into a region where the velocity differs.  On the right
 stands the divergence of the Cauchy stress, split into the pressure and the
 viscous stress :math:`\mu (\nabla \mathbf{v} + \nabla \mathbf{v}^{\mathsf{T}})`
 of a Newtonian fluid, together with the body force.  The module treats steady
-flow, so :math:`\partial \mathbf{v} / \partial t` is dropped; a transient flow
+flow, so :math:`\partial \mathbf{v} / \partial t` is dropped.  A transient flow
 would add the generic ``time_derivative`` kernel to each momentum equation.  The
 ratio of the convective to the viscous term defines the Reynolds number
 :math:`Re = \rho V L / \mu` for a problem of characteristic speed :math:`V` and
 length :math:`L`.
 
-Why the pressure is the difficulty
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+The pressure as a Lagrange multiplier
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 Conduction gives one equation for one field, and that field appears in it.  The
 Navier-Stokes system lacks this structure.  In two dimensions there are three
 fields, :math:`u`, :math:`v` and :math:`P`, and three equations, two momentum
 balances and continuity, but the pressure appears in the momentum equations and
 nowhere in :eq:`continuity`.  No equation has the pressure as its principal
-unknown, and no constitutive law delivers it from the kinematics.  The pressure
-is not a thermodynamic state variable here: it is the Lagrange multiplier
-enforcing the constraint :eq:`continuity`, taking whatever value keeps the flow
-divergence free, and in a fully enclosed flow it is fixed only to within an
-additive constant.
+unknown, and no constitutive law delivers it from the kinematics.  In this
+setting the pressure is the Lagrange multiplier enforcing the constraint
+:eq:`continuity`, with no equation of state relating it to the density.  It
+takes whatever value keeps the flow divergence free, and in a fully enclosed
+flow it is fixed only to within an additive constant.
 
-The consequence for a method that interpolates velocity and pressure together is
-sharp.  The two interpolation spaces cannot be chosen independently; they must
-jointly satisfy the Ladyzhenskaya-Babuska-Brezzi, or inf-sup, condition, which
-requires the pressure space to be poor enough relative to the velocity space
-that every discrete pressure is felt by some discrete velocity.  A pair
-violating it yields a singular or nearly singular system and pressure fields
-polluted by spurious modes, the checkerboard oscillation being the familiar one.
-Equal-order interpolation of velocity and pressure, which is what a library
-built on a single family of Lagrange elements would otherwise reach for, is
-precisely the choice that fails.
+This has a strict consequence for a method that interpolates velocity and
+pressure together.  The two interpolation spaces cannot be chosen
+independently.  They must jointly satisfy the Ladyzhenskaya-Babuška-Brezzi, or
+inf-sup, condition, which requires the pressure space to be sufficiently small
+relative to the velocity space that every nonzero discrete pressure couples,
+through the divergence, to some discrete velocity.  A pair violating it yields a
+singular or nearly singular system and pressure fields contaminated by spurious
+modes, the checkerboard oscillation being the best-known example.  Equal-order
+interpolation of velocity and pressure, the natural choice for a library built
+on a single family of Lagrange elements, violates this condition.
 
 The penalty formulation
 ^^^^^^^^^^^^^^^^^^^^^^^
 
-The library avoids the mixed problem altogether by the penalty formulation of
-Chapter 9 of Reddy's book.  Rather than treating the constraint exactly with a
-multiplier, the fluid is treated as very slightly compressible, through the
-constitutive assumption
+The library avoids the mixed problem by the penalty formulation of Chapter 9 of
+Reddy's book.  In this formulation the constraint is relaxed and the fluid is
+treated as very slightly compressible, through the constitutive assumption
 
 .. math::
    :label: penalty
@@ -321,40 +326,40 @@ constitutive assumption
    P = - \gamma \, \nabla \cdot \mathbf{v} ,
 
 in which :math:`\gamma` is the penalty parameter, a number with the units of
-viscosity.  The sign is fixed by physics: a fluid element being compressed has
-:math:`\nabla \cdot \mathbf{v} < 0` and must be at raised pressure.  As
-:math:`\gamma \to \infty` a bounded pressure forces
-:math:`\nabla \cdot \mathbf{v} \to 0` and the incompressible problem returns; at
-finite :math:`\gamma` the flow carries a residual dilatation of order
-:math:`P / \gamma`.  The benefit is that :eq:`penalty` removes the pressure as
+viscosity.  The sign follows from physical reasoning: a fluid element being
+compressed has :math:`\nabla \cdot \mathbf{v} < 0` and must be at raised
+pressure.  As :math:`\gamma \to \infty` a bounded pressure forces
+:math:`\nabla \cdot \mathbf{v} \to 0` and the incompressible problem is
+recovered.  At finite :math:`\gamma` the flow carries a residual dilatation of
+order :math:`P / \gamma`.  The benefit is that :eq:`penalty` removes the pressure as
 an unknown.  Substituting it into :eq:`momentum` expresses :math:`P` through the
 velocity gradients and leaves two equations in the two velocity components, both
 of the same second-order form as the conduction equation and hence expressible
-in the canonical form :eq:`canonical_hf`.  Continuity is no longer imposed
-separately; the penalty term enforces it approximately, and nothing else in the
-framework has to know that a constraint is present.
+in the canonical form :eq:`canonical_hf`.  Continuity is then imposed only
+through the penalty term, which enforces it approximately, and no other part of
+the framework requires knowledge of the constraint.
 
-The choice of :math:`\gamma` is a compromise and is the parameter most likely to
-be set badly.  It must be measured against the viscosity, since the penalty term
-competes with the viscous term within the same equation, and a ratio of roughly
-:math:`10^4` to :math:`10^7` works, that is, :math:`\gamma \approx 10^4 \mu` to
-:math:`10^7 \mu`.  The default :math:`\gamma = 10^8` suits a viscosity of order
-unity.  At the low extreme the constraint is weakly enforced, the computed flow
-is measurably compressible and the answer belongs to a different physical
-problem.  At the high extreme the penalty contribution dominates every matrix
-entry, the viscous contribution is lost to round-off against it, and the system
-becomes so ill-conditioned that even a direct factorization loses accuracy, so
-the velocity field degrades rather than improving.  A useful check is the
-residual divergence, which should behave as
-:math:`|\nabla \cdot \mathbf{v}| \sim P / \gamma` and which the tests confirm
-stays below :math:`10^{-5}` for the cavity at the default setting.
+The choice of :math:`\gamma` involves a trade-off, and :math:`\gamma` is the
+parameter most often set unsuitably.  It must be measured against the viscosity,
+since the penalty term competes with the viscous term within the same equation,
+and a ratio of roughly :math:`10^4` to :math:`10^7` is suitable, that is,
+:math:`\gamma \approx 10^4 \mu` to :math:`10^7 \mu`.  The default
+:math:`\gamma = 10^8` suits a viscosity of order unity.  At the low extreme the
+constraint is weakly enforced, the computed flow is measurably compressible and
+the solution corresponds to a different physical problem.  At the high extreme
+the penalty contribution dominates every matrix entry, the viscous contribution
+is lost to round-off error, and the system becomes so ill-conditioned that even a direct
+factorization loses accuracy, so a further increase of :math:`\gamma` degrades
+the velocity field.  A useful check is the residual divergence, which should
+behave as :math:`|\nabla \cdot \mathbf{v}| \sim P / \gamma` and which the tests
+confirm stays below :math:`10^{-5}` for the cavity at the default setting.
 
 Reduced integration and locking
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-The penalty term must be integrated with a **reduced** quadrature rule, and this
-is not a refinement but the thing that makes the formulation work at all.  The
-argument is one of counting.  Integrating the penalty term with a rule of
+The penalty term must be integrated with a **reduced** quadrature rule, and the
+formulation fails without this reduction.  The argument rests on counting
+constraints and unknowns.  Integrating the penalty term with a rule of
 :math:`n` points per element imposes, in the limit of large :math:`\gamma`, the
 discrete constraint :math:`\nabla \cdot \mathbf{v} = 0` at each of those points,
 so a mesh of :math:`N_e` elements carries :math:`n N_e` constraints.  Against
@@ -364,9 +369,9 @@ four-node quadrilaterals has about as many nodes as elements, hence about
 conditions are applied.  With the full :math:`2 \times 2` Gauss rule,
 :math:`n = 4` and there are some :math:`4 N_e` constraints against
 :math:`2 N_e` unknowns.  A system with twice as many constraints as unknowns has
-in general only the trivial solution, and that is what the computation returns: a
-velocity field far too stiff and, in the limit, identically zero.  This failure
-is locking, and refining the mesh does not cure it, because refinement
+in general only the trivial solution.  The computed response is accordingly far
+too stiff, and in the limit the velocity field is identically zero.  This failure
+is locking, and refining the mesh does not remove it, because refinement
 multiplies constraints and unknowns in the same proportion.
 
 The one-point rule sets :math:`n = 1`, giving :math:`N_e` constraints against
@@ -375,27 +380,29 @@ the ratio the continuum problem itself has, since at every point of a
 two-dimensional flow two velocity components are subject to one incompressibility
 condition, and it is the value at which the discrete problem neither locks nor
 leaves the constraint unenforced.  ``penalty_incompressibility`` accordingly
-defaults to the ``midpoint`` rule and to ``reduced_integration = true``, both
-against the framework's own defaults, the latter meaning that the velocity
-gradients are evaluated at the element centroid while the geometric integration
+defaults to the ``midpoint`` rule and to ``reduced_integration = true``, both of
+which differ from the framework's general defaults, the latter meaning that the
+velocity gradients are evaluated at the element centroid while the geometric integration
 proceeds as usual.  This is selective reduced integration: the viscous term
 keeps its full rule and only the constrained term is under-integrated.  A fuller
-rule on the penalty term is available, and its only proper use is to demonstrate
-the locking.
+rule on the penalty term is available, and its only appropriate use is to
+demonstrate the locking.
 
-The same counting decides which discretisations can use the formulation.  The
+The same counting determines which discretisations can use the formulation. The
 vertex-centred finite volume method replaces the interpolated gradient at a
-control domain interface by a two-point difference along the edge; applied to
-the penalty term, that would impose the constraint once per edge rather than
-once per element and lock the flow, so the replacement is not made where a
-kernel asks for reduced integration.  With that exception the vertex-centred
-method gives the same cavity flow as the dual mesh method.  The cell-centred
-finite volume method has no element interior to integrate over: its fluxes are
-formed at faces, from reconstructed cell gradients, so it imposes the
-constraint at every face.  On a lid-driven cavity the computed velocities were
-five orders of magnitude too small.  ``penalty_incompressibility`` therefore
-refuses the cell-centred method; incompressible flow on that method needs a
-pressure-velocity coupling, which is not implemented.
+control domain interface by a two-point difference along the edge.  Applied to
+the penalty term, that difference would impose the constraint once per edge,
+which exceeds the one constraint per element of the reduced rule and locks the
+flow.  The replacement is therefore skipped where a kernel requests reduced
+integration.  With that exception the vertex-centred method gives the same
+cavity flow as the dual mesh method.  The cell-centred finite volume method has
+no element interior to integrate over: its fluxes are formed at faces, from
+reconstructed cell gradients, so it imposes the constraint at every face.  On a
+lid-driven cavity the velocities computed with the penalty term on this method
+are five orders of magnitude too small.  ``penalty_incompressibility`` therefore
+refuses the cell-centred method.  Incompressible flow with that method requires
+a pressure-velocity coupling, which the pressure-velocity formulation described
+below provides.
 
 The equations as the code assembles them
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -417,14 +424,14 @@ which is :eq:`canonical_hf` with contributions from three kernels and,
 optionally, a body force.  Term by term:
 
 * ``viscous_stress`` contributes the flux
-  :math:`\mathbf{F} = \mu ( \nabla u_i + (\nabla \mathbf{v})_i )` and no source;
-  its :math:`d`-th component is
+  :math:`\mathbf{F} = \mu ( \nabla u_i + (\nabla \mathbf{v})_i )` and no source.
+  Its :math:`d`-th component is
   :math:`\mu ( \partial u_i / \partial x_d + \partial u_d / \partial x_i )`, so
   in two dimensions the :math:`u` equation carries
   :math:`(2\mu\,\partial u/\partial x,\ \mu(\partial u/\partial y +
   \partial v/\partial x))`.  The viscosity is evaluated from position and time
-  only, which makes this kernel Newtonian; a shear-rate dependent viscosity
-  needs a material and a kernel written for the purpose.
+  only, which makes this kernel Newtonian.  A shear-rate dependent viscosity
+  requires a material and a kernel written for the purpose.
 * ``penalty_incompressibility`` contributes the flux
   :math:`\mathbf{F} = \gamma (\nabla \cdot \mathbf{v}) \mathbf{e}_i`, that is
   :math:`\gamma (\partial u / \partial x + \partial v / \partial y +
@@ -436,18 +443,18 @@ optionally, a body force.  Term by term:
   :math:`\mathbf{v}` is taken through the coefficient accessor, so it is the
   current iterate under Newton's method and the previous one under direct
   iteration, while the gradient :math:`\nabla u_i` it multiplies is always the
-  current differentiated one.  A Stokes flow is obtained by omitting this kernel
-  rather than by setting the density to zero.
+  current differentiated one.  A Stokes flow is obtained by omitting this
+  kernel, and the density then plays no role.
 * ``body_force``, if present, contributes no flux and the source
-  :math:`S = -f_i`, the sign again being what makes a positive intensity drive
-  the velocity up.
+  :math:`S = -f_i`, with the sign chosen so that a positive intensity increases
+  the velocity.
 
 Each object takes the same ``velocities`` list, in coordinate order, and a
 zero-based ``component`` index into it.  The index is range checked, but its
-agreement with the ``variable`` parameter is not, so a mismatch silently
-assembles one momentum equation into another; the helper
-``dualmesh.physics.add_incompressible_flow`` exists partly to remove that
-opportunity, adding the viscous and penalty kernels for every component, the
+agreement with the ``variable`` parameter is not, so a mismatch assembles one
+momentum equation into another without any error message.  The helper
+``dualmesh.physics.add_incompressible_flow`` prevents such a mismatch by adding
+the viscous and penalty kernels for every component, the
 inertia kernel when a non-zero density is given, and the pressure material
 described next.
 
@@ -460,27 +467,27 @@ in conduction:
    = \sum_d n_d \, \mu \left( \frac{\partial u_i}{\partial x_d}
      + \frac{\partial u_d}{\partial x_i} \right) - P \, n_i ,
 
-where :eq:`penalty` was used to replace :math:`\gamma \nabla \cdot \mathbf{v}`
-by :math:`-P`.  This is the :math:`i`-th component of the surface traction, so a
+where :eq:`penalty` replaces :math:`\gamma \nabla \cdot \mathbf{v}` by
+:math:`-P`.  This is the :math:`i`-th component of the surface traction, so a
 boundary with no condition at all is traction free, which is the usual outflow
-condition.  Walls and moving lids are imposed instead as ``Dirichlet_boundary_condition``
-conditions on the velocity components.
+condition.  Walls and moving lids are imposed as
+``Dirichlet_boundary_condition`` conditions on the velocity components.
 
 Recovering the pressure
 ^^^^^^^^^^^^^^^^^^^^^^^
 
-The pressure was eliminated, not discarded, and :eq:`penalty` recovers it from
-the converged velocity field.  The ``penalty_pressure`` material declares the
-property ``pressure`` and evaluates :math:`P = -\gamma \nabla \cdot \mathbf{v}`
-wherever it is asked for.  Two cautions apply.  The value of :math:`\gamma`
-given to the material must be identical to the one given to
-``penalty_incompressibility``: the two objects hold separate copies, nothing
-checks that they agree, and a mismatch scales the recovered pressure by the
-ratio of the two, giving a plausible looking field of the wrong magnitude.  And
-the pressure should be evaluated at the element centroids, which are the
-reduced-order points at which the constraint was imposed; the divergence there
-is the quantity the formulation controlled, and the recovered pressure is
-markedly more accurate there than at the nodes.
+The pressure is eliminated from the unknowns but remains available, because
+:eq:`penalty` recovers it from the converged velocity field.  The
+``penalty_pressure`` material declares the property ``pressure`` and evaluates
+:math:`P = -\gamma \nabla \cdot \mathbf{v}` wherever it is requested.  Two
+cautions apply.  First, the value of :math:`\gamma` given to the material must
+be identical to the one given to ``penalty_incompressibility``.  The two objects
+hold separate copies, nothing checks that they agree, and a mismatch scales the
+recovered pressure by the ratio of the two, giving a plausible looking field of
+the wrong magnitude. Second, the pressure should be evaluated at the element
+centroids, which are the reduced-order points at which the constraint is
+imposed.  The divergence there is the quantity the formulation controls, and the
+recovered pressure is markedly more accurate there than at the nodes.
 
 Solving the flow equations
 --------------------------
@@ -513,32 +520,31 @@ residual norm falls below an absolute tolerance, or below a relative multiple of
 its initial value, or when the relative change in the solution falls below the
 step tolerance.
 
-What goes wrong as the Reynolds number rises is that the domain of quadratic
-convergence shrinks.  At :math:`Re = 1000` in the lid-driven cavity the
-recirculating flow is far from the rest state, and an iteration started from
-zero velocity takes a first step so large that it lands outside the basin of
-attraction and diverges.  The remedy is **load stepping**: the boundary velocity
-is applied in a sequence of load factors, each step solved to convergence and
-its solution used as the initial guess for the next.  The cavity test uses the
+As the Reynolds number rises, the domain of quadratic convergence shrinks.  At
+:math:`Re = 1000` in the lid-driven cavity the recirculating flow is far from
+the rest state, and an iteration started from zero velocity takes a first step
+so large that it leaves the basin of attraction and diverges.  The remedy is
+**load stepping**: the boundary velocity is applied in a sequence of load
+factors, each step solved to convergence and its solution used as the initial
+guess for the next.  The cavity test uses the
 factors :math:`0.1, 0.25, 0.5, 0.75, 1.0` and marks the lid condition with
-``scale_with_load`` so that it is the quantity ramped; each intermediate problem
-is then close enough to its predecessor for Newton's method to succeed, and the
-computation traces a path through a family of flows of increasing Reynolds
-number instead of attempting the final one in a single leap.
+``scale_with_load`` so that it is the quantity ramped.  Each intermediate
+problem is then close enough to its predecessor for Newton's method to converge,
+and the computation passes through a sequence of flows of increasing Reynolds
+number up to the final one.
 
 Direct iteration with relaxation
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 The alternative is direct, or Picard, iteration, which is the linearization used
-in the book.  Every nonlinear coefficient is evaluated at the previous iterate
-instead of the current one, so the transporting velocity in
-:math:`\rho (\mathbf{v} \cdot \nabla) u_i` is frozen and each iteration is a
-linear convection-diffusion solve.  The matrix is cheaper to form and the method
-is far less sensitive to the starting point, but convergence is linear rather
-than quadratic, and at higher Reynolds number the iteration tends to overshoot
-and oscillate between two states without settling.  The cure is
-under-relaxation: after the linear solve produces a tentative iterate
-:math:`\tilde{\mathbf{U}}^{r+1}`, the code blends it with the previous one,
+in the book.  Every nonlinear coefficient is evaluated at the previous iterate,
+so the transporting velocity in :math:`\rho (\mathbf{v} \cdot \nabla) u_i` is
+held fixed and each iteration is a linear convection-diffusion solve.  The
+matrix is cheaper to form and the method is far less sensitive to the starting
+point, but convergence is linear, and at higher Reynolds number the iteration
+tends to overshoot and oscillate between two states without converging.  The
+remedy is under-relaxation: after the linear solve produces a tentative iterate
+:math:`\tilde{\mathbf{U}}^{r+1}`, the code combines it with the previous one,
 
 .. math::
    :label: relaxation
@@ -548,15 +554,15 @@ under-relaxation: after the linear solve produces a tentative iterate
 
 where :math:`\beta` is the ``relaxation`` parameter, written :math:`\gamma` in
 the book's Eq. (6.2.15) and not to be confused with the penalty parameter of
-:eq:`penalty`.  Read the formula carefully, because the weight sits on the
-**old** iterate: :math:`\beta = 0`, the default, is the unrelaxed method, a value
-near one barely moves at all, and the useful range for a stubborn flow is around
-one half.  Relaxation is skipped on the first iteration of each load step, so
-the method takes one full step before it begins damping.  The same mechanism
-serves both nonlinear solvers, though direct iteration is what ordinarily needs
-it.
+:eq:`penalty`.  The weight :math:`\beta` multiplies the **old** iterate:
+:math:`\beta = 0`, the default, is the unrelaxed method, a value near one leaves
+the iterate almost unchanged, and a value of about one half is suitable for a
+flow that converges with difficulty.  Relaxation is skipped on the first
+iteration of each load step, so the method takes one full step before it begins
+damping.  The same mechanism serves both nonlinear solvers, although it is
+ordinarily required only by direct iteration.
 
-The two strategies meet the same failure from opposite directions.  Newton's
+The two strategies address the same difficulty in different ways.  Newton's
 method keeps its fast local convergence and manages the poor starting point by
 continuation in the loading, at the cost of solving a sequence of problems.
 Direct iteration accepts slow convergence in exchange for robustness and manages
@@ -569,11 +575,11 @@ The pressure-velocity formulation
 ---------------------------------
 
 The penalty method removes the pressure from the unknowns, which is economical,
-but it has three costs.  The penalty parameter :math:`\gamma` must be large
-for the divergence to be small, which makes the matrix badly conditioned; the
-penalty term must be integrated with a reduced rule, which has no counterpart
-in the cell-centred finite volume method; and the pressure is only recovered
-afterwards, element by element.  The *pressure-velocity* (or *mixed*)
+but it has three costs.  First, the penalty parameter :math:`\gamma` must be
+large for the divergence to be small, which makes the matrix badly conditioned.
+Second, the penalty term must be integrated with a reduced rule, which has no
+counterpart in the cell-centred finite volume method.  Third, the pressure is
+only recovered afterwards, element by element.  The *pressure-velocity* (or *mixed*)
 formulation, selected with ``formulation="pressure"`` in
 ``dualmesh.physics.add_incompressible_flow``, keeps the pressure :math:`p` as
 an unknown field and solves the mass equation alongside the momentum
@@ -596,10 +602,10 @@ row of the Cauchy stress,
 and the mass equation :math:`\nabla \cdot \mathbf{v} = 0` is written in the
 canonical form :math:`-\nabla \cdot \mathbf{F} + S = 0` with the flux
 :math:`\mathbf{F} = -\mathbf{v}` and no source.  ``viscous_stress`` supplies
-the viscous part of :eq:`pv_momentum`, the new kernel ``pressure_gradient`` the
+the viscous part of :eq:`pv_momentum`, the kernel ``pressure_gradient`` the
 pressure part :math:`-p\,\mathbf{e}_i`, and ``mass_conservation`` the mass
 equation, which is attached to the pressure variable.  Because the pressure
-sits inside the flux, the natural boundary quantity of a momentum equation is
+is part of the flux, the natural boundary quantity of a momentum equation is
 the full traction :math:`(\boldsymbol{\sigma} \mathbf{n})_i`, and a boundary
 without a velocity condition is a traction-free outlet.  In axisymmetric
 coordinates without swirl the radial equation also carries the hoop stress:
@@ -609,19 +615,19 @@ which ``viscous_stress`` and ``pressure_gradient`` add between them.
 Why equal-order interpolation needs stabilisation
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-The pressure in an incompressible flow is not governed by an equation of its
-own.  It is the Lagrange multiplier of the constraint
-:math:`\nabla \cdot \mathbf{v} = 0`, and a discretisation determines it only
-if the discrete velocity space is rich enough to "see" every discrete
-pressure mode.  This is the inf-sup, or Ladyzhenskaya-Babuška-Brezzi,
-condition.  Interpolating velocity and pressure with the same functions
-violates it: on a quadrilateral mesh the checkerboard pressure, alternating
-:math:`+1` and :math:`-1` from node to node, produces no force on any discrete
-velocity and is therefore invisible to the equations.  There are two cures.
-One is to enrich the velocity, as the Taylor-Hood element does with quadratic
-velocity and linear pressure.  The other, used here, is to *stabilise*: to add
-to the mass equation a term that controls the pressure gradient and vanishes
-for the exact solution.
+The pressure in an incompressible flow has no governing equation of its own.
+It is the Lagrange multiplier of the constraint
+:math:`\nabla \cdot \mathbf{v} = 0`, and a discretisation determines it only if
+the discrete velocity space is rich enough that every discrete pressure mode
+couples to some discrete velocity.
+This is the inf-sup, or Ladyzhenskaya-Babuška-Brezzi, condition.  Interpolating
+velocity and pressure with the same functions violates it: on a quadrilateral
+mesh the checkerboard pressure, alternating :math:`+1` and :math:`-1` from node
+to node, produces no force on any discrete velocity and therefore leaves the
+discrete equations unchanged.  Two remedies exist.  One is to enrich the
+velocity, as the Taylor-Hood element does with quadratic velocity and linear
+pressure.  The other, used here, is to *stabilise*: to add to the mass equation
+a term that controls the pressure gradient and vanishes for the exact solution.
 
 The stabilised mass flux
 ^^^^^^^^^^^^^^^^^^^^^^^^
@@ -649,18 +655,18 @@ finite element method, integrating :math:`\nabla \psi \cdot \mathbf{F}` over
 the domain gives the mass equation plus
 :math:`\int \tau \nabla \psi \cdot \mathbf{r}_m\, d\Omega`, which is exactly
 the pressure-stabilising Petrov-Galerkin (PSPG) method of
-[HughesFrancaBalestra1986]_; its pressure-gradient part,
+[HughesFrancaBalestra1986]_.  Its pressure-gradient part,
 :math:`\int \tau \nabla \psi \cdot \nabla p\, d\Omega`, is a small pressure
 Laplacian that removes the checkerboard mode.  For the control volume methods
 the same flux is integrated over the faces of each control volume, and the
 face mass flux becomes the interpolated velocity corrected by
 :math:`\tau (\nabla p - \dots)`.  This is the idea behind the momentum
 interpolation of [RhieChow1983]_, which cell-centred codes use to avoid
-checkerboard pressures on colocated grids, written here with the whole momentum
-residual rather than the pressure gradient alone.
+checkerboard pressures on colocated grids, here extended from the pressure
+gradient to the whole momentum residual.
 
 The parameter :math:`\tau` has the units of a time divided by a density, so
-that :math:`\tau \mathbf{r}_m` is a velocity.  It is the one of
+that :math:`\tau \mathbf{r}_m` is a velocity.  It is the parameter of
 [Tezduyar1991]_ (see also [TezduyarMittalRayShih1992]_), written per unit
 density so that it also covers the Stokes equations:
 
@@ -672,20 +678,21 @@ density so that it also covers the Stokes equations:
    + \left( \frac{4 \mu}{h^2} \right)^2 \right]^{-1/2} .
 
 The three terms are the reciprocal time scales of the unsteadiness, of
-convection across an element and of diffusion across it; the first is absent
+convection across an element and of diffusion across it.  The first is absent
 in a steady solve.  The element size is :math:`h = (c V_e)^{1/d}`, with
 :math:`V_e` the element volume and :math:`c = 1` for quadrilaterals and
 hexahedra, 2 for triangles and prisms and 6 for tetrahedra and pyramids, so
-that every element of a structured grid of spacing :math:`h` gets :math:`h`;
-it is halved for a quadratic element.  With inertia, ``momentum_stabilization``
-adds the streamline-upwind term of [BrooksHughes1982]_ to each momentum
-equation as the flux :math:`\rho \tau\, r_{m,i}\, \mathbf{v}`, which damps the
-oscillations of convection-dominated flow; ``add_incompressible_flow`` adds it
-whenever the density is non-zero.
+that every element of a structured grid of spacing :math:`h` is assigned the
+size :math:`h`.  The size is halved for a quadratic element.  With inertia,
+``momentum_stabilization`` adds the streamline-upwind term of
+[BrooksHughes1982]_ to each momentum equation as the flux
+:math:`\rho \tau\, r_{m,i}\, \mathbf{v}`, which damps the oscillations of
+convection-dominated flow.  ``add_incompressible_flow`` adds it whenever the
+density is non-zero.
 
 Every force in the momentum equations must also appear in
-:math:`\mathbf{r}_m`, because a force missing there makes the stabilisation
-push the flow against it.  ``add_incompressible_flow`` passes its
+:math:`\mathbf{r}_m`, because a force missing there causes the stabilisation
+term to act against that force.  ``add_incompressible_flow`` passes its
 ``body_force`` and its Boussinesq ``buoyancy`` to the stabilisation, with the
 same load scaling as the force itself.  Without the buoyancy in
 :math:`\mathbf{r}_m` the natural convection benchmark fails at high Rayleigh
@@ -696,13 +703,14 @@ second derivatives, which the kernels do not have.  It vanishes on linear
 simplices and on bilinear elements that are parallelograms, and omitting it
 keeps the optimal first order of the energy norm.  On quadratic elements it
 does not vanish, the omission becomes an inconsistency, and the velocity
-error stays at second order in :math:`L^2` instead of third.  The
-Taylor-Hood element, which needs no stabilisation, is the quadratic choice.
+error converges only at second order in :math:`L^2`, one order below the
+optimal third order.  For quadratic elements the Taylor-Hood element, which
+needs no stabilisation, is the appropriate choice.
 
 The Taylor-Hood element
 ^^^^^^^^^^^^^^^^^^^^^^^
 
-The other cure for the checkerboard is to make the velocity space richer than
+The other remedy for the checkerboard is to make the velocity space richer than
 the pressure space.  The element of [TaylorHood1973]_ interpolates the velocity
 with the quadratic shape functions of the element and the pressure with the
 linear shape functions of its corners: :math:`P_2`-:math:`P_1` on triangles
@@ -732,9 +740,9 @@ tested with the linear pressure shape functions, and the momentum equations
 are those above, tested with the quadratic ones.  Streamline stabilisation is
 not offered with this element: its momentum residual :eq:`pv_residual` omits
 the viscous term, which a quadratic velocity does not make vanish, so SUPG
-would be inconsistent and would cost the third order of the velocity.
+would be inconsistent and the velocity would lose its third order.
 
-**How a first-order variable lives on a quadratic mesh.**  A variable declared
+**First-order variables on a quadratic mesh.**  A variable declared
 with ``order="first"`` is interpolated on every quadratic element with the
 shape functions :math:`N^c_a` of the linear element that has the same corners
 (``Tri3`` for ``Tri6``, ``Quad4`` for ``Quad9`` and ``Quad8``, ``Tet4`` for
@@ -762,12 +770,13 @@ solution they are set to the value of the linear field there.  Because the
 quadratic shape functions reproduce every linear function of the reference
 coordinates, interpolating those nodal values with the element's own shape
 functions gives back exactly the linear pressure, so sampling, output, error
-norms and every other post-processing routine see the right field without
-knowing about the two orders.  Inside an element the local degrees of freedom
-are numbered compactly (every variable at the corners, then only the
+norms and every other post-processing routine obtain the correct field with no
+treatment specific to the two orders.  Inside an element the local degrees of
+freedom are numbered compactly (every variable at the corners, then only the
 quadratic ones at the other nodes), and the automatic differentiation seeds
-one derivative per local degree of freedom: 22 on a ``Quad9`` element instead
-of 27, and :math:`27 \times 3 + 8 = 89` on a ``Hex27`` element.
+one derivative per local degree of freedom: 22 on a ``Quad9`` element, against
+27 for three variables at every node, and :math:`27 \times 3 + 8 = 89` on a
+``Hex27`` element.
 
 **The linear systems.**  With :math:`\mathbf{A}` the momentum block and
 :math:`\mathbf{B}` the discrete divergence, each Newton step solves
@@ -782,16 +791,15 @@ of 27, and :math:`27 \times 3 + 8 = 89` on a ``Hex27`` element.
 a saddle point system whose pressure block is exactly zero.  An incomplete LU
 factorisation meets a zero pivot on the first pressure row, so the default
 linear solver (``linear_solver="automatic"``) factorises these systems
-directly whatever their size.  In two dimensions that is fast; in three
-dimensions its cost grows quickly (a ``Tet10`` mesh with about 20 000 unknowns
-takes about 4 s per factorisation in one thread), and a large problem is
-better solved with PETSc (``linear_solver="petsc"``), for instance with a
-Schur complement field split, or with MUMPS in parallel.
+directly whatever their size.  In two dimensions the direct factorisation is
+fast.  In three dimensions its cost grows quickly (a ``Tet10`` mesh with about
+20 000 unknowns takes about :math:`4\ \mathrm{s}` per factorisation in one
+thread), and a large problem is better solved with PETSc
+(``linear_solver="petsc"``), for instance with a Schur complement field split,
+or with MUMPS in parallel.
 
-Verification
-
-
-``tests/python/test_taylor_hood.py`` checks the element in four ways.
+**Verification.**  ``tests/python/test_taylor_hood.py`` checks the element in
+four ways.
 
 *Orders of convergence*, by manufactured solutions, measured on the finest
 pair of meshes (the theoretical values are 3, 2 and 2):
@@ -835,15 +843,15 @@ pair of meshes (the theoretical values are 3, 2 and 2):
 
 The enclosed case includes a velocity that crosses the boundary, for which the
 stabilised equal-order element produces an :math:`O(1)` pressure spike at the
-pin (see below); the Taylor-Hood element, which has no pressure Laplacian to
-carry the imbalance, shows none, and its pressure still converges at second
+pin (see below).  The Taylor-Hood element, which has no pressure Laplacian to
+carry the imbalance, shows no spike, and its pressure still converges at second
 order.
 
 *The inf-sup condition itself*, by the numerical test of
 [ChapelleBathe1993]_.  With :math:`\mathbf{A}` the vector Laplacian (whose
 energy is :math:`|\mathbf{v}_h|_1^2`), :math:`\mathbf{B}` the discrete
 divergence and :math:`\mathbf{M}` the pressure mass matrix, for velocities
-that vanish on the boundary, :math:`eta_h^2` is the smallest non-zero
+that vanish on the boundary, :math:`\beta_h^2` is the smallest non-zero
 eigenvalue :math:`\lambda` of
 
 .. math::
@@ -853,7 +861,7 @@ eigenvalue :math:`\lambda` of
 (the smallest eigenvalue is zero, for the constant pressure that an enclosed
 flow does not determine).  On the unit square:
 
-.. list-table:: Discrete inf-sup constant :math:`eta_h` on an :math:`n 	imes n` mesh
+.. list-table:: Discrete inf-sup constant :math:`\beta_h` on an :math:`n \times n` mesh
    :header-rows: 1
    :widths: 40 15 15 15 15
 
@@ -886,30 +894,33 @@ flow does not determine).  On the unit square:
 The Taylor-Hood constants settle to a mesh-independent value, while the
 equal-order pairs have spurious pressure modes (their second eigenvalue is
 zero to round-off) at every size.  The triangles use the structured "right"
-diagonal, which leaves two corner triangles with every vertex on the boundary;
-the constant is bounded all the same.  The same computation checks that the
+diagonal, which leaves two corner triangles with every vertex on the boundary,
+and the constant remains bounded nevertheless.  The same computation checks that the
 pressure coupling of the momentum equations is the negative transpose of the
 divergence to round-off, as the Galerkin method requires.
 
 *Newton's method* converges quadratically (the exact Jacobian includes the
-mixed-order assembly), and the *lid-driven cavity* at Re = 100 on
-:math:`16 	imes 16` ``Quad9`` elements agrees with [Ghia1982]_ on both
+mixed-order assembly), and the *lid-driven cavity* at :math:`Re = 100` on
+:math:`16 \times 16` ``Quad9`` elements agrees with [Ghia1982]_ on both
 centrelines within 0.01.
 
-*Misuse is refused* with a message that says what to do: a first-order
-variable with any method other than ``fem``; ``formulation="taylor_hood"`` on
-a linear mesh or with another method; stabilisation or SUPG requested with
-it; an existing pressure of the wrong order; and ``mass_conservation`` without
-stabilisation on an equal-order pressure, which would otherwise return the
-spurious modes.
+*Misuse is refused* with a message that states the required correction, in the
+following cases:
+
+* a first-order variable with any method other than ``fem``,
+* ``formulation="taylor_hood"`` on a linear mesh or with another method,
+* stabilisation or SUPG requested with this element,
+* an existing pressure of the wrong order, and
+* ``mass_conservation`` without stabilisation on an equal-order pressure, which
+  would otherwise return the spurious modes.
 
 Boundary conditions for the pressure
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-The mass equation needs to know the flow through the boundary.
+The mass equation requires the flow through the boundary.
 ``mass_flux_boundary_condition`` supplies it as the natural boundary quantity
-:math:`q = -\mathbf{v} \cdot \mathbf{n}`, computed from the discrete velocity;
-``add_incompressible_flow`` places it on every side set.  For the finite
+:math:`q = -\mathbf{v} \cdot \mathbf{n}`, computed from the discrete velocity,
+and ``add_incompressible_flow`` places it on every side set.  For the finite
 element method this reproduces the boundary term of PSPG exactly.  Summing the
 mass equations of all control volumes gives
 :math:`\oint \mathbf{v}_h \cdot \mathbf{n}\, ds = 0`, so the discrete flow
@@ -917,14 +928,15 @@ conserves mass globally, whatever the stabilisation.
 
 An enclosed flow, with a velocity condition on every boundary, determines the
 pressure only up to a constant.  ``pin_pressure`` fixes it with a
-``point_Dirichlet_boundary_condition``, which replaces the mass equation of the entity nearest
-to a point.  That equation is then no longer imposed, and the only place where
-a net boundary flux :math:`\oint \mathbf{v}_h \cdot \mathbf{n}\, ds \neq 0`
-can go.  With walls and a sliding lid the discrete net flux is zero and the
-pin is harmless.  With prescribed velocities that cross the boundary,
+``point_Dirichlet_boundary_condition``, which replaces the mass equation of the
+entity nearest to a point.  That mass equation is then dropped, and the pinned
+entity becomes the only place where a net boundary flux
+:math:`\oint \mathbf{v}_h \cdot \mathbf{n}\, ds \neq 0` can be accommodated.
+With walls and a sliding lid the discrete net flux is zero and the pin
+introduces no error.  With prescribed velocities that cross the boundary,
 however, the nodal interpolant of the data carries a net flux of order
 :math:`h^2`, and the pressure Laplacian of the stabilisation, whose coefficient
-is :math:`\tau \sim h^2`, turns it into a pressure spike of order one at the
+is :math:`\tau \sim h^2`, converts it into a pressure spike of order one at the
 pin.  Such a flow should have an outlet: a boundary with a traction condition
 (or none) determines the pressure and needs no pin.
 
@@ -936,8 +948,8 @@ manufactured solutions of ``dualmesh.mms.IncompressibleFlow``, whose exact
 velocity is divergence free, whose right boundary is an outlet with the exact
 traction and whose pressure has no symmetry.  With the density
 :math:`\rho = 1` and the viscosity :math:`\mu = 1`, the observed orders on the
-finest pair of meshes (:math:`32^2` and :math:`64^2` elements; :math:`8^3` and
-:math:`16^3` in three dimensions) are:
+finest pair of meshes (:math:`32^2` and :math:`64^2` elements, or :math:`8^3`
+and :math:`16^3` in three dimensions) are:
 
 .. list-table::
    :header-rows: 1
@@ -974,8 +986,8 @@ finest pair of meshes (:math:`32^2` and :math:`64^2` elements; :math:`8^3` and
 
 The theory of the stabilised methods guarantees first order for the velocity
 in :math:`H^1` and for the pressure in :math:`L^2`
-[HughesFrancaBalestra1986]_, and second order for the velocity in :math:`L^2`;
-all three are observed or exceeded.  The pressure is not controlled in
+[HughesFrancaBalestra1986]_, and second order for the velocity in :math:`L^2`.
+All three are observed or exceeded.  The pressure is not controlled in
 :math:`H^1`, and its :math:`H^1` error converges only at about half an order,
 which is the behaviour usually reported for equal-order linear elements
 [BrezziPitkaranta1984]_.
@@ -983,15 +995,15 @@ which is the behaviour usually reported for equal-order linear elements
 The physics is checked against two benchmarks.  For the lid-driven cavity at
 :math:`Re = 100` on a :math:`32 \times 32` mesh, every method reproduces the
 centreline velocities of [Ghia1982]_ to within 0.015, and to within 0.0074 on
-:math:`64 \times 64`; at :math:`Re = 1000` on :math:`64 \times 64` the finite
+:math:`64 \times 64`.  At :math:`Re = 1000` on :math:`64 \times 64` the finite
 element method gives the minimum horizontal velocity :math:`-0.381`, against
-:math:`-0.383` in the reference.  The node-based methods need the two corner
-nodes of the lid to belong to the walls: with the lid velocity there, the lid
-"leaks" through the first row of elements and the vortex is noticeably too
-weak at :math:`Re = 1000`.  For natural convection, with the buoyancy in the
-stabilisation, the Nusselt number and velocity maxima on the
-:math:`32 \times 32` graded mesh are within 2 % of [DeVahlDavis1983]_ for the
-node methods up to :math:`Ra = 10^6`, and within 3.6 % for the cell-centred
+:math:`-0.383` in the reference.  The node-based methods require the two corner
+nodes of the lid to belong to the walls.  With the lid velocity prescribed at
+those nodes, flow crosses the side walls through the first row of elements, and
+the vortex is noticeably too weak at :math:`Re = 1000`.  For natural convection,
+with the buoyancy in the stabilisation, the Nusselt number and velocity maxima
+on the :math:`32 \times 32` graded mesh are within 2 % of [DeVahlDavis1983]_ for
+the node methods up to :math:`Ra = 10^6`, and within 3.6 % for the cell-centred
 method.  Newton's method converges quadratically for all four methods.
 
 Verification of the fluids module
@@ -1002,20 +1014,20 @@ results of Chapter 9 of Reddy's book.  The creeping flow squeezed between two
 approaching plates, Example 9.8.3, is computed on the graded
 :math:`20 \times 16` mesh and reproduces the horizontal velocity profiles of the
 dual mesh column of Table 9.8.2 at two stations to within
-:math:`2 \times 10^{-3}`; the same test takes the recovered penalty pressure at
+:math:`2 \times 10^{-3}`.  The same test takes the recovered penalty pressure at
 the element centroids and confirms that it follows Nadai's approximate solution
 :math:`P = 3 \mu V_0 (a^2 + y^2 - x^2) / (2 b^3)` in the interior, with a
-correlation above :math:`0.999` and a magnitude correct to within five per cent,
+correlation above :math:`0.999` and a magnitude correct to within 5 %,
 the comparison being restricted to the interior because the corners of this
 problem are singular.  The lid-driven cavity of Example 9.8.4 is computed on the
 :math:`16 \times 20` mesh graded towards the lid and reproduces the centreline
 profile of Table 9.8.3 to within :math:`2 \times 10^{-3}` at :math:`Re = 0`,
 where the flow is Stokes, and again at :math:`Re = 1000`, where the same profile
-is obtained twice over: once by Newton's method with the lid ramped in five load
+is obtained twice: once by Newton's method with the lid ramped in five load
 steps, and once by relaxed direct iteration with :math:`\beta = 0.5`.  A further
 test at :math:`Re = 400` confirms that the two nonlinear solvers agree with each
 other to :math:`10^{-6}` in every nodal velocity, a stronger statement than
-either comparison with the book, and a last one confirms that the divergence of
+either comparison with the book, and a final test confirms that the divergence of
 the computed field stays below :math:`10^{-5}` everywhere, as :eq:`penalty`
 requires at the penalty parameter used.
 
@@ -1088,13 +1100,14 @@ number reached by continuation, the dual mesh method gives:
 
 Here :math:`u_m` is the largest horizontal velocity on the vertical centreline
 and :math:`v_m` the largest vertical velocity on the horizontal centreline.  The
-Nusselt numbers agree to within 0.2 per cent and the velocity maxima to within
-0.6 per cent, except :math:`v_m` at :math:`Ra = 10^6`, 1.8 per cent high, where
-the wall jet is thinnest; on a :math:`64 \times 64` mesh it is 221.0.  The
-finite element and vertex-centred finite volume methods give Nusselt numbers
-within 0.2 per cent of the same values.  The heat entering at the hot wall
-leaves at the cold wall to round-off, and on a :math:`16 \times 16` mesh at
-:math:`Ra = 10^4` the relative Newton steps of the last load step fall as :math:`2.3 \times 10^{-3}`, :math:`2.5 \times 10^{-6}`,
+Nusselt numbers agree to within 0.2 % and the velocity maxima to within 0.6 %,
+except :math:`v_m` at :math:`Ra = 10^6`, which is 1.8 % high, where the wall jet
+is thinnest.  On a :math:`64 \times 64` mesh this value is 221.0.  The finite
+element and vertex-centred finite volume methods give Nusselt numbers within
+0.2 % of the same values.  The heat entering at the hot wall leaves at the cold
+wall to round-off, and on a :math:`16 \times 16` mesh at :math:`Ra = 10^4` the
+relative Newton steps of the last load step fall as
+:math:`2.3 \times 10^{-3}`, :math:`2.5 \times 10^{-6}`,
 :math:`5.1 \times 10^{-12}`, which is quadratic convergence.  The tests are in
-``tests/python/test_multiphysics.py`` and the problem is
+``tests/python/test_multiphysics.py`` and the example script is
 ``examples/natural_convection.py``.

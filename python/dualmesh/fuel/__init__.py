@@ -64,6 +64,7 @@ from .rod import FuelRod
 from .specification import (
     FillGas,
     ForcedConvection,
+    ModelFactors,
     PowerHistory,
     PrescribedCladdingTemperature,
     RodGeometry,
@@ -97,6 +98,7 @@ __all__ = [
     "RodContext",
     "FillGas",
     "ForcedConvection",
+    "ModelFactors",
     "FuelRod",
     "IrradiationFields",
     "PowerHistory",

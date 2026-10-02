@@ -607,6 +607,108 @@ class RodModels:
 
 
 @dataclass
+class ModelFactors:
+    r"""Multipliers on the models of a rod, for sensitivity and uncertainty
+    studies (:mod:`dualmesh.uq`).  Every factor is 1 by default, which is
+    the model as published; a factor multiplies the quantity named.  The
+    ranges given are those used in the literature for LWR UO2 fuel, where
+    :math:`\pm x` is a 95 % interval.  The fission gas factors act on the
+    gas model only (Pastore et al., J. Nucl. Mater. 456 (2015) 398)."""
+
+    linear_heat_rate: float = parameter(
+        1.0,
+        description="The whole power history, at the same times (the burnup grows with it). "
+        "Range +/-5 % (Ikonen and Tulkki 2014, via Che et al. 2018).",
+    )
+    fuel_thermal_conductivity: float = parameter(
+        1.0, description="Thermal conductivity of the fuel. Range +/-10 % (same sources)."
+    )
+    cladding_thermal_conductivity: float = parameter(
+        1.0, description="Thermal conductivity of the cladding (and its coating)."
+    )
+    gap_gas_conductance: float = parameter(
+        1.0, description="Gas conduction term of the gap conductance. Range +/-50 % (Che 2018)."
+    )
+    gap_contact_conductance: float = parameter(
+        1.0, description="Solid contact term of the gap conductance. Range +/-50 % (Che 2018)."
+    )
+    coolant_heat_transfer: float = parameter(
+        1.0, description="Heat transfer coefficient to the coolant (forced convection)."
+    )
+    fuel_thermal_expansion: float = parameter(
+        1.0, description="Thermal expansion strain of the fuel."
+    )
+    relocation: float = parameter(
+        1.0,
+        description="Relocation strain of the fuel (and the crack volume it opens in the gas "
+        "balance).",
+    )
+    densification: float = parameter(
+        1.0,
+        description="Total densification of the fuel (UO2 fuels). Range +/-20 % (Che 2018).",
+    )
+    solid_swelling: float = parameter(
+        1.0, description="Solid fission-product swelling (UO2 fuels)."
+    )
+    gaseous_swelling: float = parameter(1.0, description="Gaseous swelling (UO2 fuels).")
+    fuel_creep: float = parameter(1.0, description="Creep rate of the fuel.")
+    cladding_creep: float = parameter(1.0, description="Creep rate of the cladding.")
+    fission_gas_temperature: float = parameter(
+        1.0,
+        description="Temperature seen by the fission gas model only. Range +/-5 % (Pastore "
+        "et al. 2015).",
+    )
+    grain_radius: float = parameter(
+        1.0,
+        description="Grain radius of the fission gas model. Range +/-60 % (Pastore et al. 2015).",
+    )
+    intragranular_diffusivity: float = parameter(
+        1.0,
+        description="Single-atom diffusion coefficient of the gas in the grains. Range: a "
+        "factor of 10 either way (Pastore et al. 2015).",
+    )
+    resolution: float = parameter(
+        1.0,
+        description="Re-solution rate of the gas in the intragranular bubbles. Range: a factor "
+        "of 10 either way (Pastore et al. 2015).",
+    )
+    grain_boundary_diffusivity: float = parameter(
+        1.0,
+        description="Vacancy diffusion coefficient on the grain boundaries (growth of the "
+        "grain-face bubbles). Range: a factor of 10 either way (Pastore et al. 2015).",
+    )
+
+    #: Factors that may be zero (a term switched off).
+    _MAY_BE_ZERO = (
+        "gap_contact_conductance",
+        "fuel_thermal_expansion",
+        "relocation",
+        "densification",
+        "solid_swelling",
+        "gaseous_swelling",
+        "fuel_creep",
+        "cladding_creep",
+    )
+
+    def __post_init__(self):
+        for f in dataclasses.fields(self):
+            value = float(getattr(self, f.name))
+            low_ok = value >= 0.0 if f.name in self._MAY_BE_ZERO else value > 0.0
+            if not (np.isfinite(value) and low_ok):
+                bound = ">= 0" if f.name in self._MAY_BE_ZERO else "> 0"
+                raise ValueError(f"ModelFactors: {f.name} must be finite and {bound}.")
+            setattr(self, f.name, value)
+
+    def changed(self) -> dict:
+        """The factors that differ from 1."""
+        return {
+            f.name: getattr(self, f.name)
+            for f in dataclasses.fields(self)
+            if getattr(self, f.name) != 1.0
+        }
+
+
+@dataclass
 class RodNumerics:
     """How the rod is discretised and solved."""
 

@@ -1,12 +1,12 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 """Worked usage examples for the generated syntax reference.
 
-Every registered object gets one entry.  The text is prose that explains when
-the object is used and what its keywords do in that context; the code block
-below it is a complete, runnable fragment.  Anything missing from this file
-still gets a generated page, just without the usage section, and the
-documentation build prints a warning naming the object, so the two cannot
-drift apart silently.
+Every registered object has one entry.  The text is prose that explains when
+the object is used and what its keywords do in that context, and the code
+block below it is a complete, runnable fragment.  An object missing from this
+file still receives a generated page without the usage section, and the
+documentation build prints a warning that names the object, so that every
+missing entry is reported.
 """
 
 from __future__ import annotations
@@ -24,12 +24,12 @@ def _add(name: str, text: str) -> None:
 _add(
     "diffusion",
     """
-``diffusion`` is the plain second-order operator and is the right kernel
-whenever the physics is "flux proportional to gradient" and no physics module
-offers a more specific name.  The diffusivity may be a number, a named function
-of position and time, or a material property, and it may additionally be
-multiplied by a polynomial in the unknown itself, which is the simplest way to
-make a problem nonlinear:
+``diffusion`` is the generic second-order operator.  It is the appropriate
+kernel whenever the flux is proportional to the gradient of the unknown and no
+physics module provides a kernel with a more specific name.  The diffusivity
+may be a number, a named function of position and time, or a material
+property, and it may additionally be multiplied by a polynomial in the unknown
+itself, which is the simplest way to make a problem nonlinear:
 
 .. code-block:: python
 
@@ -43,8 +43,8 @@ make a problem nonlinear:
    problem.add_kernel("diffusion", "nonlinear", variable="u",
                       diffusivity=1.0, solution_polynomial=[1.0, 0.5])
 
-The last form needs a nonlinear solve; with ``nonlinear_solver="newton"`` the
-derivative of the polynomial is carried exactly through the automatic
+The last form requires a nonlinear solve.  With ``nonlinear_solver="newton"``
+the derivative of the polynomial is carried exactly through the automatic
 differentiation, so the iteration converges quadratically.
 """,
 )
@@ -77,8 +77,8 @@ _add(
     """
 ``reaction`` adds a term proportional to the unknown, which models radioactive
 decay, chemical consumption, heat loss along a fin, and the restoring force of
-an elastic foundation.  The sign matters: a positive coefficient removes the
-unknown.
+an elastic foundation.  The sign of the coefficient determines the direction
+of the term: a positive coefficient removes the unknown.
 
 .. code-block:: python
 
@@ -99,19 +99,20 @@ unknown.
 _add(
     "body_force",
     """
-``body_force`` is the generic distributed source.  Any physics module has a
-better-named equivalent, but this one accepts an arbitrary function and is what
-the verification problems use when the source has no physical name:
+``body_force`` is the generic distributed source.  Each physics module provides
+an equivalent source with a physically descriptive name.  ``body_force``
+accepts an arbitrary function, and the verification problems use it when the
+source has no physical name:
 
 .. code-block:: python
 
    problem.add_function("source", lambda x, y, z, t: 10.0 * np.cos(x))
    problem.add_kernel("body_force", "source", variable="u", value="source")
 
-The quadrature keyword matters more here than anywhere else, because the source
-is the only term whose integral the method does not compute exactly.  Reddy's
-finite volume examples integrate it with the trapezoidal rule over the whole
-control domain, which this library spells ``control_domain_trapezoid``:
+The quadrature keyword has a larger effect on this kernel than on any other,
+because the source is the only term that the method integrates approximately.
+Reddy's finite volume examples integrate it with the trapezoidal rule over the
+whole control domain, which this library names ``control_domain_trapezoid``:
 
 .. code-block:: python
 
@@ -133,22 +134,24 @@ be constant or given by functions, one per component:
    problem.add_kernel("advection", "transport", variable="c", velocity=[75.0, 0.0])
 
 At a high cell Peclet number, here :math:`Pe = 75`, the central differencing
-that this kernel performs will oscillate on a coarse mesh; refine the mesh
-until the cell Peclet number is below about two, which is the honest cure, or
-accept the oscillation and note it.
+that this kernel performs produces oscillations on a coarse mesh.  Refining the
+mesh until the cell Peclet number is below about two removes the cause of the
+oscillations.  Alternatively, the oscillations can be accepted and reported
+with the results.
 
 Choose ``form="conservative"`` when the velocity field is divergence free and
-you want the discrete equations to conserve the transported quantity exactly
-over each control domain.
+the discrete equations must conserve the transported quantity exactly over
+each control domain.
 """,
 )
 
 _add(
     "coupled_force",
     """
-``coupled_force`` is the simplest way to couple two equations: it adds a source
-to one equation proportional to another variable.  It is how a concentration
-drives a temperature, or how a simple two-species reaction is written:
+``coupled_force`` is the simplest way to couple two equations: it adds to one
+equation a source proportional to another variable.  It represents, e.g., a
+heat source proportional to a concentration, or a simple two-species
+reaction:
 
 .. code-block:: python
 
@@ -168,9 +171,9 @@ and Newton's method converges quadratically even for a strongly coupled system.
 _add(
     "time_derivative",
     """
-``time_derivative`` turns a steady problem into a transient one.  Add it to
-every equation that should evolve; an equation without it stays a constraint,
-which is what a mixed formulation needs for its moment equation.
+``time_derivative`` makes a steady problem transient.  Add it to every
+equation that evolves in time.  An equation without it remains a constraint,
+which is what a mixed formulation requires for its moment equation.
 
 .. code-block:: python
 
@@ -179,8 +182,8 @@ which is what a mixed formulation needs for its moment equation.
    problem.add_kernel("time_derivative", "time", variable="u", coefficient=1.0)
    problem.solve_transient(end_time=0.1, dt=0.001, theta=0.5)
 
-Lumping the capacity, which is common in explicit and nearly explicit schemes,
-is a matter of changing the quadrature:
+The capacity is lumped, as is common in explicit and nearly explicit schemes,
+by a change of the quadrature:
 
 .. code-block:: python
 
@@ -191,10 +194,11 @@ is a matter of changing the quadrature:
 _add(
     "Dirichlet_boundary_condition",
     """
-``Dirichlet_boundary_condition`` prescribes the value of a variable, which is the essential
-member of the duality pair.  The value is written straight into the solution
-vector and the equation of that degree of freedom is replaced, so the residual
-of the replaced equation becomes available afterwards as the reaction:
+``Dirichlet_boundary_condition`` prescribes the value of a variable, which is
+the essential member of the duality pair.  The value is written directly into
+the solution vector and the equation of that degree of freedom is replaced, so
+the residual of the replaced equation becomes available afterwards as the
+reaction:
 
 .. code-block:: python
 
@@ -209,18 +213,19 @@ of the replaced equation becomes available afterwards as the reaction:
    # The heat that must flow in through the left edge to hold it at 300.
    print(problem.total_reaction("temperature", "left"))
 
-A boundary that carries no condition at all is *not* unconstrained: it gets the
-natural condition with a zero secondary variable, which means insulated for
-heat transfer and traction free for elasticity.
+A boundary without a boundary condition receives the natural condition with a
+zero secondary variable, i.e., an insulated surface in heat transfer and a
+traction-free surface in elasticity.
 """,
 )
 
 _add(
     "Neumann_boundary_condition",
     """
-``Neumann_boundary_condition`` prescribes the secondary variable of the duality pair, the normal
-flux :math:`n \\cdot F`.  Because the canonical flux of a diffusion problem is
-:math:`F = k \\nabla u`, a positive value drives the unknown *into* the body:
+``Neumann_boundary_condition`` prescribes the secondary variable of the duality
+pair, the normal flux :math:`n \\cdot F`.  Because the canonical flux of a
+diffusion problem is :math:`F = k \\nabla u`, a positive value is a flux of the
+unknown *into* the body:
 
 .. code-block:: python
 
@@ -228,19 +233,20 @@ flux :math:`n \\cdot F`.  Because the canonical flux of a diffusion problem is
    problem.add_boundary_condition("Neumann_boundary_condition", "inflow", variable="temperature",
                                   boundary="right", flux=1.0)
 
-Leaving a boundary out entirely is the same as prescribing a zero flux there,
-so an insulated or symmetry boundary needs no object at all.  Write one only
-when the flux is non-zero or when naming it makes the input clearer.
+A boundary without a boundary condition has a zero flux, so an insulated or
+symmetry boundary requires no object.  Add this object only when the flux is
+non-zero or when a named object makes the input clearer.
 """,
 )
 
 _add(
     "Robin_boundary_condition",
     """
-``Robin_boundary_condition`` is the mixed condition :math:`n \\cdot F = q_0 - h (u - u_\\infty)`,
-which covers convection into a surrounding medium, a contact resistance, and a
-spring support.  It is the general form of which ``Neumann_boundary_condition`` is the special
-case :math:`h = 0`:
+``Robin_boundary_condition`` is the mixed condition
+:math:`n \\cdot F = q_0 - h (u - u_\\infty)`, which describes convection into a
+surrounding medium, a contact resistance, and a spring support.  It is the
+general form of which ``Neumann_boundary_condition`` is the special case
+:math:`h = 0`:
 
 .. code-block:: python
 
@@ -249,8 +255,9 @@ case :math:`h = 0`:
                                   boundary="right",
                                   transfer_coefficient=2.0, ambient_value=20.0)
 
-For heat transfer specifically, ``convective_heat_flux_boundary_condition`` says the same thing in
-the vocabulary of the subject and should be preferred.
+For heat transfer, ``convective_heat_flux_boundary_condition`` expresses the
+same condition in the terminology of heat transfer and is the preferred
+object.
 """,
 )
 
@@ -258,8 +265,8 @@ _add(
     "point_source",
     """
 ``point_source`` applies a concentrated load or a point source of heat at one or
-more nodes.  The point is snapped to the nearest node without a tolerance, so
-place the load on a node the mesh actually has:
+more nodes.  The load is applied at the node nearest to the given point,
+without a tolerance, so the point should coincide with a node of the mesh:
 
 .. code-block:: python
 
@@ -271,17 +278,18 @@ place the load on a node the mesh actually has:
    problem.add_nodal_load("point_source", "heaters", variable="temperature",
                           value=50.0, boundary="heater_nodes")
 
-In a plane-stress or plane-strain model the value is *not* multiplied by the
-thickness the way a traction is, so give the total force through the thickness.
+In a plane-stress or plane-strain model a traction is multiplied by the
+thickness, while the value of a point source is applied as given, so give the
+total force through the thickness.
 """,
 )
 
 _add(
     "generic_constant_material",
     """
-``generic_constant_material`` publishes named constants that kernels can consume,
-which is how one number is shared by several kernels and how a property is made
-to differ between blocks:
+``generic_constant_material`` defines named constant properties that kernels
+read.  It allows several kernels to share one value, and a property to take
+different values in different blocks:
 
 .. code-block:: python
 
@@ -299,8 +307,9 @@ to differ between blocks:
 _add(
     "generic_function_material",
     """
-``generic_function_material`` is the same idea for a property that varies through
-the body.  The functions must be registered on the problem first:
+``generic_function_material`` is the counterpart of
+``generic_constant_material`` for a property that varies through the body.
+The functions must be registered on the problem first:
 
 .. code-block:: python
 
@@ -308,9 +317,8 @@ the body.  The functions must be registered on the problem first:
    problem.add_material("generic_function_material", "graded",
                         property_names=["conductivity"], functions=["k_of_x"])
 
-A property that depends on the *solution* rather than on position cannot be
-written this way; subclass ``Material`` in Python instead, which is shown in
-:doc:`/user_guide/problem_setup`.
+A property that depends on the *solution* requires a Python subclass of
+``Material``, as shown in :doc:`/user_guide/problem_setup`.
 """,
 )
 
@@ -320,8 +328,8 @@ written this way; subclass ``Material`` in Python instead, which is shown in
 _add(
     "heat_conduction",
     """
-``heat_conduction`` is Fourier conduction and is the kernel almost every thermal
-analysis starts from:
+``heat_conduction`` is Fourier's law of heat conduction and is the starting
+point of almost every thermal analysis:
 
 .. code-block:: python
 
@@ -345,8 +353,9 @@ base value, which is the form Reddy's nonlinear examples use:
 _add(
     "heat_source",
     """
-``heat_source`` is internal heat generation: ohmic heating in a conductor,
-nuclear heating in a fuel pin, curing in a resin.
+``heat_source`` is internal heat generation, e.g., ohmic heating in a
+conductor, nuclear heating in a fuel pin, or the heat released by curing in a
+resin.
 
 .. code-block:: python
 
@@ -363,8 +372,8 @@ nuclear heating in a fuel pin, curing in a resin.
 _add(
     "heat_conduction_time_derivative",
     """
-``heat_conduction_time_derivative`` is the storage term of the energy equation and
-is what makes a thermal problem transient:
+``heat_conduction_time_derivative`` is the storage term of the energy equation
+and makes a thermal problem transient:
 
 .. code-block:: python
 
@@ -375,15 +384,15 @@ is what makes a thermal problem transient:
    problem.solve_transient(end_time=600.0, dt=5.0, theta=0.5)
 
 Only the product of density and specific heat enters, so a volumetric heat
-capacity may be given as the density with the specific heat left at one.
+capacity may be given as the density with the specific heat set to one.
 """,
 )
 
 _add(
     "heat_flux_boundary_condition",
     """
-``heat_flux_boundary_condition`` prescribes the heat entering a surface, which is how a heater, a
-measured flux, or an absorbed radiation load is applied:
+``heat_flux_boundary_condition`` prescribes the heat flux entering a surface.
+It applies, e.g., a heater, a measured flux, or an absorbed radiation load:
 
 .. code-block:: python
 
@@ -397,9 +406,10 @@ An insulated surface is the default and needs no object.
 _add(
     "convective_heat_flux_boundary_condition",
     """
-``convective_heat_flux_boundary_condition`` is Newton's law of cooling and is the most common
-thermal boundary condition in practice, because a surface exposed to a fluid is
-neither at a known temperature nor carrying a known flux:
+``convective_heat_flux_boundary_condition`` is Newton's law of cooling and is
+the most common thermal boundary condition in practice, because both the
+temperature of a surface exposed to a fluid and the heat flux through it are
+unknown in advance:
 
 .. code-block:: python
 
@@ -408,17 +418,17 @@ neither at a known temperature nor carrying a known flux:
                                   heat_transfer_coefficient=25.0,
                                   ambient_temperature=20.0)
 
-The condition is linear in the temperature, so it costs no extra Newton
-iterations.
+The condition is linear in the temperature, so it requires no additional
+Newton iterations.
 """,
 )
 
 _add(
     "radiative_heat_flux_boundary_condition",
     """
-``radiative_heat_flux_boundary_condition`` adds grey-body radiation to a surface.  It is strongly
-nonlinear, because the flux goes as the fourth power of the temperature, and it
-demands an absolute temperature scale:
+``radiative_heat_flux_boundary_condition`` adds grey-body radiation to a
+surface.  It is strongly nonlinear, because the flux varies with the fourth
+power of the temperature, and it requires temperatures on an absolute scale:
 
 .. code-block:: python
 
@@ -428,8 +438,8 @@ demands an absolute temperature scale:
                                   emissivity=0.8, ambient_temperature=300.0)
    problem.solve(nonlinear_solver="newton")
 
-Radiation and convection usually act together; add both objects on the same
-side set and their fluxes are summed.
+Radiation and convection usually act together.  When both objects are added
+on the same side set, their fluxes are summed.
 """,
 )
 
@@ -439,9 +449,9 @@ side set and their fluxes are summed.
 _add(
     "linear_elastic_stress",
     """
-``linear_elastic_stress`` turns the displacement gradients into a stress and
-publishes it as the material property that ``stress_divergence`` consumes.  One
-instance serves all the displacement equations:
+``linear_elastic_stress`` computes the stress from the displacement gradients
+and provides it as the material property that ``stress_divergence`` reads.
+One instance supplies the stress to all the displacement equations:
 
 .. code-block:: python
 
@@ -455,7 +465,7 @@ instance serves all the displacement equations:
        problem.add_kernel("stress_divergence", f"equilibrium_{name}",
                           variable=name, component=component)
 
-Thermal strain is switched on by naming a temperature variable *and* giving a
+Thermal strain is included by naming a temperature variable *and* giving a
 non-zero expansion coefficient:
 
 .. code-block:: python
@@ -467,8 +477,8 @@ non-zero expansion coefficient:
                         thermal_expansion_coefficient=1.2e-5,
                         reference_temperature=20.0)
 
-The helper :func:`dualmesh.physics.add_plane_elasticity` writes the material and
-all the kernels in one call and is what most analyses should use.
+The helper :func:`dualmesh.physics.add_plane_elasticity` adds the material and
+all the kernels in one call and is recommended for most analyses.
 """,
 )
 
@@ -487,7 +497,7 @@ Add one instance per displacement, with ``component`` matching the variable:
 
 The thickness multiplies the whole equation in a plane problem and must match
 the thickness given to every traction and pressure boundary condition of the
-same model.  In an axisymmetric problem leave it at one, because the
+same model.  In an axisymmetric problem keep it at one, because the
 integration measure already carries the factor :math:`2 \\pi r`.
 """,
 )
@@ -495,9 +505,9 @@ integration measure already carries the factor :math:`2 \\pi r`.
 _add(
     "traction_boundary_condition",
     """
-``traction_boundary_condition`` applies a surface traction component.  There is no ``component``
-keyword: the component is the one belonging to the equation named by
-``variable``, so add one object per displacement:
+``traction_boundary_condition`` applies a surface traction component.  The
+object has no ``component`` keyword: the component is that of the equation
+named by ``variable``, so add one object per displacement:
 
 .. code-block:: python
 
@@ -511,9 +521,10 @@ keyword: the component is the one belonging to the equation named by
 _add(
     "pressure_boundary_condition",
     """
-``pressure_boundary_condition`` applies a pressure normal to a surface, which is the natural way
-to load a vessel, a dam, or a hole in a plate.  It needs one instance per
-displacement component, each told which component it contributes to:
+``pressure_boundary_condition`` applies a pressure normal to a surface, which
+is the usual load on a vessel, a dam, or the surface of a hole in a plate.  It
+requires one instance per displacement component, each with the ``component``
+to which it contributes:
 
 .. code-block:: python
 
@@ -522,7 +533,7 @@ displacement component, each told which component it contributes to:
                                       variable=name, boundary="inner",
                                       component=component, pressure=10.0e6)
 
-A positive pressure pushes inward, against the outward normal.
+A positive pressure acts inward, opposite to the outward normal.
 """,
 )
 
@@ -532,10 +543,10 @@ A positive pressure pushes inward, against the outward normal.
 _add(
     "beam_Euler_Bernoulli_mixed",
     """
-The classical beam theory gives a fourth-order equation in the deflection,
-which the dual mesh control domain method cannot discretize, so the bending
-moment is carried as a third unknown and the system becomes three second-order
-equations.  Add the kernel once per variable, with identical parameters:
+The classical beam theory gives a fourth-order equation in the deflection.
+The dual mesh control domain method discretizes second-order equations, so the
+bending moment is carried as a third unknown and the system becomes three
+second-order equations.  Add the kernel once per variable, with identical parameters:
 
 .. code-block:: python
 
@@ -551,10 +562,10 @@ equations.  Add the kernel once per variable, with identical parameters:
 
 The boundary conditions follow the duality pairs: a clamped end prescribes the
 deflection and leaves the moment free, because the vanishing slope is the
-natural condition of the moment equation; a simply supported end prescribes the
-deflection *and* prescribes the moment to be zero.
+natural condition of the moment equation.  A simply supported end prescribes
+the deflection *and* prescribes the moment to be zero.
 
-:func:`dualmesh.physics.add_beam` writes all three kernels in one call.
+:func:`dualmesh.physics.add_beam` adds all three kernels in one call.
 """,
 )
 
@@ -562,9 +573,9 @@ _add(
     "beam_Timoshenko_displacement",
     """
 The shear-deformable beam in displacement form carries the axial displacement,
-the deflection, and the rotation of the cross-section.  A thin beam locks
-unless the shear terms are integrated with one point, which is what splitting
-the kernel in two achieves:
+the deflection, and the rotation of the cross-section.  A thin beam exhibits
+shear locking unless the shear terms are integrated with one point, and the
+kernel is therefore split into two instances:
 
 .. code-block:: python
 
@@ -579,18 +590,19 @@ the kernel in two achieves:
                           variable=name, shear_treatment="only",
                           quadrature="midpoint", reduced_integration=True, **common)
 
-Using ``shear_treatment`` alone, without the matching second kernel, drops terms
-and gives a wrong answer.
+Using ``shear_treatment`` with only one of the two kernels omits terms and
+gives a wrong result.
 """,
 )
 
 _add(
     "beam_Timoshenko_mixed",
     """
-The mixed form of the shear-deformable beam carries the bending moment instead
-of the rotation.  It is free of shear locking without any reduced integration,
-which makes it the more robust of the two Timoshenko models, and the rotation
-is recovered afterwards from :math:`\\phi = -dw/dx + (1/S)\\,dM/dx`:
+The mixed form of the shear-deformable beam carries the axial displacement,
+the deflection, and the bending moment as unknowns.  It is free of shear
+locking with full integration of all terms, which makes it the more robust of
+the two Timoshenko models, and the rotation is recovered afterwards from
+:math:`\\phi = -dw/dx + (1/S)\\,dM/dx`:
 
 .. code-block:: python
 
@@ -607,10 +619,10 @@ is recovered afterwards from :math:`\\phi = -dw/dx + (1/S)\\,dM/dx`:
 _add(
     "circular_plate_first_order",
     """
-The shear-deformable model of an axisymmetric circular plate, on a
-one-dimensional radial mesh with the axisymmetric coordinate system.  As for
-the shear-deformable beam, the shear terms need their own reduced-integration
-kernel:
+This object is the shear-deformable model of an axisymmetric circular plate,
+solved on a one-dimensional radial mesh with the axisymmetric coordinate
+system.  As for the shear-deformable beam, the shear terms require their own
+reduced-integration kernel:
 
 .. code-block:: python
 
@@ -624,7 +636,7 @@ kernel:
                                  poissons_ratio=0.3, transverse_load=q0)
 
 Symmetry at the centre prescribes the radial displacement and the rotation to
-be zero; the edge condition prescribes the deflection, and a clamped edge
+be zero.  The edge condition prescribes the deflection, and a clamped edge
 additionally prescribes the rotation.
 """,
 )
@@ -656,10 +668,10 @@ moment.  This is Reddy's DM-CP(M) model:
    # A simply supported edge adds: bending_moment = 0 on "right".
    # A clamped edge adds nothing: the vanishing slope is natural there.
 
-The moment is a nodal unknown, so it is available directly rather than having
-to be differentiated out of the deflection.  It is accurate everywhere except
-at the centre, which is a known property of mixed models and is stated as such
-in Reddy's Section 8.6.
+The moment is a nodal unknown, so it is available directly, without
+differentiation of the deflection.  It is accurate everywhere except at the
+centre, which is a known property of mixed models that Reddy states in
+Section 8.6.
 """,
 )
 
@@ -668,8 +680,8 @@ _add(
     """
 The shear-deformable rectangular plate carries five variables: two in-plane
 displacements, the deflection, and two rotations.  With ``von_karman=True`` it
-models moderate rotations, which is what a thin plate under a load large enough
-to stretch its mid-plane needs:
+models moderate rotations, as required for a thin plate under a load large
+enough to stretch its mid-plane:
 
 .. code-block:: python
 
@@ -683,8 +695,8 @@ to stretch its mid-plane needs:
                         von_karman=True)
    problem.solve(load_factors=[0.1 * k for k in range(1, 11)])
 
-Load stepping is not optional for the nonlinear case: starting from rest at the
-full load usually fails to converge.
+The nonlinear case requires load stepping, because a solve that starts from
+the undeformed state at the full load usually fails to converge.
 """,
 )
 
@@ -694,9 +706,9 @@ full load usually fails to converge.
 _add(
     "viscous_stress",
     """
-``viscous_stress`` is the viscous term of the momentum equation.  With the
-penalty term it forms a Stokes flow; adding ``convective_inertia`` makes it the
-Navier-Stokes equations:
+``viscous_stress`` is the viscous term of the momentum equation.  Together with
+the penalty term it describes Stokes flow, and the addition of
+``convective_inertia`` gives the Navier-Stokes equations:
 
 .. code-block:: python
 
@@ -706,7 +718,8 @@ Navier-Stokes equations:
                           velocities=velocities, component=component,
                           dynamic_viscosity=1.0)
 
-:func:`dualmesh.physics.add_incompressible_flow` assembles the whole set.
+:func:`dualmesh.physics.add_incompressible_flow` adds the complete set of
+kernels.
 """,
 )
 
@@ -714,8 +727,8 @@ _add(
     "penalty_incompressibility",
     """
 The penalty formulation replaces the pressure by :math:`P = -\\gamma \\nabla
-\\cdot v`, which removes the pressure unknown altogether and leaves a problem in
-the velocities alone.  The price is that the term must be under-integrated:
+\\cdot v`, which eliminates the pressure unknown and leaves a problem in the
+velocities alone.  The penalty term must then be under-integrated:
 
 .. code-block:: python
 
@@ -724,10 +737,10 @@ the velocities alone.  The price is that the term must be under-integrated:
                           variable=name, velocities=velocities,
                           component=component, penalty_parameter=1.0e8)
 
-The defaults already select the one-point rule and the centroid evaluation.  If
-the velocity field comes out identically zero, the penalty parameter is almost
-certainly too large for the viscosity, and the constraint has locked the
-element.
+The default settings select the one-point rule and the centroid evaluation.  A
+velocity field that is identically zero almost certainly indicates that the
+penalty parameter is too large for the viscosity and that the constraint has
+locked the element.
 """,
 )
 
@@ -735,8 +748,8 @@ _add(
     "convective_inertia",
     """
 ``convective_inertia`` adds the nonlinear transport term of the Navier-Stokes
-equations.  Leave it out for a Stokes flow rather than setting the density to
-zero:
+equations.  A Stokes flow is modelled by omitting this kernel, which is
+preferable to setting its density to zero:
 
 .. code-block:: python
 
@@ -746,22 +759,22 @@ zero:
    problem.solve(nonlinear_solver="newton",
                  load_factors=[0.1, 0.25, 0.5, 0.75, 1.0])
 
-At a high Reynolds number, starting from rest at the full velocity usually
-diverges.  Either ramp the boundary velocity with load stepping, as above, or
-use direct iteration with a relaxation factor of about one half, which is the
-strategy Reddy's cavity example uses.
+At a high Reynolds number, a solve that starts from rest at the full velocity
+usually diverges.  Either increase the boundary velocity in increments with
+load stepping, as above, or use direct iteration with a relaxation factor of
+about one half, which is the strategy of Reddy's cavity example.
 """,
 )
 
 _add(
     "Boussinesq_buoyancy",
     """
-``Boussinesq_buoyancy`` makes a temperature field drive the flow.  Add it to the
-momentum equation of every velocity component that has a component of gravity,
-usually just the vertical one.  In the non-dimensional form of the natural
-convection benchmark (lengths scaled by the cavity width, velocities by
-:math:`\\kappa / L`, temperature by the wall temperature difference) the
-coefficient :math:`\\rho_0 \\beta g` becomes :math:`Ra \\, Pr`:
+``Boussinesq_buoyancy`` adds the buoyancy force that a temperature field exerts
+on the flow.  Add it to the momentum equation of every velocity component that
+has a component of gravity, usually only the vertical one.  In the
+non-dimensional form of the natural convection benchmark (lengths scaled by
+the cavity width, velocities by :math:`\\kappa / L`, temperature by the wall
+temperature difference) the coefficient :math:`\\rho_0 \\beta g` becomes :math:`Ra \\, Pr`:
 
 .. code-block:: python
 
@@ -770,18 +783,18 @@ coefficient :math:`\\rho_0 \\beta g` becomes :math:`Ra \\, Pr`:
                       thermal_expansion=rayleigh * prandtl, scale_with_load=True)
    problem.solve(load_factors=[0.01, 0.1, 1.0])
 
-With ``scale_with_load=True`` load stepping ramps the Rayleigh number, which is
-how a strongly buoyant flow is reached from rest.  The complete problem is
-``examples/natural_convection.py``.
+With ``scale_with_load=True`` load stepping increases the Rayleigh number in
+increments, which allows a strongly buoyant flow to be computed from a fluid
+at rest.  The complete problem is in ``examples/natural_convection.py``.
 """,
 )
 
 _add(
     "heat_convection",
     """
-``heat_convection`` is the other half of the coupling: the flow carries the
-heat.  The velocities are variables of the same problem, so Newton's method
-sees the coupling in both directions:
+``heat_convection`` is the complementary term of the coupling, through which
+the flow transports heat.  The velocities are variables of the same problem,
+so the Jacobian of Newton's method contains the coupling in both directions:
 
 .. code-block:: python
 
@@ -800,10 +813,10 @@ for an incompressible flow.
 _add(
     "penalty_pressure",
     """
-The penalty formulation never solves for a pressure, so the pressure has to be
-recovered afterwards from the velocity divergence.  ``penalty_pressure``
-publishes it as a material property, which the post-processing can then
-evaluate at the element centroids:
+The penalty formulation eliminates the pressure from the unknowns, so the
+pressure is recovered afterwards from the velocity divergence.
+``penalty_pressure`` provides it as a material property, which the
+post-processing evaluates at the element centroids:
 
 .. code-block:: python
 
@@ -812,8 +825,8 @@ evaluate at the element centroids:
    problem.solve()
    pressure = problem.property_at_centroids("pressure")
 
-The penalty parameter must be exactly the one given to
-``penalty_incompressibility``, or the recovered pressure is meaningless.
+The penalty parameter must equal the one given to
+``penalty_incompressibility``, otherwise the recovered pressure is meaningless.
 """,
 )
 
@@ -830,7 +843,7 @@ helper, together with the viscous stress and the mass equation:
                                       dynamic_viscosity=1.0, density=100.0,
                                       formulation="pressure", pin_pressure=(0.5, 0.0))
 
-By hand, one instance per velocity component:
+To add it manually, create one instance per velocity component:
 
 .. code-block:: python
 
@@ -843,8 +856,8 @@ _add(
     "mass_conservation",
     """
 ``mass_conservation`` is the mass equation, attached to the pressure variable.
-With equal-order interpolation it must carry the stabilisation, and every
-force of the momentum equations must be repeated in it:
+With equal-order interpolation it must include the stabilisation, and every
+force of the momentum equations must also be given to it:
 
 .. code-block:: python
 
@@ -855,7 +868,7 @@ force of the momentum equations must be repeated in it:
                                   boundary=["left", "right", "bottom", "top"],
                                   velocities=["u", "v"])
 
-An enclosed flow also needs its pressure level fixed, with a
+In an enclosed flow the pressure level must also be fixed, with a
 ``point_Dirichlet_boundary_condition``.
 """,
 )
@@ -878,9 +891,9 @@ equation of a flow with inertia.  It takes the same parameters as
 _add(
     "mass_flux_boundary_condition",
     """
-``mass_flux_boundary_condition`` gives the mass equation the flow through the boundary,
-computed from the discrete velocity.  Put it on every boundary where the
-pressure is not prescribed, which with the helper is every side set:
+``mass_flux_boundary_condition`` adds to the mass equation the flow through
+the boundary, computed from the discrete velocity.  Apply it on every boundary
+without a prescribed pressure, which with the helper is every side set:
 
 .. code-block:: python
 
@@ -893,8 +906,9 @@ pressure is not prescribed, which with the helper is every side set:
 _add(
     "point_Dirichlet_boundary_condition",
     """
-``point_Dirichlet_boundary_condition`` fixes a variable at the single entity nearest to a point,
-which is how the pressure level of an enclosed flow is set:
+``point_Dirichlet_boundary_condition`` fixes a variable at the single entity
+nearest to a given point.  It sets, e.g., the pressure level of an enclosed
+flow:
 
 .. code-block:: python
 
@@ -909,14 +923,14 @@ which is how the pressure level of an enclosed flow is set:
 _add(
     "gap_heat_transfer",
     """
-``gap_heat_transfer`` carries heat across a thin gap between two bodies that are
-meshed separately, such as a fuel pellet and its cladding.  Each integration
-point of ``boundary`` (the primary surface) is paired with the closest point
-of ``secondary_boundary``; the heat flux :math:`q = h (T_s - T_p)` enters the
-primary body and exactly the same heat leaves the secondary body, so the
-condition conserves energy on any pair of meshes, matching or not.  The
-conductance :math:`h` is a number or a function; radiation is added when both
-emissivities are positive:
+``gap_heat_transfer`` transfers heat across a thin gap between two bodies that
+are meshed separately, such as a fuel pellet and its cladding.  Each
+integration point of ``boundary`` (the primary surface) is paired with the
+closest point of ``secondary_boundary``.  The heat flux
+:math:`q = h (T_s - T_p)` enters the primary body and exactly the same heat
+leaves the secondary body, so the condition conserves energy on matching and
+non-matching meshes alike.  The conductance :math:`h` is a number or a
+function, and radiation is added when both emissivities are positive:
 
 .. code-block:: python
 
@@ -930,11 +944,11 @@ emissivities are positive:
 _add(
     "gap_contact",
     """
-``gap_contact`` keeps two bodies from passing through each other, with a
-penalty force normal to the contact surface that acts only when the gap is
-closed (frictionless contact).  There is one object per displacement
-component; ``penalty`` is the stiffness per unit area, which should be large
-compared with the stiffness of the bodies divided by their size:
+``gap_contact`` prevents the interpenetration of two bodies with a penalty
+force normal to the contact surface that acts only when the gap is closed
+(frictionless contact).  One object is added per displacement component.
+``penalty`` is the stiffness per unit area, which should be large compared
+with the stiffness of the bodies divided by their size:
 
 .. code-block:: python
 
@@ -970,8 +984,8 @@ _add(
 ``EigenstrainElasticStress`` computes the stress of an isotropic elastic
 solid from the total strain minus the listed eigenstrains (thermal expansion,
 swelling, relocation, growth) and, optionally, the creep strain, which it
-integrates itself by a backward Euler radial return and remembers between
-time steps.  ``formulation`` selects axisymmetric (r, z), plane strain,
+integrates itself by a backward Euler radial return and stores between time
+steps.  ``formulation`` selects axisymmetric :math:`(r, z)`, plane strain,
 three-dimensional, or ``axisymmetric_1d``, the radial slice of a long rod with
 a uniform ``axial_strain`` (generalized plane strain).  Young's modulus and
 Poisson's ratio are numbers or the properties of another material:
@@ -998,7 +1012,7 @@ _add(
 ``UO2_thermal`` supplies ``thermal_conductivity``, ``specific_heat`` and
 ``density`` for uranium dioxide.  The conductivity is that of Fink (2000),
 optionally degraded with burnup by the factors of Lucuta et al. (1996)
-(``fink_lucuta``, the default), or the NFI model; the burnup is in FIMA and
+(``fink_lucuta``, the default), or the NFI model.  The burnup is in FIMA and
 may be a function of position and time:
 
 .. code-block:: python
@@ -1060,7 +1074,7 @@ _add(
 ``FuelThermalExpansionEigenstrain`` is the thermal strain of UO2 (Martin
 1988), UN (Hayes et al. 1990) or Zircaloy measured from
 ``reference_temperature``.  For Zircaloy the axial and diametral expansions
-differ, so ``geometry`` must say which direction is the axis of the rod:
+differ, so ``geometry`` must specify which direction is the axis of the rod:
 
 .. code-block:: python
 
@@ -1078,8 +1092,8 @@ _add(
 ``UO2VolumetricEigenstrain`` is the change of volume of UO2 with burnup:
 densification (the ESCORE form, a shrinkage of ``total_densification`` that
 is complete by ``densification_complete_burnup``) and solid fission product
-swelling; the gaseous swelling can be added from an element field.  It is
-stored as an isotropic eigenstrain:
+swelling.  The gaseous swelling can be added from an element field.  The
+volume change is stored as an isotropic eigenstrain:
 
 .. code-block:: python
 
@@ -1110,7 +1124,8 @@ _add(
     """
 ``FuelRelocationEigenstrain`` represents the outward movement of the pieces
 of a cracked pellet (relocation) as a strain in the plane normal to the rod
-axis, by the ESCORE correlation in the linear power and the burnup.  The
+axis, computed with the ESCORE correlation as a function of the linear power
+and the burnup.  The
 cold pellet diameter and diametral gap are inputs:
 
 .. code-block:: python
@@ -1144,10 +1159,10 @@ _add(
 rod gap computed at every point: conduction through the gas mixture (the
 Ross-Stoute form with the Brokaw mixing rule and the temperature jump
 distances), radiation between the fuel and cladding surfaces, and solid
-conduction once they touch.  With ``displacements`` the gap width follows the
-deformation; with ``contact_penalty`` (the same value as in ``gap_contact``)
-the contact pressure raises the solid conductance.  The gas pressure and the
-mole fractions may be numbers or functions:
+conduction once they are in contact.  With ``displacements`` the gap width
+follows the deformation.  With ``contact_penalty`` (the same value as in
+``gap_contact``) the contact pressure raises the solid conductance.  The gas
+pressure and the mole fractions may be numbers or functions:
 
 .. code-block:: python
 
