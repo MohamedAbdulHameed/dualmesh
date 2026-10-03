@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 //
-// Materials defined by expressions: parsed_material, which declares a scalar
+// Property objects defined by expressions: parsed_property, which declares a scalar
 // property, and parsed_eigenstrain, which declares an eigenstrain for the
-// stress materials.  The expressions are compiled once (ParsedExpression) and
+// stress property objects.  The expressions are compiled once (ParsedExpression) and
 // evaluated with automatic differentiation, so a property that depends on the
 // solution contributes its exact derivatives to the Jacobian.  They are the
 // way to add a correlation (a conductivity, a swelling law) without writing
 // C++, at the speed of compiled code.
 #include "dualmesh/base/Factory.h"
-#include "dualmesh/base/Material.h"
 #include "dualmesh/base/Problem.h"
+#include "dualmesh/base/Property.h"
 #include "dualmesh/core/ParsedFunction.h"
 
 #include <array>
@@ -22,8 +22,8 @@ namespace
 {
 
 /// The arguments of a parsed expression: coupled variables (their values for
-/// coefficients, lagged under Picard iteration as in every material), functions of
-/// position and time, scalar properties of other materials and constants,
+/// coefficients, lagged under Picard iteration as in every property object), functions of
+/// position and time, scalar properties of other property objects and constants,
 /// each used in the expression by its name.
 class ParsedArguments
 {
@@ -48,11 +48,11 @@ public:
                   "Element fields of the problem (one value per element, set from Python with "
                   "Problem.set_element_field, such as the highest temperature an element has "
                   "reached), each used by its name. Default none.");
-    p.addOptional("material_property_names",
+    p.addOptional("coupled_properties",
                   ParameterKind::StringList,
                   std::vector<std::string>{},
-                  "Scalar properties of other materials, each used by its name. Those "
-                  "materials must be added to the problem before this one. Default none.");
+                  "Scalar properties of other property objects, each used by its name. Those "
+                  "property objects must be added to the problem before this one. Default none.");
     p.addOptional("constant_names",
                   ParameterKind::StringList,
                   std::vector<std::string>{},
@@ -68,7 +68,7 @@ public:
   {
     _variables = p.getStringList("coupled_variables");
     _functions = p.getStringList("function_names");
-    _properties = p.getStringList("material_property_names");
+    _properties = p.getStringList("coupled_properties");
     _fields = p.getStringList("element_field_names");
     _constants = p.getStringList("constant_names");
     _values = p.getRealList("constant_values");
@@ -105,8 +105,8 @@ public:
     for (const auto & name : _properties)
     {
       if (!registry.has(name))
-        throw InputError("'" + owner + "': no material declares the property '" + name +
-                         "'; add the material that declares it before this one.");
+        throw InputError("'" + owner + "': no property object declares the property '" + name +
+                         "'. Add the property object that declares it before this one.");
       if (registry.components(name) != 1)
         throw InputError("'" + owner + "': the property '" + name +
                          "' has several components; only scalar properties can be used.");
@@ -155,16 +155,16 @@ const char * kExpressionHelp =
 } // namespace
 
 // ---------------------------------------------------------------------------
-/// A scalar material property given by an expression.
-class ParsedMaterial : public Material
+/// A scalar property given by an expression.
+class ParsedProperty : public Property
 {
 public:
   static InputParameters validParams()
   {
-    InputParameters p = Material::validParams();
+    InputParameters p = Property::validParams();
     p.setClassDescription(
-        std::string("A scalar material property given by an expression of solution variables, "
-                    "functions, other material properties and constants, compiled once and "
+        std::string("A scalar property given by an expression of solution variables, "
+                    "functions, other properties and constants, compiled once and "
                     "differentiated automatically. It is how a correlation, for instance a "
                     "thermal conductivity k(T, burnup), is added without writing C++. ") +
         kExpressionHelp);
@@ -173,16 +173,16 @@ public:
     ParsedArguments::addParams(p);
     return p;
   }
-  explicit ParsedMaterial(const InputParameters & p) : Material(p), _arguments(p)
+  explicit ParsedProperty(const InputParameters & p) : Property(p), _arguments(p)
   {
     _expression = std::make_unique<ParsedExpression>(p.getString("expression"), _arguments.names());
   }
   void initialSetup(Problem & problem) override
   {
-    Material::initialSetup(problem);
+    Property::initialSetup(problem);
     _arguments.initialSetup(problem, name());
   }
-  void declareProperties(MaterialPropertyRegistry & r) override
+  void declareProperties(PropertyRegistry & r) override
   {
     _prop = r.declare(_params.getString("property_name"), 1);
   }
@@ -201,12 +201,12 @@ private:
 
 // ---------------------------------------------------------------------------
 /// An eigenstrain given by an expression.
-class ParsedEigenstrain : public Material
+class ParsedEigenstrain : public Property
 {
 public:
   static InputParameters validParams()
   {
-    InputParameters p = Material::validParams();
+    InputParameters p = Property::validParams();
     p.setClassDescription(
         std::string(
             "An eigenstrain (a stress-free strain, such as thermal expansion or swelling) "
@@ -232,13 +232,14 @@ public:
                   "isotropic (the three normal directions), axial (along the axis of the "
                   "formulation only) or transverse (the two directions normal to the axis). "
                   "Default isotropic.");
-    p.addOptional("formulation",
-                  ParameterKind::String,
-                  std::string("three_dimensional"),
-                  "Formulation of the stress material, which fixes which component is axial: "
-                  "axisymmetric (the second, z), axisymmetric_1d (the second, z), plane_strain "
-                  "(the third) or three_dimensional (the third, z). Default three_dimensional. "
-                  "The formulation matters only for an axial or transverse direction.");
+    p.addOptional(
+        "formulation",
+        ParameterKind::String,
+        std::string("three_dimensional"),
+        "Formulation of the stress property object, which fixes which component is axial: "
+        "axisymmetric (the second, z), axisymmetric_1d (the second, z), plane_strain "
+        "(the third) or three_dimensional (the third, z). Default three_dimensional. "
+        "The formulation matters only for an axial or transverse direction.");
     p.addOptional("stress_free_state_names",
                   ParameterKind::StringList,
                   std::vector<std::string>{},
@@ -252,7 +253,7 @@ public:
     ParsedArguments::addParams(p);
     return p;
   }
-  explicit ParsedEigenstrain(const InputParameters & p) : Material(p), _arguments(p)
+  explicit ParsedEigenstrain(const InputParameters & p) : Property(p), _arguments(p)
   {
     const auto names = _arguments.names();
     _expression = std::make_unique<ParsedExpression>(p.getString("expression"), names);
@@ -295,10 +296,10 @@ public:
   }
   void initialSetup(Problem & problem) override
   {
-    Material::initialSetup(problem);
+    Property::initialSetup(problem);
     _arguments.initialSetup(problem, name());
   }
-  void declareProperties(MaterialPropertyRegistry & r) override
+  void declareProperties(PropertyRegistry & r) override
   {
     _prop = r.declare(_params.getString("eigenstrain_name"), 6);
   }
@@ -336,8 +337,8 @@ private:
 void
 registerParsedObjects(Factory & f)
 {
-  f.add<ParsedMaterial>("parsed_material", ObjectCategory::Material, "framework");
-  f.add<ParsedEigenstrain>("parsed_eigenstrain", ObjectCategory::Material, "solid_mechanics");
+  f.add<ParsedProperty>("parsed_property", ObjectCategory::Property, "framework");
+  f.add<ParsedEigenstrain>("parsed_eigenstrain", ObjectCategory::Property, "solid_mechanics");
 }
 
 } // namespace dualmesh

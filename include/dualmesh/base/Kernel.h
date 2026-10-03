@@ -41,7 +41,7 @@ public:
   /// Time-derivative kernels are not weighted by the time-integration theta.
   virtual bool isTimeKernel() const { return false; }
 
-  /// Material properties this kernel needs (names), resolved at setup.
+  /// Properties this kernel needs (names), resolved at setup.
   virtual std::vector<std::string> requiredProperties() const { return {}; }
 
   /// For the constraint equation of a saddle point problem (the mass equation

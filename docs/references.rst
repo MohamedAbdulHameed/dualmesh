@@ -9,11 +9,6 @@ it.  Where the implementation follows a design decision of another project
 project is named as the influence, and the underlying method is cited to its
 own source.
 
-The bibliographic data of each entry were checked against the record of the
-publisher (the DOI landing page or the metadata deposited with Crossref),
-against the citation page of the project for software, and against a library
-catalogue for books.
-
 The method
 ----------
 
@@ -363,6 +358,19 @@ Solvers
    systems", *SIAM Journal on Scientific and Statistical Computing*,
    13(2):631–644, 1992.  DOI: 10.1137/0913035.
 
+.. [VanekMandelBrezina1996] P. Vaněk, J. Mandel and M. Brezina, "Algebraic
+   multigrid by smoothed aggregation for second and fourth order elliptic
+   problems", *Computing*, 56(3):179–196, 1996.  DOI: 10.1007/BF02238511.
+
+.. [AdamsBrezinaHuTuminaro2003] M. Adams, M. Brezina, J. Hu and R. Tuminaro,
+   "Parallel multigrid smoothing: polynomial versus Gauss-Seidel", *Journal of
+   Computational Physics*, 188(2):593–610, 2003.
+   DOI: 10.1016/S0021-9991(03)00194-3.
+
+.. [Gustavson1978] F. G. Gustavson, "Two fast algorithms for sparse matrices:
+   multiplication and permuted transposition", *ACM Transactions on
+   Mathematical Software*, 4(3):250–269, 1978.  DOI: 10.1145/355791.355796.
+
 .. [Saad1994] Y. Saad, "ILUT: a dual threshold incomplete LU factorization",
    *Numerical Linear Algebra with Applications*, 1(4):387–402, 1994.
    DOI: 10.1002/nla.1680010405.  The threshold preconditioner offered as
@@ -533,9 +541,6 @@ Nuclear fuel performance
 ------------------------
 
 These are the works cited in :doc:`fuel/models` and :doc:`fuel/correlations`.
-The module was written from the published literature, and no source code of
-BISON, TRANSURANUS or OFFBEAT was used.  Every DOI below was checked against
-Crossref.
 
 *The three codes that inspired the module*
 
@@ -575,10 +580,6 @@ Crossref.
    Rods*, report BNWL-1894, Battelle Pacific Northwest Laboratories, 1975.
    DOI: 10.2172/4209005.
 
-.. [LindsayBromley1950] A. L. Lindsay and L. A. Bromley, "Thermal conductivity
-   of gas mixtures", *Industrial & Engineering Chemistry*, 42(8):1508–1511,
-   1950.  DOI: 10.1021/ie50488a017.
-
 .. [Brokaw1958] R. S. Brokaw, "Approximate formulas for the viscosity and
    thermal conductivity of gas mixtures", *The Journal of Chemical Physics*,
    29(2):391–397, 1958.  DOI: 10.1063/1.1744491.
@@ -587,8 +588,7 @@ Crossref.
    automobile radiators of the tubular type", *University of California
    Publications in Engineering*, 2(13):443–461, 1930.  Reprinted in
    *International Communications in Heat and Mass Transfer*, 12(1):3–22,
-   1985, DOI: 10.1016/0735-1933(85)90003-X.  The coefficient 0.023 used by the
-   module is the one introduced by McAdams.
+   1985, DOI: 10.1016/0735-1933(85)90003-X.
 
 *Fission gas*
 
@@ -705,6 +705,95 @@ These are the works cited in :doc:`fuel/triso`.
    DOI: 10.1115/1.4010337.  The weakest link model of the failure
    probability.
 
+Uncertainty quantification and sensitivity analysis
+---------------------------------------------------
+
+These are the works cited in :doc:`theory/uncertainty`.
+
+.. [Wilks1941] S. S. Wilks, "Determination of sample sizes for setting
+   tolerance limits", *The Annals of Mathematical Statistics*, 12(1):91–96,
+   1941.  DOI: 10.1214/aoms/1177731788.
+
+.. [McKay1979] M. D. McKay, R. J. Beckman and W. J. Conover, "A comparison of
+   three methods for selecting values of input variables in the analysis of
+   output from a computer code", *Technometrics*, 21(2):239–245, 1979.
+
+.. [Marino2008] S. Marino, I. B. Hogue, C. J. Ray and D. E. Kirschner, "A
+   methodology for performing global uncertainty and sensitivity analysis in
+   systems biology", *Journal of Theoretical Biology*, 254:178–196, 2008.
+   DOI: 10.1016/j.jtbi.2008.04.011.
+
+.. [Sobol2001] I. M. Sobol', "Global sensitivity indices for nonlinear
+   mathematical models and their Monte Carlo estimates", *Mathematics and
+   Computers in Simulation*, 55:271–280, 2001.
+   DOI: 10.1016/S0378-4754(00)00270-6.
+
+.. [Jansen1999] M. J. W. Jansen, "Analysis of variance designs for model
+   output", *Computer Physics Communications*, 117:35–43, 1999.
+
+.. [Saltelli2002] A. Saltelli, "Making best use of model evaluations to compute
+   sensitivity indices", *Computer Physics Communications*, 145(2):280–297,
+   2002.  DOI: 10.1016/S0010-4655(02)00280-1.
+
+.. [Saltelli2010] A. Saltelli, P. Annoni, I. Azzini, F. Campolongo, M. Ratto and
+   S. Tarantola, "Variance based sensitivity analysis of model output. Design
+   and estimator for the total sensitivity index", *Computer Physics
+   Communications*, 181:259–270, 2010.  DOI: 10.1016/j.cpc.2009.09.018.
+
+.. [Sacks1989] J. Sacks, W. J. Welch, T. J. Mitchell and H. P. Wynn, "Design and
+   analysis of computer experiments", *Statistical Science*, 4(4):409–435,
+   1989.  DOI: 10.1214/ss/1177012413.
+
+.. [Dubrule1983] O. Dubrule, "Cross validation of kriging in a unique
+   neighborhood", *Mathematical Geology*, 15(6):687–699, 1983.
+
+.. [Marrel2009] A. Marrel, B. Iooss, B. Laurent and O. Roustant, "Calculations of
+   Sobol indices for the Gaussian process metamodel", *Reliability Engineering
+   and System Safety*, 94:742–751, 2009.  DOI: 10.1016/j.ress.2008.07.008.
+
+.. [Higdon2008] D. Higdon, J. Gattiker, B. Williams and M. Rightley, "Computer
+   model calibration using high-dimensional output", *Journal of the American
+   Statistical Association*, 103(482):570–583, 2008.
+   DOI: 10.1198/016214507000000888.
+
+.. [KennedyOHagan2001] M. C. Kennedy and A. O'Hagan, "Bayesian calibration of
+   computer models", *Journal of the Royal Statistical Society B*,
+   63(3):425–464, 2001.  DOI: 10.1111/1467-9868.00294.
+
+.. [Wu2018] X. Wu, T. Kozlowski, H. Meidani and K. Shirvan, "Inverse
+   uncertainty quantification using the modular Bayesian approach based on
+   Gaussian process, Part 1: Theory", *Nuclear Engineering and Design*,
+   335:339–355, 2018.  DOI: 10.1016/j.nucengdes.2018.06.004.
+
+.. [Wu2019] X. Wu, K. Shirvan and T. Kozlowski, "Demonstration of the
+   relationship between sensitivity and identifiability for inverse
+   uncertainty quantification", *Journal of Computational Physics*,
+   396:12–30, 2019.  DOI: 10.1016/j.jcp.2019.06.032.
+
+.. [GoodmanWeare2010] J. Goodman and J. Weare, "Ensemble samplers with affine
+   invariance", *Communications in Applied Mathematics and Computational
+   Science*, 5(1):65–80, 2010.  DOI: 10.2140/camcos.2010.5.65.
+
+.. [AndrieuThoms2008] C. Andrieu and J. Thoms, "A tutorial on adaptive MCMC",
+   *Statistics and Computing*, 18:343–373, 2008.
+   DOI: 10.1007/s11222-008-9110-y.
+
+.. [Vehtari2021] A. Vehtari, A. Gelman, D. Simpson, B. Carpenter and
+   P.-C. Bürkner, "Rank-normalization, folding, and localization: an improved
+   :math:`\hat R` for assessing convergence of MCMC", *Bayesian Analysis*,
+   16(2), 2021.  DOI: 10.1214/20-BA1221.  The equation numbers refer to the
+   version arXiv:1903.08008v5.
+
+.. [Ikonen2014] T. Ikonen and V. Tulkki, "The importance of input interactions
+   in the uncertainty and sensitivity analysis of nuclear fuel behavior",
+   *Nuclear Engineering and Design*, 275:229–241, 2014.
+   DOI: 10.1016/j.nucengdes.2014.05.015.
+
+.. [Che2018] Y. Che, G. Pastore, J. Hales and K. Shirvan, "Modeling of
+   Cr2O3-doped UO2 as a near-term accident tolerant fuel for LWRs using the
+   BISON code", *Nuclear Engineering and Design*, 337:271–278, 2018.
+   DOI: 10.1016/j.nucengdes.2018.07.015.
+
 Software that dualmesh builds on, or learns from
 ------------------------------------------------
 
@@ -732,11 +821,9 @@ Software that dualmesh builds on, or learns from
    DOI: 10.1016/j.softx.2025.102264.  The current reference for MOOSE, and
    the one the project's citation page asks for.  dualmesh follows the
    object model of MOOSE: named and registered kernels, boundary conditions
-   and materials with validated and self-documenting parameters, assembled
+   and property objects with validated and self-documenting parameters, assembled
    into one monolithic and fully coupled system with an automatically
-   differentiated Jacobian.  No source code of MOOSE is used.  The influence
-   is on the design, and every algorithm that MOOSE also implements is cited
-   above to its own source.
+   differentiated Jacobian.
 
 .. [MOOSE2020] C. J. Permann, D. R. Gaston, D. Andrš, R. W. Carlsen, F. Kong,
    A. D. Lindsay, J. M. Miller, J. W. Peterson, A. E. Slaughter, R. H. Stogner
@@ -781,3 +868,19 @@ Software that dualmesh builds on, or learns from
    Multiphysics 6.1 Application Library, model ``wrench``,
    https://doc.comsol.com/6.1/doc/com.comsol.help.models.mph.wrench/wrench.html.
    The load case of the wrench tutorial (:doc:`tutorials/wrench`).
+
+Neutronics
+----------
+
+.. [Lee2025] J. C. Lee, *Nuclear Reactor Physics and Engineering*, 2nd
+   edition, John Wiley & Sons, Hoboken, NJ, 2025.  DOI:
+   10.1002/9781394283583.  The multigroup diffusion equations (Chapter 7),
+   the boundary conditions and the bucklings of one-group theory (Chapter 5)
+   and the numerical solution and the source iteration (Chapter 6), in the
+   form :doc:`theory/neutronics` uses them.
+
+.. [ANL7416] Argonne Code Center, *Argonne Code Center: Benchmark Problem
+   Book*, ANL-7416, Supplement 2, Argonne National Laboratory, Argonne, IL,
+   June 1977, OSTI ID 5037820.  DOI: 10.2172/5037820.  Source Situation 11
+   and problem 11-A2 (the two-dimensional IAEA PWR benchmark) with its
+   reference solution 11-A2-1.

@@ -75,20 +75,13 @@ def halden_cladding_temperature(linear_heat_rate, time):
 
 
 def make_rod(history: fuel.PowerHistory, output_times) -> fuel.FuelRod:
-    geometry = fuel.RodGeometry(
-        pellet_outer_radius=0.5 * 10.61e-3,
-        clad_inner_radius=0.5 * 10.8e-3,
-        clad_outer_radius=0.5 * 10.8e-3 + 0.95e-3,
-        fuel_stack_height=0.1,
-    )
+    geometry = fuel.RodGeometry(pellet_outer_radius=0.5 * 10.61e-3, clad_inner_radius=0.5 * 10.8e-3, clad_outer_radius=0.5 * 10.8e-3 + 0.95e-3, fuel_stack_height=0.1)
     return fuel.FuelRod(
         geometry=geometry,
         fuel=fuel.UO2Fuel(enrichment=0.13, theoretical_density_fraction=0.95, grain_radius=7.5e-6),
         cladding=fuel.ZircaloyCladding(),
         fill_gas=fuel.FillGas(pressure=0.5e6, plenum_volume=50e-6),
-        coolant=fuel.PrescribedCladdingTemperature(
-            temperature=halden_cladding_temperature, pressure=3.4e6
-        ),
+        coolant=fuel.PrescribedCladdingTemperature(temperature=halden_cladding_temperature, pressure=3.4e6),
         power_history=history,
         numerics=fuel.RodNumerics(max_time_step=20 * DAY),
         output=fuel.RodOutput(print_input=False, print_steps=False, output_times=output_times),
@@ -99,30 +92,16 @@ def run(history, end_days):
     rod = make_rod(history, np.linspace(0.0, end_days * DAY, 201))
     result = rod.run()
     burnup = result.burnup_in("MWd/kgU", rod_average=True)
-    return (
-        burnup,
-        100.0 * np.asarray(result.fission_gas_release),
-        np.asarray(result.max_fuel_centerline_temperature) - 273.15,
-    )
+    return (burnup, 100.0 * np.asarray(result.fission_gas_release), np.asarray(result.max_fuel_centerline_temperature) - 273.15)
 
 
 def case_2a():
-    history = fuel.PowerHistory(
-        linear_heat_rate=[15e3, 15e3],
-        burnup=[0.0, 100.0],
-        burnup_unit="MWd/kgU",
-        fast_neutron_flux_per_linear_heat_rate=1e11,
-    )
+    history = fuel.PowerHistory(linear_heat_rate=[15e3, 15e3], burnup=[0.0, 100.0], burnup_unit="MWd/kgU", fast_neutron_flux_per_linear_heat_rate=1e11)
     return run(history, 5500.0)
 
 
 def case_2b():
-    history = fuel.PowerHistory(
-        linear_heat_rate=[20e3, 10e3],
-        burnup=[0.0, 100.0],
-        burnup_unit="MWd/kgU",
-        fast_neutron_flux_per_linear_heat_rate=1e11,
-    )
+    history = fuel.PowerHistory(linear_heat_rate=[20e3, 10e3], burnup=[0.0, 100.0], burnup_unit="MWd/kgU", fast_neutron_flux_per_linear_heat_rate=1e11)
     return run(history, 6000.0)
 
 
@@ -130,12 +109,7 @@ def case_1(powers_kw_m):
     """Burnup and centre temperature at 1 % release for each constant power."""
     points = []
     for q in powers_kw_m:
-        history = fuel.PowerHistory(
-            linear_heat_rate=[q * 1e3, q * 1e3],
-            burnup=[0.0, 100.0],
-            burnup_unit="MWd/kgU",
-            fast_neutron_flux_per_linear_heat_rate=1e11,
-        )
+        history = fuel.PowerHistory(linear_heat_rate=[q * 1e3, q * 1e3], burnup=[0.0, 100.0], burnup_unit="MWd/kgU", fast_neutron_flux_per_linear_heat_rate=1e11)
         end_days = 100.0 * 0.8119e3 / q  # 0.812 kgU/m, MWd/kgU -> days at q kW/m
         burnup, fgr, tc = run(history, end_days * 1.02)
         above = np.nonzero(fgr >= 1.0)[0]
@@ -144,17 +118,8 @@ def case_1(powers_kw_m):
             continue
         i = above[0]
         w = (1.0 - fgr[i - 1]) / (fgr[i] - fgr[i - 1])
-        points.append(
-            (
-                q,
-                burnup[i - 1] + w * (burnup[i] - burnup[i - 1]),
-                tc[i - 1] + w * (tc[i] - tc[i - 1]),
-            )
-        )
-        print(
-            f"  27(1) {q:5.1f} kW/m: 1 % FGR at {points[-1][1]:6.2f} MWd/kgU, "
-            f"{points[-1][2]:7.1f} degC"
-        )
+        points.append((q, burnup[i - 1] + w * (burnup[i] - burnup[i - 1]), tc[i - 1] + w * (tc[i] - tc[i - 1])))
+        print(f"  27(1) {q:5.1f} kW/m: 1 % FGR at {points[-1][1]:6.2f} MWd/kgU, {points[-1][2]:7.1f} degC")
     return np.array(points)
 
 
@@ -206,24 +171,8 @@ def main():
         plotstyle.save_cache(CACHE, z)
     b2a, f2a, b2b, f2b, locus = z["b2a"], z["f2a"], z["b2b"], z["f2b"], z["locus"]
 
-    plot_fgr(
-        "27(2a)",
-        b2a,
-        f2a,
-        "FUMEX-II case 27(2a): 15 kW/m constant",
-        data,
-        40,
-        out / "fumex2_case27_2a_fgr.png",
-    )
-    plot_fgr(
-        "27(2b)",
-        b2b,
-        f2b,
-        "FUMEX-II case 27(2b): 20 to 10 kW/m",
-        data,
-        35,
-        out / "fumex2_case27_2b_fgr.png",
-    )
+    plot_fgr("27(2a)", b2a, f2a, "FUMEX-II case 27(2a): 15 kW/m constant", data, 40, out / "fumex2_case27_2a_fgr.png")
+    plot_fgr("27(2b)", b2b, f2b, "FUMEX-II case 27(2b): 20 to 10 kW/m", data, 35, out / "fumex2_case27_2b_fgr.png")
 
     fig, ax = plotstyle.new_figure()
     first = True
@@ -234,28 +183,12 @@ def main():
         first = False
     vx, vy = data[("27(1)", "Vitanza", "0")]
     order = np.argsort(vx)
-    ax.plot(
-        vx[order], vy[order], color=REFERENCE, linewidth=2.2, label="Vitanza threshold (Fig. 7)"
-    )
+    ax.plot(vx[order], vy[order], color=REFERENCE, linewidth=2.2, label="Vitanza threshold (Fig. 7)")
     ok = np.isfinite(locus[:, 1])
-    ax.plot(
-        locus[ok, 1],
-        locus[ok, 2],
-        "o-",
-        color=DUALMESH,
-        linewidth=2.2,
-        markersize=6,
-        markeredgecolor="white",
-        label="dualmesh",
-    )
+    ax.plot(locus[ok, 1], locus[ok, 2], "o-", color=DUALMESH, linewidth=2.2, markersize=6, markeredgecolor="white", label="dualmesh")
     ax.set_xlim(0, 100)
     ax.set_ylim(500, 1700)
-    plotstyle.style(
-        ax,
-        "Rod average burnup (MWd/kgU)",
-        r"Centre temperature ($^\circ$C)",
-        "FUMEX-II case 27(1): onset of 1 % fission gas release",
-    )
+    plotstyle.style(ax, "Rod average burnup (MWd/kgU)", r"Centre temperature ($^\circ$C)", "FUMEX-II case 27(1): onset of 1 % fission gas release")
     plotstyle.legend_below(ax, ncol=3)
     plotstyle.save(fig, out / "fumex2_case27_1.png")
 

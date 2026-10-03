@@ -1,7 +1,7 @@
 Object reference
 ================
 
-Every kernel, boundary condition, material and nodal load in dualmesh is a
+Every kernel, boundary condition, property object and nodal load in dualmesh is a
 registered object with declared, validated parameters.  This part of the manual
 has one page for each of them, generated from that registry when the
 documentation is built, so a page can never describe a parameter the object
@@ -20,8 +20,8 @@ The same information is available at the prompt:
 
    import dualmesh as dm
 
-   dm.registered_types()                    # every object name
-   dm.object_category("heat_conduction")     # 'kernel'
+   dm.registered_types()  # every object name
+   dm.object_category("heat_conduction")  # 'kernel'
    print(dm.describe_object("heat_conduction"))
 
 .. toctree::

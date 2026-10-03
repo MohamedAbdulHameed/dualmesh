@@ -84,30 +84,10 @@ from pathlib import Path
 import numpy as np
 
 #: Atomic numbers and standard atomic weights of the bundled elements.
-ELEMENTS = {
-    "C": (6, 12.011),
-    "Al": (13, 26.982),
-    "Si": (14, 28.085),
-    "Ti": (22, 47.867),
-    "Cr": (24, 51.996),
-    "Fe": (26, 55.845),
-    "Ni": (28, 58.693),
-    "Zr": (40, 91.224),
-    "Nb": (41, 92.906),
-    "Mo": (42, 95.95),
-    "W": (74, 183.84),
-    "U": (92, 238.03),
-}
+ELEMENTS = {"C": (6, 12.011), "Al": (13, 26.982), "Si": (14, 28.085), "Ti": (22, 47.867), "Cr": (24, 51.996), "Fe": (26, 55.845), "Ni": (28, 58.693), "Zr": (40, 91.224), "Nb": (41, 92.906), "Mo": (42, 95.95), "W": (74, 183.84), "U": (92, 238.03)}
 
 #: Nordlund et al. (2018) Table 1: E_d (eV), b and c of arc-dpa.
-ARC_DPA = {
-    "Fe": (40.0, -0.568, 0.286),
-    "Cu": (33.0, -0.68, 0.16),
-    "Ni": (39.0, -1.01, 0.23),
-    "Pd": (41.0, -0.88, 0.15),
-    "Pt": (42.0, -1.12, 0.11),
-    "W": (70.0, -0.56, 0.12),
-}
+ARC_DPA = {"Fe": (40.0, -0.568, 0.286), "Cu": (33.0, -0.68, 0.16), "Ni": (39.0, -1.01, 0.23), "Pd": (41.0, -0.88, 0.15), "Pt": (42.0, -1.12, 0.11), "W": (70.0, -0.56, 0.12)}
 
 _DATA = Path(__file__).resolve().parent / "data" / "damage_energy_endfb8.csv"
 _TABLE = None
@@ -253,12 +233,7 @@ class DisplacementCrossSection:
         return np.array(out)
 
 
-def nrt_cross_section(
-    element: str,
-    threshold: float | None = None,
-    model: str = "nrt",
-    arc_constants: tuple | None = None,
-) -> DisplacementCrossSection:
+def nrt_cross_section(element: str, threshold: float | None = None, model: str = "nrt", arc_constants: tuple | None = None) -> DisplacementCrossSection:
     """The NRT (or approximate arc-dpa) displacement cross section of a
     bundled element from its ENDF/B-VIII.0 damage energy cross section.
 
@@ -276,10 +251,7 @@ def nrt_cross_section(
     bounds = np.concatenate([t["lower_eV"], t["upper_eV"][-1:]])
     damage = t[f"{element}_damage_eV_b"]
     values = 0.8 * damage / (2.0 * threshold)
-    notes = [
-        "damage energy: ENDF/B-VIII.0 MT444 (NJOY-2016, IAEA NDS), 50 groups per decade",
-        f"E_d = {threshold:g} eV",
-    ]
+    notes = ["damage energy: ENDF/B-VIII.0 MT444 (NJOY-2016, IAEA NDS), 50 groups per decade", f"E_d = {threshold:g} eV"]
     if model == "arc":
         if arc_constants is None:
             if element not in ARC_DPA:
@@ -295,16 +267,7 @@ def nrt_cross_section(
     return DisplacementCrossSection(bounds, values, f"{element} {model}-dpa", notes)
 
 
-def elastic_cross_section(
-    energy,
-    elastic,
-    Z: float,
-    A: float,
-    threshold: float,
-    model: str = "nrt",
-    arc_constants: tuple | None = None,
-    points: int = 400,
-):
+def elastic_cross_section(energy, elastic, Z: float, A: float, threshold: float, model: str = "nrt", arc_constants: tuple | None = None, points: int = 400):
     """Displacement cross section (barn) for elastic scattering that is
     isotropic in the centre-of-mass frame, at neutron energies ``energy``
     (eV) with the elastic cross section ``elastic`` (barn) there: the recoil
@@ -343,9 +306,7 @@ def spectrum_averaged(cross_section: DisplacementCrossSection, spectrum: Spectru
     return float(np.sum(cross_section.on(spectrum) * spectrum.flux) / np.sum(spectrum.flux))
 
 
-def dpa_per_fluence(
-    cross_section: DisplacementCrossSection, spectrum: Spectrum, threshold: float = 1.0e6
-) -> float:
+def dpa_per_fluence(cross_section: DisplacementCrossSection, spectrum: Spectrum, threshold: float = 1.0e6) -> float:
     """dpa per unit fluence (n/m^2) above ``threshold`` (eV, default 1 MeV),
     the conversion factor between a fast fluence and a dose."""
     fast = spectrum.fluence_above(threshold)
@@ -375,6 +336,4 @@ def compound_cross_section(parts: dict) -> DisplacementCrossSection:
         raise ValueError("dpa: the atom fractions must sum to one.")
     first = next(iter(parts.values()))[1]
     values = sum(f * xs.values for f, xs in parts.values())
-    return DisplacementCrossSection(
-        first.bounds, values, " + ".join(parts), ["atom-fraction weighted"]
-    )
+    return DisplacementCrossSection(first.bounds, values, " + ".join(parts), ["atom-fraction weighted"])

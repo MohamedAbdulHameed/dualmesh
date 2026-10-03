@@ -37,15 +37,7 @@ from .specification import RodGeometry
 
 #: Names of the fields, which are also the names of the functions added to the
 #: problem and of the parameters of the objects that read them.
-FIELD_NAMES = (
-    "power_density",
-    "fission_rate",
-    "burnup",
-    "pellet_average_burnup",
-    "linear_heat_rate",
-    "fast_neutron_flux",
-    "fast_neutron_fluence",
-)
+FIELD_NAMES = ("power_density", "fission_rate", "burnup", "pellet_average_burnup", "linear_heat_rate", "fast_neutron_flux", "fast_neutron_fluence")
 
 
 def trapezoid(values, points) -> float:
@@ -65,26 +57,10 @@ class TimeHistory:
         self.axial_profile = axial_profile
         self.radial_profile = radial_profile
         # The integral of q' up to each point (exact: q' is linear in between).
-        self._energy = np.concatenate(
-            [
-                [0.0],
-                np.cumsum(
-                    0.5
-                    * np.diff(self.time)
-                    * (self.linear_heat_rate[1:] + self.linear_heat_rate[:-1])
-                ),
-            ]
-        )
+        self._energy = np.concatenate([[0.0], np.cumsum(0.5 * np.diff(self.time) * (self.linear_heat_rate[1:] + self.linear_heat_rate[:-1]))])
 
     @classmethod
-    def from_burnup(
-        cls,
-        burnup,
-        linear_heat_rate,
-        fima_per_joule_per_metre: float,
-        axial_profile=None,
-        radial_profile=None,
-    ) -> TimeHistory:
+    def from_burnup(cls, burnup, linear_heat_rate, fima_per_joule_per_metre: float, axial_profile=None, radial_profile=None) -> TimeHistory:
         """Times for a history given in rod-average burnup (FIMA).
 
         The history gives the burnup :math:`B_i` and the linear heat rate
@@ -165,16 +141,7 @@ class IrradiationFields:
 
 
 def irradiation_fields(
-    history: TimeHistory,
-    geometry: RodGeometry,
-    heavy_metal_atom_density: float,
-    energy_per_fission: float,
-    fast_neutron_flux_per_linear_heat_rate: float,
-    formulation: str,
-    slice_axial_position: float = 0.0,
-    num_radial_points: int = 41,
-    num_axial_points: int = 41,
-    time_refinement: int = 8,
+    history: TimeHistory, geometry: RodGeometry, heavy_metal_atom_density: float, energy_per_fission: float, fast_neutron_flux_per_linear_heat_rate: float, formulation: str, slice_axial_position: float = 0.0, num_radial_points: int = 41, num_axial_points: int = 41, time_refinement: int = 8
 ) -> IrradiationFields:
     """Tabulate the irradiation fields of ``history`` for one problem.
 
@@ -186,14 +153,7 @@ def irradiation_fields(
     linearly, so the split keeps the interpolation error below a per cent of
     the burnup gained in one interval (1/(8 n^2) of it, for n splits).
     """
-    t = np.unique(
-        np.concatenate(
-            [
-                np.linspace(history.time[i], history.time[i + 1], time_refinement + 1)
-                for i in range(len(history.time) - 1)
-            ]
-        )
-    )
+    t = np.unique(np.concatenate([np.linspace(history.time[i], history.time[i + 1], time_refinement + 1) for i in range(len(history.time) - 1)]))
     r = np.linspace(geometry.pellet_inner_radius, geometry.pellet_outer_radius, num_radial_points)
     if formulation == "axisymmetric_1d":
         z = np.array([slice_axial_position])
@@ -214,14 +174,7 @@ def irradiation_fields(
     burnup = average_burnup * radial[None, None, :]
 
     def table(values):
-        return _core.CylinderTableFunction(
-            list(r),
-            list(z),
-            list(t),
-            list(np.ascontiguousarray(values).ravel()),
-            formulation,
-            slice_axial_position,
-        )
+        return _core.CylinderTableFunction(list(r), list(z), list(t), list(np.ascontiguousarray(values).ravel()), formulation, slice_axial_position)
 
     return IrradiationFields(
         power_density=table(power_density),

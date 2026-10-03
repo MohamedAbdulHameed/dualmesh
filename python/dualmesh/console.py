@@ -35,10 +35,7 @@ def table(rows: Sequence[Sequence], headers: Sequence[str], indent: int = 2) -> 
     for row in text_rows:
         for i, cell in enumerate(row):
             widths[i] = max(widths[i], len(cell))
-    numeric = [
-        bool(rows) and all(_is_number(row[i]) for row in rows if i < len(row))
-        for i in range(len(headers))
-    ]
+    numeric = [bool(rows) and all(_is_number(row[i]) for row in rows if i < len(row)) for i in range(len(headers))]
     pad = " " * indent
 
     def line(cells):
@@ -69,21 +66,8 @@ def header(title: str = "dualmesh") -> str:
     from . import __version__
 
     build = _core.build_information()
-    features = [
-        f"OpenMP {'on' if build['openmp'] else 'off'}",
-        f"MPI {'on' if build['mpi'] else 'off'}",
-        f"PETSc {build['petsc_version'] if build['petsc'] else 'off'}",
-        f"automatic differentiation budget {build['max_ad_derivatives']} slots",
-    ]
-    lines = [
-        RULE,
-        f"{title}  (dualmesh {__version__})",
-        f"build:   {', '.join(features)}",
-        f"python:  {platform.python_version()} on {platform.system()} {platform.machine()}",
-        f"host:    {socket.gethostname()}",
-        f"started: {datetime.datetime.now().isoformat(timespec='seconds')}",
-        RULE,
-    ]
+    features = [f"OpenMP {'on' if build['openmp'] else 'off'}", f"MPI {'on' if build['mpi'] else 'off'}", f"PETSc {build['petsc_version'] if build['petsc'] else 'off'}", f"automatic differentiation budget {build['max_ad_derivatives']} slots"]
+    lines = [RULE, f"{title}  (dualmesh {__version__})", f"build:   {', '.join(features)}", f"python:  {platform.python_version()} on {platform.system()} {platform.machine()}", f"host:    {socket.gethostname()}", f"started: {datetime.datetime.now().isoformat(timespec='seconds')}", RULE]
     return "\n".join(lines)
 
 
@@ -93,15 +77,7 @@ def problem_report(problem, parameters: bool = True) -> str:
     when the user did not set it."""
     core = problem._problem
     mesh = problem.mesh
-    lines = [
-        "Problem",
-        f"  method:       {problem.method}",
-        f"  coordinates:  {problem.coordinates}",
-        f"  unknowns:     {problem.num_active_dofs()} carrying an equation",
-        "Mesh",
-        "  " + mesh.summary().strip().replace("\n", "\n  "),
-        "Variables",
-    ]
+    lines = ["Problem", f"  method:       {problem.method}", f"  coordinates:  {problem.coordinates}", f"  unknowns:     {problem.num_active_dofs()} carrying an equation", "Mesh", "  " + mesh.summary().strip().replace("\n", "\n  "), "Variables"]
     rows = []
     for name in core.variable_names():
         rows.append([name, problem.variable_order(name)])
@@ -123,11 +99,7 @@ def problem_report(problem, parameters: bool = True) -> str:
 
 def solve_report(result, wall_time: float | None = None) -> str:
     """The outcome of a solve, in a few aligned lines."""
-    rows = [
-        ["converged", bool(result.converged)],
-        ["nonlinear iterations", int(result.total_iterations)],
-        ["linear iterations", int(result.linear_iterations)],
-    ]
+    rows = [["converged", bool(result.converged)], ["nonlinear iterations", int(result.total_iterations)], ["linear iterations", int(result.linear_iterations)]]
     if result.time_steps:
         rows.append(["time steps accepted", int(result.time_steps)])
         rows.append(["time steps rejected", int(result.rejected_steps)])

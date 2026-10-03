@@ -42,9 +42,8 @@ Thermal conductivity
        for 95 % dense fuel between 298 and 3120 K.  The factor of Brandt and
        Neuer, :math:`1 - (2.6 - 0.5 t) p`, corrects it to the porosity
        :math:`p`.
-     - Fink (2000) [Fink2000]_, as tabulated in IAEA-TECDOC-1496 Sect.
-       6.1.1.7, Eqs. (1)-(2) and Table 1.  The uncertainty is 10 % up to 2000
-       K and 20 % above.
+     - Fink (2000) [Fink2000]_, Eqs. (18) and (19), also IAEA-TECDOC-1496
+       Sect. 6.1.1.7.  The uncertainty is 10 % up to 2000 K and 20 % above.
    * - ``fink_lucuta`` (default)
      - :math:`k = k_{95}(T)\,\frac{\kappa_{2p}(p)}{\kappa_{2p}(0.05)}\,
        \kappa_{1d}\,\kappa_{1p}\,\kappa_{4r}`, where :math:`\kappa_{1d}`,
@@ -53,24 +52,27 @@ Thermal conductivity
        (:math:`\kappa_{4r}` applies to irradiated fuel only), and
        :math:`\kappa_{2p} = (1 - p)/(1 + 0.5 p)` is the Maxwell-Eucken factor
        for spherical pores.
-     - Lucuta, Matzke and Hastings (1996) [Lucuta1996]_, in the form of Popov
-       et al., ORNL/TM-2000/351, Eqs. (6.4)-(6.7), and IAEA-TECDOC-1496 Sect.
-       6.1.2.
+     - Lucuta, Matzke and Hastings (1996) [Lucuta1996]_, Eqs. (14b), (14c),
+       (14d) and (14f), with the shape factor 1.5 of spherical pores in Eq.
+       (14d).
    * - ``nfi``
      - The modified NFI model with burnup and gadolinia terms (see
        ``UO2_thermal``).
-     - Ohira and Itagaki (1997).  The gadolinia resistance of the model is
+     - Ohira and Itagaki (1997), in the form of the FRAPCON-4.0 code
+       description (PNNL-19418 Vol. 1 Rev. 2), Eqs. (2.52)-(2.56).  The
+       gadolinia resistance of the model is
        constant, whereas the data of IAEA-TECDOC-1496 Table 2 (Sect.
        6.1.3.2) show a resistance that decreases at high temperature.
    * - ``halden``
      - :math:`k_{95} = [0.1148 + 0.0035 B + 2.475\times10^{-4} (1 -
-       0.00333 B) T_C]^{-1} + 0.0132\, e^{0.00188 T_C}` W/(m K), where
-       :math:`T_C` is the temperature in degrees Celsius and :math:`B` the
-       burnup in MWd/kgUO2, for 95 % dense fuel up to 75 MWd/kgUO2.  The
+       0.00333 B) \min(T_C, 1650)]^{-1} + 0.0132\, e^{0.00188 T_C}` W/(m K),
+       where :math:`T_C` is the temperature in degrees Celsius and :math:`B`
+       the burnup in MWd/kgUO2, for 95 % dense fuel up to 75 MWd/kgUO2.  The
        density factor is :math:`1.0789\, d/(1 + 0.5(1 - d))`.
-     - Wiesenack (1996), as given in IAEA-TECDOC-1496 Sect. 6.1.2, which
-       recommends it for irradiated fuel, and in CASL-U-2019-1870 Eqs.
-       (1)-(2).  Check values: 2.8465 W/(m K) at 1000 :math:`^\circ\mathrm{C}` for fresh fuel and
+     - W. Wiesenack, "Assessment of UO2 conductivity degradation based on
+       in-pile temperature data", Sects. III.A and V.  IAEA-TECDOC-1496 Sect.
+       6.1.2 recommends it for irradiated fuel, and CASL-U-2019-1870 Eqs.
+       (1)-(2) give it with the density factor.  Check values: 2.8465 W/(m K) at 1000 :math:`^\circ\mathrm{C}` for fresh fuel and
        2.6567 W/(m K) at 10 MWd/kgUO2.
 
 The check values of :math:`k_{95}` are 7.612, 3.467, 2.061 and 2.837 W/(m K) at
@@ -81,9 +83,8 @@ IAEA-TECDOC-1496.  At 1000 K and a burnup of 3 at. %, the Lucuta factors are
 
 The ``fink_lucuta`` model starts from the conductivity of Fink for 95 % dense
 fuel and applies the pore factor to the departure from 95 % density only.
-Fresh fuel of 95 % density therefore has the conductivity of Fink exactly.  The
-Maxwell-Eucken form for spherical pores is used for the pore factor, whereas
-Popov et al. write it as :math:`(1 - p)/(1 + 2p)`.  At 60 MWd/t the
+Fresh fuel of 95 % density therefore has the conductivity of Fink exactly.  At
+60 MWd/t the
 ``fink_lucuta``, ``nfi`` and ``halden`` models all lie within about 10 % of the
 data of Amaya et al. tabulated in IAEA-TECDOC-1496, which is within the
 scatter of the data.  On the Halden thermocouples of :doc:`benchmarks`, the
@@ -103,7 +104,8 @@ Specific heat, thermal expansion and density
    * - Specific heat, ``fink`` (default)
      - The Einstein term, the linear term and the Frenkel-defect term of Fink,
        per mole, divided by :math:`M = 0.2700277` kg/mol.
-     - Fink (2000) [Fink2000]_, IAEA-TECDOC-1496 Sect. 6.1.1.1.  Check values:
+     - Fink (2000) [Fink2000]_, Eq. (2), also IAEA-TECDOC-1496 Sect. 6.1.1.1.
+       The molar mass is :math:`238.02891 + 2 \times 15.9994` g/mol.  Check values:
        311.7 J/(kg K) at 1000 K and 725.8 J/(kg K) at 3000 K.  The
        uncertainty is 2 % up to 1800 K and 13 % above.
    * - Specific heat, ``matpro``
@@ -113,13 +115,12 @@ Specific heat, thermal expansion and density
    * - Thermal expansion
      - The two cubic polynomials of Martin for :math:`L(T)/L(273\,\mathrm{K})`,
        joined at 923 K.
-     - Martin (1988) [Martin1988]_, IAEA-TECDOC-1496 Sect. 6.1.1.3.  Section
-       6.1.1.10 of the same report prints the cubic coefficient as
-       4.291e-13.  The value 4.391e-13 of Sect. 6.1.1.3 is the one that
-       reproduces the tables of the report.
+     - Martin (1988) [Martin1988]_, Eqs. (1a) and (1b).  Section 6.1.1.10 of
+       IAEA-TECDOC-1496 prints the cubic coefficient of Eq. (1a) as
+       4.291e-13, a misprint of Martin's 4.391e-13.
    * - Theoretical density
      - :math:`10963\ \mathrm{kg/m^3}` at 273 K.
-     - IAEA-TECDOC-1496 Sect. 6.1.1.10.
+     - Fink (2000) [Fink2000]_, Eq. (12).
 
 Elastic constants
 ^^^^^^^^^^^^^^^^^
@@ -186,7 +187,7 @@ Densification
    * - Model
      - Correlation
      - Source
-   * - ``matpro`` (default)
+   * - ``matpro``
      - :math:`\frac{\Delta L}{L} = \left(\frac{\Delta L}{L}\right)_m +
        e^{-3(Bu + B)} + 2 e^{-35(Bu + B)}` per cent, where
        :math:`(\Delta L/L)_m = -0.0015\,\mathrm{RSNTR}` below 1000 K and
@@ -195,10 +196,16 @@ Densification
        MWd/kgU, and :math:`B` is chosen such that the strain is zero at zero
        burnup.  The volumetric strain is three times the linear strain.
      - MATPRO FUDENS, NUREG/CR-6150 Vol. 4, Eqs. (2-81), (2-82) and (2-85).
-   * - ``escore``
-     - :math:`\varepsilon_V = \Delta\rho_0 [\exp(Bu \ln 0.01 / (C_D Bu_D)) -
-       1]`, with :math:`C_D = 7.235 - 0.0086 (T_C - 25)` below 750 :math:`^\circ\mathrm{C}`.
-     - Rashid et al., EPRI 1011308.
+   * - ``escore`` (default)
+     - :math:`\varepsilon_V = \Delta\rho_0 [\exp(Bu \ln 0.01 / (C\,Bu_D)) -
+       1]`, with :math:`C = 7.235 - 0.0086 (T_C - 25)` below 750
+       :math:`^\circ\mathrm{C}` and :math:`C = 1` above, the total
+       densification :math:`\Delta\rho_0`, the burnup :math:`Bu_D` at which
+       densification is complete, and the pellet-average burnup :math:`Bu`.
+     - FALCON MOD01 Vol. 1 (EPRI 1011307), Eqs. (5-22) and (5-24).  The
+       intercept :math:`7.235 = 1 + 0.0086 \times 725` makes :math:`C`, and
+       so the densification, continuous at 750 :math:`^\circ\mathrm{C}`
+       (FALCON prints it rounded to 7.2).
 
 Densification is irreversible.  Both models therefore use the highest
 temperature that each element has reached, which the rod driver keeps in the
@@ -236,9 +243,18 @@ FIMA at 95 % density.
 Relocation
 ^^^^^^^^^^
 
-The relocation strain is that of the ESCORE model (Rashid et al., EPRI
-1011308).  It follows the current linear heat rate of the rod and vanishes at
-zero power.
+The relocation strain is that of the ESCORE model as FALCON MOD01 Vol. 1
+(EPRI 1011307) gives it in Eqs. (5-30) and (5-31):
+
+.. math::
+
+   \frac{\Delta D}{D} = 0.80\,Q\,\frac{G_0}{D_0}\left(0.005\,Bu^{0.3} - 0.20\,D_0 + 0.3\right),
+
+with the linear heat rate :math:`q'` in kW/ft (:math:`Q = 0` below 6,
+:math:`(q' - 6)^{1/3}` up to 14 and :math:`(q' - 10)/2` above), the cold
+diametral gap :math:`G_0`, the pellet diameter :math:`D_0` in inches, and the
+pellet-average burnup :math:`Bu` in MWd/tU.  It follows the current linear heat
+rate of the rod and vanishes at zero power.
 
 Fission gas
 ^^^^^^^^^^^
@@ -257,9 +273,9 @@ Fission gas
      - The thermal term :math:`D_1` and the athermal term :math:`D_3 =
        2\times10^{-40}\dot F` are those of Turnbull et al. [Turnbull1982]_,
        Eq. (9), and White and Tucker (1983), Eqs. (8) and (12).  The
-       irradiation-enhanced term :math:`D_2` is that of Turnbull, White and
-       Wise (1989), as given by Zullo et al. (2023), Table 1,
-       CASL-U-2019-1870, Eq. (8), and Cooper et al. (2021), Eq. (10).
+       irradiation-enhanced term :math:`D_2` is that of Zullo et al. (2023),
+       Table 1, CASL-U-2019-1870, Eq. (8), and Cooper et al. (2021), Eq.
+       (10).
        Pastore et al. (2015), Eq. (9), used :math:`1.41\times10^{-25}` for
        :math:`D_2` and no :math:`D_3`.
    * - Trapping and re-solution
@@ -269,9 +285,9 @@ Fission gas
        2006, Eq. 1), :math:`\dot N = 2\eta\dot F - bN` and :math:`R =
        (3\Omega m/4\pi N)^{1/3}`, with :math:`\eta = 25`, :math:`\mu_{ff} =
        6` :math:`\mu\mathrm{m}`, :math:`R_{ff} = 1` nm and :math:`\Omega = 4.09\times10^{-29}\ \mathrm{m^3}`.
-     - Zullo et al. (2023), Tables 2-4, and Zullo's thesis, Eqs.
-       (2.2)-(2.3).  The radius of a gas atom :math:`R_s` is taken as the
-       radius of the sphere of volume :math:`\Omega`, 0.214 nm.  The option
+     - Pizzocri et al. (2018), J. Nucl. Mater. 502, 323, Eqs. (1)-(4) and
+       Table 1, which also gives the radius of a gas atom, :math:`R_s = 0.2`
+       nm, and Zullo et al. (2023), Tables 2-4.  The option
        ``white_tucker`` uses the fitted bubble radius and density of White
        and Tucker (1983), Eq. (27), with their :math:`b =
        3.03\pi\mu_{ff}(\bar R + Z_0)^2 \dot F` (Eq. 24).  The test suite
@@ -329,8 +345,8 @@ is :math:`1.7511\times10^{-20}` :math:`\mathrm{m^2/s}` at 1000 K and :math:`10^{
 :math:`\mathrm{fissions/(m^3\,s)}`.  The factors are held at one above their reference
 temperature of 1773 K, where the fit would otherwise make the doping slow the
 diffusion down.  Doping is measured to accelerate creep, by a factor of about
-five at 1773 K and 45 MPa for 0.1 wt% Cr2O3 (Dugay et al. 1998, as reported in
-SSM 2021:20, Table 16).  No creep correlation for doped fuel is available, and
+five at 1773 K and 45 MPa for 0.1 wt% Cr2O3 (SSM 2021:20,
+Table 16).  No creep correlation for doped fuel is available, and
 the parameter ``creep_rate_factor`` (default 1) applies such a factor.  The
 total densification is 0.1 %, the value measured on the doped rods of the
 Halden test IFA-677.1 (CASL-U-2019-1870, Sect. 2.7.1).
@@ -367,10 +383,17 @@ Uranium mononitride
        implies :math:`\Theta = 367.5` K, a difference below 0.1 % in
        :math:`c_p`.
    * - Density and thermal expansion
-     - :math:`\varepsilon = (7.096\times10^{-6} + 1.409\times10^{-9}T)(T -
-       298)`, a mean coefficient from 298 K derived from the lattice
-       parameter of Hayes et al.
-     - Hayes et al. [HayesI1990]_.
+     - :math:`\rho = 14.42 - 2.997\times10^{-4}T - 4.897\times10^{-8}T^2`
+       :math:`\mathrm{g/cm^3}`, 298-2523 K, and :math:`\varepsilon =
+       (7.096\times10^{-6} + 1.409\times10^{-9}T)(T - 298)`, a mean
+       coefficient from 298 K derived from the lattice parameter of Hayes et
+       al.  The theoretical density is the value at 298 K,
+       :math:`14326\ \mathrm{kg/m^3}`.
+     - Hayes et al. [HayesI1990]_, Eq. (3) in the body of the paper.  The
+       abstract prints :math:`2.779\times10^{-4}` for the linear coefficient,
+       which departs from the density of the lattice parameter by
+       :math:`0.056\ \mathrm{g/cm^3}`.  The body value departs from it by
+       less than :math:`0.004\ \mathrm{g/cm^3}`.
    * - Elastic constants
      - :math:`E = 0.258 D^{3.002}(1 - 2.375\times10^{-5}T)` MPa and
        :math:`\nu = 1.26\times10^{-3} D^{1.174}`, with :math:`D` in per cent
@@ -380,13 +403,12 @@ Uranium mononitride
    * - Creep, dislocation
      - :math:`2.054\times10^{-3}\sigma^{4.5}e^{-39369.5/T}` 1/s, with
        :math:`\sigma` in MPa, for dense UN.
-     - Hayes et al. [HayesII1990]_, as given by AbdulHameed et al. (2025),
-       Eq. (1).
+     - Hayes et al. [HayesII1990]_.
    * - Creep, grain boundary
      - :math:`582610.427\,\frac{\sigma}{T d^3}\,e^{-2.28\,\mathrm{eV}/kT}`
        1/s, with :math:`d` the grain size in :math:`\mu\mathrm{m}`.
      - AbdulHameed, Beeler, Galvin, Cooper, Elamrawy and Claisse,
-       arXiv:2503.03231v4 (2025), Eqs. (14)-(15).
+       J. Nucl. Mater. 617 (2025) 156153, Eqs. (14)-(15).
    * - Creep, irradiation
      - :math:`2.9\times10^{-22}\sigma G e^{0.2P}` per hour, with :math:`G` in
        :math:`\mathrm{fissions/(cm^3\,s)}` and :math:`P` in %.
@@ -423,12 +445,13 @@ Uranium silicide (U3Si2)
    * - Conductivity
      - :math:`k = 4.996 + 0.0118 T` W/(m K), 300-1773 K, with an uncertainty
        of 5 %.
-     - White et al. (2015) and its corrigendum (2017), as given in
+     - White et al. (2015) and its corrigendum (2017), Eq. (4), also
        CASL-U-2019-1870, Eq. 23, and IAEA-TECDOC-1921, Eq. 11.  Check value:
        8.536 W/(m K) at 300 K.
    * - Specific heat
      - :math:`c_p = (0.02582 T + 140.5)/0.77026` J/(kg K).
-     - INL/EXT-16-40059, Eq. 4.2.
+     - White et al. (2015), Eq. (2), divided by the molar mass, also
+       INL/EXT-16-40059, Eq. 4.2.
    * - Elastic constants
      - :math:`E = 142.68 - 6.425p` and :math:`G = 61.27 - 2.901p` GPa, with
        :math:`p` the porosity in %, and :math:`\nu = E/2G - 1`.
@@ -497,8 +520,8 @@ Accident-tolerant cladding
      - Conductivity, expansion and swelling of the handbook (Eqs. 1 and
        6-8), with the swelling evaluated at the highest temperature reached.
        Specific heat of Snead et al. (2007).
-     - ORNL/TM-2018/912.  The specific heat as given in IAEA-TECDOC-1921, Eq.
-       17, which is within 1.6 % of the NIST-JANAF table of beta-SiC.
+     - ORNL/TM-2018/912.  The specific heat of Snead et al. (2007), Eq. 10,
+       which is within 1.6 % of the NIST-JANAF table of beta-SiC.
    * - Chromium coating
      - Properties of Aragon et al. (2025).  Thermal creep
        :math:`43.19\sigma^{4.769}e^{-333.6\,\mathrm{kJ}/RT}`, and irradiation
@@ -624,13 +647,15 @@ The gap and the coolant
      - MATPRO :math:`k = A T^B`.
      - NUREG/CR-6150 Vol. 4, Table 13-2.
    * - Mixture rule
-     - The rule of Lindsay and Bromley in the form of Brokaw.
+     - Brokaw's Eqs. (12) and (13), with the collision integral ratios
+       :math:`A^* = B^* = 1.1`.
      - [Brokaw1958]_.  Against the He-Xe mixture data of Kestin et al.
        (Tables 15-17), the rule is 1 to 5.5 % low.
    * - Temperature jump distance
-     - The kinetic-theory form of Kennard, with the accommodation coefficients
-       of the FRAPCON gap model bounded below by 0.07.
-     - [LanningHann1975]_.  The bound of 0.07 is the MATPRO estimate for
+     - The equation of Kennard for a mixture of monatomic gases, with the
+       accommodation coefficients of Ullman et al. for helium and xenon,
+       interpolated by the mixture molar mass and bounded below by 0.07.
+     - [LanningHann1975]_, Appendix B.  The bound of 0.07 is the MATPRO estimate for
        helium on Zircaloy (NUREG/CR-6150 Vol. 4, Table 13-4).
    * - Water properties
      - IAPWS-IF97 region 1, the IAPWS R12-08 viscosity and the R15-11
@@ -638,9 +663,15 @@ The gap and the coolant
      - The three IAPWS releases.  Every verification value of their tables
        is reproduced.
    * - Coolant heat transfer
-     - Dittus-Boelter (default) or Weisman, from the local properties.
-     - [DittusBoelter1930]_ and EPRI 1000215, Eqs. 4-4 and 4-5, for the
-       correlation of Weisman.
+     - Weisman (default), :math:`Nu = C\, Re^{0.8} Pr^{1/3}` with :math:`C =
+       0.042 P/D - 0.024`, or Dittus-Boelter, :math:`Nu = 0.023\, Re^{0.8}
+       Pr^{0.4}`, from the local properties.
+     - The form of [DittusBoelter1930]_, Eq. (15), with :math:`n = 0.4` for a
+       heated fluid.  Written in SI units (the paper takes :math:`d` in
+       inches, :math:`V` in :math:`\mathrm{lb/(ft^2\,s)}` and :math:`z` in
+       centipoise), the coefficient of Eq. (15) is 0.0241, 5 % above the
+       0.023 used here.  EPRI 1000215, Eqs. 4-4 and 4-5, for the correlation of
+       Weisman.
 
 The accommodation coefficient of helium is kept positive at all temperatures,
 so that the gap conductance stays finite.  The coolant follows an enthalpy

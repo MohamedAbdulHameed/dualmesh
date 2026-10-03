@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 //
 // Base class of every user-configurable object (kernels, boundary conditions,
-// materials, loads).  Mirrors MooseObject: an object is built from a validated
+// property objects, loads).  Mirrors MooseObject: an object is built from a validated
 // InputParameters dictionary and later "set up" against a Problem, at which
-// point names (variables, functions, material properties) are resolved.
+// point names (variables, functions, properties) are resolved.
 #pragma once
 
 #include "dualmesh/core/Function.h"

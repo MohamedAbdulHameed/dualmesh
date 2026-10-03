@@ -25,8 +25,8 @@ so that no guess enters a calculation unannounced.  All the materials are
 built on the expression machinery of :mod:`dualmesh.fuel.materials`: they are
 compiled once and differentiated exactly, like the built-in ones.
 
-Sources read
-------------
+Sources
+-------
 * K. G. Field, M. A. Snead, Y. Yamamoto, K. A. Terrani, "Handbook on the
   Material Properties of FeCrAl Alloys for Nuclear Power Production
   Applications (FY18 Version: Revision 1)", ORNL/SPR-2018/905, 2018.
@@ -66,15 +66,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from .gas import ATHERMAL_COEFFICIENT
-from .materials import (
-    CladdingMaterial,
-    CustomCladding,
-    CustomFuel,
-    FuelMaterial,
-    RodContext,
-    UO2Fuel,
-    uranium_molar_mass,
-)
+from .materials import CladdingMaterial, CustomCladding, CustomFuel, FuelMaterial, RodContext, UO2Fuel, uranium_molar_mass
 from .specification import parameter
 
 BOLTZMANN_EV = 8.617333262e-5  # eV/K
@@ -108,8 +100,8 @@ class _ExpressionCladding(_Delegating, CladdingMaterial):
     def material_name(self) -> str:
         return self._delegate().name
 
-    def add_thermal_material(self, problem, block, context):
-        self._delegate().add_thermal_material(problem, block, context)
+    def add_thermal_properties(self, problem, block, context):
+        self._delegate().add_thermal_properties(problem, block, context)
 
     def add_elasticity(self, problem, block, context):
         self._delegate().add_elasticity(problem, block, context)
@@ -145,19 +137,9 @@ _FECRAL_SPECIFIC_HEAT = {
     "C36M": (2.995, -5.953e-3, 4.516e-6, 1.456, -1.296e-3, 0.438e-6, 26.45e3, -46.89, 771.0),
 }
 # Thermal conductivity A1 T^2 + A2 T + A3, W/(m K).
-_FECRAL_CONDUCTIVITY = {
-    "APMT": (-7.223e-7, 1.563e-2, 6.569),
-    "C06M": (6.762e-7, 1.032e-2, 9.956),
-    "C35M": (-19.860e-7, 1.537e-2, 8.502),
-    "C36M": (-9.184e-7, 1.368e-2, 8.187),
-}
+_FECRAL_CONDUCTIVITY = {"APMT": (-7.223e-7, 1.563e-2, 6.569), "C06M": (6.762e-7, 1.032e-2, 9.956), "C35M": (-19.860e-7, 1.537e-2, 8.502), "C36M": (-9.184e-7, 1.368e-2, 8.187)}
 # Expansion coefficient A1 T^3 + A2 T^2 + A3 T + A4, in 1e-6 / K.
-_FECRAL_EXPANSION = {
-    "APMT": (1.771e-10, 9.558e-7, 1.937e-3, 10.27),
-    "C06M": (10.74e-10, -21.36e-7, 4.694e-3, 10.03),
-    "C35M": (9.095e-10, -17.46e-7, 4.530e-3, 9.810),
-    "C36M": (3.079e-10, 2.719e-7, 2.535e-3, 10.56),
-}
+_FECRAL_EXPANSION = {"APMT": (1.771e-10, 9.558e-7, 1.937e-3, 10.27), "C06M": (10.74e-10, -21.36e-7, 4.694e-3, 10.03), "C35M": (9.095e-10, -17.46e-7, 4.530e-3, 9.810), "C36M": (3.079e-10, 2.719e-7, 2.535e-3, 10.56)}
 
 
 @dataclass
@@ -206,12 +188,7 @@ class FeCrAlCladding(_ExpressionCladding):
     """
 
     meyer_hardness: float | None = parameter(
-        None,
-        unit="Pa",
-        description="Meyer hardness of the softer of the pellet and cladding surfaces, for the "
-        "solid contact conductance. Default None: 2.45 GPa for APMT (250 HV in the Kanthal "
-        "datasheet, with the Meyer hardness taken equal to the Vickers hardness); required for "
-        "the ORNL alloys.",
+        None, unit="Pa", description="Meyer hardness of the softer of the pellet and cladding surfaces, for the solid contact conductance. Default None: 2.45 GPa for APMT (250 HV in the Kanthal datasheet, with the Meyer hardness taken equal to the Vickers hardness). It is required for the ORNL alloys."
     )
     dpa_per_fast_neutron_fluence: float = parameter(
         0.9e-25,
@@ -220,61 +197,28 @@ class FeCrAlCladding(_ExpressionCladding):
         "for irradiation creep. Default 0.9e-25, the conversion of IAEA-TECDOC-1921 (1e25 n/m^2 "
         "= 0.9 dpa, after Field et al. 2015, energy threshold not stated). dualmesh.fuel.dpa "
         "gives, for APMT in a U-235 fission spectrum, 0.96e-25 NRT dpa per n/m^2 above 0.1 MeV "
-        "and 1.36e-25 above 1 MeV, so the published rule matches a 0.1 MeV basis; compute the "
+        "and 1.36e-25 above 1 MeV, so the published rule matches a 0.1 MeV basis. Compute the "
         "factor for the reactor's spectrum with that module.",
     )
-    irradiation_creep_compliance: float = parameter(
-        5.0e-6,
-        unit="1/(MPa dpa)",
-        description="B of the irradiation creep. Default 5e-6, Terrani et al. (2016); 0 turns "
-        "irradiation creep off.",
-    )
-    swelling_per_dpa: float = parameter(
-        0.0,
-        description="Volumetric swelling per dpa. Default 0 (none measured); 5e-4 is the "
-        "parametric upper bound of Terrani et al. (2016).",
-    )
-    alloy: str = parameter(
-        "APMT",
-        description="APMT (Kanthal APMT, Fe-21Cr-5Al-3Mo), C06M, C35M or C36M (ORNL alloys). "
-        "Default APMT, the commercial alloy of the lead test rods.",
-    )
-    density: float = parameter(
-        7250.0,
-        unit="kg/m^3",
-        description="Default 7250, Kanthal APMT (datasheet); the handbook gives no density, so "
-        "set it for the ORNL alloys.",
-    )
-    surface_roughness: float = parameter(
-        1.0e-6, unit="m", description="Inner surface roughness. Default 1 um, a drawn tube."
-    )
-    emissivity: float = parameter(
-        0.70,
-        description="Inner surface emissivity. Default 0.70, fully oxidised APMT (Kanthal "
-        "datasheet); the inner surface of a new tube is less oxidised and may be lower.",
-    )
+    irradiation_creep_compliance: float = parameter(5.0e-6, unit="1/(MPa dpa)", description="B of the irradiation creep. Default 5e-6, Terrani et al. (2016). A value of 0 turns irradiation creep off.")
+    swelling_per_dpa: float = parameter(0.0, description="Volumetric swelling per dpa. Default 0, because no swelling has been measured. The parametric upper bound of Terrani et al. (2016) is 5e-4.")
+    alloy: str = parameter("APMT", description="APMT (Kanthal APMT, Fe-21Cr-5Al-3Mo), C06M, C35M or C36M (ORNL alloys). Default APMT, the commercial alloy of the lead test rods.")
+    density: float = parameter(7250.0, unit="kg/m^3", description="Density. Default 7250, Kanthal APMT (datasheet). The handbook gives no density, so set it for the ORNL alloys.")
+    surface_roughness: float = parameter(1.0e-6, unit="m", description="Inner surface roughness. Default 1 um, a drawn tube.")
+    emissivity: float = parameter(0.70, description="Inner surface emissivity. Default 0.70, fully oxidised APMT (Kanthal datasheet). The inner surface of a new tube is less oxidised and may be lower.")
 
     def __post_init__(self):
         if self.alloy not in _FECRAL_CONDUCTIVITY:
-            raise ValueError(
-                f"FeCrAlCladding: unknown alloy '{self.alloy}'. "
-                f"Use {', '.join(_FECRAL_CONDUCTIVITY)}."
-            )
+            raise ValueError(f"FeCrAlCladding: unknown alloy '{self.alloy}'. Use {', '.join(_FECRAL_CONDUCTIVITY)}.")
         if self.meyer_hardness is None:
             if self.alloy != "APMT":
-                raise ValueError(
-                    f"FeCrAlCladding: give meyer_hardness for {self.alloy}; the default is for "
-                    "APMT only."
-                )
+                raise ValueError(f"FeCrAlCladding: give meyer_hardness for {self.alloy}; the default is for APMT only.")
             self.meyer_hardness = 250.0 * 9.80665e6
 
     def _custom(self) -> CustomCladding:
         a, b, c, a2, b2, c2, d2, e2, tc = _FECRAL_SPECIFIC_HEAT[self.alloy]
         below = f"({a}*temperature + {b}*temperature^2 + {c}*temperature^3)"
-        above = (
-            f"({a2}*temperature + {b2}*temperature^2 + {c2}*temperature^3 + {d2}/temperature"
-            f" + {e2}*log(max(abs(temperature - {tc}), 1)/{tc}))"
-        )
+        above = f"({a2}*temperature + {b2}*temperature^2 + {c2}*temperature^3 + {d2}/temperature + {e2}*log(max(abs(temperature - {tc}), 1)/{tc}))"
         k1, k2, k3 = _FECRAL_CONDUCTIVITY[self.alloy]
         e1, e2_, e3, e4 = _FECRAL_EXPANSION[self.alloy]
         tcel = "(temperature - 273.15)"
@@ -294,23 +238,13 @@ class FeCrAlCladding(_ExpressionCladding):
             density=self.density,
             youngs_modulus=youngs,
             poissons_ratio=poisson,
-            thermal_strain=(
-                f"1e-6*({e1}*temperature^3 + {e2_}*temperature^2 + {e3}*temperature + {e4})"
-                "*(temperature - 293.15)"
-            ),
+            thermal_strain=(f"1e-6*({e1}*temperature^3 + {e2_}*temperature^2 + {e3}*temperature + {e4})*(temperature - 293.15)"),
             meyer_hardness=self.meyer_hardness,
-            creep_rate=(
-                "0.83*(von_mises_stress/1e6)^7.1*exp(-326000/(8.314462618*temperature))"
-                " + B_irr*(von_mises_stress/1e6)*fast_neutron_flux*dpa_per_fluence"
-            ),
+            creep_rate=("0.83*(von_mises_stress/1e6)^7.1*exp(-326000/(8.314462618*temperature)) + B_irr*(von_mises_stress/1e6)*fast_neutron_flux*dpa_per_fluence"),
             volumetric_swelling=swelling,
             surface_roughness=self.surface_roughness,
             emissivity=self.emissivity,
-            constants={
-                "B_irr": self.irradiation_creep_compliance,
-                "dpa_per_fluence": self.dpa_per_fast_neutron_fluence,
-                "swelling_per_dpa": self.swelling_per_dpa,
-            },
+            constants={"B_irr": self.irradiation_creep_compliance, "dpa_per_fluence": self.dpa_per_fast_neutron_fluence, "swelling_per_dpa": self.swelling_per_dpa},
         )
 
 
@@ -329,8 +263,8 @@ class SiCCladding(_ExpressionCladding):
       irradiation;
     * specific heat of monolithic SiC (the handbook's Section 3.1.4 and
       Fig. 4), :math:`c_p = 925.65 + 0.3772 T - 7.9259\times10^{-5} T^2 -
-      3.1946\times10^{7}/T^2` J/(kg K), the correlation of Snead et al. (2007)
-      as given in IAEA-TECDOC-1921 Eq. 17.  It agrees with the
+      3.1946\times10^{7}/T^2` J/(kg K), Snead et al. (2007), Eq. 10, also
+      IAEA-TECDOC-1921 Eq. 17.  It agrees with the
       NIST-JANAF table of beta-SiC within 1.6 % from 298 to 2000 K;
     * through-thickness thermal conductivity :math:`1/k = 1/k_0 + c_R S`: the
       unirradiated :math:`k_0` is 8.0 - 1.32e-3 (T - 293) W/(m K), a linear fit
@@ -358,38 +292,18 @@ class SiCCladding(_ExpressionCladding):
     compared with the swelling and can be ignored on current data.
     """
 
-    dpa_per_fast_neutron_fluence: float = parameter(
-        unit="dpa per n/m^2",
-        description="Displacement damage in SiC per unit fast neutron fluence (the fluence of "
-        "the rod, E > 1 MeV). It depends on the neutron spectrum; take it from the neutronics "
-        "of the reactor. No default.",
-    )
-    meyer_hardness: float = parameter(
-        unit="Pa",
-        description="Meyer hardness of the softer of the pellet and cladding surfaces, for the "
-        "solid contact conductance. No default: no value was found in the sources.",
-    )
+    dpa_per_fast_neutron_fluence: float = parameter(unit="dpa per n/m^2", description="Displacement damage in SiC per unit fast neutron fluence (the fluence of the rod, E > 1 MeV). It depends on the neutron spectrum. Take it from the neutronics of the reactor. No default.")
+    meyer_hardness: float = parameter(unit="Pa", description="Meyer hardness of the softer of the pellet and cladding surfaces, for the solid contact conductance. No default.")
     defect_thermal_resistivity_per_swelling: float = parameter(
         11.2,
         unit="m K/W",
-        description="c_R in 1/k = 1/k_0 + c_R S. Default 11.2: the defect resistivity of the "
-        "full SiC/SiC tube of the handbook's Fig. 17a (about 0.2 m K/W after 2.3 dpa near "
-        "630 K) divided by the swelling there (1.8 %). Monolithic SiC has about 6 (Snead et "
-        "al. 2007, per the public BISON documentation).",
+        description="c_R in 1/k = 1/k_0 + c_R S. Default 11.2: the defect resistivity of the full SiC/SiC tube of the handbook's Fig. 17a (about 0.2 m K/W after 2.3 dpa near 630 K) divided by the swelling there (1.8 %). Monolithic SiC has about 6 (Snead et al., J. Nucl. Mater. 371 (2007) 329, Fig. 25: about 0.13 m K/W at 2.25 % swelling).",
     )
-    youngs_modulus: float = parameter(
-        2.0e11, unit="Pa", description="Default 200 GPa, inside the tube ranges of the handbook."
-    )
-    poissons_ratio: float = parameter(
-        0.12, description="Default 0.12, measured axially on a tube (the handbook)."
-    )
+    youngs_modulus: float = parameter(2.0e11, unit="Pa", description="Default 200 GPa, inside the tube ranges of the handbook.")
+    poissons_ratio: float = parameter(0.12, description="Default 0.12, measured axially on a tube (the handbook).")
     density: float = parameter(2700.0, unit="kg/m^3", description="Default 2700 (the handbook).")
-    surface_roughness: float = parameter(
-        1.0e-6, unit="m", description="Inner surface roughness. Default 1 um."
-    )
-    emissivity: float = parameter(
-        0.8, description="Inner surface emissivity. Default 0.8, as for the metals here."
-    )
+    surface_roughness: float = parameter(1.0e-6, unit="m", description="Inner surface roughness. Default 1 um.")
+    emissivity: float = parameter(0.8, description="Inner surface emissivity. Default 0.8, as for the metals here.")
 
     def __post_init__(self):
         if not self.dpa_per_fast_neutron_fluence > 0:
@@ -408,23 +322,16 @@ class SiCCladding(_ExpressionCladding):
         return CustomCladding(
             name="SiC/SiC",
             thermal_conductivity=f"1/(1/{k0} + c_R*{swelling})",
-            specific_heat=(
-                "925.65 + 0.3772*temperature - 7.9259e-5*temperature^2 - 3.1946e7/temperature^2"
-            ),
+            specific_heat=("925.65 + 0.3772*temperature - 7.9259e-5*temperature^2 - 3.1946e7/temperature^2"),
             density=self.density,
             youngs_modulus=self.youngs_modulus,
             poissons_ratio=self.poissons_ratio,
-            thermal_strain=_polynomial_integral(
-                [-0.7765, 1.4350e-2, -1.2209e-5, 3.8289e-9], "temperature", 1e-6
-            ),
+            thermal_strain=_polynomial_integral([-0.7765, 1.4350e-2, -1.2209e-5, 3.8289e-9], "temperature", 1e-6),
             meyer_hardness=self.meyer_hardness,
             volumetric_swelling=swelling,
             surface_roughness=self.surface_roughness,
             emissivity=self.emissivity,
-            constants={
-                "dpa_per_fluence": self.dpa_per_fast_neutron_fluence,
-                "c_R": self.defect_thermal_resistivity_per_swelling,
-            },
+            constants={"dpa_per_fluence": self.dpa_per_fast_neutron_fluence, "c_R": self.defect_thermal_resistivity_per_swelling},
         )
 
 
@@ -433,40 +340,41 @@ class SiCCladding(_ExpressionCladding):
 # ---------------------------------------------------------------------------
 @dataclass
 class ChromiumCoating(_ExpressionCladding):
-    r"""A pure chromium coating, with the properties compiled by Aragon et
-    al. (2025) for TRANSURANUS from the open literature (T_C is the
-    temperature in degrees Celsius):
+    r"""A pure chromium coating, with the properties that Aragon et al. (2025)
+    compiled for TRANSURANUS from the open literature, each checked against
+    its original source (T_C is the temperature in degrees Celsius):
 
-    * density 7200 kg/m^3 (Simmons and Wang 1971);
+    * density 7200 kg/m^3 (Simmons and Wang 1971).
     * :math:`k = 87.56671 - 0.04179 T_C + 3.15147\times10^{-5} T_C^2 -
-      2.06676\times10^{-8} T_C^3` W/(m K) (Holzwarth and Stamm 2002, 20 to
-      1000 C, Eq. 1);
+      2.06676\times10^{-8} T_C^3` W/(m K), 20 to 1000 C (Holzwarth and Stamm,
+      J. Nucl. Mater. 300 (2002) 161, Eq. (A.6)).
     * :math:`c_p = 1000 (0.48047 + 6.34753\times10^{-5} T_C +
       2.34120\times10^{-7} T_C^2 - 1.27824\times10^{-10} T_C^3)` J/(kg K)
-      (Holzwarth and Stamm 2002, Eq. 2);
-    * thermal expansion from the coefficient :math:`(8.3159 +
-      1.80901\times10^{-3} T_C + 6.45421\times10^{-7} T_C^2 +
-      1.27483\times10^{-10} T_C^3)\times10^{-6}` 1/K (Holzwarth and Stamm
-      2002, Eq. 4), taken as the instantaneous coefficient;
+      (Holzwarth and Stamm 2002, Eq. (A.5)).
+    * the thermal strain :math:`\alpha_m (T_C - 20)` with the mean expansion
+      coefficient from 20 C, :math:`\alpha_m = (8.3159 + 1.80901\times10^{-3}
+      T_C + 6.45421\times10^{-7} T_C^2 + 1.27483\times10^{-10}
+      T_C^3)\times10^{-6}` 1/K (Holzwarth and Stamm 2002, Eq. (A.4) and Sect.
+      3.2.3).
     * :math:`E = 264.11 - 0.01 T - 2.5\times10^{-5} T^2` GPa with T in
-      kelvin (Wagih et al. 2018, Eq. 5) and :math:`\nu = 0.22` (Simmons and
-      Wang 1971);
+      kelvin, 300 to 1500 K, and :math:`\nu = 0.22` (Wagih et al., Ann. Nucl.
+      Energy 120 (2018) 304, Eqs. (3) and (4)).
     * thermal creep :math:`\dot\varepsilon = A \sigma^n \exp(-Q/RT)` with
-      :math:`A = 43.19` MPa^-n/s, :math:`n = 4.769`, :math:`Q = 333.6` kJ/mol:
+      :math:`A = 43.19` MPa^-n/s, :math:`n = 4.769`, :math:`Q = 333.6` kJ/mol,
       a least-squares fit to all 49 minimum creep rates of Table I of
-      Stephens and Klopp (NASA TM X-2499, 1972; 816 to 1316 C, 3.7 to 100
-      MPa, two grain sizes; rms error of ln(rate) 0.51).  The law of Wagih et
+      Stephens and Klopp (NASA TM X-2499, 1972, 816 to 1316 C, 3.7 to 100
+      MPa, two grain sizes, rms error of ln(rate) 0.51).  The law of Wagih et
       al. (2018) that Aragon et al. use (A = 5.1596e-3, n = 6.2, Q = 306.3
       kJ/mol) fits the 816 C data only and is 3 to 100 times too slow from
       982 to 1316 C.  ``thermal_creep="wagih"`` selects it.  Below 816 C there
-      are no data; both laws are extrapolations there;
+      are no data, and both laws are extrapolations there.
     * irradiation creep :math:`\dot\varepsilon = B \sigma \dot d` with
-      ``dpa_per_fast_neutron_fluence`` given.  No value for chromium was
-      found; the default compliance is the upper end of the range 0.5 to 5e-6
-      MPa^-1 dpa^-1 for bcc metals quoted by Terrani et al. (2016).  Aragon et
-      al. use the Zircaloy law instead, in the absence of data;
+      ``dpa_per_fast_neutron_fluence`` given.  The default compliance is the
+      upper end of the range 0.5 to 5e-6 MPa^-1 dpa^-1 for bcc metals quoted
+      by Terrani et al. (2016).  Aragon et al. use the Zircaloy law.
     * with ``dpa_per_fast_neutron_fluence`` given, irradiation swelling of
-      0.14 % per dpa up to 5.9 dpa and 0.05 % per dpa beyond (Eq. 6).
+      0.14 % per dpa up to 5.9 dpa and 0.05 % per dpa beyond (Aragon et al.,
+      Eq. 6).
 
     Plasticity and cracking of the coating are not modelled.  Its stress can
     reach several hundred MPa, above the room-temperature yield strength of
@@ -476,26 +384,15 @@ class ChromiumCoating(_ExpressionCladding):
     surface faces.
     """
 
-    dpa_per_fast_neutron_fluence: float | None = parameter(
-        None,
-        unit="dpa per n/m^2",
-        description="Displacement damage in chromium per unit fast neutron fluence, for the "
-        "irradiation swelling and creep. Default None: neither is modelled.",
-    )
-    irradiation_creep_compliance: float = parameter(
-        5.0e-6,
-        unit="1/(MPa dpa)",
-        description="B of the irradiation creep. Default 5e-6, the upper end of the bcc range "
-        "of Terrani et al. (2016); used only with dpa_per_fast_neutron_fluence.",
-    )
-    thermal_creep: str = parameter(
-        "stephens_klopp",
-        description="stephens_klopp (the fit to all of their data) or wagih (Wagih et al. "
-        "2018, the 816 C data). Default stephens_klopp.",
-    )
-    surface_roughness: float = parameter(1.0e-6, unit="m", description="Not used (outer surface).")
-    emissivity: float = parameter(0.8, description="Not used (outer surface).")
-    meyer_hardness: float = parameter(6.8e8, unit="Pa", description="Not used (outer surface).")
+    dpa_per_fast_neutron_fluence: float | None = parameter(None, unit="dpa per n/m^2", description="Displacement damage in chromium per unit fast neutron fluence, for the irradiation swelling and creep. Default None: neither is modelled.")
+    irradiation_creep_compliance: float = parameter(5.0e-6, unit="1/(MPa dpa)", description="B of the irradiation creep. Default 5e-6, the upper end of the bcc range of Terrani et al. (2016). It is used only with dpa_per_fast_neutron_fluence.")
+    thermal_creep: str = parameter("stephens_klopp", description="stephens_klopp (the fit to all of their data) or wagih (Wagih et al. 2018, the 816 C data). Default stephens_klopp.")
+    # The gap faces the inner surface of the substrate, so these surface
+    # properties of the outer coating never enter a calculation, and the
+    # user does not give them.
+    surface_roughness: float = dataclasses.field(default=1.0e-6, init=False, repr=False)
+    emissivity: float = dataclasses.field(default=0.8, init=False, repr=False)
+    meyer_hardness: float = dataclasses.field(default=6.8e8, init=False, repr=False)
 
     def _custom(self) -> CustomCladding:
         tc = "(temperature - 273.15)"
@@ -515,18 +412,12 @@ class ChromiumCoating(_ExpressionCladding):
             creep += " + B_irr*(von_mises_stress/1e6)*fast_neutron_flux*dpa_per_fluence"
         return CustomCladding(
             name="chromium",
-            thermal_conductivity=(
-                f"87.56671 - 0.04179*{tc} + 3.15147e-5*{tc}^2 - 2.06676e-8*{tc}^3"
-            ),
-            specific_heat=(
-                f"1000*(0.48047 + 6.34753e-5*{tc} + 2.34120e-7*{tc}^2 - 1.27824e-10*{tc}^3)"
-            ),
+            thermal_conductivity=(f"87.56671 - 0.04179*{tc} + 3.15147e-5*{tc}^2 - 2.06676e-8*{tc}^3"),
+            specific_heat=(f"1000*(0.48047 + 6.34753e-5*{tc} + 2.34120e-7*{tc}^2 - 1.27824e-10*{tc}^3)"),
             density=7200.0,
             youngs_modulus="1e9*(264.11 - 0.01*temperature - 2.5e-5*temperature^2)",
             poissons_ratio=0.22,
-            thermal_strain=_polynomial_integral(
-                [8.3159, 1.80901e-3, 6.45421e-7, 1.27483e-10], tc, 1e-6
-            ),
+            thermal_strain=f"1e-6*(8.3159 + 1.80901e-3*{tc} + 6.45421e-7*{tc}^2 + 1.27483e-10*{tc}^3)*({tc} - 20)",
             meyer_hardness=self.meyer_hardness,
             volumetric_swelling=swelling,
             creep_rate=creep,
@@ -567,8 +458,8 @@ class CoatedCladding(CladdingMaterial):
     def _part(self, block: str) -> CladdingMaterial:
         return self.coating if block == "coating" else self.substrate
 
-    def add_thermal_material(self, problem, block, context):
-        self._part(block).add_thermal_material(problem, block, context)
+    def add_thermal_properties(self, problem, block, context):
+        self._part(block).add_thermal_properties(problem, block, context)
 
     def add_elasticity(self, problem, block, context):
         self._part(block).add_elasticity(problem, block, context)
@@ -591,40 +482,42 @@ class U3Si2Fuel(_Delegating, FuelMaterial):
     (2020), and those of INL/EXT-16-40059 (Gamble et al. 2016) and
     INL/EXT-20-59969 (Gamble, Pastore and Cooper 2020):
 
-    * :math:`k = 4.996 + 0.0118 T` W/(m K), 300 to 1773 K, 5 %: the fit of the
-      corrigendum of White et al. (J. Nucl. Mater. 484, 2017),
+    * :math:`k = 4.996 + 0.0118 T` W/(m K), 300 to 1773 K, 5 %, the fit of the
+      corrigendum of White et al. (J. Nucl. Mater. 484 (2017) 386, Eq. (4)),
       CASL-U-2019-1870 Eq. 23 and IAEA-TECDOC-1921 Eq. 11.  The uncorrected
       2015 fit, 6.004 + 0.0151 T, is 23-27 % higher.  No irradiation
-      dependence is known;
-    * :math:`c_p = (0.02582 T + 140.5)/0.77026` J/(kg K) (Eq. 4.2 of the 2016
-      report; within 1 % of the handbook form);
+      dependence is known.
+    * :math:`c_p = (0.02582 T + 140.5)/0.77026` J/(kg K), Eq. (2) of White et
+      al. (J. Nucl. Mater. 464 (2015) 275) divided by the molar mass, also
+      Eq. 4.2 of the 2016 report.
     * :math:`E = 142.68 - 6.425 p` GPa and :math:`G = 61.27 - 2.901 p` GPa with
       the porosity p in per cent, :math:`\nu = E/2G - 1` (CASL-U-2019-1870
-      Eqs. 39-41, 1.5 to 10 % porosity, 29 % uncertainty): 110.6 GPa and 0.182
-      at 95 % density;
+      Eqs. 39-41, 1.5 to 10 % porosity, 29 % uncertainty), 110.6 GPa and 0.182
+      at 95 % density.
     * a constant thermal expansion coefficient :math:`16.0\times10^{-6}` 1/K,
       273 to 1473 K, :math:`\pm 3\times10^{-6}` (the handbook value,
-      CASL-U-2019-1870 Sect. 3.4.2);
+      CASL-U-2019-1870 Sect. 3.4.2).  White et al. (2015), Sect. 3.1, measured
+      a mean of :math:`(16.1 \pm 1.3)\times10^{-6}` 1/K to 1673 K.
     * solid swelling :math:`0.34392\,Bu` with Bu in FIMA (CASL-U-2019-1870
-      Eq. 68, 20 %), and with ``gaseous_swelling=True`` the empirical gaseous
+      Eq. 68, 20 %), and, with ``gaseous_swelling=True``, the empirical gaseous
       part of the fit of Metzger et al. to the data of Finlay et al.,
-      :math:`3.88008\,Bu^2 + 0.45419\,Bu` (Eq. 70; CASL prints 3.8808,
-      Metzger and the INL reports 3.88008).  Those data come from dispersion
-      fuel at 300 to 500 K, where U3Si2 becomes amorphous; power-reactor
-      data disagree (about 12 % at 6 GWd/tU in AI-7-1, 0 to 1 % in the ATF-1
-      rodlets to 20 GWd/tU), and no validated gaseous swelling correlation for
-      LWR conditions exists.  It is therefore off by default;
+      :math:`3.88008\,Bu^2 + 0.45419\,Bu` (Eq. 70, where CASL prints 3.8808,
+      and Metzger and the INL reports 3.88008).  Those data come from
+      dispersion fuel at 300 to 500 K, where U3Si2 becomes amorphous.
+      Power-reactor data disagree (about 12 % at 6 GWd/tU in AI-7-1, 0 to 1 %
+      in the ATF-1 rodlets to 20 GWd/tU), and no validated gaseous swelling
+      correlation for LWR conditions exists.  It is therefore off by default.
     * creep as the sum of Nabarro-Herring, Coble and dislocation-climb terms
       (Eqs. 3.3 to 3.6 of the 2020 report, whose journal version is Cooper et
       al., J. Nucl. Mater. 555 (2021) 153129), with the grain size
-      :math:`d = 2 a`; it reproduces the compressive creep tests of Yingling
-      et al. (INL/JOU-20-58799, Table 1) within a factor of 2.3;
+      :math:`d = 2 a`.  It reproduces the compressive creep tests of Yingling
+      et al. (INL/JOU-20-58799, Table 1) within a factor of 2.3.
     * fission gas by diffusion out of the grains with the xenon diffusivity
       of stoichiometric U3Si2 (Eq. 3.1 of the 2020 report) and grain-boundary
       saturation with the coverage 0.6, surface energy 1.0 J/m^2 and
       semi-dihedral angle 73 degrees given there.  Those parameters belong to
       the cluster-dynamics model of Barani et al. (2019), with trapping and
-      lenticular bubbles; in this reduced model (no trapping, the UO2 bubble
+      lenticular bubbles.  In this reduced model (no trapping, the UO2 bubble
       radius of 0.5 um) they are not validated.
 
     The theoretical density, 12190 kg/m^3, follows from the uranium density
@@ -633,31 +526,12 @@ class U3Si2Fuel(_Delegating, FuelMaterial):
     """
 
     enrichment: float = parameter(0.05, description="U-235 weight fraction. Default 0.05.")
-    theoretical_density_fraction: float = parameter(
-        0.95, description="Fabricated density as a fraction of 12190 kg/m^3. Default 0.95."
-    )
-    grain_radius: float = parameter(
-        26.0e-6,
-        unit="m",
-        description="Mean grain radius. Default 26 um, the fresh fuel of the AI-7-1 experiment "
-        "(Table 4.1 of the 2016 report).",
-    )
-    surface_roughness: float = parameter(
-        2.0e-6, unit="m", description="Pellet surface roughness. Default 2 um, as for UO2."
-    )
-    emissivity: float = parameter(
-        0.8,
-        description="Pellet surface emissivity. Default 0.8, the UO2 value (no U3Si2 value was "
-        "found in the sources read).",
-    )
-    energy_per_fission: float = parameter(
-        200.0 * 1.602176634e-13, unit="J", description="Default 200 MeV."
-    )
-    gaseous_swelling: bool = parameter(
-        False,
-        description="Add the empirical gaseous swelling of Finlay et al. (see the class). "
-        "Default False.",
-    )
+    theoretical_density_fraction: float = parameter(0.95, description="Fabricated density as a fraction of 12190 kg/m^3. Default 0.95.")
+    grain_radius: float = parameter(26.0e-6, unit="m", description="Mean grain radius. Default 26 um, the fresh fuel of the AI-7-1 experiment (Table 4.1 of the 2016 report).")
+    surface_roughness: float = parameter(2.0e-6, unit="m", description="Pellet surface roughness. Default 2 um, as for UO2.")
+    emissivity: float = parameter(0.8, description="Pellet surface emissivity. Default 0.8, the UO2 value.")
+    energy_per_fission: float = parameter(200.0 * 1.602176634e-13, unit="J", description="Default 200 MeV.")
+    gaseous_swelling: bool = parameter(False, description="Add the empirical gaseous swelling of Finlay et al. (see the class). Default False.")
 
     material_name = "U3Si2"
     optional_models = {}
@@ -679,10 +553,7 @@ class U3Si2Fuel(_Delegating, FuelMaterial):
         kT = "(8.617333262e-5*temperature)"
         s = "von_mises_stress"
         d = "(2*grain_radius)"
-        nabarro = (
-            f"{s}/{d}^2*(3.023e-15*exp(-3.246/{kT}) + 6.812e-54*fission_rate*exp(-0.5179/{kT})"
-            f" + 2.59e-17*exp(-3.330/{kT}))"
-        )
+        nabarro = f"{s}/{d}^2*(3.023e-15*exp(-3.246/{kT}) + 6.812e-54*fission_rate*exp(-0.5179/{kT}) + 2.59e-17*exp(-3.330/{kT}))"
         coble = f"{s}/{d}^3*2.280e-24*exp(-1.381/{kT})"
         climb = f"{s}^3*(3.444e-15*exp(-4.02/{kT}) + 3.759e-58*fission_rate*exp(-0.0178/{kT}))"
         return CustomFuel(
@@ -696,17 +567,11 @@ class U3Si2Fuel(_Delegating, FuelMaterial):
             youngs_modulus="1e9*(142.68 - 6.425*100*porosity)",
             poissons_ratio="(142.68 - 6.425*100*porosity)/(2*(61.27 - 2.901*100*porosity)) - 1",
             thermal_strain="16.0e-6*temperature",
-            volumetric_swelling=(
-                "0.34392*burnup + 3.88008*burnup^2 + 0.45419*burnup"
-                if self.gaseous_swelling
-                else "0.34392*burnup"
-            ),
+            volumetric_swelling=("0.34392*burnup + 3.88008*burnup^2 + 0.45419*burnup" if self.gaseous_swelling else "0.34392*burnup"),
             creep_rate=f"{nabarro} + {coble} + {climb}",
             fission_gas_release="booth",
             fission_gas_diffusion_coefficient=(f"2.85e-4*exp(-3.17/{kT}) + 3.58e-42*fission_rate"),
-            booth_parameters=dict(
-                saturation_coverage=0.6, surface_energy=1.0, dihedral_half_angle=73.0
-            ),
+            booth_parameters=dict(saturation_coverage=0.6, surface_energy=1.0, dihedral_half_angle=73.0),
             theoretical_density_fraction=self.theoretical_density_fraction,
             grain_radius=self.grain_radius,
             surface_roughness=self.surface_roughness,
@@ -714,8 +579,8 @@ class U3Si2Fuel(_Delegating, FuelMaterial):
             energy_per_fission=self.energy_per_fission,
         )
 
-    def add_thermal_material(self, problem, block, context):
-        self._delegate().add_thermal_material(problem, block, context)
+    def add_thermal_properties(self, problem, block, context):
+        self._delegate().add_thermal_properties(problem, block, context)
 
     def add_elasticity(self, problem, block, context):
         self._delegate().add_elasticity(problem, block, context)
@@ -779,15 +644,13 @@ class DopedUO2Fuel(UO2Fuel):
     the diffusional creep of doped fuel 25 times slower than for 5 um
     grains.  Measurements show the opposite: at 1773 K and 45 MPa the creep
     rate of UO2 with 0.1 wt% Cr2O3 is about 5 times that of undoped UO2
-    (Dugay et al. 1998, as tabulated in SSM 2021:20, Table 16).  No creep
+    (SSM 2021:20, Table 16).  No creep
     correlation for doped fuel exists (CASL-U-2019-1870, Sect. 2.9);
     ``creep_rate_factor`` lets a user apply such a single-condition factor,
     and is 1 by default.
     """
 
-    grain_radius: float = parameter(
-        25.0e-6, unit="m", description="Mean grain radius. Default 25 um (see the class)."
-    )
+    grain_radius: float = parameter(25.0e-6, unit="m", description="Mean grain radius. Default 25 um (see the class).")
     total_densification: float = parameter(
         0.001,
         description="Density change in a resintering test as a fraction of the theoretical "
@@ -795,18 +658,9 @@ class DopedUO2Fuel(UO2Fuel):
         "densified about 0.1 % (0.6 % for the undoped UO2 rods of the same test), and those of "
         "IFA-716.1 negligibly (CASL-U-2019-1870, Sect. 2.7.1, citing the Halden reports).",
     )
-    diffusivity_case: str = parameter(
-        "best_estimate",
-        description="best_estimate (case A) or upper_limit (case B) of Table 2.1 of "
-        "INL/EXT-20-59969, or casl_2019 (Eq. 16 of CASL-U-2019-1870, T1 = 1673 K, "
-        "0.316 and -0.684 eV, the upper limit that report used). Default best_estimate.",
-    )
+    diffusivity_case: str = parameter("best_estimate", description="best_estimate (case A) or upper_limit (case B) of Table 2.1 of INL/EXT-20-59969, or casl_2019 (Eq. 16 of CASL-U-2019-1870, T1 = 1673 K, 0.316 and -0.684 eV, the upper limit that report used). Default best_estimate.")
 
-    creep_rate_factor: float = parameter(
-        1.0,
-        description="Factor on the FCREEP creep rate. Default 1 (see the class for the "
-        "measured doped/undoped ratio of about 5 at 1773 K and 45 MPa).",
-    )
+    creep_rate_factor: float = parameter(1.0, description="Factor on the FCREEP creep rate. Default 1 (see the class for the measured doped/undoped ratio of about 5 at 1773 K and 45 MPa).")
 
     material_name = "Cr2O3-doped UO2"
 
@@ -818,10 +672,7 @@ class DopedUO2Fuel(UO2Fuel):
     def __post_init__(self):
         super().__post_init__()
         if self.diffusivity_case not in _DOPED_DIFFUSIVITY:
-            raise ValueError(
-                "DopedUO2Fuel: diffusivity_case must be best_estimate, upper_limit or "
-                f"casl_2019, not '{self.diffusivity_case}'."
-            )
+            raise ValueError(f"DopedUO2Fuel: diffusivity_case must be best_estimate, upper_limit or casl_2019, not '{self.diffusivity_case}'.")
 
     def diffusion_coefficient(self, temperature, fission_rate):
         """The intragranular diffusion coefficient, m^2/s (Eq. 2.1)."""
@@ -842,13 +693,7 @@ class DopedUO2Fuel(UO2Fuel):
 
         if context.models.fission_gas_release != "booth":
             return None
-        return BoothFissionGasRelease(
-            num_elements,
-            grain_radius=self.grain_radius,
-            trapping_factor=context.models.trapping_factor,
-            trapping=context.models.intragranular_trapping or "speight",
-            diffusion_coefficient=self.diffusion_coefficient,
-        )
+        return BoothFissionGasRelease(num_elements, grain_radius=self.grain_radius, trapping_factor=context.models.trapping_factor, trapping=context.models.intragranular_trapping or "speight", diffusion_coefficient=self.diffusion_coefficient)
 
 
 def describe_material(material) -> dict:

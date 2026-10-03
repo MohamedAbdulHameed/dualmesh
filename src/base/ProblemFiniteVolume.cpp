@@ -438,7 +438,7 @@ Problem::assembleCellFiniteVolume(const Vector & U,
     ctx.state_domain = 1;
     ctx.state_owner = face_index;
     ctx.state_key = 0;
-    computeMaterials(ctx);
+    evaluateProperties(ctx);
 
     const double cf = coordFactor(f.centroid);
     // The equation of a boundary entity is the condition on its face's flux,
@@ -448,15 +448,69 @@ Problem::assembleCellFiniteVolume(const Vector & U,
     // spherical problem the weight r vanishes, which would leave the entity
     // with an empty equation, so the weight there is 1 instead.
     const double ef = interior ? cf : boundaryEntityFactor(f.centroid);
-    for (const Kernel * k : ks)
+    const auto normalFlux = [&](const Kernel * k)
     {
-      const int v = k->variable();
       ADVector3 F{ADReal(0.0), ADReal(0.0), ADReal(0.0)};
       k->computeFlux(ctx, F);
       ADReal fn(0.0);
       for (int kk = 0; kk < dim; ++kk)
         if (f.area[kk] != 0.0)
           fn += F[kk] * f.area[kk];
+      return fn;
+    };
+    std::vector<ADReal> fluxes;
+    fluxes.reserve(ks.size());
+    for (const Kernel * k : ks)
+      fluxes.push_back(normalFlux(k));
+    // A face between two blocks: the properties of the two sides differ, and
+    // the flux that is continuous across the face is the one of the
+    // distance-weighted harmonic mean of the two coefficients,
+    // F = 1 / ((1 - w) / F_O + w / F_N), where F_O and F_N are the fluxes
+    // with the properties of the owner and of the neighbour and w = d_N / d.
+    // For F = k grad u with a two-point gradient this is the harmonic
+    // average of k that makes the flux continuous when u is linear on each
+    // side of the face, which keeps the method second order across a jump
+    // of the coefficient.
+    const int neighbor_block = interior ? _cells->cellBlock(f.neighbor) : block;
+    if (interior && neighbor_block != block)
+    {
+      ctx.element = f.neighbor;
+      ctx.block = neighbor_block;
+      evaluateProperties(ctx);
+      for (std::size_t i = 0; i < ks.size(); ++i)
+      {
+        if (!ks[i]->activeOnBlock(neighbor_block))
+          continue;
+        const ADReal fN = normalFlux(ks[i]);
+        const ADReal fO = fluxes[i];
+        // The conductances of the two sides, the derivatives of their fluxes
+        // with respect to the value across the face, set the harmonic mean
+        // also where the flux vanishes (e.g., the zero state at which the
+        // eigenvalue study assembles its operators).
+        const int slot = nv + ks[i]->variable();
+        const double cO = ndx > 0 ? fO.derivatives()[slot] : 0.0;
+        const double cN = ndx > 0 ? fN.derivatives()[slot] : 0.0;
+        // The harmonic mean of the two fluxes themselves carries every
+        // derivative (also that of a coefficient that depends on the
+        // solution), so it is preferred.  Where the fluxes vanish, the
+        // conductances set it.
+        const double scale = std::max(std::abs(fO.value()), std::abs(fN.value()));
+        if (fO.value() * fN.value() > 0.0 &&
+            std::min(std::abs(fO.value()), std::abs(fN.value())) > 1e-12 * scale)
+          fluxes[i] = fO * fN / ((1.0 - w) * fN + w * fO);
+        else if (cO * cN > 0.0)
+          fluxes[i] = fO * (cN / ((1.0 - w) * cN + w * cO));
+        else
+          fluxes[i] = w * fO + (1.0 - w) * fN;
+      }
+      ctx.element = f.owner;
+      ctx.block = block;
+    }
+    for (std::size_t i = 0; i < ks.size(); ++i)
+    {
+      const Kernel * k = ks[i];
+      const int v = k->variable();
+      ADReal fn = fluxes[i];
       fn *= weightOf(k, k->isTimeKernel());
       Rloc[v] -= cf * fn;
       Rloc[nv + v] += ef * fn;
@@ -619,7 +673,7 @@ Problem::assembleCellFiniteVolume(const Vector & U,
                                  static_cast<unsigned>(&group - _groups.data()),
                                  0,
                                  static_cast<unsigned>(&ip - pts.data()));
-        computeMaterials(ctx);
+        evaluateProperties(ctx);
         const double cf = coordFactor(geo.x) * ip.weight;
         for (const Kernel * k : ks)
         {
@@ -705,7 +759,7 @@ Problem::assembleCellFiniteVolume(const Vector & U,
                                      static_cast<unsigned>(&bc - _ibcs.data()),
                                      static_cast<unsigned>(f.side.second),
                                      0);
-            computeMaterials(ctx);
+            evaluateProperties(ctx);
             const double wt = f.measure * boundaryEntityFactor(f.centroid) * wfac;
             const ADReal q = ib->computeInterfaceFlux(ctx) * wt;
             Rloc[v] -= q;
@@ -763,7 +817,7 @@ Problem::assembleCellFiniteVolume(const Vector & U,
                                    static_cast<unsigned>(&bc - _ibcs.data()),
                                    static_cast<unsigned>(f.side.second),
                                    0);
-          computeMaterials(ctx);
+          evaluateProperties(ctx);
           const double wt = f.measure * boundaryEntityFactor(f.centroid) * wfac;
           const ADReal q = bc->computeBoundaryFlux(ctx) * wt;
           Rloc[nv + v] -= q;

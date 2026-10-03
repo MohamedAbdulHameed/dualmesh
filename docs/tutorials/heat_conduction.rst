@@ -27,10 +27,17 @@ A bus bar in two dimensions
 ---------------------------
 
 Example 5.4.3 adds internal heat generation and a convective boundary.  The
-same problem is also available as an input file (:doc:`../input_files`).
+script ``examples/bus_bar.py`` defines the problem, adds five
+post-processors (the heat flows through the left and right sides, the
+temperatures at the middle of the bottom and top edges, and the largest
+temperature), and writes the field and the post-processors to files:
 
-.. literalinclude:: ../../examples/bus_bar.yaml
-   :language: yaml
+.. literalinclude:: ../../examples/bus_bar.py
+   :language: python
+   :pyobject: bus_bar
+
+The temperature at the middle of the bottom edge is 83.142, as in Table 5.4.3
+of the book.
 
 Points to note
 --------------

@@ -30,51 +30,26 @@ import pytest
 def _cavity(formulation, element_type, n, density=0.0, method="fem"):
     mesh = dm.generate_rectangle_mesh(0, 1, 0, 1, n, n, element_type=element_type)
     problem = dm.Problem(mesh, method=method)
-    dm.physics.add_incompressible_flow(
-        problem,
-        velocities=["u", "v"],
-        density=density,
-        formulation=formulation,
-        pressure_pin_point=(0.5, 0.0),
-    )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", "lid", variable="u", boundary="top", value=1.0
-    )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", "lid_v", variable="v", boundary="top", value=0.0
-    )
+    problem.add_physics("incompressible_flow", "flow", velocities=["u", "v"], density=density, formulation=formulation, pressure_pin_point=(0.5, 0.0))
+    problem.add_boundary_condition("Dirichlet_boundary_condition", "lid", variable="u", boundary="top", value=1.0)
+    problem.add_boundary_condition("Dirichlet_boundary_condition", "lid_v", variable="v", boundary="top", value=0.0)
     for variable in ("u", "v"):
-        problem.add_boundary_condition(
-            "Dirichlet_boundary_condition",
-            f"walls_{variable}",
-            variable=variable,
-            boundary=["left", "right", "bottom"],
-            value=0.0,
-        )
+        problem.add_boundary_condition("Dirichlet_boundary_condition", f"walls_{variable}", variable=variable, boundary=["left", "right", "bottom"], value=0.0)
     return problem
 
 
 def _relative_difference(problem, reference):
-    return max(
-        np.abs(problem.values(v) - reference.values(v)).max()
-        / max(np.abs(reference.values(v)).max(), 1e-300)
-        for v in ("u", "v", "pressure")
-    )
+    return max(np.abs(problem.values(v) - reference.values(v)).max() / max(np.abs(reference.values(v)).max(), 1e-300) for v in ("u", "v", "pressure"))
 
 
-@pytest.mark.parametrize(
-    "formulation, element_type, limit",
-    [("taylor_hood", "Quad9", 20), ("pressure", "Quad4", 22)],
-)
+@pytest.mark.parametrize("formulation, element_type, limit", [("Taylor_Hood", "Quad9", 20), ("pressure", "Quad4", 22)])
 def test_iterations_do_not_grow_with_the_mesh(formulation, element_type, limit):
     counts = []
     for n in (8, 16, 32):
         reference = _cavity(formulation, element_type, n)
         reference.solve(linear_solver="lu")
         problem = _cavity(formulation, element_type, n)
-        result = problem.solve(
-            linear_solver="gmres", preconditioner="pressure_mass_schur", linear_tolerance=1e-12
-        )
+        result = problem.solve(linear_solver="gmres", preconditioner="pressure_mass_schur", linear_tolerance=1e-12)
         counts.append(result.linear_iterations / result.total_iterations)
         assert _relative_difference(problem, reference) < 1e-8
     assert max(counts) <= limit, counts
@@ -85,9 +60,9 @@ def test_navier_stokes_at_a_moderate_reynolds_number():
     """At Re = 100 the mass matrix is a cruder approximation (the Schur
     complement then also carries convection); measured about 40 iterations
     per Newton step."""
-    reference = _cavity("taylor_hood", "Quad9", 16, density=100.0)
+    reference = _cavity("Taylor_Hood", "Quad9", 16, density=100.0)
     reference.solve(linear_solver="lu")
-    problem = _cavity("taylor_hood", "Quad9", 16, density=100.0)
+    problem = _cavity("Taylor_Hood", "Quad9", 16, density=100.0)
     result = problem.solve(linear_solver="gmres", preconditioner="pressure_mass_schur")
     assert _relative_difference(problem, reference) < 1e-8
     assert result.linear_iterations / result.total_iterations < 60
@@ -96,15 +71,10 @@ def test_navier_stokes_at_a_moderate_reynolds_number():
 @pytest.mark.skipif(not dm.have_petsc(), reason="built without PETSc")
 @pytest.mark.parametrize("options", [None, "-fieldsplit_0_pc_type gamg"])
 def test_petsc_field_split_with_the_pressure_mass_matrix(options):
-    reference = _cavity("taylor_hood", "Quad9", 12)
+    reference = _cavity("Taylor_Hood", "Quad9", 12)
     reference.solve(linear_solver="lu")
-    problem = _cavity("taylor_hood", "Quad9", 12)
-    problem.solve(
-        linear_solver="petsc",
-        preconditioner="pressure_mass_schur",
-        petsc_options=options,
-        linear_tolerance=1e-12,
-    )
+    problem = _cavity("Taylor_Hood", "Quad9", 12)
+    problem.solve(linear_solver="petsc", preconditioner="pressure_mass_schur", petsc_options=options, linear_tolerance=1e-12)
     assert _relative_difference(problem, reference) < 1e-7
 
 
@@ -117,7 +87,7 @@ def test_it_works_with_the_dual_mesh_method():
 
 
 def test_it_needs_a_krylov_solver():
-    problem = _cavity("taylor_hood", "Quad9", 4)
+    problem = _cavity("Taylor_Hood", "Quad9", 4)
     with pytest.raises(ValueError, match="'gmres' or 'automatic'"):
         problem.solve(linear_solver="bicgstab", preconditioner="pressure_mass_schur")
 
@@ -128,8 +98,6 @@ def test_it_needs_a_mass_conservation_equation():
     problem.add_variable("temperature")
     problem.add_kernel("diffusion", "conduction", variable="temperature")
     problem.add_kernel("body_force", "heating", variable="temperature", value=1.0)
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", "cold", variable="temperature", boundary="left", value=0.0
-    )
+    problem.add_boundary_condition("Dirichlet_boundary_condition", "cold", variable="temperature", boundary="left", value=0.0)
     with pytest.raises(ValueError, match="mass_conservation"):
         problem.solve(linear_solver="gmres", preconditioner="pressure_mass_schur")

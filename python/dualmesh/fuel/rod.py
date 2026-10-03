@@ -49,36 +49,15 @@ from .. import _core
 from ..problem import Problem
 from . import report
 from .fields import TimeHistory, irradiation_fields, normalized_axial_profile
-from .materials import (
-    MAXIMUM_TEMPERATURE,
-    CladdingMaterial,
-    FuelMaterial,
-    RodContext,
-    UO2Fuel,
-)
+from .materials import MAXIMUM_TEMPERATURE, CladdingMaterial, FuelMaterial, RodContext, UO2Fuel
 from .mesh import axisymmetric_rod_mesh, radial_slice_mesh, three_dimensional_rod_mesh
 from .result import SECONDS_PER_DAY, RodResult
-from .specification import (
-    GASES,
-    FillGas,
-    ForcedConvection,
-    ModelFactors,
-    PowerHistory,
-    PrescribedCladdingTemperature,
-    RodGeometry,
-    RodModels,
-    RodNumerics,
-    RodOutput,
-)
+from .specification import GASES, FillGas, ForcedConvection, ModelFactors, PowerHistory, PrescribedCladdingTemperature, RodGeometry, RodModels, RodNumerics, RodOutput
 from .units import AVOGADRO, GAS_CONSTANT, BurnupConverter
 
 #: The formulation of the stress objects and of the irradiation fields for
 #: each rod model.
-FORMULATIONS = {
-    "axisymmetric": "axisymmetric",
-    "three_dimensional": "three_dimensional",
-    "1.5d": "axisymmetric_1d",
-}
+FORMULATIONS = {"axisymmetric": "axisymmetric", "three_dimensional": "three_dimensional", "1.5d": "axisymmetric_1d"}
 
 
 class FuelRod:
@@ -130,70 +109,37 @@ class FuelRod:
         coated = geometry.clad_coating_thickness > 0
         self.clad_blocks = ("clad", "coating") if coated else ("clad",)
         if coated != bool(getattr(cladding, "has_coating", False)):
-            raise ValueError(
-                "FuelRod: a coated cladding needs both RodGeometry.clad_coating_thickness > 0 and "
-                "a cladding with a coating (CoatedCladding); one of the two is missing."
-            )
+            raise ValueError("FuelRod: a coated cladding needs both RodGeometry.clad_coating_thickness > 0 and a cladding with a coating (CoatedCladding); one of the two is missing.")
         # The models with the fuel-dependent defaults filled in.
         self.active_models = self.models.resolved(fuel)
         self._check_factors()
         self.formulation = FORMULATIONS[self.numerics.model]
-        if (
-            self.numerics.model == "three_dimensional"
-            and self.numerics.mesh.num_fuel_core_divisions % 2
-        ):
-            raise ValueError(
-                "RodMesh: the three-dimensional model needs an even num_fuel_core_divisions (the "
-                "rigid-body restraints sit on the x and y axes)."
-            )
+        if self.numerics.model == "three_dimensional" and self.numerics.mesh.num_fuel_core_divisions % 2:
+            raise ValueError("RodMesh: the three-dimensional model needs an even num_fuel_core_divisions (the rigid-body restraints sit on the x and y axes).")
 
         # ---- burnup, and the power history in time ----
         self.converter = BurnupConverter(fuel.energy_per_fission, fuel.heavy_metal_molar_mass)
         self.heavy_metal_atom_density = fuel.heavy_metal_atom_density()
         # FIMA per unit energy per unit length of rod: 1 / (E_f n_HM A).
-        self.fima_per_joule_per_metre = 1.0 / (
-            fuel.energy_per_fission * self.heavy_metal_atom_density * geometry.fuel_cross_section
-        )
+        self.fima_per_joule_per_metre = 1.0 / (fuel.energy_per_fission * self.heavy_metal_atom_density * geometry.fuel_cross_section)
         axial = normalized_axial_profile(power_history.axial_profile, geometry.fuel_stack_height)
         if power_history.time is not None:
-            self.history = TimeHistory(
-                power_history.time,
-                power_history.linear_heat_rate,
-                axial,
-                power_history.radial_profile,
-            )
+            self.history = TimeHistory(power_history.time, power_history.linear_heat_rate, axial, power_history.radial_profile)
         else:
             burnup = self.converter.to_fima(power_history.burnup, power_history.burnup_unit)
             if burnup[0] != 0.0:
-                raise ValueError(
-                    "PowerHistory: a history in burnup must start at zero burnup (fresh fuel)."
-                )
-            self.history = TimeHistory.from_burnup(
-                burnup,
-                power_history.linear_heat_rate,
-                self.fima_per_joule_per_metre,
-                axial,
-                power_history.radial_profile,
-            )
+                raise ValueError("PowerHistory: a history in burnup must start at zero burnup (fresh fuel).")
+            self.history = TimeHistory.from_burnup(burnup, power_history.linear_heat_rate, self.fima_per_joule_per_metre, axial, power_history.radial_profile)
 
         if self.factors.linear_heat_rate != 1.0:
             # The same times, the power scaled: the burnup grows with it.
-            self.history = TimeHistory(
-                self.history.time,
-                self.history.linear_heat_rate * self.factors.linear_heat_rate,
-                axial,
-                power_history.radial_profile,
-            )
+            self.history = TimeHistory(self.history.time, self.history.linear_heat_rate * self.factors.linear_heat_rate, axial, power_history.radial_profile)
 
         # ---- the rod's gas ----
         self._gas_pressure = _core.SettableFunction(fill_gas.pressure)
         self._coolant_pressure = _core.SettableFunction(coolant.pressure)
-        self._gas_fractions = {
-            gas: _core.SettableFunction(float(fill_gas.composition.get(gas, 0.0))) for gas in GASES
-        }
-        self.fill_amount = (
-            fill_gas.pressure * self.cold_free_volume() / (GAS_CONSTANT * fill_gas.temperature)
-        )
+        self._gas_fractions = {gas: _core.SettableFunction(float(fill_gas.composition.get(gas, 0.0))) for gas in GASES}
+        self.fill_amount = fill_gas.pressure * self.cold_free_volume() / (GAS_CONSTANT * fill_gas.temperature)
         self.released_amount = {"xenon": 0.0, "krypton": 0.0}
         self.plenum_temperature = fill_gas.temperature
         self._axial_jacobians: dict = {}
@@ -221,12 +167,7 @@ class FuelRod:
     def derived_quantities(self) -> list[tuple]:
         """Quantities computed from the input, for the input report."""
         g, fuel = self.geometry, self.fuel
-        heavy_metal_mass = (
-            self.heavy_metal_atom_density
-            * g.fuel_cross_section
-            * fuel.heavy_metal_molar_mass
-            / AVOGADRO
-        )
+        heavy_metal_mass = self.heavy_metal_atom_density * g.fuel_cross_section * fuel.heavy_metal_molar_mass / AVOGADRO
         end_fima = float(self.history.energy_at(self.history.time[-1])[0])
         end_fima *= self.fima_per_joule_per_metre
         rows = [
@@ -237,28 +178,13 @@ class FuelRod:
             ("cold free volume", self.cold_free_volume() * 1e6, "cm^3"),
             ("fill gas amount", self.fill_amount, "mol"),
             ("history end time", self.history.time[-1] / SECONDS_PER_DAY, "d"),
-            (
-                "history end burnup",
-                float(self.converter.from_fima(end_fima, self.output.burnup_unit)),
-                self.output.burnup_unit,
-            ),
+            ("history end burnup", float(self.converter.from_fima(end_fima, self.output.burnup_unit)), self.output.burnup_unit),
         ]
         for name in ("relocation", "densification", "gaseous_swelling", "fission_gas_release"):
-            rows.append(
-                (f"{name} (resolved for this fuel)", str(getattr(self.active_models, name)), "")
-            )
+            rows.append((f"{name} (resolved for this fuel)", str(getattr(self.active_models, name)), ""))
         if isinstance(self.coolant, ForcedConvection):
             c, radius = self.coolant, g.clad_outer_radius
-            rows += [
-                ("coolant flow area", c.flow_area(radius) * 1e6, "mm^2"),
-                ("hydraulic diameter", c.hydraulic_diameter(radius) * 1e3, "mm"),
-                (
-                    "heat transfer coefficient at the inlet",
-                    c.heat_transfer_coefficient_for(radius),
-                    "W/(m^2 K)",
-                ),
-                ("coolant saturation temperature", c.saturation_temperature(), "K"),
-            ]
+            rows += [("coolant flow area", c.flow_area(radius) * 1e6, "mm^2"), ("hydraulic diameter", c.hydraulic_diameter(radius) * 1e3, "mm"), ("heat transfer coefficient at the inlet", c.heat_transfer_coefficient_for(radius), "W/(m^2 K)"), ("coolant saturation temperature", c.saturation_temperature(), "K")]
         return rows
 
     # ------------------------------------------------------------------
@@ -270,9 +196,7 @@ class FuelRod:
         H = self.geometry.fuel_stack_height
         grid = np.linspace(0.0, H, 401)
         shape = self.history.axial(grid, H)
-        cumulative = np.concatenate(
-            [[0.0], np.cumsum(0.5 * (shape[1:] + shape[:-1]) * np.diff(grid))]
-        )
+        cumulative = np.concatenate([[0.0], np.cumsum(0.5 * (shape[1:] + shape[:-1]) * np.diff(grid))])
         return np.interp(z, grid, cumulative)
 
     def coolant_temperature(self, z, t) -> np.ndarray:
@@ -281,12 +205,8 @@ class FuelRod:
         z = np.atleast_1d(np.asarray(z, dtype=float))
         q = float(self.history.linear_heat_rate_at(t))
         if isinstance(self.coolant, ForcedConvection):
-            return self.coolant.bulk_temperature(
-                q * self._cumulative_axial_shape(z), self.geometry.clad_outer_radius
-            )
-        local = q * self.history.axial(
-            np.minimum(z, self.geometry.fuel_stack_height), self.geometry.fuel_stack_height
-        )
+            return self.coolant.bulk_temperature(q * self._cumulative_axial_shape(z), self.geometry.clad_outer_radius)
+        local = q * self.history.axial(np.minimum(z, self.geometry.fuel_stack_height), self.geometry.fuel_stack_height)
         return np.array([self.coolant.value(qz, t) for qz in local])
 
     def _coolant_table(self, slice_axial_position: float, quantity: str = "temperature"):
@@ -294,11 +214,7 @@ class FuelRod:
         coefficient h(z, t) from the local bulk temperature, as a solver
         function."""
         h = self.history
-        t = np.unique(
-            np.concatenate(
-                [np.linspace(h.time[i], h.time[i + 1], 9) for i in range(len(h.time) - 1)]
-            )
-        )
+        t = np.unique(np.concatenate([np.linspace(h.time[i], h.time[i + 1], 9) for i in range(len(h.time) - 1)]))
         if self.formulation == "axisymmetric_1d":
             z = np.array([slice_axial_position])
         else:
@@ -306,16 +222,9 @@ class FuelRod:
             z = np.linspace(0.0, top, 41)
         values = np.array([self.coolant_temperature(z, tk) for tk in t])  # [t, z]
         if quantity == "heat_transfer_coefficient":
-            values = (
-                self.factors.coolant_heat_transfer
-                * self.coolant.heat_transfer_coefficient_for(
-                    self.geometry.clad_outer_radius, values
-                )
-            )
+            values = self.factors.coolant_heat_transfer * self.coolant.heat_transfer_coefficient_for(self.geometry.clad_outer_radius, values)
         data = np.repeat(values[:, :, None], 2, axis=2)
-        return _core.CylinderTableFunction(
-            [0.0, 1.0], list(z), list(t), list(data.ravel()), self.formulation, slice_axial_position
-        )
+        return _core.CylinderTableFunction([0.0, 1.0], list(z), list(t), list(data.ravel()), self.formulation, slice_axial_position)
 
     # ------------------------------------------------------------------
     # construction
@@ -337,33 +246,18 @@ class FuelRod:
 
     def _burnup_parameters(self, burnup_field: str = "burnup") -> dict:
         fuel = self.fuel
-        return dict(
-            burnup=burnup_field,
-            burnup_unit="FIMA",
-            energy_per_fission=fuel.energy_per_fission,
-            heavy_metal_molar_mass=fuel.heavy_metal_molar_mass,
-        )
+        return dict(burnup=burnup_field, burnup_unit="FIMA", energy_per_fission=fuel.energy_per_fission, heavy_metal_molar_mass=fuel.heavy_metal_molar_mass)
 
     def _context(self) -> RodContext:
         """What the materials are told about this rod."""
-        return RodContext(
-            formulation=self.formulation,
-            models=self.active_models,
-            geometry=self.geometry,
-            stress_free_temperature=self.fill_gas.temperature,
-            burnup=self._burnup_parameters(),
-            mwd_per_kg_per_fima=self.converter.mwd_per_kg_per_fima,
-            factors=self.factors,
-        )
+        return RodContext(formulation=self.formulation, models=self.active_models, geometry=self.geometry, stress_free_temperature=self.fill_gas.temperature, burnup=self._burnup_parameters(), mwd_per_kg_per_fima=self.converter.mwd_per_kg_per_fima, factors=self.factors)
 
     def _check_factors(self):
         """Refuse a factor that has no effect on this rod, which would
         otherwise pass silently through a sensitivity study."""
         f, fuel, models = self.factors, self.fuel, self.active_models
         problems = []
-        if f.densification != 1.0 and not (
-            models.densification and hasattr(fuel, "total_densification")
-        ):
+        if f.densification != 1.0 and not (models.densification and hasattr(fuel, "total_densification")):
             problems.append("densification (no densification model)")
         if f.solid_swelling != 1.0 and not (models.solid_swelling and isinstance(fuel, UO2Fuel)):
             problems.append("solid_swelling (UO2 fuels with solid swelling only)")
@@ -375,38 +269,20 @@ class FuelRod:
         if not models.mechanics:
             problems += [f"{n} (no mechanics)" for n in mech if getattr(f, n) != 1.0]
         if not models.creep:
-            problems += [
-                f"{n} (no creep)" for n in ("fuel_creep", "cladding_creep") if getattr(f, n) != 1.0
-            ]
+            problems += [f"{n} (no creep)" for n in ("fuel_creep", "cladding_creep") if getattr(f, n) != 1.0]
         if f.coolant_heat_transfer != 1.0 and not isinstance(self.coolant, ForcedConvection):
             problems.append("coolant_heat_transfer (the cladding temperature is prescribed)")
-        gas = (
-            "fission_gas_temperature",
-            "grain_radius",
-            "intragranular_diffusivity",
-            "resolution",
-            "grain_boundary_diffusivity",
-        )
+        gas = ("fission_gas_temperature", "grain_radius", "intragranular_diffusivity", "resolution", "grain_boundary_diffusivity")
         if models.fission_gas_release != "booth":
             problems += [f"{n} (no Booth fission gas model)" for n in gas if getattr(f, n) != 1.0]
         if problems:
-            raise ValueError(
-                "ModelFactors: these factors have no effect on this rod: "
-                + "; ".join(problems)
-                + "."
-            )
+            raise ValueError("ModelFactors: these factors have no effect on this rod: " + "; ".join(problems) + ".")
 
     def _scale(self, p, block_list, properties, name):
         """Multiply properties computed by the materials added so far."""
         props = [(n, v) for n, v in properties if v != 1.0]
         if props:
-            p.add_material(
-                "property_scaling",
-                name,
-                block=list(block_list),
-                scaled_properties=[n for n, _ in props],
-                property_factors=[float(v) for _, v in props],
-            )
+            p.add_property("property_scaling", name, block=list(block_list), scaled_properties=[n for n, _ in props], property_factors=[float(v) for _, v in props])
 
     def _make_problem(self, mesh, slice_axial_position: float) -> Problem:
         g, fuel, formulation = self.geometry, self.fuel, self.formulation
@@ -416,24 +292,13 @@ class FuelRod:
         # field for models that must not reverse when the rod cools
         # (densification, swelling at the irradiation temperature).
         p.set_element_field(MAXIMUM_TEMPERATURE, np.zeros(mesh.num_elements))
-        fields = irradiation_fields(
-            self.history,
-            g,
-            self.heavy_metal_atom_density,
-            fuel.energy_per_fission,
-            self.power_history.fast_neutron_flux_per_linear_heat_rate,
-            formulation,
-            slice_axial_position,
-        )
+        fields = irradiation_fields(self.history, g, self.heavy_metal_atom_density, fuel.energy_per_fission, self.power_history.fast_neutron_flux_per_linear_heat_rate, formulation, slice_axial_position)
         p._fields = fields
         for name, function in fields.items():
             p.add_function(name, function)
         p.add_function("coolant_temperature", self._coolant_table(slice_axial_position))
         if isinstance(self.coolant, ForcedConvection):
-            p.add_function(
-                "coolant_heat_transfer_coefficient",
-                self._coolant_table(slice_axial_position, "heat_transfer_coefficient"),
-            )
+            p.add_function("coolant_heat_transfer_coefficient", self._coolant_table(slice_axial_position, "heat_transfer_coefficient"))
         p.add_function("gas_pressure", self._gas_pressure)
         p.add_function("coolant_pressure", self._coolant_pressure)
         for gas, function in self._gas_fractions.items():
@@ -443,50 +308,19 @@ class FuelRod:
 
         # ---- heat ----
         context = self._context()
-        fuel.add_thermal_material(p, "fuel", context)
+        fuel.add_thermal_properties(p, "fuel", context)
         for block in self.clad_blocks:
-            self.cladding.add_thermal_material(p, block, context)
+            self.cladding.add_thermal_properties(p, block, context)
         f = self.factors
-        self._scale(
-            p,
-            ["fuel"],
-            [("thermal_conductivity", f.fuel_thermal_conductivity)],
-            "fuel_conductivity_factor",
-        )
-        self._scale(
-            p,
-            self.clad_blocks,
-            [("thermal_conductivity", f.cladding_thermal_conductivity)],
-            "clad_conductivity_factor",
-        )
+        self._scale(p, ["fuel"], [("thermal_conductivity", f.fuel_thermal_conductivity)], "fuel_conductivity_factor")
+        self._scale(p, self.clad_blocks, [("thermal_conductivity", f.cladding_thermal_conductivity)], "clad_conductivity_factor")
         # The heat equation on the deformed body needs the deformation
         # gradient of the mechanics (see RodNumerics.heat_conduction_configuration).
-        deformed = (
-            self.active_models.mechanics
-            and self.numerics.heat_conduction_configuration == "deformed"
-        )
+        deformed = self.active_models.mechanics and self.numerics.heat_conduction_configuration == "deformed"
         on_deformed = {"deformation_gradient_property": "deformation_gradient"} if deformed else {}
-        p.add_kernel(
-            "heat_conduction",
-            "heat_conduction",
-            variable="temperature",
-            thermal_conductivity_property="thermal_conductivity",
-            **on_deformed,
-        )
-        p.add_kernel(
-            "heat_conduction_time_derivative",
-            "heat_capacity",
-            variable="temperature",
-            density_property="density",
-            specific_heat_property="specific_heat",
-        )
-        p.add_kernel(
-            "heat_source",
-            "fission_heat",
-            variable="temperature",
-            heat_source="power_density",
-            block=["fuel"],
-        )
+        p.add_kernel("heat_conduction", "heat_conduction", variable="temperature", thermal_conductivity_property="thermal_conductivity", **on_deformed)
+        p.add_kernel("heat_conduction_time_derivative", "heat_capacity", variable="temperature", density_property="density", specific_heat_property="specific_heat")
+        p.add_kernel("heat_source", "fission_heat", variable="temperature", heat_source="power_density", block=["fuel"])
         displacements = self._add_mechanics(p) if self.active_models.mechanics else []
         p._displacements = displacements
         gap = dict(
@@ -513,33 +347,15 @@ class FuelRod:
             gap.update(displacements=displacements, contact_penalty=self.numerics.contact_penalty)
         p.add_boundary_condition("gas_gap_heat_transfer", "gap_heat_transfer", **gap, **on_deformed)
         if isinstance(self.coolant, ForcedConvection):
-            p.add_boundary_condition(
-                "convective_heat_flux_boundary_condition",
-                "coolant",
-                variable="temperature",
-                boundary=["clad_outer"],
-                heat_transfer_coefficient="coolant_heat_transfer_coefficient",
-                ambient_temperature="coolant_temperature",
-                **on_deformed,
-            )
+            p.add_boundary_condition("convective_heat_flux_boundary_condition", "coolant", variable="temperature", boundary=["clad_outer"], heat_transfer_coefficient="coolant_heat_transfer_coefficient", ambient_temperature="coolant_temperature", **on_deformed)
         else:
-            p.add_boundary_condition(
-                "Dirichlet_boundary_condition",
-                "clad_outer_temperature",
-                variable="temperature",
-                boundary=["clad_outer"],
-                value="coolant_temperature",
-            )
+            p.add_boundary_condition("Dirichlet_boundary_condition", "clad_outer_temperature", variable="temperature", boundary=["clad_outer"], value="coolant_temperature")
         return p
 
     def _add_mechanics(self, p) -> list[str]:
         g, fuel, models = self.geometry, self.fuel, self.active_models
         formulation = self.formulation
-        displacements = {
-            "axisymmetric": ["disp_r", "disp_z"],
-            "three_dimensional": ["disp_x", "disp_y", "disp_z"],
-            "axisymmetric_1d": ["disp_r"],
-        }[formulation]
+        displacements = {"axisymmetric": ["disp_r", "disp_z"], "three_dimensional": ["disp_x", "disp_y", "disp_z"], "axisymmetric_1d": ["disp_r"]}[formulation]
         for d in displacements:
             p.add_variable(d)
         # ---- elasticity, eigenstrains and stresses, from the materials ----
@@ -547,37 +363,19 @@ class FuelRod:
         fuel.add_elasticity(p, "fuel", context)
         f = self.factors
         if f.densification != 1.0:
-            fuel = dataclasses.replace(
-                fuel, total_densification=fuel.total_densification * f.densification
-            )
+            fuel = dataclasses.replace(fuel, total_densification=fuel.total_densification * f.densification)
         eigenstrains = {"fuel": fuel.add_eigenstrains(p, "fuel", context)}
         names = eigenstrains["fuel"]
-        self._scale(
-            p,
-            ["fuel"],
-            [
-                (n, v)
-                for n, v in (
-                    ("fuel_thermal_strain", f.fuel_thermal_expansion),
-                    ("fuel_relocation_strain", f.relocation),
-                )
-                if n in names
-            ],
-            "fuel_strain_factors",
-        )
+        self._scale(p, ["fuel"], [(n, v) for n, v in (("fuel_thermal_strain", f.fuel_thermal_expansion), ("fuel_relocation_strain", f.relocation)) if n in names], "fuel_strain_factors")
         creep = {"fuel": fuel.creep_parameters(context) if models.creep else {}}
         for block in self.clad_blocks:
             self.cladding.add_elasticity(p, block, context)
             eigenstrains[block] = self.cladding.add_eigenstrains(p, block, context)
             creep[block] = self.cladding.creep_parameters(context, block) if models.creep else {}
-        for block, factor in [("fuel", f.fuel_creep)] + [
-            (b, f.cladding_creep) for b in self.clad_blocks
-        ]:
+        for block, factor in [("fuel", f.fuel_creep)] + [(b, f.cladding_creep) for b in self.clad_blocks]:
             if creep[block] and factor != 1.0:
                 creep[block] = dict(creep[block])
-                creep[block]["creep_rate_factor"] = (
-                    creep[block].get("creep_rate_factor", 1.0) * factor
-                )
+                creep[block]["creep_rate_factor"] = creep[block].get("creep_rate_factor", 1.0) * factor
         axial = {}
         if formulation == "axisymmetric_1d":
             # One axial strain for the fuel and one for the cladding, which a
@@ -585,24 +383,10 @@ class FuelRod:
             p._axial_strain = {b: _core.SettableFunction(0.0) for b in ("fuel", "clad")}
             for b, function in p._axial_strain.items():
                 p.add_function(f"{b}_axial_strain", function)
-            axial = {
-                block: {
-                    "axial_strain": "fuel_axial_strain" if block == "fuel" else "clad_axial_strain"
-                }
-                for block in ("fuel", *self.clad_blocks)
-            }
+            axial = {block: {"axial_strain": "fuel_axial_strain" if block == "fuel" else "clad_axial_strain"} for block in ("fuel", *self.clad_blocks)}
         finite = self.numerics.strain == "finite"
         for block in ("fuel", *self.clad_blocks):
-            p.add_material(
-                "finite_strain_stress" if finite else "small_strain_stress",
-                f"{block}_stress",
-                block=[block],
-                displacements=displacements,
-                formulation=formulation,
-                eigenstrain_names=eigenstrains[block],
-                **axial.get(block, {}),
-                **creep[block],
-            )
+            p.add_property("finite_strain_stress" if finite else "small_strain_stress", f"{block}_stress", block=[block], displacements=displacements, formulation=formulation, eigenstrain_names=eigenstrains[block], **axial.get(block, {}), **creep[block])
         # ---- equilibrium, contact and pressures ----
         gas_surfaces = ["fuel_outer", "clad_inner"]
         if g.pellet_inner_radius > 0:
@@ -611,58 +395,14 @@ class FuelRod:
             gas_surfaces.append("fuel_top")
         follower = {"deformation_gradient_property": "deformation_gradient"} if finite else {}
         for i, d in enumerate(displacements):
-            p.add_kernel(
-                "stress_divergence",
-                f"equilibrium_{d}",
-                variable=d,
-                component=i,
-                stress_property="first_piola_kirchhoff_stress" if finite else "stress",
-            )
-            p.add_boundary_condition(
-                "gap_contact",
-                f"contact_{d}",
-                variable=d,
-                boundary=["fuel_outer"],
-                secondary_boundary=["clad_inner"],
-                displacements=displacements,
-                component=i,
-                penalty=self.numerics.contact_penalty,
-                **follower,
-            )
-            p.add_boundary_condition(
-                "pressure_boundary_condition",
-                f"gas_pressure_{d}",
-                variable=d,
-                component=i,
-                boundary=gas_surfaces,
-                pressure="gas_pressure",
-                **follower,
-            )
-            p.add_boundary_condition(
-                "pressure_boundary_condition",
-                f"coolant_pressure_{d}",
-                variable=d,
-                component=i,
-                boundary=["clad_outer"],
-                pressure="coolant_pressure",
-                **follower,
-            )
+            p.add_kernel("stress_divergence", f"equilibrium_{d}", variable=d, component=i, stress_property="first_piola_kirchhoff_stress" if finite else "stress")
+            p.add_boundary_condition("gap_contact", f"contact_{d}", variable=d, boundary=["fuel_outer"], secondary_boundary=["clad_inner"], displacements=displacements, component=i, penalty=self.numerics.contact_penalty, **follower)
+            p.add_boundary_condition("pressure_boundary_condition", f"gas_pressure_{d}", variable=d, component=i, boundary=gas_surfaces, pressure="gas_pressure", **follower)
+            p.add_boundary_condition("pressure_boundary_condition", f"coolant_pressure_{d}", variable=d, component=i, boundary=["clad_outer"], pressure="coolant_pressure", **follower)
         if formulation in ("axisymmetric", "axisymmetric_1d") and g.pellet_inner_radius == 0:
-            p.add_boundary_condition(
-                "Dirichlet_boundary_condition",
-                "axis_disp_r",
-                variable="disp_r",
-                boundary=["axis"],
-                value=0.0,
-            )
+            p.add_boundary_condition("Dirichlet_boundary_condition", "axis_disp_r", variable="disp_r", boundary=["axis"], value=0.0)
         if formulation != "axisymmetric_1d":
-            p.add_boundary_condition(
-                "Dirichlet_boundary_condition",
-                "bottom_disp_z",
-                variable="disp_z",
-                boundary=["fuel_bottom", "clad_bottom"],
-                value=0.0,
-            )
+            p.add_boundary_condition("Dirichlet_boundary_condition", "bottom_disp_z", variable="disp_z", boundary=["fuel_bottom", "clad_bottom"], value=0.0)
             self._add_end_plug_load(p)
         if formulation == "three_dimensional":
             self._hold_rigid_body_motion(p)
@@ -689,20 +429,8 @@ class FuelRod:
             mesh.add_nodeset_by_predicate(f"{body}_plus_y", at(0.0, radius))
             hold_y += [f"{body}_plus_x", f"{body}_minus_x"]
             hold_x += [f"{body}_plus_y"]
-        p.add_boundary_condition(
-            "Dirichlet_boundary_condition",
-            "hold_disp_x",
-            variable="disp_x",
-            boundary=hold_x,
-            value=0.0,
-        )
-        p.add_boundary_condition(
-            "Dirichlet_boundary_condition",
-            "hold_disp_y",
-            variable="disp_y",
-            boundary=hold_y,
-            value=0.0,
-        )
+        p.add_boundary_condition("Dirichlet_boundary_condition", "hold_disp_x", variable="disp_x", boundary=hold_x, value=0.0)
+        p.add_boundary_condition("Dirichlet_boundary_condition", "hold_disp_y", variable="disp_y", boundary=hold_y, value=0.0)
 
     def _end_plug_stress(self) -> float:
         """The axial stress that the gas and the coolant pressures put on the
@@ -714,13 +442,7 @@ class FuelRod:
     def _add_end_plug_load(self, p):
         p._end_plug_stress = _core.SettableFunction(self._end_plug_stress())
         p.add_function("end_plug_stress", p._end_plug_stress)
-        p.add_boundary_condition(
-            "traction_boundary_condition",
-            "end_plug",
-            variable="disp_z",
-            boundary=["clad_top"],
-            traction="end_plug_stress",
-        )
+        p.add_boundary_condition("traction_boundary_condition", "end_plug", variable="disp_z", boundary=["clad_top"], traction="end_plug_stress")
 
     # ------------------------------------------------------------------
     # fission gas and gaseous swelling
@@ -760,12 +482,7 @@ class FuelRod:
             if hasattr(model, "mwd_per_kg_per_fima"):
                 model.mwd_per_kg_per_fima = self.converter.mwd_per_kg_per_fima
             if model is not None and hasattr(model, "set_factors"):
-                model.set_factors(
-                    temperature=f.fission_gas_temperature,
-                    diffusivity=f.intragranular_diffusivity,
-                    resolution=f.resolution,
-                    grain_boundary_diffusivity=f.grain_boundary_diffusivity,
-                )
+                model.set_factors(temperature=f.fission_gas_temperature, diffusivity=f.intragranular_diffusivity, resolution=f.resolution, grain_boundary_diffusivity=f.grain_boundary_diffusivity)
             self._fuel_regions.append((p, ids, volumes, centroids, nodes, model))
 
     @staticmethod
@@ -785,9 +502,7 @@ class FuelRod:
             if p.is_cell_centered:
                 temperature = temperature[: mesh.num_elements]
             else:
-                temperature = np.array(
-                    [temperature[mesh.element_nodes(e)].mean() for e in range(mesh.num_elements)]
-                )
+                temperature = np.array([temperature[mesh.element_nodes(e)].mean() for e in range(mesh.num_elements)])
             field = np.maximum(np.asarray(p.element_field(MAXIMUM_TEMPERATURE)), temperature)
             p.set_element_field(MAXIMUM_TEMPERATURE, field)
 
@@ -809,9 +524,7 @@ class FuelRod:
             burnup_new = self._at_centroids(fields.burnup, centroids, t_new)
             if model is not None:
                 fission_rate = self._at_centroids(fields.fission_rate, centroids, t_new)
-                atoms = model.advance(
-                    dt, temperature, fission_rate, self._gas_pressure.get(), burnup_new
-                )
+                atoms = model.advance(dt, temperature, fission_rate, self._gas_pressure.get(), burnup_new)
                 released_atoms += float(np.sum(atoms * volumes))
                 xenon_fraction = model.xenon_fraction
             if swelling:
@@ -823,12 +536,7 @@ class FuelRod:
                         field[ids] = self.factors.gaseous_swelling * model.gaseous_swelling()
                 else:
                     burnup_old = self._at_centroids(fields.burnup, centroids, t_old)
-                    field[ids] += (
-                        self.factors.gaseous_swelling
-                        * self.fuel.gaseous_swelling_increment(
-                            temperature, burnup_old, np.maximum(burnup_new - burnup_old, 0.0)
-                        )
-                    )
+                    field[ids] += self.factors.gaseous_swelling * self.fuel.gaseous_swelling_increment(temperature, burnup_old, np.maximum(burnup_new - burnup_old, 0.0))
                 p.set_element_field("gaseous_swelling", field)
         released = released_atoms / AVOGADRO
         self.released_amount["xenon"] += xenon_fraction * released
@@ -912,9 +620,7 @@ class FuelRod:
         a = g.pellet_outer_radius + state["fuel_surface_displacement"]
         width = np.maximum(state["gap_width"], 0.0)
         gap_volumes = np.pi * ((a + width) ** 2 - a**2) * dz
-        gap_temperatures = 0.5 * (
-            state["fuel_surface_temperature"] + state["clad_inner_temperature"]
-        )
+        gap_temperatures = 0.5 * (state["fuel_surface_temperature"] + state["clad_inner_temperature"])
         weighted = float(np.sum(gap_volumes / np.maximum(gap_temperatures, 1.0)))
         if g.pellet_inner_radius > 0:
             bore = np.pi * (g.pellet_inner_radius + state["bore_displacement"]) ** 2 * dz
@@ -928,9 +634,7 @@ class FuelRod:
             strain = self._relocation_strain_along_the_rod()
             area = np.pi * (g.pellet_outer_radius**2 - g.pellet_inner_radius**2)
             cracks = 2.0 * strain * area * dz
-            crack_temperatures = 0.5 * (
-                state["fuel_centerline_temperature"] + state["fuel_surface_temperature"]
-            )
+            crack_temperatures = 0.5 * (state["fuel_centerline_temperature"] + state["fuel_surface_temperature"])
             weighted += float(np.sum(cracks / np.maximum(crack_temperatures, 1.0)))
         plenum = self.fill_gas.plenum_volume + np.pi * g.clad_inner_radius**2 * g.plenum_height
         top = float(self.coolant_temperature([g.fuel_stack_height], self.time)[0])
@@ -951,12 +655,7 @@ class FuelRod:
         q = float(self.history.linear_heat_rate_at(t)) * shape
         fima = float(self.history.energy_at(t)[0]) * self.fima_per_joule_per_metre * shape
         burnup = np.asarray(self.converter.from_fima(fima, "MWd/kgHM"), dtype=float)
-        return self.factors.relocation * np.asarray(
-            _core.fuel.uo2_relocation_strain(
-                q, burnup, 2.0 * g.pellet_outer_radius, 2.0 * g.radial_gap
-            ),
-            dtype=float,
-        )
+        return self.factors.relocation * np.asarray(_core.fuel.uo2_relocation_strain(q, burnup, 2.0 * g.pellet_outer_radius, 2.0 * g.radial_gap), dtype=float)
 
     # ------------------------------------------------------------------
     # the axial force balance of the 1.5D model
@@ -981,13 +680,7 @@ class FuelRod:
             body = 0 if mesh.element_block(e) == 0 else 1
             forces[body] += axial[e] * np.pi * abs(r1**2 - r0**2)
         pressure, coolant = self._gas_pressure.get(), self._coolant_pressure.get()
-        target = np.array(
-            [
-                -pressure * np.pi * (g.pellet_outer_radius**2 - g.pellet_inner_radius**2),
-                pressure * np.pi * g.clad_inner_radius**2
-                - coolant * np.pi * g.clad_outer_radius**2,
-            ]
-        )
+        target = np.array([-pressure * np.pi * (g.pellet_outer_radius**2 - g.pellet_inner_radius**2), pressure * np.pi * g.clad_inner_radius**2 - coolant * np.pi * g.clad_outer_radius**2])
         return forces - target
 
     def _solve_axial_balance(self, p, solve) -> int:
@@ -1076,7 +769,7 @@ class FuelRod:
             state = p._problem.save_state()
             start = {v: np.asarray(p.values(v)).copy() for v in ["temperature"] + p._displacements}
             try:
-                result = p.solve_transient(start_time=t_old, end_time=t_new, dt=dt, **options)
+                result = p.solve_transient(start_time=t_old, end_time=t_new, time_step=dt, **options)
             except RuntimeError:
                 if "line_search" in self.numerics.solver_options:
                     raise
@@ -1090,7 +783,7 @@ class FuelRod:
                     p.set_values(v, values)
                 p._problem.restore_state(state)
                 options["line_search"] = "none"
-                result = p.solve_transient(start_time=t_old, end_time=t_new, dt=dt, **options)
+                result = p.solve_transient(start_time=t_old, end_time=t_new, time_step=dt, **options)
             return int(result.total_iterations)
         variables = ["temperature"] + p._displacements
         start = {v: np.asarray(p.values(v)).copy() for v in variables}
@@ -1100,7 +793,7 @@ class FuelRod:
             for v, values in start.items():
                 p.set_values(v, values)
             p._problem.restore_state(state)
-            result = p.solve_transient(start_time=t_old, end_time=t_new, dt=dt, **options)
+            result = p.solve_transient(start_time=t_old, end_time=t_new, time_step=dt, **options)
             return int(result.total_iterations)
 
         return self._solve_axial_balance(p, solve)
@@ -1116,12 +809,39 @@ class FuelRod:
         inside = h.time[keep][(h.time[keep] > times[0]) & (h.time[keep] < times[-1])]
         merged = np.union1d(times, inside)
         # Drop history points within a microsecond of an output time.
-        close = np.isin(merged, times) | (
-            np.min(np.abs(merged[:, None] - times[None, :]), axis=1) > 1e-6
-        )
+        close = np.isin(merged, times) | (np.min(np.abs(merged[:, None] - times[None, :]), axis=1) > 1e-6)
         return merged[close]
 
+    def _number_of_steps(self, t_start: float, t_end: float) -> int:
+        """The number of equal steps from ``t_start`` to ``t_end``: the
+        smallest that keeps every step within the limits of ``RodNumerics``
+        on the time step, the burnup increment and the change of the linear
+        heat rate.  The power history is linear between the step boundaries,
+        so the burnup and the power change uniformly enough over the interval
+        for equal steps."""
+        numerics = self.numerics
+        span = t_end - t_start
+        steps = 1
+        if numerics.max_time_step is not None:
+            steps = max(steps, int(np.ceil(span / numerics.max_time_step - 1e-9)))
+        if numerics.max_burnup_step is not None:
+            fima = (float(self.history.energy_at(t_end)[0]) - float(self.history.energy_at(t_start)[0])) * self.fima_per_joule_per_metre
+            burnup = float(self.converter.from_fima(fima, "MWd/kgHM"))
+            steps = max(steps, int(np.ceil(burnup / numerics.max_burnup_step - 1e-9)))
+        if numerics.max_power_step is not None:
+            change = abs(float(self.history.linear_heat_rate_at(t_end)) - float(self.history.linear_heat_rate_at(t_start)))
+            steps = max(steps, int(np.ceil(change / numerics.max_power_step - 1e-9)))
+        return max(1, steps)
+
     def _output_times(self) -> np.ndarray:
+        if self.output.output_interval is not None:
+            start, end = float(self.history.time[0]), float(self.history.time[-1])
+            num_intervals = int(np.floor((end - start) / self.output.output_interval * (1.0 + 1e-12)))
+            times = start + self.output.output_interval * np.arange(num_intervals + 1)
+            if end - times[-1] > 1e-6:
+                return np.append(times, end)
+            times[-1] = end
+            return times
         if self.output.output_times is None:
             return np.asarray(self.history.time, dtype=float)
         times = np.asarray(self.output.output_times, dtype=float)
@@ -1148,47 +868,32 @@ class FuelRod:
         rod["helium_fraction"].append(self._gas_fractions["helium"].get())
         rod["gas_amount"].append(self.gas_amount())
         rod["plenum_temperature"].append(self.plenum_temperature)
-        rod["max_fuel_centerline_temperature"].append(
-            float(state["fuel_centerline_temperature"].max())
-        )
+        rod["max_fuel_centerline_temperature"].append(float(state["fuel_centerline_temperature"].max()))
         rod["min_gap_width"].append(float(state["gap_width"].min()))
         rod["nonlinear_iterations"].append(iterations)
         axial = result.axial
         axial["linear_heat_rate"].append(q * shape)
         axial["burnup"].append(np.asarray(self.converter.from_fima(average_fima * shape, unit)))
         axial["coolant_temperature"].append(self.coolant_temperature(self.axial_positions, t))
-        for name in (
-            "fuel_centerline_temperature",
-            "fuel_surface_temperature",
-            "clad_inner_temperature",
-            "clad_outer_temperature",
-            "gap_width",
-            "fuel_surface_displacement",
-            "clad_outer_displacement",
-            "clad_hoop_strain",
-        ):
+        for name in ("fuel_centerline_temperature", "fuel_surface_temperature", "clad_inner_temperature", "clad_outer_temperature", "gap_width", "fuel_surface_displacement", "clad_outer_displacement", "clad_hoop_strain"):
             axial[name].append(np.asarray(state[name], dtype=float))
         if isinstance(self.coolant, ForcedConvection) and not self._warned_boiling:
             saturation = self.coolant.saturation_temperature()
             wall = float(np.max(state["clad_outer_temperature"]))
             if wall > saturation:
                 self._warned_boiling = True
-                warnings.warn(
-                    f"FuelRod: the cladding surface reaches {wall:.1f} K, above the coolant "
-                    f"saturation temperature {saturation:.1f} K. Subcooled nucleate boiling, "
-                    "which would hold the wall a few kelvin above saturation, is not modelled.",
-                    stacklevel=3,
-                )
+                warnings.warn(f"FuelRod: the cladding surface reaches {wall:.1f} K, above the coolant saturation temperature {saturation:.1f} K. Subcooled nucleate boiling, which would hold the wall a few kelvin above saturation, is not modelled.", stacklevel=3)
 
     def run(self) -> RodResult:
         """Follow the power history from the first output time to the last
         and return the rod state at every output time (:class:`RodResult`).
 
-        The rod starts in the steady state of the first power level.  Between
-        two output times it takes steps no longer than
-        ``numerics.max_time_step`` (one step when that is None); after every
-        step the fission gas, the gaseous swelling and the gas pressure are
-        updated."""
+        The rod starts in the steady state of the first power level.  The
+        steps land on the output times and on the points of the power history,
+        and between them they are kept within ``numerics.max_time_step``,
+        ``numerics.max_burnup_step`` and ``numerics.max_power_step``.  After
+        every step the fission gas, the gaseous swelling and the gas pressure
+        are updated."""
         out = self.output
         started = wall_clock.perf_counter()
         result = RodResult(out.burnup_unit, self.converter, self.axial_positions.copy())
@@ -1206,12 +911,11 @@ class FuelRod:
         if out.print_steps:
             print(report.step_header(out.burnup_unit))
             print(report.step_row(result, 0))
-        max_step = self.numerics.max_time_step
         bounds = self._step_boundaries(times)
         iterations, k = 0, 0
         for t_next in bounds[1:]:
             span = t_next - self.time
-            steps = 1 if max_step is None else max(1, int(np.ceil(span / max_step)))
+            steps = self._number_of_steps(self.time, t_next)
             dt = span / steps
             start = self.time
             for step in range(steps):
@@ -1236,7 +940,7 @@ class FuelRod:
             print(result.summary())
             print(f"  wall time: {self.wall_time:.3g} s")
         if out.directory is not None:
-            for path in result.write_csv(out.directory, out.file_base):
+            for path in result._write_files(out.directory, out.file_base):
                 if out.print_steps:
                     print(f"  wrote {path}")
         return result

@@ -51,6 +51,18 @@ registration works. Prototyping in Python (`dm.PythonKernel`) is encouraged:
 the interface is the same, so a model that works can be moved to C++ almost
 unchanged.
 
+## Development process
+
+Mohamed AbdulHameed designs dualmesh. He sets the architecture and the input
+and output design. He selects each physical model and its source, and he
+specifies the verification and validation cases. AI coding assistants (Claude,
+from Anthropic) help to write the code, the tests and the documentation from
+these specifications and from the source papers. Every model is checked
+against its source: the equations, each coefficient, the units and the range
+of validity. Every capability must pass its verification and benchmark tests
+before it is complete, and the reference data of a test never change to make
+the test pass.
+
 ## Reporting problems
 
 Please open an issue with the smallest input that reproduces the behaviour, the

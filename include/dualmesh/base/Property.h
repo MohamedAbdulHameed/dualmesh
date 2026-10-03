@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 //
-// Materials compute named properties at integration points (for example a
+// Property objects compute named properties at integration points (for example a
 // conductivity, a stress tensor, or beam stiffness coefficients).  Kernels and
 // boundary conditions look these properties up by name, which decouples the
-// physics (kernels) from the constitutive model (materials), as in MOOSE.
+// physics (kernels) from the constitutive models (property objects).
 #pragma once
 
 #include "dualmesh/base/Object.h"
@@ -18,8 +18,8 @@
 namespace dualmesh
 {
 
-/// Name -> (offset, number of components) of material property storage.
-class MaterialPropertyRegistry
+/// Name -> (offset, number of components) of property storage.
+class PropertyRegistry
 {
 public:
   /// Declare a property; returns its id (storage offset).  Declaring the same
@@ -37,20 +37,20 @@ private:
   int _size = 0;
 };
 
-class Material : public Object
+class Property : public Object
 {
 public:
-  explicit Material(const InputParameters & params);
+  explicit Property(const InputParameters & params);
   static InputParameters validParams();
 
   void initialSetup(Problem & problem) override;
-  /// Declare the properties this material provides.
-  virtual void declareProperties(MaterialPropertyRegistry & registry) = 0;
+  /// Declare the properties this property object provides.
+  virtual void declareProperties(PropertyRegistry & registry) = 0;
   /// Compute the declared properties at an integration point.
   virtual void computeProperties(QpContext & ctx) const = 0;
 
-  /// Number of history values this material keeps at every integration point
-  /// (zero for a material without history).  The history is the state at the
+  /// Number of history values this property object keeps at every integration point
+  /// (zero for a property object without history).  The history is the state at the
   /// end of the last accepted time step; computeProperties() reads it through
   /// ctx.state_old + stateOffset() and writes the state reached at the current
   /// iterate through ctx.state_new + stateOffset().
@@ -61,9 +61,9 @@ public:
   const std::set<int> & blocks() const { return _blocks; }
   bool activeOnBlock(int b) const { return _blocks.empty() || _blocks.count(b); }
 
-  /// Resolve 'scaled_properties' against the registry, once this material
+  /// Resolve 'scaled_properties' against the registry, once this property object
   /// has declared its properties.
-  void setupPropertyFactors(const MaterialPropertyRegistry & registry);
+  void setupPropertyFactors(const PropertyRegistry & registry);
   /// Multiply the scaled properties by their factors; called by the problem
   /// right after computeProperties().
   void applyPropertyFactors(QpContext & ctx) const;

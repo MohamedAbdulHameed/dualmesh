@@ -55,16 +55,7 @@ class BeamStiffness:
         return self.coupling / self.bending
 
 
-def beam_stiffness(
-    modulus_top: float,
-    modulus_bottom: float,
-    power_law_index: float,
-    height: float,
-    width: float = 1.0,
-    poisson_ratio: float = 0.3,
-    shear_correction_factor: float = 5.0 / 6.0,
-    plate: bool = False,
-) -> BeamStiffness:
+def beam_stiffness(modulus_top: float, modulus_bottom: float, power_law_index: float, height: float, width: float = 1.0, poissons_ratio: float = 0.3, shear_correction_factor: float = 5.0 / 6.0, plate: bool = False) -> BeamStiffness:
     r"""Closed-form stiffnesses of a power-law functionally graded section.
 
     ``modulus_top`` is :math:`E_1` (at :math:`z = +h/2`) and ``modulus_bottom``
@@ -81,38 +72,23 @@ def beam_stiffness(
     m = e1 / e2
     extensional = e2 * b * h * (m + n) / (1 + n)
     coupling = e2 * b * h**2 * (m - 1) * n / (2 * (1 + n) * (2 + n))
-    bending = (
-        e2
-        * b
-        * h**3
-        * (3 * m * (2 + n + n**2) + 8 * n + 3 * n**2 + n**3)
-        / (12 * (1 + n) * (2 + n) * (3 + n))
-    )
+    bending = e2 * b * h**3 * (3 * m * (2 + n + n**2) + 8 * n + 3 * n**2 + n**3) / (12 * (1 + n) * (2 + n) * (3 + n))
     # The shear stiffness uses the shear modulus G = E / (2 (1 + nu)) and so
     # is not divided by (1 - nu^2), even for plates.
-    shear = shear_correction_factor * extensional / (2 * (1 + poisson_ratio))
-    factor = 1.0 / (1.0 - poisson_ratio**2) if plate else 1.0
+    shear = shear_correction_factor * extensional / (2 * (1 + poissons_ratio))
+    factor = 1.0 / (1.0 - poissons_ratio**2) if plate else 1.0
     extensional *= factor
     coupling *= factor
     bending *= factor
     return BeamStiffness(extensional, coupling, bending, shear)
 
 
-def modulus(
-    z: float, modulus_top: float, modulus_bottom: float, power_law_index: float, height: float
-) -> float:
+def modulus(z: float, modulus_top: float, modulus_bottom: float, power_law_index: float, height: float) -> float:
     """The through-thickness modulus :math:`E(z)` of the power-law profile."""
     return (modulus_top - modulus_bottom) * (0.5 + z / height) ** power_law_index + modulus_bottom
 
 
-def stiffness_by_quadrature(
-    modulus_top: float,
-    modulus_bottom: float,
-    power_law_index: float,
-    height: float,
-    width: float = 1.0,
-    num_points: int = 400,
-) -> tuple[float, float, float]:
+def stiffness_by_quadrature(modulus_top: float, modulus_bottom: float, power_law_index: float, height: float, width: float = 1.0, num_points: int = 400) -> tuple[float, float, float]:
     """``(A, B, D)`` obtained by numerical integration (used to check the formulas)."""
     import numpy as np
 
@@ -120,8 +96,4 @@ def stiffness_by_quadrature(
     z = z * height / 2
     w = w * height / 2
     e = np.array([modulus(zi, modulus_top, modulus_bottom, power_law_index, height) for zi in z])
-    return (
-        float(width * np.sum(w * e)),
-        float(width * np.sum(w * e * z)),
-        float(width * np.sum(w * e * z**2)),
-    )
+    return (float(width * np.sum(w * e)), float(width * np.sum(w * e * z)), float(width * np.sum(w * e * z**2)))

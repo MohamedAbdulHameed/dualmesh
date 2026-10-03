@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 //
-// Everything a kernel, boundary condition, or material may need at an
+// Everything a kernel, boundary condition, or property object may need at an
 // integration point: position, time, the solution and its gradient
 // (as AD numbers), lagged values for Picard iteration, old values for
-// transient problems, and the material properties computed at that point.
+// transient problems, and the properties computed at that point.
 #pragma once
 
 #include "dualmesh/core/ADReal.h"
@@ -68,22 +68,22 @@ public:
   std::vector<ADReal> u_other;
   Point x_other{0, 0, 0};
 
-  // ---- history (state) of stateful materials ------------------------------------
+  // ---- history (state) of stateful property objects ------------------------------------
   /// Where this point's history is kept: the owner (an element, or with
   /// state_domain 1 a cell-centred face) and a key unique within the owner.
-  /// An owner of -1 means that the point has no history (a stateful material
+  /// An owner of -1 means that the point has no history (a stateful property object
   /// then sees a zero old state and its new state is discarded).
   int state_domain = 0;
   Index state_owner = -1;
   std::uint64_t state_key = 0;
-  /// Filled by the problem before the materials run: the state at the start
+  /// Filled by the problem before the property objects run: the state at the start
   /// of the step and the place to write the new state, each the whole record
-  /// of the point (a material adds its own offset).
+  /// of the point (a property object adds its own offset).
   const double * state_old = nullptr;
   double * state_new = nullptr;
 
-  // ---- material properties ------------------------------------------------------
-  /// Storage for material properties (see MaterialPropertyRegistry).
+  // ---- properties ------------------------------------------------------
+  /// Storage for properties (see PropertyRegistry).
   std::vector<ADReal> properties;
   const ADReal & property(int id, int component = 0) const { return properties[id + component]; }
   ADReal & property(int id, int component = 0) { return properties[id + component]; }

@@ -22,18 +22,7 @@ from scipy import integrate, stats  # noqa: E402
 # ---------------------------------------------------------------------------
 # distributions
 # ---------------------------------------------------------------------------
-@pytest.mark.parametrize(
-    "dist",
-    [
-        uq.Normal(1.0, 0.3),
-        uq.Normal(1.0, 0.3, lower=0.2),
-        uq.Normal(1.0, 0.3, lower=0.9, upper=1.6),
-        uq.LogNormal(median=1.0, factor=10),
-        uq.LogNormal(median=2.0, sigma=0.4, lower=1.0, upper=5.0),
-        uq.Uniform(-1.0, 3.0),
-        uq.LogUniform(0.1, 10.0),
-    ],
-)
+@pytest.mark.parametrize("dist", [uq.Normal(1.0, 0.3), uq.Normal(1.0, 0.3, lower=0.2), uq.Normal(1.0, 0.3, lower=0.9, upper=1.6), uq.LogNormal(median=1.0, factor=10), uq.LogNormal(median=2.0, sigma=0.4, lower=1.0, upper=5.0), uq.Uniform(-1.0, 3.0), uq.LogUniform(0.1, 10.0)])
 def test_distribution_moments_and_quantiles(dist):
     """Mean and standard deviation against numerical integration of the
     density, the density integrates to one, and ppf inverts cdf."""
@@ -45,7 +34,7 @@ def test_distribution_moments_and_quantiles(dist):
     m2 = integrate.quad(lambda x: x * x * float(dist.pdf(x)), lo, hi, points=pts, limit=200)[0]
     assert total == pytest.approx(1.0, rel=1e-6)
     assert dist.mean == pytest.approx(m1, rel=1e-6, abs=1e-9)
-    assert dist.std == pytest.approx(math.sqrt(m2 - m1 * m1), rel=1e-5)
+    assert dist.standard_deviation == pytest.approx(math.sqrt(m2 - m1 * m1), rel=1e-5)
     u = np.linspace(0.01, 0.99, 25)
     assert np.allclose(dist.cdf(dist.ppf(u)), u, atol=1e-9)
     assert np.all(np.isinf(dist.logpdf(np.array([lo - 1.0]))) | (lo == -np.inf) | (lo <= 0))
@@ -72,7 +61,7 @@ def test_normal_upper_tail_truncation_is_accurate():
     assert x.min() >= 6.0 and x.max() <= 7.0
     ref = stats.truncnorm(6.0, 7.0)
     assert d.mean == pytest.approx(ref.mean(), rel=1e-10)
-    assert d.std == pytest.approx(ref.std(), rel=1e-7)
+    assert d.standard_deviation == pytest.approx(ref.std(), rel=1e-7)
 
 
 # ---------------------------------------------------------------------------
@@ -88,7 +77,7 @@ def test_propagate_linear_model_moments():
     inputs = {"a": uq.Normal(1.0, 0.1), "b": uq.Uniform(0.0, 1.0)}
     runs = uq.propagate(_linear, inputs, 4000, seed=3)
     assert runs.mean("y") == pytest.approx(3.5, abs=5e-3)
-    assert runs.std("y") ** 2 == pytest.approx(0.79, rel=0.02)
+    assert runs.standard_deviation("y") ** 2 == pytest.approx(0.79, rel=0.02)
     assert runs.outputs["v"].shape == (4000, 3)
     rho = runs.sensitivity("y")
     assert rho["b"] > 0.9 and abs(rho["a"]) < 0.3
@@ -211,7 +200,7 @@ def _ishigami_exact():
 
 def test_sobol_indices_of_the_ishigami_function():
     """First, total and second-order indices against the closed form
-    (Ishigami and Homma 1990; Saltelli et al. 2008), with the run count
+    (derived from the variance decomposition), with the run count
     n(2k+2) and intervals that hold the exact values."""
     inputs = {n: uq.Uniform(-math.pi, math.pi) for n in ("x1", "x2", "x3")}
     first, total, s13 = _ishigami_exact()
@@ -239,16 +228,35 @@ def test_sobol_on_a_gaussian_process_surrogate():
         assert s.total["output"][n] == pytest.approx(total[j], abs=0.06)
 
 
+def test_sobol_on_given_training_runs():
+    # Runs of propagate on a nested Sobol' design train the same surrogate as
+    # training_samples, and a larger design reuses the runs of a smaller one.
+    inputs = {n: uq.Uniform(-math.pi, math.pi) for n in ("x1", "x2", "x3")}
+    first, total, _ = _ishigami_exact()
+    runs = uq.propagate(_ishigami, inputs, 256, method="sobol")
+    s = uq.sobol(_ishigami, inputs, 1024, surrogate="gaussian_process", training=runs)
+    assert s.runs == 256
+    for j, n in enumerate(("x1", "x2", "x3")):
+        assert s.first_order["output"][n] == pytest.approx(first[j], abs=0.06)
+        assert s.total["output"][n] == pytest.approx(total[j], abs=0.06)
+    small = uq.propagate(_ishigami, inputs, 64, method="sobol")
+    assert np.array_equal(small.x, runs.x[:64])
+    lhs = uq.propagate(_ishigami, inputs, 200)
+    a = uq.sobol(_ishigami, inputs, 256, surrogate="gaussian_process", training=lhs)
+    b = uq.sobol(_ishigami, inputs, 256, surrogate="gaussian_process", training_samples=200)
+    assert a.total["output"] == pytest.approx(b.total["output"], abs=1e-12)
+    with pytest.raises(ValueError, match="not both"):
+        uq.sobol(_ishigami, inputs, 64, surrogate="gaussian_process", training=runs, training_samples=50)
+    with pytest.raises(ValueError, match="only with surrogate"):
+        uq.sobol(_ishigami, inputs, 64, training=runs)
+
+
 # ---------------------------------------------------------------------------
 # Gaussian process
 # ---------------------------------------------------------------------------
 def _branin(x):
     x1, x2 = 15 * x[:, 0] - 5, 15 * x[:, 1]
-    return (
-        (x2 - 5.1 / (4 * np.pi**2) * x1**2 + 5 / np.pi * x1 - 6) ** 2
-        + 10 * (1 - 1 / (8 * np.pi)) * np.cos(x1)
-        + 10
-    )
+    return (x2 - 5.1 / (4 * np.pi**2) * x1**2 + 5 / np.pi * x1 - 6) ** 2 + 10 * (1 - 1 / (8 * np.pi)) * np.cos(x1) + 10
 
 
 def test_gaussian_process_interpolates_and_predicts():
@@ -258,7 +266,7 @@ def test_gaussian_process_interpolates_and_predicts():
     gp = uq.GaussianProcess(nugget=0.0).fit(x, y)
     assert np.allclose(gp.predict(x), y, atol=1e-4 * np.ptp(y))
     xt = rng.random((400, 2))
-    pred, sd = gp.predict(xt, return_std=True)
+    pred, sd = gp.predict(xt, return_standard_deviation=True)
     q2 = 1 - np.sum((pred - _branin(xt)) ** 2) / np.sum((_branin(xt) - _branin(xt).mean()) ** 2)
     assert q2 > 0.99
     z = (pred - _branin(xt)) / sd
@@ -293,7 +301,7 @@ def test_gaussian_process_vector_output_keeps_the_discarded_variance():
     y = theta[:, :1] * np.exp(-(1 + 3 * theta[:, 1:]) * t)
     gp = uq.GaussianProcess(variance_kept=0.99).fit(theta, y)
     assert 1 <= gp.components < 6
-    pred, sd = gp.predict(theta[:5], return_std=True)
+    pred, sd = gp.predict(theta[:5], return_standard_deviation=True)
     assert pred.shape == (5, 40) and np.all(sd > 0)
     _, cov = gp.predict(theta[:2], return_cov=True)
     assert cov.shape == (2, 40, 40)
@@ -334,27 +342,15 @@ def _conjugate_case():
     return inputs, y, sig, mp, np.sqrt(np.diag(Sp))
 
 
-@pytest.mark.parametrize(
-    "surrogate,sampler",
-    [(None, "ensemble"), (None, "metropolis"), ("gaussian_process", "ensemble")],
-)
+@pytest.mark.parametrize("surrogate,sampler", [(None, "ensemble"), (None, "metropolis"), ("gaussian_process", "ensemble")])
 def test_calibration_recovers_the_conjugate_posterior(surrogate, sampler):
     """Linear model, normal prior and noise: the posterior is normal with
     the closed-form mean and covariance."""
     inputs, y, sig, mp, sp = _conjugate_case()
-    post = uq.calibrate(
-        _quadratic,
-        inputs,
-        {"y": y},
-        {"y": sig},
-        surrogate=surrogate,
-        sampler=sampler,
-        samples=12000,
-        seed=4,
-    )
+    post = uq.calibrate(_quadratic, inputs, {"y": y}, {"y": sig}, surrogate=surrogate, sampler=sampler, samples=12000, seed=4)
     for j, n in enumerate("abc"):
         assert post.mean(n) == pytest.approx(mp[j], abs=0.1 * sp[j] + 0.002)
-        assert post.std(n) == pytest.approx(sp[j], rel=0.1)
+        assert post.standard_deviation(n) == pytest.approx(sp[j], rel=0.1)
         assert post.r_hat[n] < 1.02
         assert post.effective_sample_size[n] > 300
     assert post.contraction["a"] > 0.9
@@ -375,14 +371,7 @@ def test_calibration_flags_parameters_the_data_do_not_inform():
     assert abs(post.contraction["b"]) < 0.1
     assert "not identified by the data" in post.summary()
     # Data far above the prior push the parameter to the upper end.
-    far = uq.calibrate(
-        _only_a,
-        {"a": uq.Normal(1.0, 0.1, upper=1.3), "b": inputs["b"]},
-        {"y": 3.0 * T_OBS},
-        {"y": 0.02},
-        surrogate=None,
-        samples=4000,
-    )
+    far = uq.calibrate(_only_a, {"a": uq.Normal(1.0, 0.1, upper=1.3), "b": inputs["b"]}, {"y": 3.0 * T_OBS}, {"y": 0.02}, surrogate=None, samples=4000)
     assert far.at_bound["a"] == "upper"
 
 
@@ -390,26 +379,27 @@ def _slope(theta):
     return {"y": theta * T_OBS}
 
 
-def test_discrepancy_removes_the_bias_of_a_missing_term():
-    """Measurements y = t + 0.3 t^2 of a model y = theta t whose nominal
-    theta = 1 is right: without a discrepancy term the missing t^2 biases
-    theta by about 0.23; the modular discrepancy term removes the bias."""
+def test_discrepancy_widens_the_posterior_and_does_not_hold_it_at_the_prior():
+    """Measurements y = t + 0.3 t^2 of a model y = theta t. Without a
+    discrepancy theta = 1.24 with an interval as narrow as the noise allows.
+    With the discrepancy integrated out (Kennedy and O'Hagan 2001) the
+    interval is many times wider, the posterior does not depend on the prior
+    mean, and the predictive interval covers every measurement. A
+    discrepancy fitted at the prior mean and subtracted from the data holds
+    the posterior at the prior mean whatever the data (Wu et al. 2018,
+    Sect. 5): with prior means 0.7, 1.0 and 1.4 it gave 0.70, 1.00 and 1.40,
+    each with a standard deviation of 0.009."""
     y = T_OBS + 0.3 * T_OBS**2
-    inputs = {"theta": uq.Normal(1.0, 0.5)}
-    plain = uq.calibrate(_slope, inputs, {"y": y}, {"y": 0.01}, surrogate=None, samples=6000)
-    fixed = uq.calibrate(
-        _slope,
-        inputs,
-        {"y": y},
-        {"y": 0.01},
-        surrogate=None,
-        samples=6000,
-        discrepancy="gaussian_process",
-        locations={"y": T_OBS},
-    )
-    assert plain.mean("theta") - 1.0 > 0.15
-    assert abs(fixed.mean("theta") - 1.0) < 0.05
-    assert fixed.discrepancy["y"][0].shape == (8,)
+    plain = uq.calibrate(_slope, {"theta": uq.Normal(1.0, 0.5)}, {"y": y}, {"y": 0.01}, surrogate=None, samples=6000)
+    assert plain.mean("theta") == pytest.approx(1.24, abs=0.01)
+    means = []
+    for prior_mean in (0.7, 1.0, 1.4):
+        post = uq.calibrate(_slope, {"theta": uq.Normal(prior_mean, 0.5)}, {"y": y}, {"y": 0.01}, surrogate=None, samples=6000, discrepancy="gaussian_process", locations={"y": T_OBS})
+        means.append(post.mean("theta"))
+        assert post.standard_deviation("theta") > 5 * plain.standard_deviation("theta")
+        assert post.predict()["y"]["coverage"] == 1.0
+    assert max(means) - min(means) < 0.03
+    assert set(post.discrepancy["y"]) == {"variance", "length_scale"}
 
 
 def test_calibration_input_errors():
@@ -423,115 +413,78 @@ def test_calibration_input_errors():
 
 
 # ---------------------------------------------------------------------------
-# YAML input
+# the bus bar example and the JSON summaries
 # ---------------------------------------------------------------------------
 EXAMPLES = __import__("pathlib").Path(__file__).resolve().parents[2] / "examples"
 
 
-def _yaml_study(tmp_path, block, inline=False):
-    yaml = pytest.importorskip("yaml")
-    from dualmesh.uq._input import run_study
-
-    if inline:
-        with open(EXAMPLES / "bus_bar.yaml") as stream:
-            document = yaml.safe_load(stream)
-        document["uq"] = block
-    else:
-        (tmp_path / "bus_bar.yaml").write_text((EXAMPLES / "bus_bar.yaml").read_text())
-        document = {"uq": {"model": "bus_bar.yaml", **block}}
-    return run_study(document, tmp_path, verbose=False)
-
-
-INPUTS_YAML = {
-    "conductivity": {
-        "distribution": "normal",
-        "mean": 20.0,
-        "std": 1.0,
-        "parameter": "kernels/conduction/thermal_conductivity",
-    },
-    "heat_source": {
-        "distribution": "normal",
-        "mean": 1.0,
-        "std": 0.05,
-        "parameter": "kernels/heating/heat_source",
-        "apply": "factor",
-    },
-}
-
-
-def test_yaml_propagation_equals_python(tmp_path):
-    """The YAML study of examples/bus_bar_uq.yaml gives the same runs as
-    the Python model of examples/bus_bar_uq.py."""
+def _bus_bar_example():
     import importlib.util
 
-    block = dict(
-        study="propagate",
-        inputs=INPUTS_YAML,
-        outputs=["hottest"],
-        samples=16,
-        seed=1,
-        results="out.json",
-    )
-    runs = _yaml_study(tmp_path, block)
     spec = importlib.util.spec_from_file_location("bus_bar_uq", EXAMPLES / "bus_bar_uq.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    return module
+
+
+def test_bus_bar_propagation_is_reproducible_and_written_to_json(tmp_path):
+    """The study of examples/bus_bar_uq.py gives the same runs from the same
+    seed, and its summary is written to JSON."""
+    import json
+
+    module = _bus_bar_example()
     inputs = {k: module.inputs[k] for k in ("conductivity", "heat_source")}
-    python = uq.propagate(module.bus_bar, inputs, 16, seed=1)
-    assert np.allclose(runs.outputs["hottest"], python.outputs["hottest"], rtol=1e-12)
-    assert (tmp_path / "out.json").exists()
-    inline = _yaml_study(tmp_path, dict(block, results=None), inline=True)
-    assert np.allclose(inline.outputs["hottest"], runs.outputs["hottest"], rtol=1e-12)
+    runs = uq.propagate(module.bus_bar, inputs, 16, seed=1)
+    again = uq.propagate(module.bus_bar, inputs, 16, seed=1)
+    assert np.allclose(runs.outputs["hottest"], again.outputs["hottest"], rtol=1e-12)
+    runs.write_json(tmp_path / "out.json")
+    numbers = json.loads((tmp_path / "out.json").read_text())
+    assert numbers["study"] == "propagate" and numbers["runs"] == 16 and numbers["failed_runs"] == 0
+    assert numbers["outputs"]["hottest"]["mean"] == pytest.approx(runs.mean("hottest"))
+    assert set(numbers["outputs"]["hottest"]["spearman"]) == {"conductivity", "heat_source"}
 
 
-def test_yaml_sobol_and_calibration(tmp_path):
-    s = _yaml_study(
-        tmp_path, dict(study="sobol", inputs=INPUTS_YAML, outputs=["hottest"], samples=64)
-    )
+def test_bus_bar_sobol_and_calibration_summaries(tmp_path):
+    import json
+
+    module = _bus_bar_example()
+    inputs = {k: module.inputs[k] for k in ("conductivity", "heat_source")}
+    s = uq.sobol(module.bus_bar, inputs, 64)
     assert s.runs == 64 * 4
     assert s.total["hottest"]["conductivity"] > 0.2
+    s.write_json(tmp_path / "sobol.json")
+    assert json.loads((tmp_path / "sobol.json").read_text())["total"]["hottest"]["conductivity"] == pytest.approx(s.total["hottest"]["conductivity"])
     # Calibrate the conductivity on a measurement made with k = 21.
-    nominal = _yaml_study(
-        tmp_path,
-        dict(
-            study="propagate",
-            outputs=["hottest"],
-            samples=1,
-            inputs={
-                "conductivity": {
-                    "distribution": "uniform",
-                    "lower": 20.999999,
-                    "upper": 21.0,
-                    "parameter": "kernels/conduction/thermal_conductivity",
-                }
-            },
-        ),
-    )
-    measured = float(nominal.outputs["hottest"][0])
-    post = _yaml_study(
-        tmp_path,
-        dict(
-            study="calibrate",
-            inputs={"conductivity": INPUTS_YAML["conductivity"]},
-            outputs=["hottest"],
-            observed={"hottest": measured},
-            noise={"hottest": 0.2},
-            training_samples=12,
-            samples=4000,
-        ),
-    )
+    measured = module.bus_bar(conductivity=21.0)["hottest"]
+    post = uq.calibrate(module.bus_bar, {"conductivity": inputs["conductivity"]}, {"hottest": measured}, {"hottest": 0.2}, training_samples=12, samples=4000)
     assert post.mean("conductivity") == pytest.approx(21.0, abs=0.15)
+    post.write_json(tmp_path / "posterior.json")
+    numbers = json.loads((tmp_path / "posterior.json").read_text())
+    assert numbers["parameters"]["conductivity"]["mean"] == pytest.approx(post.mean("conductivity"))
 
 
-def test_yaml_errors(tmp_path):
-    with pytest.raises(ValueError, match="Did you mean 'samples'"):
-        _yaml_study(
-            tmp_path, dict(study="propagate", inputs=INPUTS_YAML, outputs=["hottest"], sample=4)
-        )
-    bad = {"k": dict(INPUTS_YAML["conductivity"], parameter="kernels/conductor/k")}
-    with pytest.raises(ValueError, match="no 'kernels/conductor'"):
-        _yaml_study(tmp_path, dict(study="propagate", inputs=bad, outputs=["hottest"], samples=2))
-    with pytest.raises(RuntimeError, match="no post-processor 'coldest'"):
-        _yaml_study(
-            tmp_path, dict(study="propagate", inputs=INPUTS_YAML, outputs=["coldest"], samples=2)
-        )
+def test_jsonable_writes_non_finite_values_as_null():
+    from dualmesh.parameters import jsonable
+
+    assert jsonable({"a": np.array([1.0, np.nan]), "b": (np.int64(2), math.inf)}) == {"a": [1.0, None], "b": [2, None]}
+
+
+def test_split_rhat_is_rank_normalized_and_folded():
+    """Vehtari et al. (Bayesian Analysis 2021), Sects. 4.1 and 4.2: the
+    split R-hat of rank-normalized draws, and the maximum with that of the
+    folded draws |theta - median|, which detects chains with the same
+    location but different scales; the classic split R-hat does not."""
+    from dualmesh.uq.calibrate import _classic_split_rhat, _normal_scores, _split_rhat
+
+    rng = np.random.default_rng(1)
+    mixed = rng.standard_normal((2000, 4, 1))
+    assert _split_rhat(mixed) < 1.01
+    scales = mixed * np.array([1.0, 1.0, 1.0, 3.0])[None, :, None]
+    assert _split_rhat(scales) > 1.05
+    # The classic split R-hat of the same draws misses the different scales.
+    halves = np.column_stack([scales[:1000, c, 0] for c in range(4)] + [scales[1000:, c, 0] for c in range(4)])
+    assert _classic_split_rhat(halves) < 1.01
+    # The rank-normalized (bulk) part is invariant to a monotone transformation.
+    assert _classic_split_rhat(_normal_scores(np.exp(halves))) == pytest.approx(_classic_split_rhat(_normal_scores(halves)), rel=1e-12)
+    # Defined for heavy tails (Cauchy draws in stationary chains).
+    assert _split_rhat(rng.standard_cauchy((2000, 4, 1))) < 1.01

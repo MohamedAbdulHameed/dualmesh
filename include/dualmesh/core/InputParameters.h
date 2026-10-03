@@ -69,7 +69,7 @@ public:
   void setClassDescription(const std::string & d) { _class_description = d; }
   const std::string & classDescription() const { return _class_description; }
 
-  // ---- assignment (from Python/input files) ------------------------------
+  // ---- assignment (from Python) --------------------------------------------
   /// Assign a value; performs lenient conversions (int->real, scalar->list).
   void set(const std::string & name, ParameterValue value);
   /// Set a parameter without declaration checks (framework-internal).

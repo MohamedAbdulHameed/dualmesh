@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 //
 // Base-class implementations: Object, ResidualObject, Kernel, boundary
-// conditions, nodal loads, materials, and the Factory.
+// conditions, nodal loads, property objects, and the Factory.
 #include "dualmesh/base/Factory.h"
 #include "dualmesh/base/Kernel.h"
-#include "dualmesh/base/Material.h"
 #include "dualmesh/base/Problem.h"
+#include "dualmesh/base/Property.h"
 
 #include <algorithm>
 #include <cctype>
@@ -167,12 +167,29 @@ IntegratedBC::validParams()
 {
   InputParameters p = ResidualObject::validParams();
   p.addRequired("boundary", ParameterKind::StringList, "Side sets where the condition applies.");
+  // A boundary condition may name one variable or, through 'variables',
+  // several, in which case Problem::addObject creates one copy per variable.
+  p.addOptional("variable",
+                ParameterKind::String,
+                std::string(),
+                "The variable (equation) this condition acts on. Give either 'variable' or "
+                "'variables'. The two define the same thing and must not be used together.");
+  p.addOptional("variables",
+                ParameterKind::StringList,
+                std::vector<std::string>{},
+                "Several variables on which the same condition is imposed, e.g., [u, v, w]. The "
+                "condition is then created once per variable, under the names <name>_<variable>, "
+                "with all its other parameters equal. Give either 'variable' or 'variables'. The "
+                "two define the same thing and must not be used together.");
   return p;
 }
 
 IntegratedBC::IntegratedBC(const InputParameters & params) : ResidualObject(params)
 {
   _boundaries = params.getStringList("boundary");
+  if (_var_name.empty())
+    throw InputError("Boundary condition '" + _name +
+                     "' needs 'variable' (or 'variables', a list of variables).");
 }
 
 void
@@ -233,12 +250,29 @@ NodalBC::validParams()
   p.addRequired("boundary",
                 ParameterKind::StringList,
                 "Node sets or side sets where the value is prescribed.");
+  // A boundary condition may name one variable or, through 'variables',
+  // several, in which case Problem::addObject creates one copy per variable.
+  p.addOptional("variable",
+                ParameterKind::String,
+                std::string(),
+                "The variable (equation) this condition acts on. Give either 'variable' or "
+                "'variables'. The two define the same thing and must not be used together.");
+  p.addOptional("variables",
+                ParameterKind::StringList,
+                std::vector<std::string>{},
+                "Several variables on which the same condition is imposed, e.g., [u, v, w]. The "
+                "condition is then created once per variable, under the names <name>_<variable>, "
+                "with all its other parameters equal. Give either 'variable' or 'variables'. The "
+                "two define the same thing and must not be used together.");
   return p;
 }
 
 NodalBC::NodalBC(const InputParameters & params) : ResidualObject(params)
 {
   _boundaries = params.getStringList("boundary");
+  if (_var_name.empty())
+    throw InputError("Boundary condition '" + _name +
+                     "' needs 'variable' (or 'variables', a list of variables).");
 }
 
 void
@@ -354,15 +388,15 @@ NodalLoad::computeValue(const Point & x, double t) const
   return _value->value(x, t);
 }
 
-// ---- Materials -------------------------------------------------------------------------
+// ---- Property objects -------------------------------------------------------------------------
 int
-MaterialPropertyRegistry::declare(const std::string & name, int components)
+PropertyRegistry::declare(const std::string & name, int components)
 {
   auto it = _props.find(name);
   if (it != _props.end())
   {
     if (it->second.second != components)
-      throw InputError("Material property '" + name + "' declared with different sizes.");
+      throw InputError("Property '" + name + "' declared with different sizes.");
     return it->second.first;
   }
   const int id = _size;
@@ -372,13 +406,13 @@ MaterialPropertyRegistry::declare(const std::string & name, int components)
 }
 
 int
-MaterialPropertyRegistry::id(const std::string & name) const
+PropertyRegistry::id(const std::string & name) const
 {
   auto it = _props.find(name);
   if (it == _props.end())
   {
     std::ostringstream os;
-    os << "Material property '" << name << "' is not provided by any material. Available:";
+    os << "Property '" << name << "' is not provided by any property object. Available:";
     for (const auto & [n, _] : _props)
       os << " " << n;
     throw InputError(os.str());
@@ -387,27 +421,29 @@ MaterialPropertyRegistry::id(const std::string & name) const
 }
 
 int
-MaterialPropertyRegistry::components(const std::string & name) const
+PropertyRegistry::components(const std::string & name) const
 {
   id(name);
   return _props.at(name).second;
 }
 
 InputParameters
-Material::validParams()
+Property::validParams()
 {
   InputParameters p = Object::validParams();
-  p.addOptional("block",
-                ParameterKind::StringList,
-                std::vector<std::string>{},
-                "Blocks (subdomains) where this material applies. An empty list selects every "
-                "block.");
-  p.addOptional("scaled_properties",
-                ParameterKind::StringList,
-                std::vector<std::string>{},
-                "Properties computed by this material to multiply by the matching entries of "
-                "'property_factors', for sensitivity and uncertainty studies (for example "
-                "thermal_conductivity). Default none.");
+  p.addOptional(
+      "block",
+      ParameterKind::StringList,
+      std::vector<std::string>{},
+      "Blocks (subdomains) where this property object applies. An empty list selects every "
+      "block.");
+  p.addOptional(
+      "scaled_properties",
+      ParameterKind::StringList,
+      std::vector<std::string>{},
+      "Properties computed by this property object to multiply by the matching entries of "
+      "'property_factors', for sensitivity and uncertainty studies (for example "
+      "thermal_conductivity). Default none.");
   p.addOptional("property_factors",
                 ParameterKind::RealList,
                 std::vector<double>{},
@@ -415,7 +451,7 @@ Material::validParams()
   return p;
 }
 
-Material::Material(const InputParameters & params) : Object(params)
+Property::Property(const InputParameters & params) : Object(params)
 {
   if (_params.getStringList("scaled_properties").size() !=
       _params.getRealList("property_factors").size())
@@ -424,7 +460,7 @@ Material::Material(const InputParameters & params) : Object(params)
 }
 
 void
-Material::setupPropertyFactors(const MaterialPropertyRegistry & registry)
+Property::setupPropertyFactors(const PropertyRegistry & registry)
 {
   _property_factors.clear();
   const auto & names = _params.getStringList("scaled_properties");
@@ -433,14 +469,14 @@ Material::setupPropertyFactors(const MaterialPropertyRegistry & registry)
   {
     if (!registry.has(names[i]))
       throw InputError("'" + name() + "': cannot scale '" + names[i] +
-                       "', which no material declares.");
+                       "', which no property object declares.");
     _property_factors.emplace_back(
         registry.id(names[i]), registry.components(names[i]), factors[i]);
   }
 }
 
 void
-Material::applyPropertyFactors(QpContext & ctx) const
+Property::applyPropertyFactors(QpContext & ctx) const
 {
   for (const auto & [id, n, f] : _property_factors)
     for (int c = 0; c < n; ++c)
@@ -448,7 +484,7 @@ Material::applyPropertyFactors(QpContext & ctx) const
 }
 
 void
-Material::initialSetup(Problem & problem)
+Property::initialSetup(Problem & problem)
 {
   _blocks.clear();
   for (const auto & b : _params.getStringList("block"))
@@ -456,7 +492,7 @@ Material::initialSetup(Problem & problem)
 }
 
 int
-Material::coupledVariable(Problem & problem, const std::string & param) const
+Property::coupledVariable(Problem & problem, const std::string & param) const
 {
   return problem.variableIndex(_params.getString(param));
 }
@@ -475,8 +511,8 @@ categoryName(ObjectCategory c)
     return "nodal_boundary_condition";
   case ObjectCategory::NodalLoad:
     return "nodal_load";
-  case ObjectCategory::Material:
-    return "material";
+  case ObjectCategory::Property:
+    return "property";
   }
   return "Unknown";
 }
@@ -496,6 +532,7 @@ Factory::Factory()
   registerFluidObjects(*this);
   registerFuelObjects(*this);
   registerParsedObjects(*this);
+  registerNeutronicsObjects(*this);
 }
 
 const Factory::Entry &

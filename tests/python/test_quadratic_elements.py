@@ -40,45 +40,14 @@ def distorted_square(num_elements=3, element_type="Quad9"):
     square, but no element is a parallelogram and, for a quadratic mesh, no
     edge is straight.
     """
-    mesh = dm.generate_rectangle_mesh(
-        x_min=0.0,
-        x_max=1.0,
-        y_min=0.0,
-        y_max=1.0,
-        num_x_elements=num_elements,
-        num_y_elements=num_elements,
-        element_type=element_type,
-    )
-    mesh.transform_nodes(
-        lambda x, y, z: [
-            x + 0.3 * x * (1 - x) * y * (1 - y),
-            y - 0.2 * x * (1 - x) * y * (1 - y),
-            0.0,
-        ]
-    )
+    mesh = dm.generate_rectangle_mesh(x_min=0.0, x_max=1.0, y_min=0.0, y_max=1.0, num_x_elements=num_elements, num_y_elements=num_elements, element_type=element_type)
+    mesh.transform_nodes(lambda x, y, z: [x + 0.3 * x * (1 - x) * y * (1 - y), y - 0.2 * x * (1 - x) * y * (1 - y), 0.0])
     return mesh
 
 
 def distorted_cube(num_elements=2, element_type="Hex27"):
-    mesh = dm.generate_box_mesh(
-        x_min=0.0,
-        x_max=1.0,
-        y_min=0.0,
-        y_max=1.0,
-        z_min=0.0,
-        z_max=1.0,
-        num_x_elements=num_elements,
-        num_y_elements=num_elements,
-        num_z_elements=num_elements,
-        element_type=element_type,
-    )
-    mesh.transform_nodes(
-        lambda x, y, z: [
-            x + 0.2 * x * (1 - x) * y,
-            y - 0.15 * y * (1 - y) * z,
-            z + 0.1 * z * (1 - z) * x,
-        ]
-    )
+    mesh = dm.generate_box_mesh(x_min=0.0, x_max=1.0, y_min=0.0, y_max=1.0, z_min=0.0, z_max=1.0, num_x_elements=num_elements, num_y_elements=num_elements, num_z_elements=num_elements, element_type=element_type)
+    mesh.transform_nodes(lambda x, y, z: [x + 0.2 * x * (1 - x) * y, y - 0.15 * y * (1 - y) * z, z + 0.1 * z * (1 - z) * x])
     return mesh
 
 
@@ -103,15 +72,7 @@ def test_promotion_gives_the_expected_number_of_nodes(linear, num_nodes):
         mesh = dm.generate_line_mesh(start=0.0, end=1.0, num_elements=4)
         expected_elements = 4
     else:
-        mesh = dm.generate_rectangle_mesh(
-            x_min=0.0,
-            x_max=1.0,
-            y_min=0.0,
-            y_max=1.0,
-            num_x_elements=2,
-            num_y_elements=2,
-            element_type="Tri3" if linear == "Tri6" else linear,
-        )
+        mesh = dm.generate_rectangle_mesh(x_min=0.0, x_max=1.0, y_min=0.0, y_max=1.0, num_x_elements=2, num_y_elements=2, element_type="Tri3" if linear == "Tri6" else linear)
         expected_elements = mesh.num_elements
     promoted = mesh.second_order()
     assert promoted.num_elements == expected_elements
@@ -122,20 +83,13 @@ def test_promotion_gives_the_expected_number_of_nodes(linear, num_nodes):
 
 
 def test_promotion_keeps_the_boundary_sets():
-    mesh = dm.generate_rectangle_mesh(
-        x_min=0.0, x_max=1.0, y_min=0.0, y_max=2.0, num_x_elements=3, num_y_elements=3
-    )
+    mesh = dm.generate_rectangle_mesh(x_min=0.0, x_max=1.0, y_min=0.0, y_max=2.0, num_x_elements=3, num_y_elements=3)
     promoted = mesh.second_order()
     assert sorted(promoted.sideset_names()) == sorted(mesh.sideset_names())
     # A side set now covers the mid-edge nodes as well, so every node the side
     # set touches is on the geometric boundary it names.
     points = np.asarray(promoted.points())
-    for name, coordinate, value in (
-        ("left", 0, 0.0),
-        ("right", 0, 1.0),
-        ("bottom", 1, 0.0),
-        ("top", 1, 2.0),
-    ):
+    for name, coordinate, value in (("left", 0, 0.0), ("right", 0, 1.0), ("bottom", 1, 0.0), ("top", 1, 2.0)):
         ids = promoted.boundary_nodes(name)
         assert len(ids) == 7  # 4 corner nodes and 3 mid-edge nodes
         assert points[ids, coordinate] == pytest.approx(value)
@@ -154,11 +108,7 @@ def test_the_serendipity_elements_are_refused_by_the_dual_mesh_methods_only():
     cell-centred finite volume method needs only its geometry, so the mesh is
     accepted and only the two methods that integrate over control domains
     refuse it, naming the reason and the methods that do work."""
-    mesh = dm.mesh_from_arrays(
-        [[0, 0], [1, 0], [1, 1], [0, 1], [0.5, 0], [1, 0.5], [0.5, 1], [0, 0.5]],
-        [[0, 1, 2, 3, 4, 5, 6, 7]],
-        element_type="Quad8",
-    )
+    mesh = dm.mesh_from_arrays([[0, 0], [1, 0], [1, 1], [0, 1], [0.5, 0], [1, 0.5], [0.5, 1], [0, 0.5]], [[0, 1, 2, 3, 4, 5, 6, 7]], element_type="Quad8")
     for method in ("dmcdm", "hfvm"):
         with pytest.raises(ValueError, match="no interior node.*method='fem'"):
             dm.Problem(mesh, method=method)
@@ -189,13 +139,7 @@ def test_linear_field_is_exact_in_two_dimensions(element_type, method):
     problem = dm.Problem(mesh, method=method)
     problem.add_variable("u")
     problem.add_kernel("diffusion", "diffusion", variable="u")
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "all",
-        variable="u",
-        boundary=mesh.sideset_names(),
-        value=exact,
-    )
+    problem.add_boundary_condition("Dirichlet_boundary_condition", "all", variable="u", boundary=mesh.sideset_names(), value=exact)
     problem.solve()
     points = problem.entity_points()
     expected = 1.0 + 2.0 * points[:, 0] - 3.0 * points[:, 1]
@@ -214,13 +158,7 @@ def test_linear_field_is_exact_in_three_dimensions(element_type, method):
     problem = dm.Problem(mesh, method=method)
     problem.add_variable("u")
     problem.add_kernel("diffusion", "diffusion", variable="u")
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "all",
-        variable="u",
-        boundary=mesh.sideset_names(),
-        value=exact,
-    )
+    problem.add_boundary_condition("Dirichlet_boundary_condition", "all", variable="u", boundary=mesh.sideset_names(), value=exact)
     problem.solve()
     points = problem.entity_points()
     expected = 1.0 + 2.0 * points[:, 0] - 3.0 * points[:, 1] + 0.5 * points[:, 2]
@@ -234,32 +172,12 @@ def poisson_error(num_elements, element_type, method, quadrature="automatic"):
     """Nodal error for -div(grad u) = 2 pi^2 sin(pi x) sin(pi y) on the unit
     square with u = 0 on the boundary, whose solution is
     u = sin(pi x) sin(pi y)."""
-    mesh = dm.generate_rectangle_mesh(
-        x_min=0.0,
-        x_max=1.0,
-        y_min=0.0,
-        y_max=1.0,
-        num_x_elements=num_elements,
-        num_y_elements=num_elements,
-        element_type=element_type,
-    )
+    mesh = dm.generate_rectangle_mesh(x_min=0.0, x_max=1.0, y_min=0.0, y_max=1.0, num_x_elements=num_elements, num_y_elements=num_elements, element_type=element_type)
     problem = dm.Problem(mesh, method=method)
     problem.add_variable("u")
     problem.add_kernel("diffusion", "diffusion", variable="u", quadrature=quadrature)
-    problem.add_kernel(
-        "body_force",
-        "source",
-        variable="u",
-        value=lambda x, y, z, t: 2.0 * np.pi**2 * np.sin(np.pi * x) * np.sin(np.pi * y),
-        quadrature=quadrature,
-    )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "walls",
-        variable="u",
-        boundary=mesh.sideset_names(),
-        value=0.0,
-    )
+    problem.add_kernel("body_force", "source", variable="u", value=lambda x, y, z, t: 2.0 * np.pi**2 * np.sin(np.pi * x) * np.sin(np.pi * y), quadrature=quadrature)
+    problem.add_boundary_condition("Dirichlet_boundary_condition", "walls", variable="u", boundary=mesh.sideset_names(), value=0.0)
     problem.solve()
     points = problem.entity_points()
     exact = np.sin(np.pi * points[:, 0]) * np.sin(np.pi * points[:, 1])
@@ -331,26 +249,12 @@ def test_one_dimensional_dual_mesh_on_quadratic_elements_equals_the_refined_line
     """
 
     def solve(num_elements, element_type):
-        mesh = dm.generate_line_mesh(
-            start=0.0, end=1.0, num_elements=num_elements, element_type=element_type
-        )
+        mesh = dm.generate_line_mesh(start=0.0, end=1.0, num_elements=num_elements, element_type=element_type)
         problem = dm.Problem(mesh, method="dmcdm")
         problem.add_variable("u")
         problem.add_kernel("diffusion", "diffusion", variable="u", quadrature="gauss8")
-        problem.add_kernel(
-            "body_force",
-            "source",
-            variable="u",
-            value=lambda x, y, z, t: np.pi**2 * np.sin(np.pi * x),
-            quadrature="gauss8",
-        )
-        problem.add_boundary_condition(
-            "Dirichlet_boundary_condition",
-            "ends",
-            variable="u",
-            boundary=["left", "right"],
-            value=0.0,
-        )
+        problem.add_kernel("body_force", "source", variable="u", value=lambda x, y, z, t: np.pi**2 * np.sin(np.pi * x), quadrature="gauss8")
+        problem.add_boundary_condition("Dirichlet_boundary_condition", "ends", variable="u", boundary=["left", "right"], value=0.0)
         problem.solve()
         order = np.argsort(problem.entity_points()[:, 0])
         return problem.values("u")[order]
@@ -370,13 +274,7 @@ def test_curved_boundaries_are_resolved_to_fourth_order(element_type):
     exact_area = 0.25 * np.pi * (2.0**2 - 1.0**2)
 
     def area_error(num_elements, etype):
-        mesh = dm.generate_annulus_mesh(
-            inner_radius=1.0,
-            outer_radius=2.0,
-            num_radial_elements=num_elements,
-            num_angular_elements=num_elements,
-            element_type=etype,
-        )
+        mesh = dm.generate_annulus_mesh(inner_radius=1.0, outer_radius=2.0, num_radial_elements=num_elements, num_angular_elements=num_elements, element_type=etype)
         problem = dm.Problem(mesh)
         problem.add_variable("u")
         problem.set_values("u", np.ones(len(problem.entity_points())))
@@ -407,11 +305,7 @@ def test_a_quadratic_solution_is_reproduced_exactly(element_type, method):
     represent, and neither method reproduces it exactly.  The patch test above,
     which uses a linear field, is the one that must pass on a curved mesh.
     """
-    mesh = dm.generate_rectangle_mesh(
-        x_coordinates=[0.0, 0.3, 0.7, 1.0],
-        y_coordinates=[0.0, 0.45, 0.6, 1.0],
-        element_type=element_type,
-    )
+    mesh = dm.generate_rectangle_mesh(x_coordinates=[0.0, 0.3, 0.7, 1.0], y_coordinates=[0.0, 0.45, 0.6, 1.0], element_type=element_type)
 
     def exact(x, y, z=0.0, t=0.0):
         return 1.0 + x - 2.0 * y + 3.0 * x**2 - x * y + y**2
@@ -420,13 +314,7 @@ def test_a_quadratic_solution_is_reproduced_exactly(element_type, method):
     problem.add_variable("u")
     problem.add_kernel("diffusion", "diffusion", variable="u")
     problem.add_kernel("body_force", "source", variable="u", value=-8.0)
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "all",
-        variable="u",
-        boundary=mesh.sideset_names(),
-        value=exact,
-    )
+    problem.add_boundary_condition("Dirichlet_boundary_condition", "all", variable="u", boundary=mesh.sideset_names(), value=exact)
     problem.solve()
     points = problem.entity_points()
     assert problem.values("u") == pytest.approx(exact(points[:, 0], points[:, 1]), abs=1e-10)

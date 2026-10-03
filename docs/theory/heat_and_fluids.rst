@@ -194,7 +194,7 @@ time, by a polynomial in the temperature:
    \left( c_0 + c_1 T + c_2 T^2 + \cdots \right) .
 
 The base value :math:`k_0` is the ``thermal_conductivity`` parameter, or a
-material property when ``thermal_conductivity_property`` names one.  Naming a
+property when ``thermal_conductivity_property`` names one.  Naming a
 property replaces :math:`k_0` alone, and the polynomial still multiplies it.
 The coefficients are the ``temperature_polynomial`` list, evaluated by Horner's
 rule from the highest downwards.  Two details of :eq:`kpoly` require attention.
@@ -431,7 +431,7 @@ optionally, a body force.  Term by term:
   :math:`(2\mu\,\partial u/\partial x,\ \mu(\partial u/\partial y +
   \partial v/\partial x))`.  The viscosity is evaluated from position and time
   only, which makes this kernel Newtonian.  A shear-rate dependent viscosity
-  requires a material and a kernel written for the purpose.
+  requires a property object and a kernel written for the purpose.
 * ``penalty_incompressibility`` contributes the flux
   :math:`\mathbf{F} = \gamma (\nabla \cdot \mathbf{v}) \mathbf{e}_i`, that is
   :math:`\gamma (\partial u / \partial x + \partial v / \partial y +
@@ -452,11 +452,11 @@ optionally, a body force.  Term by term:
 Each object takes the same ``velocities`` list, in coordinate order, and a
 zero-based ``component`` index into it.  The index is range checked, but its
 agreement with the ``variable`` parameter is not, so a mismatch assembles one
-momentum equation into another without any error message.  The helper
-``dualmesh.physics.add_incompressible_flow`` prevents such a mismatch by adding
-the viscous and penalty kernels for every component, the
-inertia kernel when a non-zero density is given, and the pressure material
-described next.
+momentum equation into another without any error message.  The
+``incompressible_flow`` physics prevents such a mismatch by adding the viscous
+and penalty kernels for every component, the
+inertia kernel when a non-zero density is given, and the pressure property
+object described next.
 
 The natural boundary quantity of :eq:`penalty_momentum` follows the same rule as
 in conduction:
@@ -478,9 +478,9 @@ Recovering the pressure
 
 The pressure is eliminated from the unknowns but remains available, because
 :eq:`penalty` recovers it from the converged velocity field.  The
-``penalty_pressure`` material declares the property ``pressure`` and evaluates
+``penalty_pressure`` property object declares the property ``pressure`` and evaluates
 :math:`P = -\gamma \nabla \cdot \mathbf{v}` wherever it is requested.  Two
-cautions apply.  First, the value of :math:`\gamma` given to the material must
+cautions apply.  First, the value of :math:`\gamma` given to the property object must
 be identical to the one given to ``penalty_incompressibility``.  The two objects
 hold separate copies, nothing checks that they agree, and a mismatch scales the
 recovered pressure by the ratio of the two, giving a plausible looking field of
@@ -580,8 +580,8 @@ large for the divergence to be small, which makes the matrix badly conditioned.
 Second, the penalty term must be integrated with a reduced rule, which has no
 counterpart in the cell-centred finite volume method.  Third, the pressure is
 only recovered afterwards, element by element.  The *pressure-velocity* (or *mixed*)
-formulation, selected with ``formulation="pressure"`` in
-``dualmesh.physics.add_incompressible_flow``, keeps the pressure :math:`p` as
+formulation, selected with ``formulation="pressure"`` of the
+``incompressible_flow`` physics, keeps the pressure :math:`p` as
 an unknown field and solves the mass equation alongside the momentum
 equations.  It works with all four methods.
 
@@ -687,13 +687,14 @@ size :math:`h`.  The size is halved for a quadratic element.  With inertia,
 ``momentum_stabilization`` adds the streamline-upwind term of
 [BrooksHughes1982]_ to each momentum equation as the flux
 :math:`\rho \tau\, r_{m,i}\, \mathbf{v}`, which damps the oscillations of
-convection-dominated flow.  ``add_incompressible_flow`` adds it whenever the
-density is non-zero.
+convection-dominated flow.  The ``incompressible_flow`` physics adds it
+whenever the density is non-zero.
 
 Every force in the momentum equations must also appear in
 :math:`\mathbf{r}_m`, because a force missing there causes the stabilisation
-term to act against that force.  ``add_incompressible_flow`` passes its
-``body_force`` and its Boussinesq ``buoyancy`` to the stabilisation, with the
+term to act against that force.  The ``incompressible_flow`` physics passes
+its ``body_force`` and the buoyancy of a ``nonisothermal_flow`` coupling to the
+stabilisation, with the
 same load scaling as the force itself.  Without the buoyancy in
 :math:`\mathbf{r}_m` the natural convection benchmark fails at high Rayleigh
 number, because there :math:`\tau \nabla p` is much larger than the velocity.
@@ -848,7 +849,8 @@ carry the imbalance, shows no spike, and its pressure still converges at second
 order.
 
 *The inf-sup condition itself*, by the numerical test of
-[ChapelleBathe1993]_.  With :math:`\mathbf{A}` the vector Laplacian (whose
+[ChapelleBathe1993]_ (Proposition 2.2, Eq. (14)), on meshes of increasing
+refinement as they recommend (Sect. 2.5).  With :math:`\mathbf{A}` the vector Laplacian (whose
 energy is :math:`|\mathbf{v}_h|_1^2`), :math:`\mathbf{B}` the discrete
 divergence and :math:`\mathbf{M}` the pressure mass matrix, for velocities
 that vanish on the boundary, :math:`\beta_h^2` is the smallest non-zero
@@ -920,14 +922,14 @@ Boundary conditions for the pressure
 The mass equation requires the flow through the boundary.
 ``mass_flux_boundary_condition`` supplies it as the natural boundary quantity
 :math:`q = -\mathbf{v} \cdot \mathbf{n}`, computed from the discrete velocity,
-and ``add_incompressible_flow`` places it on every side set.  For the finite
+and the ``incompressible_flow`` physics places it on every side set.  For the finite
 element method this reproduces the boundary term of PSPG exactly.  Summing the
 mass equations of all control volumes gives
 :math:`\oint \mathbf{v}_h \cdot \mathbf{n}\, ds = 0`, so the discrete flow
 conserves mass globally, whatever the stabilisation.
 
 An enclosed flow, with a velocity condition on every boundary, determines the
-pressure only up to a constant.  ``pin_pressure`` fixes it with a
+pressure only up to a constant.  ``pressure_pin_point`` fixes it with a
 ``point_Dirichlet_boundary_condition``, which replaces the mass equation of the
 entity nearest to a point.  That mass equation is then dropped, and the pinned
 entity becomes the only place where a net boundary flux
@@ -944,7 +946,8 @@ Verification of the pressure-velocity formulation
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 ``tests/python/test_pressure_velocity.py`` checks the formulation with the
-manufactured solutions of ``dualmesh.mms.IncompressibleFlow``, whose exact
+manufactured solutions of the ``incompressible_flow`` physics
+(:class:`dualmesh.mms.ManufacturedSolution`), whose exact
 velocity is divergence free, whose right boundary is an outlet with the exact
 traction and whose pressure has no symmetry.  With the density
 :math:`\rho = 1` and the viscosity :math:`\mu = 1`, the observed orders on the

@@ -15,59 +15,18 @@ MODELS = ("beam_Euler_Bernoulli_mixed", "beam_Timoshenko_displacement", "beam_Ti
 
 
 def solve(model, power_law_index, num_elements=16):
-    stiffness = dm.fgm.beam_stiffness(
-        modulus_top=MODULUS_TOP,
-        modulus_bottom=MODULUS_BOTTOM,
-        power_law_index=power_law_index,
-        height=HEIGHT,
-        width=WIDTH,
-        poisson_ratio=POISSON,
-    )
+    stiffness = dm.fgm.beam_stiffness(modulus_top=MODULUS_TOP, modulus_bottom=MODULUS_BOTTOM, power_law_index=power_law_index, height=HEIGHT, width=WIDTH, poissons_ratio=POISSON)
     mesh = dm.generate_line_mesh(start=0.0, end=LENGTH / 2, num_elements=num_elements)
     problem = dm.Problem(mesh)
-    variables = dm.physics.add_beam(
-        problem,
-        model=model,
-        extensional_stiffness=stiffness.extensional,
-        coupling_stiffness=stiffness.coupling,
-        bending_stiffness=stiffness.bending,
-        shear_stiffness=stiffness.shear,
-        transverse_load=LOAD,
-    )
-    third = variables[2]
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "pin_axial",
-        variable="axial_displacement",
-        boundary="left",
-        value=0.0,
-    )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "pin_deflection",
-        variable="deflection",
-        boundary="left",
-        value=0.0,
-    )
+    beam = problem.add_physics("beam", "beam", model=model, extensional_stiffness=stiffness.extensional, coupling_stiffness=stiffness.coupling, bending_stiffness=stiffness.bending, shear_stiffness=stiffness.shear, transverse_load=LOAD)
+    third = beam.variables()[2]
+    problem.add_boundary_condition("Dirichlet_boundary_condition", "pin_axial", variable="axial_displacement", boundary="left", value=0.0)
+    problem.add_boundary_condition("Dirichlet_boundary_condition", "pin_deflection", variable="deflection", boundary="left", value=0.0)
     if third == "bending_moment":
-        problem.add_boundary_condition(
-            "Dirichlet_boundary_condition", "pin_moment", variable=third, boundary="left", value=0.0
-        )
+        problem.add_boundary_condition("Dirichlet_boundary_condition", "pin_moment", variable=third, boundary="left", value=0.0)
     else:
-        problem.add_boundary_condition(
-            "Dirichlet_boundary_condition",
-            "symmetry_rotation",
-            variable=third,
-            boundary="right",
-            value=0.0,
-        )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "symmetry_axial",
-        variable="axial_displacement",
-        boundary="right",
-        value=0.0,
-    )
+        problem.add_boundary_condition("Dirichlet_boundary_condition", "symmetry_rotation", variable=third, boundary="right", value=0.0)
+    problem.add_boundary_condition("Dirichlet_boundary_condition", "symmetry_axial", variable="axial_displacement", boundary="right", value=0.0)
     problem.solve()
     return problem, stiffness
 

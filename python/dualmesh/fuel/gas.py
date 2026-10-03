@@ -47,12 +47,12 @@ conductance of the pellet-cladding gap and raises the pressure in the rod.
   b D / (b + g)`.  The bubbles nucleate at :math:`\nu = 2 \eta \dot F` and
   are destroyed by re-solution, :math:`\dot N = \nu - b N`, and their radius
   follows from the gas they hold, :math:`R = (3 \Omega m / 4 \pi N)^{1/3}`
-  with :math:`m = g / (b + g)` of the gas in the grain.  The parameters are
-  those of Zullo et al. (2023), Tables 2-4, and of Zullo's thesis
-  (Politecnico di Milano, Eqs. 2.2-2.3): :math:`\eta = 25`, :math:`\mu_{ff} =
-  6` um, :math:`R_{ff} = 1` nm, :math:`\Omega = 4.09 \times 10^{-29}` m^3.
-  :math:`R_s`, the radius of a gas atom, is taken as that of the sphere of
-  volume :math:`\Omega`, 0.214 nm (the sources give the symbol but no value).
+  with :math:`m = g / (b + g)` of the gas in the grain.  This is the model of
+  D. Pizzocri et al., J. Nucl. Mater. 502 (2018) 323, Eqs. (1)-(4), with the
+  parameters of its Table 1, which Zullo et al. (2023), Tables 2-4, also use:
+  :math:`\eta = 25`, :math:`\mu_{ff} = 6` um, :math:`R_{ff} = 1` nm, the radius
+  of a gas atom :math:`R_s = 0.2` nm and :math:`\Omega = 4.09 \times 10^{-29}`
+  m^3.
 * **Grain-face bubbles** (the default, ``grain_boundary="bubbles"``): the gas
   that reaches the grain boundaries collects in lenticular bubbles on the
   grain faces, which grow by absorbing vacancies, coalesce, and vent the gas
@@ -225,9 +225,7 @@ class GrainFaceBubbles:
         self.vacancy_volume = float(vacancy_volume)
         self.gas_covolume = float(gas_covolume)
         self.boundary_thickness = float(boundary_thickness)
-        self.vacancy_diffusivity = vacancy_diffusivity or (
-            lambda T: (3.5 / 5.0) * 8.86e-6 * np.exp(-4.17e4 / np.asarray(T, dtype=float))
-        )
+        self.vacancy_diffusivity = vacancy_diffusivity or (lambda T: (3.5 / 5.0) * 8.86e-6 * np.exp(-4.17e4 / np.asarray(T, dtype=float)))
         # A factor on the vacancy diffusivity, for sensitivity studies.
         self.vacancy_diffusivity_factor = 1.0
         volume0 = 4.0 / 3.0 * np.pi * initial_radius**3 * self._phi
@@ -273,11 +271,7 @@ class GrainFaceBubbles:
         # [1 + Q e^x]^(-1/Q) = exp(-log1p(Q e^x) / Q), written to stay finite
         # for large x, where log1p(Q e^x) = x + log(Q) + log1p(e^-x / Q).
         big = x > 30.0
-        log_term = np.where(
-            big,
-            x + np.log(Q) + np.log1p(np.exp(-np.where(big, x, 0.0)) / Q),
-            np.log1p(Q * np.exp(np.where(big, 0.0, x))),
-        )
+        log_term = np.where(big, x + np.log(Q) + np.log1p(np.exp(-np.where(big, x, 0.0)) / Q), np.log1p(Q * np.exp(np.where(big, 0.0, x))))
         return 1.0 - np.exp(-log_term / Q)
 
     def _crack(self, temperature, burnup):
@@ -293,10 +287,7 @@ class GrainFaceBubbles:
         heating = T >= T0
         # m increases on heating and on cooling (s = +1 and -1), so the
         # increment is m_s(T) - m_s(T0) >= 0 for the direction of the step.
-        dm = np.maximum(
-            self.cracking_parameter(T, bu, heating) - self.cracking_parameter(T0, bu, heating),
-            0.0,
-        )
+        dm = np.maximum(self.cracking_parameter(T, bu, heating) - self.cracking_parameter(T0, bu, heating), 0.0)
         f = self.intact
         f_cracked = f * np.exp(-dm)  # Eq. (5)
         df_c = f_cracked - f
@@ -305,9 +296,7 @@ class GrainFaceBubbles:
         df_h = f_healed - f_cracked
         self.intact = f_healed
         # Eq. (3): dF_sat = F_sat (df_c + df_h), never above its initial value.
-        self.saturation = np.minimum(
-            self.saturation * (1.0 + df_c + df_h), self._initial_saturation
-        )
+        self.saturation = np.minimum(self.saturation * (1.0 + df_c + df_h), self._initial_saturation)
         self._previous_temperature, self._previous_burnup = T.copy(), bu.copy()
         return df_c
 
@@ -326,14 +315,7 @@ class GrainFaceBubbles:
         self.gas = np.maximum(self.gas + arrived / (self.density * self.area_per_volume), 0.0)
         coverage = np.clip(self.coverage(), 1e-6, 0.99)
         S = -((3.0 - coverage) * (1.0 - coverage) + 2.0 * np.log(coverage)) / 4.0
-        K = (
-            2.0
-            * np.pi
-            * self.vacancy_diffusivity_factor
-            * self.vacancy_diffusivity(T)
-            * self.boundary_thickness
-            / (kT * S)
-        )
+        K = 2.0 * np.pi * self.vacancy_diffusivity_factor * self.vacancy_diffusivity(T) * self.boundary_thickness / (kT * S)
         old, gas = self.vacancies, self.gas
 
         def residual(nv):
@@ -510,7 +492,7 @@ class BoothFissionGasRelease:
         fragment_range: float = 6.0e-6,
         fragment_radius: float = 1.0e-9,
         gas_atom_volume: float = 4.09e-29,
-        gas_atom_radius: float | None = None,
+        gas_atom_radius: float = 0.2e-9,
         grain_boundary: str = "bubbles",
         grain_face_parameters: dict | None = None,
         intragranular_bubbles: str = "nucleation",
@@ -520,18 +502,12 @@ class BoothFissionGasRelease:
         micro_cracking: bool = True,
     ):
         if intragranular_bubbles not in ("nucleation", "white_tucker"):
-            raise ValueError(
-                "BoothFissionGasRelease: intragranular_bubbles must be nucleation or white_tucker."
-            )
+            raise ValueError("BoothFissionGasRelease: intragranular_bubbles must be nucleation or white_tucker.")
         self.intragranular_bubbles = intragranular_bubbles
         # b = c pi l_f (R + Z0)^2 F: c = 2 for bubbles of one size (Olander and
         # Wongsawaeng 2006, Eq. 1), c = 3.03 for the size distribution of
         # White and Tucker (1983), Eq. (24), whose mean radius it goes with.
-        self.resolution_coefficient = (
-            (3.03 if intragranular_bubbles == "white_tucker" else 2.0)
-            if resolution_coefficient is None
-            else float(resolution_coefficient)
-        )
+        self.resolution_coefficient = (3.03 if intragranular_bubbles == "white_tucker" else 2.0) if resolution_coefficient is None else float(resolution_coefficient)
         self.mwd_per_kg_per_fima = float(mwd_per_kg_per_fima)
         # Irradiation-induced re-solution from the grain boundaries (Speight
         # 1969; White and Tucker 1983, Sect. 5.2): b_gb delta = kappa F (m/s),
@@ -545,33 +521,17 @@ class BoothFissionGasRelease:
         if trapping not in ("speight", "constant"):
             raise ValueError("BoothFissionGasRelease: trapping must be speight or constant.")
         if trapping == "speight" and trapping_factor != 1.0:
-            raise ValueError(
-                "BoothFissionGasRelease: trapping_factor applies to trapping='constant' only."
-            )
+            raise ValueError("BoothFissionGasRelease: trapping_factor applies to trapping='constant' only.")
         self.trapping = trapping
         self.nucleation_factor = float(nucleation_factor)
         self.fragment_range = float(fragment_range)
         self.fragment_radius = float(fragment_radius)
         self.gas_atom_volume = float(gas_atom_volume)
-        self.gas_atom_radius = (
-            (3.0 * self.gas_atom_volume / (4.0 * np.pi)) ** (1.0 / 3.0)
-            if gas_atom_radius is None
-            else float(gas_atom_radius)
-        )
+        self.gas_atom_radius = float(gas_atom_radius)
         if grain_boundary not in ("bubbles", "saturation"):
-            raise ValueError(
-                "BoothFissionGasRelease: grain_boundary must be bubbles or saturation."
-            )
+            raise ValueError("BoothFissionGasRelease: grain_boundary must be bubbles or saturation.")
         self.grain_boundary = grain_boundary
-        self.faces = (
-            GrainFaceBubbles(
-                num_elements,
-                grain_radius,
-                **{"micro_cracking": micro_cracking, **(grain_face_parameters or {})},
-            )
-            if grain_boundary == "bubbles"
-            else None
-        )
+        self.faces = GrainFaceBubbles(num_elements, grain_radius, **{"micro_cracking": micro_cracking, **(grain_face_parameters or {})}) if grain_boundary == "bubbles" else None
         # Factors of set_factors, for sensitivity and uncertainty studies.
         self.temperature_factor = 1.0
         self.diffusivity_factor = 1.0
@@ -599,14 +559,10 @@ class BoothFissionGasRelease:
         self.released = np.zeros(num_elements)
         theta = np.radians(dihedral_half_angle)
         f_theta = 1.0 - 1.5 * np.cos(theta) + 0.5 * np.cos(theta) ** 3
-        self._saturation_prefactor = (
-            4.0 * bubble_radius * f_theta * saturation_coverage / (3.0 * np.sin(theta) ** 2)
-        )
+        self._saturation_prefactor = 4.0 * bubble_radius * f_theta * saturation_coverage / (3.0 * np.sin(theta) ** 2)
         self._capillary_pressure = 2.0 * surface_energy / bubble_radius
 
-    def set_factors(
-        self, temperature=1.0, diffusivity=1.0, resolution=1.0, grain_boundary_diffusivity=1.0
-    ):
+    def set_factors(self, temperature=1.0, diffusivity=1.0, resolution=1.0, grain_boundary_diffusivity=1.0):
         """Multipliers for sensitivity and uncertainty studies (see
         :class:`~dualmesh.fuel.ModelFactors`): on the temperature the model
         sees, the single-atom diffusion coefficient, the re-solution rate
@@ -618,9 +574,7 @@ class BoothFissionGasRelease:
         if self.faces is not None:
             self.faces.vacancy_diffusivity_factor = float(grain_boundary_diffusivity)
         elif grain_boundary_diffusivity != 1.0:
-            raise ValueError(
-                "BoothFissionGasRelease: grain_boundary_diffusivity needs grain_boundary='bubbles'."
-            )
+            raise ValueError("BoothFissionGasRelease: grain_boundary_diffusivity needs grain_boundary='bubbles'.")
         if resolution != 1.0 and self.trapping != "speight":
             raise ValueError("BoothFissionGasRelease: resolution needs trapping='speight'.")
 
@@ -629,28 +583,13 @@ class BoothFissionGasRelease:
         trapping factor with ``trapping="constant"``, and the diffusivity
         factor of :meth:`set_factors`)."""
         if self.diffusion_coefficient is not None:
-            given = self.diffusion_coefficient(
-                np.asarray(temperature, dtype=float), np.asarray(fission_rate, dtype=float)
-            )
-            return (
-                self.diffusivity_factor
-                * self.trapping_factor
-                * np.broadcast_to(given, np.shape(temperature)).astype(float)
-            )
+            given = self.diffusion_coefficient(np.asarray(temperature, dtype=float), np.asarray(fission_rate, dtype=float))
+            return self.diffusivity_factor * self.trapping_factor * np.broadcast_to(given, np.shape(temperature)).astype(float)
         kT = BOLTZMANN * np.asarray(temperature, dtype=float)
         fission_rate = np.asarray(fission_rate, dtype=float)
         thermal = 7.6e-10 * np.exp(-4.86e-19 / kT)
-        irradiation = (
-            self.irradiation_factor
-            * 5.64e-25
-            * np.sqrt(np.maximum(fission_rate, 0.0))
-            * np.exp(-1.91e-19 / kT)
-        )
-        return (
-            self.diffusivity_factor
-            * self.trapping_factor
-            * (thermal + irradiation + self.athermal_coefficient * fission_rate)
-        )
+        irradiation = self.irradiation_factor * 5.64e-25 * np.sqrt(np.maximum(fission_rate, 0.0)) * np.exp(-1.91e-19 / kT)
+        return self.diffusivity_factor * self.trapping_factor * (thermal + irradiation + self.athermal_coefficient * fission_rate)
 
     def _speight(self, D, fission_rate, grain_gas, temperature=None):
         """The effective diffusion coefficient b D / (b + g) and the
@@ -678,17 +617,7 @@ class BoothFissionGasRelease:
             b = c * (R + self.fragment_radius) ** 2 * F
             with np.errstate(divide="ignore", invalid="ignore"):
                 share = np.where(b + g > 0, g / (b + g), 0.0)
-                target = np.where(
-                    has,
-                    np.cbrt(
-                        3.0
-                        * self.gas_atom_volume
-                        * share
-                        * np.maximum(grain_gas, 0.0)
-                        / (4.0 * np.pi * np.where(has, N, 1.0))
-                    ),
-                    0.0,
-                )
+                target = np.where(has, np.cbrt(3.0 * self.gas_atom_volume * share * np.maximum(grain_gas, 0.0) / (4.0 * np.pi * np.where(has, N, 1.0))), 0.0)
             if np.all(np.abs(target - R) <= 1e-6 * np.maximum(target, 1e-12)):
                 R = target
                 break
@@ -702,11 +631,7 @@ class BoothFissionGasRelease:
 
     def saturation(self, temperature, pressure):
         """Atoms per m^3 of fuel that the grain boundaries hold at saturation."""
-        per_area = (
-            self._saturation_prefactor
-            / (BOLTZMANN * np.asarray(temperature, dtype=float))
-            * (self._capillary_pressure + pressure)
-        )
+        per_area = self._saturation_prefactor / (BOLTZMANN * np.asarray(temperature, dtype=float)) * (self._capillary_pressure + pressure)
         return per_area * 3.0 / (2.0 * self.grain_radius)
 
     def intragranular(self) -> np.ndarray:
@@ -729,11 +654,7 @@ class BoothFissionGasRelease:
             nu = 2.0 * self.nucleation_factor * np.maximum(np.asarray(fission_rate, float), 0.0)
             with np.errstate(divide="ignore", invalid="ignore"):
                 equilibrium = np.where(b > 0, nu / b, 0.0)
-                self.bubble_density = np.where(
-                    b > 0,
-                    equilibrium + (self.bubble_density - equilibrium) * np.exp(-b * dt),
-                    self.bubble_density + nu * dt,
-                )
+                self.bubble_density = np.where(b > 0, equilibrium + (self.bubble_density - equilibrium) * np.exp(-b * dt), self.bubble_density + nu * dt)
         rate = D[:, None] * self._eigenvalue_factor
         decay = np.exp(-rate * dt)
         with np.errstate(divide="ignore", invalid="ignore"):
@@ -750,11 +671,7 @@ class BoothFissionGasRelease:
             # therefore solved for exactly with psi1 = c (G0 + arrival).
             F = np.maximum(np.asarray(fission_rate, dtype=float), 0.0)
             with np.errstate(divide="ignore", invalid="ignore"):
-                c = np.where(
-                    D > 0,
-                    self.boundary_resolution * F * (2.0 * self.grain_radius / 3.0) / (2.0 * D),
-                    0.0,
-                )
+                c = np.where(D > 0, self.boundary_resolution * F * (2.0 * self.grain_radius / 3.0) / (2.0 * D), 0.0)
             weights = self._source_coefficients * self._concentration_weights
             Q = growth @ weights  # response of the mean of v to a unit source
             V0 = (self.coefficients * decay) @ self._concentration_weights
@@ -766,22 +683,13 @@ class BoothFissionGasRelease:
         else:
             psi1 = psi0
         effective_source = source - (psi1 - psi0) / dt
-        self.coefficients = (
-            self.coefficients * decay
-            + effective_source[:, None] * self._source_coefficients * growth
-        )
+        self.coefficients = self.coefficients * decay + effective_source[:, None] * self._source_coefficients * growth
         self.boundary_concentration = psi1
         produced = source * dt
         self.produced += produced
         arrived = before + produced - self.intragranular()
         if self.faces is not None:
-            release = self.faces.advance(
-                dt,
-                temperature,
-                pressure,
-                arrived,
-                None if burnup is None else np.asarray(burnup, float) * self.mwd_per_kg_per_fima,
-            )
+            release = self.faces.advance(dt, temperature, pressure, arrived, None if burnup is None else np.asarray(burnup, float) * self.mwd_per_kg_per_fima)
             self.boundary = self.faces.stored()
         else:
             self.boundary += arrived
@@ -811,9 +719,7 @@ class BoothFissionGasRelease:
         bubbles of a known volume and contributes nothing."""
         swelling = np.zeros(len(self.produced))
         if self.trapping == "speight":
-            swelling += (
-                4.0 / 3.0 * np.pi * self.intragranular_bubble_radius**3 * self.bubble_density
-            )
+            swelling += 4.0 / 3.0 * np.pi * self.intragranular_bubble_radius**3 * self.bubble_density
         if self.faces is not None:
             swelling += self.faces.swelling()
         return swelling
@@ -828,13 +734,7 @@ class FractionFissionGasRelease:
     ``fission_gas_yield`` (default 0.32) and ``xenon_fraction`` (default
     0.88) are as for :class:`BoothFissionGasRelease`."""
 
-    def __init__(
-        self,
-        num_elements: int,
-        release_fraction,
-        fission_gas_yield: float = 0.32,
-        xenon_fraction: float = 0.88,
-    ):
+    def __init__(self, num_elements: int, release_fraction, fission_gas_yield: float = 0.32, xenon_fraction: float = 0.88):
         self.release_fraction_function = release_fraction
         self.produced = np.zeros(num_elements)
         self.released = np.zeros(num_elements)
@@ -847,16 +747,7 @@ class FractionFissionGasRelease:
         if burnup is None:
             raise ValueError(f"{type(self).__name__}.advance needs the local burnup.")
         self.produced += self.fission_gas_yield * np.asarray(fission_rate, dtype=float) * dt
-        fraction = np.clip(
-            np.asarray(
-                self.release_fraction_function(
-                    np.asarray(temperature, dtype=float), np.asarray(burnup, dtype=float)
-                ),
-                dtype=float,
-            ),
-            0.0,
-            1.0,
-        )
+        fraction = np.clip(np.asarray(self.release_fraction_function(np.asarray(temperature, dtype=float), np.asarray(burnup, dtype=float)), dtype=float), 0.0, 1.0)
         release = np.maximum(fraction * self.produced - self.released, 0.0)
         self.released += release
         return release
@@ -872,13 +763,7 @@ class StormsFissionGasRelease(FractionFissionGasRelease):
     gas produced as a function of the temperature, the burnup and the
     density (:class:`FractionFissionGasRelease` with that correlation)."""
 
-    def __init__(
-        self,
-        num_elements: int,
-        theoretical_density_fraction: float = 0.95,
-        fission_gas_yield: float = 0.32,
-        xenon_fraction: float = 0.88,
-    ):
+    def __init__(self, num_elements: int, theoretical_density_fraction: float = 0.95, fission_gas_yield: float = 0.32, xenon_fraction: float = 0.88):
         self.theoretical_density_fraction = float(theoretical_density_fraction)
         density = self.theoretical_density_fraction
 

@@ -2,7 +2,7 @@
 #pragma once
 
 #include "dualmesh/base/Kernel.h"
-#include "dualmesh/base/Material.h"
+#include "dualmesh/base/Property.h"
 
 namespace dualmesh
 {
@@ -50,6 +50,8 @@ public:
 private:
   FunctionPtr _c;
   double _p;
+  std::string _prop_name;
+  int _prop = -1;
 };
 
 class BodyForce : public Kernel
@@ -107,6 +109,8 @@ public:
 private:
   int _v = -1;
   FunctionPtr _c;
+  std::string _prop_name;
+  int _prop = -1;
 };
 
 class DirichletBC : public NodalBC
@@ -165,12 +169,12 @@ protected:
   FunctionPtr _h, _uinf, _q;
 };
 
-class GenericConstantMaterial : public Material
+class ConstantProperty : public Property
 {
 public:
-  explicit GenericConstantMaterial(const InputParameters & p);
+  explicit ConstantProperty(const InputParameters & p);
   static InputParameters validParams();
-  void declareProperties(MaterialPropertyRegistry & r) override;
+  void declareProperties(PropertyRegistry & r) override;
   void computeProperties(QpContext & ctx) const override;
 
 private:
@@ -179,13 +183,13 @@ private:
   std::vector<int> _ids;
 };
 
-class GenericFunctionMaterial : public Material
+class FunctionProperty : public Property
 {
 public:
-  explicit GenericFunctionMaterial(const InputParameters & p);
+  explicit FunctionProperty(const InputParameters & p);
   static InputParameters validParams();
   void initialSetup(Problem & problem) override;
-  void declareProperties(MaterialPropertyRegistry & r) override;
+  void declareProperties(PropertyRegistry & r) override;
   void computeProperties(QpContext & ctx) const override;
 
 private:

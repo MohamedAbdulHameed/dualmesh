@@ -1,13 +1,13 @@
 quantity,dualmesh,bison,measured
-thermocouple bias K (median),-11,-94,0
+thermocouple bias K (median),-9,-94,0
 thermocouple rms K,48,116,0
 thermocouple bias K (median; BISON 2021 case A),,92,0
 thermocouple rms K (BISON 2021 case A),,158,0
-FGR at 620 days % (doped, case A (best estimate)),3.98,2.43,5.6
-FGR at 620 days % (doped, case B (upper limit)),6.58,2.43,5.6
-FGR at 620 days % (doped, CASL Eq. 16 (as BISON)),5.82,2.43,5.6
-FGR rms against the measured curve % (doped, case A (best estimate)),0.95,1.87,
-FGR rms against the measured curve % (doped, case B (upper limit)),2.28,3.56,
-FGR rms against the measured curve % (doped, CASL Eq. 16 (as BISON)),1.68,1.99,
+FGR at 620 days % (doped, case A (best estimate)),4.05,2.43,5.6
+FGR at 620 days % (doped, case B (upper limit)),6.85,2.43,5.6
+FGR at 620 days % (doped, CASL Eq. 16 (as BISON)),6.02,2.43,5.6
+FGR rms against the measured curve % (doped, case A (best estimate)),0.93,1.87,
+FGR rms against the measured curve % (doped, case B (upper limit)),2.44,3.56,
+FGR rms against the measured curve % (doped, CASL Eq. 16 (as BISON)),1.79,1.99,
 FGR at the last measured point % (BISON 2021 case A),,6.70,5.59
 FGR at the last measured point % (BISON 2021 case B),,8.71,5.59

@@ -318,7 +318,7 @@ Problem::propertyAtCentroids(const std::string & property) const
     ctx.state_domain = 0;
     ctx.state_owner = e;
     ctx.state_key = kCentroidStateKey;
-    computeMaterials(ctx);
+    evaluateProperties(ctx);
     std::vector<double> row(nc);
     for (int c = 0; c < nc; ++c)
       row[c] = ctx.property(id, c).value();
@@ -362,7 +362,7 @@ Problem::kernelFluxAtCentroids(const std::string & kernel) const
     ctx.state_domain = 0;
     ctx.state_owner = e;
     ctx.state_key = kCentroidStateKey;
-    computeMaterials(ctx);
+    evaluateProperties(ctx);
     ADVector3 F{ADReal(0.0), ADReal(0.0), ADReal(0.0)};
     if (k->hasFlux() && k->activeOnBlock(el.block))
       k->computeFlux(ctx, F);
@@ -402,6 +402,71 @@ Problem::integrate(const std::string & var) const
   return total;
 }
 
+std::vector<double>
+Problem::elementIntegrals(const std::string & var) const
+{
+  const int v = var.empty() ? -1 : variableIndex(var);
+  std::vector<double> out(_mesh->numElements(), 0.0);
+  if (_cells)
+  {
+    for (Index c = 0; c < _cells->numCells() && c < _mesh->numElements(); ++c)
+      out[c] = (v < 0 ? 1.0 : _U[dof(c, v)]) * _cells->cellVolume(c) *
+               coordFactor(_cells->entityPoint(c));
+    return out;
+  }
+  QuadratureSpec g;
+  g.points = 3;
+  MappedPoint mp;
+  std::vector<IntegrationPoint> pts;
+  for (Index e = 0; e < _mesh->numElements(); ++e)
+  {
+    const auto & el = _mesh->element(e);
+    buildElementPoints(*_mesh, e, false, PointSet::Volume, g, pts);
+    double total = 0;
+    for (const auto & ip : pts)
+    {
+      mapPoint(*_mesh, el, ip.xi, mp);
+      double s = v < 0 ? 1.0 : 0.0;
+      for (int k = 0; v >= 0 && k < el.numNodes(); ++k)
+        s += mp.N[k] * _U[dof(el.nodes[k], v)];
+      total += s * ip.weight * coordFactor(mp.x);
+    }
+    out[e] = total;
+  }
+  return out;
+}
+
+double
+Problem::boundaryMeasure(const std::vector<std::string> & boundaries) const
+{
+  if (!_global_boundary_measures.empty())
+  {
+    // Side sets do not overlap in the inputs this is used for, so the measures
+    // of several side sets add.
+    double total = 0.0;
+    for (const auto & name : boundaries)
+    {
+      const auto it = _global_boundary_measures.find(name);
+      if (it == _global_boundary_measures.end())
+        throw InputError("Unknown side set '" + name + "'.");
+      total += it->second;
+    }
+    return total;
+  }
+  for (const auto & name : boundaries)
+    if (!_mesh->sidesets().count(name))
+      throw InputError("Unknown side set '" + name + "'." +
+                       didYouMean(name,
+                                  [this]
+                                  {
+                                    std::vector<std::string> n;
+                                    for (const auto & [k, v] : _mesh->sidesets())
+                                      n.push_back(k);
+                                    return n;
+                                  }()));
+  return sidesetMeasure(*_mesh, boundaries, _coord);
+}
+
 double
 Problem::boundaryFluxIntegral(const std::string & kernel, const std::string & boundary) const
 {
@@ -430,7 +495,7 @@ Problem::boundaryFluxIntegral(const std::string & kernel, const std::string & bo
       ctx.x = f.centroid;
       ctx.normal = (1.0 / f.measure) * f.area;
       ctx.on_boundary = true;
-      computeMaterials(ctx);
+      evaluateProperties(ctx);
       ADVector3 F{ADReal(0.0), ADReal(0.0), ADReal(0.0)};
       k->computeFlux(ctx, F);
       total += (F[0].value() * f.area[0] + F[1].value() * f.area[1] + F[2].value() * f.area[2]) *
@@ -456,7 +521,7 @@ Problem::boundaryFluxIntegral(const std::string & kernel, const std::string & bo
       ctx.block = el.block;
       ctx.normal = (1.0 / ip.weight) * ip.area;
       ctx.on_boundary = true;
-      computeMaterials(ctx);
+      evaluateProperties(ctx);
       ADVector3 F{ADReal(0.0), ADReal(0.0), ADReal(0.0)};
       k->computeFlux(ctx, F);
       total += (F[0].value() * ip.area[0] + F[1].value() * ip.area[1] + F[2].value() * ip.area[2]) *

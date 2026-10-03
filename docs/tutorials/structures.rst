@@ -22,13 +22,12 @@ Points to note:
   ``dw/dx = 0``, which is a *natural* condition there and requires no boundary
   condition.
 * In the displacement Timoshenko model the shear term must be evaluated at the
-  element centre, or the beam locks.  :func:`dualmesh.physics.add_beam` applies
-  this evaluation automatically, and ``tests/python/test_beams.py`` shows the
-  size of the difference.
-* For the plate models the same is done by adding the kernel twice per
-  variable, once for bending and once for shear with reduced integration,
-  which is what :func:`dualmesh.physics.add_plate` and
-  :func:`dualmesh.physics.add_circular_plate` do.
+  element centre, or the beam locks.  The ``beam`` physics applies this
+  evaluation, and ``tests/python/test_beams.py`` shows the size of the
+  difference.
+* The ``plate`` and ``circular_plate`` physics do the same by adding the
+  kernel twice per variable, once for bending and once for shear with reduced
+  integration.
 * Geometric nonlinearity is switched on with ``von_karman=True``.  Use load
   steps, and optionally ``nonlinear_solver="picard"`` with ``relaxation=0.35``
   as in Section 7.6 of the book.

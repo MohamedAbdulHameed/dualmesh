@@ -67,22 +67,12 @@ def style(ax, xlabel="", ylabel="", title=None):
 
 def legend(ax, loc="best", ncol=1, **kwargs):
     """A frameless legend inside the axes."""
-    return ax.legend(
-        frameon=False, fontsize=LEGEND_SIZE, labelcolor=INK, loc=loc, ncol=ncol, **kwargs
-    )
+    return ax.legend(frameon=False, fontsize=LEGEND_SIZE, labelcolor=INK, loc=loc, ncol=ncol, **kwargs)
 
 
 def legend_below(ax, ncol=2, offset=0.17, **kwargs):
     """A frameless legend centred below the axes, under the x-axis label."""
-    return ax.legend(
-        frameon=False,
-        fontsize=LEGEND_SIZE,
-        labelcolor=INK,
-        loc="upper center",
-        bbox_to_anchor=(0.5, -offset),
-        ncol=ncol,
-        **kwargs,
-    )
+    return ax.legend(frameon=False, fontsize=LEGEND_SIZE, labelcolor=INK, loc="upper center", bbox_to_anchor=(0.5, -offset), ncol=ncol, **kwargs)
 
 
 def save(fig, path):

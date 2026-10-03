@@ -80,10 +80,7 @@ REFAB_BURNUP = 52.0  # MWd/kgUO2, Fig. 20
 # the ratio rod 19 / rod 18 = 1.85 of printed page 52.  The figure values are
 # used.
 MEASURED_FGR = {18: 4.68, 19: 8.89}
-ROD = {
-    18: dict(porosity=0.039, final_porosity=0.035, grain_diameter=22.1e-6, enrichment=0.0384),
-    19: dict(porosity=0.033, final_porosity=0.024, grain_diameter=8.5e-6, enrichment=0.0379),
-}
+ROD = {18: dict(porosity=0.039, final_porosity=0.035, grain_diameter=22.1e-6, enrichment=0.0384), 19: dict(porosity=0.033, final_porosity=0.024, grain_diameter=8.5e-6, enrichment=0.0379)}
 PELLET_DIAMETER = 9.12e-3
 CLAD_ID, CLAD_OD = 9.29e-3, 10.75e-3
 STACK = 0.411
@@ -100,11 +97,7 @@ def read_csv(path):
 
 def power_history_points():
     rows = read_csv(HERE / "fumex2_participants.csv")
-    pts = [
-        (float(r["burnup"]), float(r["value"]))
-        for r in rows
-        if r["case"] == "IFA-534.14 rod 18 power"
-    ]
+    pts = [(float(r["burnup"]), float(r["value"])) for r in rows if r["case"] == "IFA-534.14 rod 18 power"]
     return np.array(pts)
 
 
@@ -141,9 +134,7 @@ def run(rod_number):
     times, power = time_history(points, uo2_mass)
     t_refab = refab_time(points, times)
 
-    coolant = fuel.ForcedConvection(
-        inlet_temperature=308.0 + 273.15, pressure=15.5e6, mass_flux=3127.0, rod_pitch=14.3e-3
-    )
+    coolant = fuel.ForcedConvection(inlet_temperature=308.0 + 273.15, pressure=15.5e6, mass_flux=3127.0, rod_pitch=14.3e-3)
     bulk = 308.0 + 273.15 + 15.0
     h = coolant.heat_transfer_coefficient_for(0.5 * CLAD_OD, bulk)
 
@@ -154,30 +145,14 @@ def run(rod_number):
         return 273.15 + 240.0 + 0.4162 * (q / 1e3) ** 0.75
 
     rod = fuel.FuelRod(
-        geometry=fuel.RodGeometry(
-            pellet_outer_radius=0.5 * PELLET_DIAMETER,
-            clad_inner_radius=0.5 * CLAD_ID,
-            clad_outer_radius=0.5 * CLAD_OD,
-            fuel_stack_height=STACK,
-        ),
-        fuel=fuel.UO2Fuel(
-            enrichment=spec["enrichment"],
-            theoretical_density_fraction=density,
-            grain_radius=0.5 * spec["grain_diameter"],
-            total_densification=spec["porosity"] - spec["final_porosity"],
-        ),
+        geometry=fuel.RodGeometry(pellet_outer_radius=0.5 * PELLET_DIAMETER, clad_inner_radius=0.5 * CLAD_ID, clad_outer_radius=0.5 * CLAD_OD, fuel_stack_height=STACK),
+        fuel=fuel.UO2Fuel(enrichment=spec["enrichment"], theoretical_density_fraction=density, grain_radius=0.5 * spec["grain_diameter"], total_densification=spec["porosity"] - spec["final_porosity"]),
         cladding=fuel.ZircaloyCladding(),
         fill_gas=fuel.FillGas(pressure=2.15e6, plenum_volume=5.1e-6),
         coolant=fuel.PrescribedCladdingTemperature(temperature=wall, pressure=15.5e6),
-        power_history=fuel.PowerHistory(
-            linear_heat_rate=power, time=times, fast_neutron_flux_per_linear_heat_rate=5e13
-        ),
+        power_history=fuel.PowerHistory(linear_heat_rate=power, time=times, fast_neutron_flux_per_linear_heat_rate=5e13),
         numerics=fuel.RodNumerics(max_time_step=10 * DAY),
-        output=fuel.RodOutput(
-            print_input=False,
-            print_steps=False,
-            output_times=np.unique(np.concatenate([np.linspace(0, times[-1], 300), times])),
-        ),
+        output=fuel.RodOutput(print_input=False, print_steps=False, output_times=np.unique(np.concatenate([np.linspace(0, times[-1], 300), times]))),
     )
     result = rod.run()
     t = np.asarray(result.time)
@@ -190,14 +165,7 @@ def run(rod_number):
     # t_refab (see time_history).
     i = np.searchsorted(t, t_refab + 2 * HOUR - 1.0)
     halden = fgr[-1] - fgr[i] * burnup[i] / burnup[-1]
-    return dict(
-        burnup=burnup,
-        fgr=fgr,
-        power=np.asarray(result.rod_average_linear_heat_rate) / 1e3,
-        centre=np.asarray(result.max_fuel_centerline_temperature) - 273.15,
-        base_fgr=fgr[i],
-        halden_fgr=halden,
-    )
+    return dict(burnup=burnup, fgr=fgr, power=np.asarray(result.rod_average_linear_heat_rate) / 1e3, centre=np.asarray(result.max_fuel_centerline_temperature) - 273.15, base_fgr=fgr[i], halden_fgr=halden)
 
 
 def compute():
@@ -214,10 +182,7 @@ def main():
         plotstyle.save_cache(CACHE, cached)
     results = {n: cached[str(n)] for n in (18, 19)}
     for n, r in results.items():
-        print(
-            f"rod {n}: base FGR {r['base_fgr']:.2f} %, Halden FGR {r['halden_fgr']:.2f} % "
-            f"(measured {MEASURED_FGR[n]} %), end burnup {r['burnup'][-1]:.2f} MWd/kgUO2"
-        )
+        print(f"rod {n}: base FGR {r['base_fgr']:.2f} %, Halden FGR {r['halden_fgr']:.2f} % (measured {MEASURED_FGR[n]} %), end burnup {r['burnup'][-1]:.2f} MWd/kgUO2")
     ratio = results[18]["halden_fgr"] / max(results[19]["halden_fgr"], 1e-9)
     print(f"ratio rod 19 / rod 18: {1 / ratio:.2f} (measured {8.89 / 4.68:.2f})")
 
@@ -225,21 +190,9 @@ def main():
     for n, colour, style_ in ((18, DUALMESH, "-"), (19, DUALMESH, "--")):
         r = results[n]
         grain = ROD[n]["grain_diameter"] * 1e6
-        ax.plot(
-            r["burnup"],
-            r["fgr"],
-            style_,
-            color=colour,
-            linewidth=2.2,
-            label=f"dualmesh, rod {n} ({grain:g} $\\mu$m)",
-        )
+        ax.plot(r["burnup"], r["fgr"], style_, color=colour, linewidth=2.2, label=f"dualmesh, rod {n} ({grain:g} $\\mu$m)")
     ax.set_xlim(0, 56)
-    plotstyle.style(
-        ax,
-        "Rod average burnup (MWd/kgUO$_2$)",
-        "Fission gas release (%)",
-        "IFA-534.14: release over the life of the rods",
-    )
+    plotstyle.style(ax, "Rod average burnup (MWd/kgUO$_2$)", "Fission gas release (%)", "IFA-534.14: release over the life of the rods")
     plotstyle.legend(ax, loc="upper left")
     plotstyle.save(fig, out / "fumex2_ifa534_cumulative_fgr.png")
 
@@ -257,9 +210,7 @@ def main():
     ax.set_xticks(x, ["Rod 18 (22.1 $\\mu$m)", "Rod 19 (8.5 $\\mu$m)"])
     ax.set_xlim(-0.6, 1.6)
     ax.set_ylim(0, 1.25 * max(measured + computed))
-    plotstyle.style(
-        ax, "", "Fission gas release (%)", "IFA-534.14: release during the Halden irradiation"
-    )
+    plotstyle.style(ax, "", "Fission gas release (%)", "IFA-534.14: release during the Halden irradiation")
     ax.grid(False, axis="x")
     plotstyle.legend(ax, loc="upper left")
     plotstyle.save(fig, out / "fumex2_ifa534_halden_fgr.png")

@@ -9,14 +9,15 @@ surfaces (Gmsh physical groups):
 
 ``jaws``
     The flats of the open end that bear on the nut.  The nut is taken as
-    rigid, and the three displacement components are zero there.
+    rigid, and the three displacement components are zero there
+    (``fixed_constraint``).
 ``grip``
     The upper and lower faces of the handle between x = 120 mm and
     x = 145 mm, where a uniform shear traction in the -y direction applies a
-    total force of 150 N.
+    total force of 150 N (``traction_boundary_condition`` with
+    ``total_force``).
 
-The same problem as an input file is ``wrench.yaml``.  The script checks the
-solution against three independent results: the total reaction on the jaws
+The script checks the solution against three independent results: the total reaction on the jaws
 (150 N), the moment of the reactions about the nut (the force times its arm),
 and the bending stress of the handle from beam theory.
 """
@@ -38,29 +39,13 @@ WIDTH, THICKNESS = 12.0 * MM, 5.0 * MM  # the handle section
 
 def solve(mesh_file="wrench.msh", method="fem"):
     mesh = dm.read_mesh(mesh_file)
+    print(dm.sideset_summary(mesh))
     problem = dm.Problem(mesh, method=method)
-    displacements = ["u", "v", "w"]
-    dm.physics.add_plane_elasticity(
-        problem,
-        displacements=displacements,
-        formulation="three_dimensional",
-        youngs_modulus=YOUNGS_MODULUS,
-        poissons_ratio=POISSONS_RATIO,
-    )
-    # The nut holds the jaws: one condition per displacement component.
-    for variable in displacements:
-        problem.add_boundary_condition(
-            "Dirichlet_boundary_condition",
-            f"jaws_{variable}",
-            variable=variable,
-            boundary="jaws",
-            value=0.0,
-        )
-    # The hand: a shear traction in -y on the grip faces.  A condition named
-    # after a side set acts on that side set.
-    problem.add_boundary_condition(
-        "traction_boundary_condition", "grip", variable="v", traction=-FORCE / GRIP_AREA
-    )
+    solid = problem.add_physics("solid_mechanics", "solid", displacements=["u", "v", "w"], youngs_modulus=YOUNGS_MODULUS, poissons_ratio=POISSONS_RATIO)
+    # The nut holds the jaws: the three displacement components are zero there.
+    solid.add_boundary_condition("fixed_constraint", "jaws")
+    # The hand pulls the grip with 150 N in -y, spread uniformly over its area.
+    solid.add_boundary_condition("traction_boundary_condition", "grip", total_force=[0.0, -FORCE, 0.0])
     problem.solve()
     return problem
 
@@ -72,10 +57,7 @@ def check(problem):
     fx = dict(problem.reactions("u", "jaws"))
     fy = dict(problem.reactions("v", "jaws"))
     reaction_y = sum(fy.values())
-    moment = sum(
-        (nodes[n, 0] - NUT_CENTRE[0]) * fy[n] - (nodes[n, 1] - NUT_CENTRE[1]) * fx.get(n, 0.0)
-        for n in fy
-    )
+    moment = sum((nodes[n, 0] - NUT_CENTRE[0]) * fy[n] - (nodes[n, 1] - NUT_CENTRE[1]) * fx.get(n, 0.0) for n in fy)
     expected_moment = FORCE * (GRIP_CENTRE_X - NUT_CENTRE[0])
 
     # Bending stress of the handle at x = 60 mm, away from the head and the
@@ -89,18 +71,9 @@ def check(problem):
     beam = FORCE * (GRIP_CENTRE_X - 60.0 * MM) * (WIDTH / 2.0) / inertia
 
     s = stress
-    von_mises = np.sqrt(
-        0.5 * ((s[:, 0] - s[:, 1]) ** 2 + (s[:, 1] - s[:, 2]) ** 2 + (s[:, 2] - s[:, 0]) ** 2)
-        + 3.0 * (s[:, 3] ** 2 + s[:, 4] ** 2 + s[:, 5] ** 2)
-    )
+    von_mises = np.sqrt(0.5 * ((s[:, 0] - s[:, 1]) ** 2 + (s[:, 1] - s[:, 2]) ** 2 + (s[:, 2] - s[:, 0]) ** 2) + 3.0 * (s[:, 3] ** 2 + s[:, 4] ** 2 + s[:, 5] ** 2))
     v = np.array(problem.values("v"))
-    return {
-        "reaction on the jaws (N)": (reaction_y, FORCE),
-        "moment about the nut (N m)": (moment, expected_moment),
-        "bending stress at x = 60 mm (MPa)": (computed / 1e6, beam / 1e6),
-        "largest von Mises stress (MPa)": (von_mises.max() / 1e6, None),
-        "largest deflection (mm)": (np.abs(v).max() / MM, None),
-    }, von_mises
+    return {"reaction on the jaws (N)": (reaction_y, FORCE), "moment about the nut (N m)": (moment, expected_moment), "bending stress at x = 60 mm (MPa)": (computed / 1e6, beam / 1e6), "largest von Mises stress (MPa)": (von_mises.max() / 1e6, None), "largest deflection (mm)": (np.abs(v).max() / MM, None)}, von_mises
 
 
 def plot_top_face(problem, von_mises, path):

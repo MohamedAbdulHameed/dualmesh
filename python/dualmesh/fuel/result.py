@@ -18,7 +18,6 @@ read directly::
 
 from __future__ import annotations
 
-import csv
 import os
 from dataclasses import dataclass, field
 
@@ -49,11 +48,7 @@ ROD_QUANTITIES = (
 AXIAL_QUANTITIES = (
     ("linear_heat_rate", "W/m", "Local linear heat rate."),
     ("burnup", "burnup_unit", "Pellet-average burnup at the axial position."),
-    (
-        "fuel_centerline_temperature",
-        "K",
-        "Fuel temperature on the axis, or at the bore of an annular pellet.",
-    ),
+    ("fuel_centerline_temperature", "K", "Fuel temperature on the axis, or at the bore of an annular pellet."),
     ("fuel_surface_temperature", "K", "Fuel temperature at the pellet surface."),
     ("clad_inner_temperature", "K", "Cladding inner surface temperature."),
     ("clad_outer_temperature", "K", "Cladding outer surface temperature."),
@@ -61,12 +56,7 @@ AXIAL_QUANTITIES = (
     ("gap_width", "m", "Radial gap between the displaced pellet and cladding surfaces."),
     ("fuel_surface_displacement", "m", "Radial displacement of the pellet surface."),
     ("clad_outer_displacement", "m", "Radial displacement of the cladding outer surface."),
-    (
-        "clad_hoop_strain",
-        "-",
-        "Total hoop strain at the cladding outer surface, u_r / r (elastic, thermal, creep and "
-        "growth together).",
-    ),
+    ("clad_hoop_strain", "-", "Total hoop strain at the cladding outer surface, u_r / r (elastic, thermal, creep and growth together)."),
 )
 
 
@@ -95,9 +85,7 @@ class RodResult:
             return np.asarray(rod[name], dtype=float)
         if name in axial:
             return np.asarray(axial[name], dtype=float)
-        raise AttributeError(
-            f"RodResult has no quantity '{name}'. Use one of: {', '.join(self.names())}."
-        )
+        raise AttributeError(f"RodResult has no quantity '{name}'. Use one of: {', '.join(self.names())}.")
 
     def names(self) -> list[str]:
         return [n for n, _, _ in ROD_QUANTITIES] + [n for n, _, _ in AXIAL_QUANTITIES]
@@ -122,6 +110,34 @@ class RodResult:
         return out
 
     # ---- text -----------------------------------------------------------------
+    def to_dict(self) -> dict:
+        """The peak values and the end state of :meth:`summary`, in SI units
+        (temperatures in K, lengths in m, pressures in Pa, the release as a
+        fraction) and the burnup in its unit."""
+        T = self.fuel_centerline_temperature
+        i, j = np.unravel_index(np.argmax(T), T.shape)
+        return {
+            "end_time": float(self.time[-1]),
+            "burnup_unit": self.burnup_unit,
+            "rod_average_burnup": float(self.rod_average_burnup[-1]),
+            "peak_fuel_centerline_temperature": float(T[i, j]),
+            "peak_fuel_centerline_temperature_time": float(self.time[i]),
+            "peak_fuel_centerline_temperature_axial_position": float(self.axial_positions[j]),
+            "peak_clad_outer_temperature": float(self.clad_outer_temperature.max()),
+            "smallest_gap_width": float(self.gap_width.min()),
+            "gas_pressure": float(self.gas_pressure[-1]),
+            "fission_gas_release": float(self.fission_gas_release[-1]),
+            "largest_clad_hoop_strain": float(self.clad_hoop_strain.max()),
+            "smallest_clad_hoop_strain": float(self.clad_hoop_strain.min()),
+            "nonlinear_iterations": int(self.nonlinear_iterations.sum()),
+        }
+
+    def write_json(self, path) -> None:
+        """Write :meth:`to_dict` to a JSON file."""
+        from ..parameters import write_json_numbers
+
+        write_json_numbers(self.to_dict(), path)
+
     def summary(self) -> str:
         """The peak values and the end state, as aligned text."""
         from ..console import table
@@ -146,35 +162,40 @@ class RodResult:
         return "Summary\n" + table(rows, ["quantity", "value", "unit"])
 
     # ---- files ----------------------------------------------------------------
-    def write_csv(self, directory: str, file_base: str = "rod") -> list[str]:
-        """Write ``<file_base>_history.csv`` (one row per output time) and
-        ``<file_base>_axial.csv`` (one row per output time and axial
-        position), and the input report as ``<file_base>_input.txt``.
+    @property
+    def tables(self) -> dict:
+        """``history``: one row per output time, and ``axial``: one row per
+        output time and axial position, with the units in the column
+        names."""
+        from ..tables import Table
+
+        names = [n for n, _, _ in ROD_QUANTITIES]
+        history = Table(names, [self.unit(n) for n in names], [[float(self.rod[n][k]) for n in names] for k in range(len(self.rod["time"]))], title="Rod history")
+        axial_names = [n for n, _, _ in AXIAL_QUANTITIES]
+        rows = []
+        for k, t in enumerate(self.rod["time"]):
+            for j, z in enumerate(self.axial_positions):
+                rows.append([float(t), float(t) / SECONDS_PER_DAY, float(z)] + [float(self.axial[n][k][j]) for n in axial_names])
+        axial = Table(["time", "time_days", "axial_position"] + axial_names, ["s", "d", "m"] + [self.unit(n) for n in axial_names], rows, title="Axial profiles")
+        return {"history": history, "axial": axial}
+
+    def write_csv(self, path, table: str | None = None) -> None:
+        """Write one table to a CSV file: ``history`` (the default) or
+        ``axial``."""
+        from ..tables import ResultTables
+
+        ResultTables.write_csv(self, path, table)
+
+    def _write_files(self, directory: str, file_base: str = "rod") -> list[str]:
+        """Write ``<file_base>_history.csv``, ``<file_base>_axial.csv`` and
+        the input report ``<file_base>_input.txt``, for RodOutput.directory.
         Returns the paths."""
         os.makedirs(directory, exist_ok=True)
         paths = []
-        history = os.path.join(directory, f"{file_base}_history.csv")
-        names = [n for n, _, _ in ROD_QUANTITIES]
-        with open(history, "w", newline="") as f:
-            writer = csv.writer(f, lineterminator="\n")
-            writer.writerow(names)
-            f.write("# units: " + ", ".join(self.unit(n) for n in names) + "\n")
-            for k in range(len(self.rod["time"])):
-                writer.writerow([repr(float(self.rod[n][k])) for n in names])
-        paths.append(history)
-        axial = os.path.join(directory, f"{file_base}_axial.csv")
-        names = [n for n, _, _ in AXIAL_QUANTITIES]
-        with open(axial, "w", newline="") as f:
-            writer = csv.writer(f, lineterminator="\n")
-            writer.writerow(["time", "time_days", "axial_position"] + names)
-            f.write("# units: s, d, m, " + ", ".join(self.unit(n) for n in names) + "\n")
-            for k, t in enumerate(self.rod["time"]):
-                for j, z in enumerate(self.axial_positions):
-                    writer.writerow(
-                        [repr(float(t)), repr(float(t) / SECONDS_PER_DAY), repr(float(z))]
-                        + [repr(float(self.axial[n][k][j])) for n in names]
-                    )
-        paths.append(axial)
+        for name in ("history", "axial"):
+            path = os.path.join(directory, f"{file_base}_{name}.csv")
+            self.write_csv(path, table=name)
+            paths.append(path)
         if self.input_report:
             report = os.path.join(directory, f"{file_base}_input.txt")
             with open(report, "w") as f:

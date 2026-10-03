@@ -279,8 +279,41 @@ Problem::addObject(const std::string & type, const std::string & name_in, InputP
       name = type + "_" + std::to_string(i++);
     while (_by_name.count(name));
   }
+  // A boundary condition given a list of variables is created once per
+  // variable.  fixed_constraint names its list 'displacements'.
+  const auto category = f.category(type);
+  if (type == "symmetry_boundary_condition")
+    return addSymmetryCondition(name, std::move(params));
+  if (category == ObjectCategory::BoundaryCondition || category == ObjectCategory::NodalBC)
+  {
+    std::vector<std::string> keys;
+    for (const char * key : {"variables", "displacements"})
+      if ((std::string(key) == "variables" || type == "fixed_constraint") && params.has(key) &&
+          params.isSetByUser(key) && !params.getStringList(key).empty())
+        keys.push_back(key);
+    if (keys.size() > 1)
+      throw InputError(
+          "Boundary condition '" + name +
+          "': 'variables' and 'displacements' define the same thing. Give only one of them.");
+    if (!keys.empty())
+    {
+      if (params.isSetByUser("variable") && !params.getString("variable").empty())
+        throw InputError("Boundary condition '" + name + "': 'variable' and '" + keys[0] +
+                         "' define the same thing. Give only one of them.");
+      const auto variables = params.getStringList(keys[0]);
+      std::shared_ptr<Object> last;
+      for (const auto & variable : variables)
+      {
+        InputParameters copy = params;
+        copy.set(keys[0], std::vector<std::string>{});
+        copy.set("variable", variable);
+        last = addObject(type, name + "_" + variable, std::move(copy));
+      }
+      return last;
+    }
+  }
   auto obj = f.create(type, name, std::move(params));
-  switch (f.category(type))
+  switch (category)
   {
   case ObjectCategory::Kernel:
     addKernel(std::static_pointer_cast<Kernel>(obj));
@@ -294,10 +327,72 @@ Problem::addObject(const std::string & type, const std::string & name_in, InputP
   case ObjectCategory::NodalLoad:
     addNodalLoad(std::static_pointer_cast<NodalLoad>(obj));
     break;
-  case ObjectCategory::Material:
-    addMaterial(std::static_pointer_cast<Material>(obj));
+  case ObjectCategory::Property:
+    addProperty(std::static_pointer_cast<Property>(obj));
     break;
   }
+  return obj;
+}
+
+std::shared_ptr<Object>
+Problem::addSymmetryCondition(const std::string & name, InputParameters params)
+{
+  // The plane of the side set is normal to the coordinate axis along which
+  // all its nodes share one coordinate.  The condition is the zero value of
+  // the displacement along that axis.
+  const auto displacements = params.getStringList("displacements");
+  if (displacements.empty())
+    throw InputError("Boundary condition '" + name +
+                     "': symmetry_boundary_condition needs 'displacements', the displacement "
+                     "variables in the order of the coordinate axes.");
+  if (params.isSetByUser("variable") ||
+      (params.has("variables") && params.isSetByUser("variables")))
+    throw InputError("Boundary condition '" + name +
+                     "': symmetry_boundary_condition takes 'displacements' only. 'variable' and "
+                     "'variables' define the same thing and must not be given with it.");
+  const auto boundaries = params.getStringList("boundary");
+  std::vector<Index> nodes;
+  for (const auto & b : boundaries)
+  {
+    if (!_mesh->hasBoundary(b))
+      throw InputError("Boundary condition '" + name + "': the mesh has no boundary '" + b + "'.");
+    const auto list = _mesh->boundaryNodes(b);
+    nodes.insert(nodes.end(), list.begin(), list.end());
+  }
+  const auto box = _mesh->boundingBox();
+  double size = 0.0;
+  for (int k = 0; k < 3; ++k)
+    size = std::max(size, box.second[k] - box.first[k]);
+  const double tolerance = 1e-8 * std::max(size, 1e-300);
+  const int dim = std::min<int>(_mesh->dimension(), static_cast<int>(displacements.size()));
+  int axis = nodes.empty() ? 0 : -1;
+  for (int k = 0; k < dim && !nodes.empty(); ++k)
+  {
+    double lo = _mesh->node(nodes[0])[k], hi = lo;
+    for (Index n : nodes)
+    {
+      lo = std::min(lo, _mesh->node(n)[k]);
+      hi = std::max(hi, _mesh->node(n)[k]);
+    }
+    if (hi - lo <= tolerance)
+    {
+      axis = k;
+      break;
+    }
+  }
+  if (axis < 0)
+    throw InputError("Boundary condition '" + name +
+                     "': symmetry_boundary_condition needs a side set in a plane normal to a "
+                     "coordinate axis (x, y or z constant on all its nodes), and this one is not. "
+                     "An inclined symmetry plane is not available. Rotate the mesh so that the "
+                     "plane is normal to an axis.");
+  InputParameters copy = params;
+  copy.set("displacements", std::vector<std::string>{});
+  copy.set("variable", displacements[axis]);
+  const std::string object_name = name + "_" + displacements[axis];
+  auto obj =
+      Factory::instance().create("symmetry_boundary_condition", object_name, std::move(copy));
+  addNodalBC(std::static_pointer_cast<NodalBC>(obj));
   return obj;
 }
 
@@ -344,10 +439,10 @@ Problem::addNodalLoad(std::shared_ptr<NodalLoad> load)
   _initialized = false;
 }
 void
-Problem::addMaterial(std::shared_ptr<Material> m)
+Problem::addProperty(std::shared_ptr<Property> m)
 {
   registerName(_by_name, m);
-  _materials.push_back(std::move(m));
+  _property_objects.push_back(std::move(m));
   _initialized = false;
 }
 
@@ -374,6 +469,7 @@ Problem::initialize()
 {
   if (_initialized)
     return;
+  _singularity_checked = false;
   if (_vars.empty())
     throw InputError("The problem has no variables.");
   if (_kernels.empty())
@@ -397,8 +493,8 @@ Problem::initialize()
           ReferenceElement::get(elementCornerType(el.type)).numNodes() > MappedPoint::kMaxCorners)
         throw InputError("Internal error: an element has more corners than MappedPoint holds.");
   }
-  _props = MaterialPropertyRegistry();
-  for (auto & m : _materials)
+  _props = PropertyRegistry();
+  for (auto & m : _property_objects)
   {
     m->initialSetup(*this);
     m->declareProperties(_props);
@@ -421,14 +517,14 @@ Problem::initialize()
     b->initialSetup(*this);
   for (auto & l : _loads)
     l->initialSetup(*this);
-  // Check that required material properties exist.
+  // Check that required properties exist.
   for (auto & k : _kernels)
     for (const auto & p : k->requiredProperties())
       _props.id(p);
-  // The history records: every stateful material gets its slice of the
+  // The history records: every stateful property object gets its slice of the
   // record, and every owner an (initially empty) list of points.
   _state_record = 0;
-  for (auto & m : _materials)
+  for (auto & m : _property_objects)
   {
     m->setStateOffset(_state_record);
     _state_record += m->stateSize();
@@ -874,13 +970,13 @@ Problem::stateAtElements() const
 }
 
 void
-Problem::computeMaterials(QpContext & ctx) const
+Problem::evaluateProperties(QpContext & ctx) const
 {
-  if (_materials.empty())
+  if (_property_objects.empty())
     return;
   bindState(ctx);
   ctx.properties.assign(_props.size(), ADReal(0.0));
-  for (const auto & m : _materials)
+  for (const auto & m : _property_objects)
     if (m->activeOnBlock(ctx.block))
     {
       m->computeProperties(ctx);

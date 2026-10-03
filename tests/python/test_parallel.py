@@ -66,41 +66,15 @@ def conduction_problem(problem):
     """Heat conduction with a source, a prescribed temperature on two sides and
     convection on the other two."""
     problem.add_variable("temperature")
-    problem.add_kernel(
-        "heat_conduction", "conduction", variable="temperature", thermal_conductivity=2.5
-    )
+    problem.add_kernel("heat_conduction", "conduction", variable="temperature", thermal_conductivity=2.5)
     problem.add_kernel("heat_source", "source", variable="temperature", heat_source=40.0)
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "cold",
-        variable="temperature",
-        boundary=["left", "bottom"],
-        value=20.0,
-    )
-    problem.add_boundary_condition(
-        "convective_heat_flux_boundary_condition",
-        "convection",
-        variable="temperature",
-        boundary=["right", "top"],
-        heat_transfer_coefficient=15.0,
-        ambient_temperature=5.0,
-    )
+    problem.add_boundary_condition("Dirichlet_boundary_condition", "cold", variable="temperature", boundary=["left", "bottom"], value=20.0)
+    problem.add_boundary_condition("convective_heat_flux_boundary_condition", "convection", variable="temperature", boundary=["right", "top"], heat_transfer_coefficient=15.0, ambient_temperature=5.0)
 
 
 @pytest.mark.parametrize("method", ["dmcdm", "fem", "hfvm"])
-@pytest.mark.parametrize(
-    "preconditioner, overlap, subdomain_solver",
-    [
-        ("jacobi", 0, "ilu"),
-        ("additive_schwarz", 0, "ilu"),
-        ("additive_schwarz", 1, "lu"),
-        ("two_level_schwarz", 1, "ilu"),
-        ("two_level_schwarz", 2, "lu"),
-    ],
-)
-def test_distributed_path_reproduces_the_serial_answer(
-    method, preconditioner, overlap, subdomain_solver
-):
+@pytest.mark.parametrize("preconditioner, overlap, subdomain_solver", [("jacobi", 0, "ilu"), ("additive_schwarz", 0, "ilu"), ("additive_schwarz", 1, "lu"), ("two_level_schwarz", 1, "ilu"), ("two_level_schwarz", 2, "lu")])
+def test_distributed_path_reproduces_the_serial_answer(method, preconditioner, overlap, subdomain_solver):
     mesh = dm.generate_rectangle_mesh(0.0, 1.0, 0.0, 1.0, 12, 12)
 
     serial = dm.Problem(mesh, method=method)
@@ -108,16 +82,9 @@ def test_distributed_path_reproduces_the_serial_answer(
     serial.solve()
     expected = serial.values("temperature")
 
-    distributed = dm.DistributedProblem(
-        mesh,
-        method=method,
-        preconditioner=preconditioner,
-        overlap=overlap,
-        subdomain_solver=subdomain_solver,
-        linear_tolerance=1e-13,
-    )
-    conduction_problem(distributed.local)
-    distributed.solve()
+    distributed = dm.Problem(mesh, method=method, distributed=True, overlap=overlap)
+    conduction_problem(distributed)
+    distributed.solve(preconditioner=preconditioner, subdomain_solver=subdomain_solver, linear_tolerance=1e-13)
     got = np.asarray(distributed.gathered_values("temperature"))
     assert got == pytest.approx(expected, abs=1e-8)
     assert distributed.num_ranks == dm.num_ranks()
@@ -128,28 +95,19 @@ def test_distributed_transient_reproduces_the_serial_answer():
     mesh = dm.generate_rectangle_mesh(0.0, 1.0, 0.0, 1.0, 10, 10)
 
     def define(problem):
-        problem.add_variable(
-            "temperature",
-            initial_condition=lambda x, y, z, t: np.sin(np.pi * x) * np.sin(np.pi * y),
-        )
+        problem.add_variable("temperature", initial_condition=lambda x, y, z, t: np.sin(np.pi * x) * np.sin(np.pi * y))
         problem.add_kernel("diffusion", "diffusion", variable="temperature")
         problem.add_kernel("time_derivative", "time", variable="temperature")
-        problem.add_boundary_condition(
-            "Dirichlet_boundary_condition",
-            "edges",
-            variable="temperature",
-            boundary=["left", "right", "bottom", "top"],
-            value=0.0,
-        )
+        problem.add_boundary_condition("Dirichlet_boundary_condition", "edges", variable="temperature", boundary=["left", "right", "bottom", "top"], value=0.0)
 
     serial = dm.Problem(mesh)
     define(serial)
-    serial.solve_transient(end_time=0.02, dt=0.002, theta=0.5)
+    serial.solve_transient(end_time=0.02, time_step=0.002, implicitness=0.5)
     expected = serial.values("temperature")
 
-    distributed = dm.DistributedProblem(mesh, linear_tolerance=1e-13)
-    define(distributed.local)
-    distributed.solve_transient(end_time=0.02, dt=0.002, theta=0.5)
+    distributed = dm.Problem(mesh, distributed=True)
+    define(distributed)
+    distributed.solve_transient(end_time=0.02, time_step=0.002, implicitness=0.5, linear_tolerance=1e-13)
     got = np.asarray(distributed.gathered_values("temperature"))
     assert got == pytest.approx(expected, abs=1e-8)
 
@@ -182,13 +140,7 @@ def test_threading_is_disabled_for_python_objects():
     problem.add_kernel("diffusion", "diffusion", variable="u")
     problem.add_function("source", lambda x, y, z, t: np.sin(x))
     problem.add_kernel("body_force", "body", variable="u", value="source")
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "edges",
-        variable="u",
-        boundary=["left", "right", "bottom", "top"],
-        value=0.0,
-    )
+    problem.add_boundary_condition("Dirichlet_boundary_condition", "edges", variable="u", boundary=["left", "right", "bottom", "top"], value=0.0)
     problem.set_num_threads(4)
     problem.solve()
     assert not problem.thread_safe
@@ -211,25 +163,28 @@ def test_the_default_preconditioner_is_two_level_schwarz_with_overlap():
     elements, with a coarse level, is the default: its iteration count stays
     flat as ranks are added (the multi-rank check is in
     dualmesh_parallel_tests) and it is several times lower than Jacobi's.
-    Both layers must agree on the default: the C++ options struct and the
-    Python constructor that mirrors it."""
+    The C++ options struct and the Python defaults must agree."""
     import inspect
 
+    from dualmesh.problem import _distributed_options
+
     options = dm._core.DistributedOptions()
-    signature = inspect.signature(dm.DistributedProblem.__init__).parameters
-    assert options.preconditioner == signature["preconditioner"].default == "two_level_schwarz"
+    linear, _ = _distributed_options({})
+    signature = inspect.signature(dm.Problem.__init__).parameters
+    assert options.preconditioner == linear.preconditioner == "two_level_schwarz"
     assert options.overlap == signature["overlap"].default == 1
-    assert options.subdomain_solver == signature["subdomain_solver"].default == "ilu"
+    assert options.subdomain_solver == linear.subdomain_solver == "ilu"
+    assert options.linear_solver == linear.linear_solver == "bicgstab"
 
 
 def test_bad_schwarz_options_are_reported():
     mesh = dm.generate_rectangle_mesh(0.0, 1.0, 0.0, 1.0, 4, 4)
     with pytest.raises(ValueError, match="overlap"):
-        dm.DistributedProblem(mesh, overlap=-1)
-    distributed = dm.DistributedProblem(mesh, subdomain_solver="multigrid")
-    conduction_problem(distributed.local)
+        dm.Problem(mesh, distributed=True, overlap=-1)
+    distributed = dm.Problem(mesh, distributed=True)
+    conduction_problem(distributed)
     with pytest.raises(ValueError, match="Unknown subdomain solver"):
-        distributed.solve()
+        distributed.solve(subdomain_solver="multigrid")
 
 
 def test_the_cell_centred_finite_volume_method_is_refused_by_the_distributed_solver():
@@ -240,39 +195,26 @@ def test_the_cell_centred_finite_volume_method_is_refused_by_the_distributed_sol
     need a layer of ghost cells across each partition boundary.  Rather than
     return a wrong answer, the constructor refuses, and the message says which
     methods to use instead."""
-    mesh = dm.generate_rectangle_mesh(
-        x_min=0.0, x_max=1.0, y_min=0.0, y_max=1.0, num_x_elements=4, num_y_elements=4
-    )
+    mesh = dm.generate_rectangle_mesh(x_min=0.0, x_max=1.0, y_min=0.0, y_max=1.0, num_x_elements=4, num_y_elements=4)
     with pytest.raises(Exception, match="cell-centred finite volume"):
-        dm.DistributedProblem(mesh, method="zfvm")
+        dm.Problem(mesh, method="zfvm", distributed=True)
     # The three node-based methods are accepted.
     for method in ("dmcdm", "fem", "hfvm"):
-        dm.DistributedProblem(mesh, method=method)
+        dm.Problem(mesh, method=method, distributed=True)
 
 
 def test_a_linear_solve_that_cannot_converge_says_what_to_try():
     """When the distributed iteration cannot reach the tolerance, the error
     must name the number of iterations and the residual reached and say what
     to try, rather than simply saying that it failed."""
-    mesh = dm.generate_rectangle_mesh(
-        x_min=0.0, x_max=1.0, y_min=0.0, y_max=1.0, num_x_elements=8, num_y_elements=8
-    )
-    distributed = dm.DistributedProblem(
-        mesh, preconditioner="jacobi", linear_tolerance=1e-14, linear_max_iterations=2
-    )
-    problem = distributed.local
+    mesh = dm.generate_rectangle_mesh(x_min=0.0, x_max=1.0, y_min=0.0, y_max=1.0, num_x_elements=8, num_y_elements=8)
+    problem = dm.Problem(mesh, distributed=True)
     problem.add_variable("u")
     problem.add_kernel("diffusion", "diffusion", variable="u")
     problem.add_kernel("body_force", "source", variable="u", value=1.0)
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "walls",
-        variable="u",
-        boundary=mesh.sideset_names(),
-        value=0.0,
-    )
+    problem.add_boundary_condition("Dirichlet_boundary_condition", "walls", variable="u", boundary=mesh.sideset_names(), value=0.0)
     with pytest.raises(RuntimeError, match="did not converge in 2 iterations"):
-        distributed.solve()
+        problem.solve(preconditioner="jacobi", linear_tolerance=1e-14, linear_max_iterations=2)
 
 
 @pytest.mark.parametrize("method", ["dmcdm", "fem", "hfvm"])
@@ -284,36 +226,19 @@ def test_distributed_pressure_velocity_flow_reproduces_the_serial_answer(method,
     otherwise every process would pin a node of its own."""
 
     def define(problem):
-        dm.physics.add_incompressible_flow(
-            problem,
-            velocities=["u", "v"],
-            dynamic_viscosity=1.0,
-            density=density,
-            formulation="pressure",
-            pressure_pin_point=(0.5, 0.0),
-        )
-        problem.add_boundary_condition(
-            "Dirichlet_boundary_condition", "lid", variable="u", boundary="top", value=1.0
-        )
-        problem.add_boundary_condition(
-            "Dirichlet_boundary_condition", "lid_v", variable="v", boundary="top", value=0.0
-        )
+        problem.add_physics("incompressible_flow", "flow", velocities=["u", "v"], dynamic_viscosity=1.0, density=density, formulation="pressure", pressure_pin_point=(0.5, 0.0))
+        problem.add_boundary_condition("Dirichlet_boundary_condition", "lid", variable="u", boundary="top", value=1.0)
+        problem.add_boundary_condition("Dirichlet_boundary_condition", "lid_v", variable="v", boundary="top", value=0.0)
         for variable in ("u", "v"):
-            problem.add_boundary_condition(
-                "Dirichlet_boundary_condition",
-                f"walls_{variable}",
-                variable=variable,
-                boundary=["left", "right", "bottom"],
-                value=0.0,
-            )
+            problem.add_boundary_condition("Dirichlet_boundary_condition", f"walls_{variable}", variable=variable, boundary=["left", "right", "bottom"], value=0.0)
 
     mesh = dm.generate_rectangle_mesh(0.0, 1.0, 0.0, 1.0, 16, 16)
     serial = dm.Problem(mesh, method=method)
     define(serial)
     serial.solve()
-    distributed = dm.DistributedProblem(mesh, method=method, linear_tolerance=1e-12)
-    define(distributed.local)
-    distributed.solve()
+    distributed = dm.Problem(mesh, method=method, distributed=True)
+    define(distributed)
+    distributed.solve(linear_tolerance=1e-12)
     for variable in ("u", "v", "pressure"):
         got = np.asarray(distributed.gathered_values(variable))
         assert got == pytest.approx(serial.values(variable), abs=1e-8)
@@ -321,79 +246,37 @@ def test_distributed_pressure_velocity_flow_reproduces_the_serial_answer(method,
 
 @pytest.mark.skipif(not dm.have_petsc(), reason="built without PETSc")
 @pytest.mark.parametrize("method", ["dmcdm", "fem", "hfvm"])
-@pytest.mark.parametrize(
-    "options",
-    [
-        None,
-        {"ksp_type": "gmres", "pc_type": "asm", "sub_pc_type": "ilu", "ksp_gmres_restart": 400},
-    ],
-)
+@pytest.mark.parametrize("options", [None, {"ksp_type": "gmres", "pc_type": "asm", "sub_pc_type": "ilu", "ksp_gmres_restart": 400}])
 def test_distributed_petsc_reproduces_the_serial_answer(method, options):
     """With linear_solver="petsc" the Jacobian is assembled as one distributed
     PETSc matrix, from the entries every rank computed for its own elements
     in a global numbering, and solved by PETSc."""
 
     def define(problem):
-        dm.physics.add_incompressible_flow(
-            problem,
-            velocities=["u", "v"],
-            dynamic_viscosity=1.0,
-            density=50.0,
-            formulation="pressure",
-            pressure_pin_point=(0.5, 0.0),
-        )
-        problem.add_boundary_condition(
-            "Dirichlet_boundary_condition", "lid", variable="u", boundary="top", value=1.0
-        )
-        problem.add_boundary_condition(
-            "Dirichlet_boundary_condition", "lid_v", variable="v", boundary="top", value=0.0
-        )
+        problem.add_physics("incompressible_flow", "flow", velocities=["u", "v"], dynamic_viscosity=1.0, density=50.0, formulation="pressure", pressure_pin_point=(0.5, 0.0))
+        problem.add_boundary_condition("Dirichlet_boundary_condition", "lid", variable="u", boundary="top", value=1.0)
+        problem.add_boundary_condition("Dirichlet_boundary_condition", "lid_v", variable="v", boundary="top", value=0.0)
         for variable in ("u", "v"):
-            problem.add_boundary_condition(
-                "Dirichlet_boundary_condition",
-                f"walls_{variable}",
-                variable=variable,
-                boundary=["left", "right", "bottom"],
-                value=0.0,
-            )
+            problem.add_boundary_condition("Dirichlet_boundary_condition", f"walls_{variable}", variable=variable, boundary=["left", "right", "bottom"], value=0.0)
 
     mesh = dm.generate_rectangle_mesh(0.0, 1.0, 0.0, 1.0, 16, 16)
     serial = dm.Problem(mesh, method=method)
     define(serial)
     serial.solve(linear_solver="lu")
-    distributed = dm.DistributedProblem(
-        mesh, method=method, linear_solver="petsc", petsc_options=options, linear_tolerance=1e-12
-    )
-    define(distributed.local)
-    distributed.solve()
+    distributed = dm.Problem(mesh, method=method, distributed=True)
+    define(distributed)
+    distributed.solve(linear_solver="petsc", petsc_options=options, linear_tolerance=1e-12)
     for variable in ("u", "v", "pressure"):
         got = np.asarray(distributed.gathered_values(variable))
         assert got == pytest.approx(serial.values(variable), abs=1e-8)
 
 
 def _taylor_hood_cavity(problem):
-    dm.physics.add_incompressible_flow(
-        problem,
-        velocities=["u", "v"],
-        dynamic_viscosity=1.0,
-        density=50.0,
-        formulation="taylor_hood",
-        pressure_pin_point=(0.5, 0.0),
-    )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", "lid", variable="u", boundary="top", value=1.0
-    )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", "lid_v", variable="v", boundary="top", value=0.0
-    )
+    problem.add_physics("incompressible_flow", "flow", velocities=["u", "v"], dynamic_viscosity=1.0, density=50.0, formulation="Taylor_Hood", pressure_pin_point=(0.5, 0.0))
+    problem.add_boundary_condition("Dirichlet_boundary_condition", "lid", variable="u", boundary="top", value=1.0)
+    problem.add_boundary_condition("Dirichlet_boundary_condition", "lid_v", variable="v", boundary="top", value=0.0)
     for variable in ("u", "v"):
-        problem.add_boundary_condition(
-            "Dirichlet_boundary_condition",
-            f"walls_{variable}",
-            variable=variable,
-            boundary=["left", "right", "bottom"],
-            value=0.0,
-        )
+        problem.add_boundary_condition("Dirichlet_boundary_condition", f"walls_{variable}", variable=variable, boundary=["left", "right", "bottom"], value=0.0)
 
 
 _TAYLOR_HOOD_SOLVERS = [{"subdomain_solver": "lu"}] + (
@@ -423,20 +306,18 @@ def test_distributed_taylor_hood_reproduces_the_serial_answer(options):
     serial = dm.Problem(mesh, method="fem")
     _taylor_hood_cavity(serial)
     serial.solve()
-    distributed = dm.DistributedProblem(mesh, method="fem", linear_tolerance=1e-12, **options)
-    _taylor_hood_cavity(distributed.local)
-    distributed.solve()
+    distributed = dm.Problem(mesh, method="fem", distributed=True)
+    _taylor_hood_cavity(distributed)
+    distributed.solve(linear_tolerance=1e-12, **options)
     for variable in ("u", "v", "pressure"):
         got = np.asarray(distributed.gathered_values(variable))
         assert got == pytest.approx(serial.values(variable), abs=1e-8)
 
 
-@pytest.mark.parametrize(
-    "options", [{}, {"preconditioner": "jacobi"}], ids=["incomplete_lu", "jacobi"]
-)
+@pytest.mark.parametrize("options", [{}, {"preconditioner": "jacobi"}], ids=["incomplete_lu", "jacobi"])
 def test_distributed_taylor_hood_refuses_preconditioners_that_divide_by_zero(options):
     mesh = dm.generate_rectangle_mesh(0.0, 1.0, 0.0, 1.0, 4, 4, element_type="Quad9")
-    distributed = dm.DistributedProblem(mesh, method="fem", **options)
-    _taylor_hood_cavity(distributed.local)
+    distributed = dm.Problem(mesh, method="fem", distributed=True)
+    _taylor_hood_cavity(distributed)
     with pytest.raises(ValueError, match="subdomain_solver = 'lu'"):
-        distributed.solve()
+        distributed.solve(**options)

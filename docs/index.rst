@@ -14,15 +14,19 @@ exactly in the Jacobian.
 The same problem description can be discretised by four methods, which are
 selected by one keyword: the Galerkin **finite element method**, the
 vertex-centred and the cell-centred **finite volume methods**, and the **dual
-mesh control domain method** (DMCDM) of J. N. Reddy, which combines the
+mesh control domain method** (DMCDM) of J. N. Reddy [Reddy2024]_, which combines the
 finite element interpolation with the finite volume balance.  All four
 methods are held to the same verification standard.  An element type or a
 physics that a method cannot treat correctly is refused with an explanation.
 
-The library is written in C++17 and is driven from Python or from YAML input
-files.  Its structure follows MOOSE [MOOSE2025]_.  The physics is added as
-*kernels*, *boundary conditions* and *materials*, which are registered
-objects with validated and self-documenting parameters.  Meshes are generated
+The library is written in C++17 and is driven from Python.  A model is
+described in physical terms: *physics* such as ``heat_transfer``,
+``solid_mechanics`` and ``incompressible_flow``, their boundary conditions,
+and *couplings* such as ``thermal_expansion``.  Each physics generates the
+*kernels*, *property objects* and *boundary conditions* of its equations, which
+follow the object model of MOOSE [MOOSE2025]_ and are registered objects with
+validated and self-documenting parameters.  An equation without a physics is
+written with these objects directly.  Meshes are generated
 by the library or read from standard file formats.  The solvers (Newton's
 method with exact derivatives, direct iteration, load stepping, adaptive time
 integration, and threaded and distributed linear algebra) are shared by every
@@ -36,28 +40,20 @@ two sides and convection on the top (Example 5.4.3 of Reddy's book) reads:
 
    import dualmesh as dm
 
-   mesh = dm.generate_rectangle_mesh(
-       x_min=0.0, x_max=0.1, y_min=0.0, y_max=0.05,
-       num_x_elements=10, num_y_elements=5)
+   mesh = dm.generate_rectangle_mesh(x_min=0.0, x_max=0.1, y_min=0.0, y_max=0.05, num_x_elements=10, num_y_elements=5)
 
    problem = dm.Problem(mesh, method="dmcdm")
-   problem.add_variable("temperature")
-   problem.add_kernel("heat_conduction", variable="temperature",
-                      thermal_conductivity=20.0)
-   problem.add_kernel("heat_source", variable="temperature", heat_source=1.0e6)
-   problem.add_boundary_condition("Dirichlet_boundary_condition", "left",
-                                  variable="temperature", value=40.0)
-   problem.add_boundary_condition("Dirichlet_boundary_condition", "right",
-                                  variable="temperature", value=10.0)
-   problem.add_boundary_condition("convective_heat_flux_boundary_condition", "top",
-                                  variable="temperature", heat_transfer_coefficient=75.0)
+   heat = problem.add_physics("heat_transfer", "heat", thermal_conductivity=20.0, heat_source=1.0e6)
+   heat.add_boundary_condition("Dirichlet_boundary_condition", "left", value=40.0)
+   heat.add_boundary_condition("Dirichlet_boundary_condition", "right", value=10.0)
+   heat.add_boundary_condition("convective_heat_flux_boundary_condition", "top", heat_transfer_coefficient=75.0)
    problem.solve()
 
-   print(problem.sample("temperature", [[0.05, 0.0]]))   # 83.142 (Reddy, Table 5.4.3)
+   print(problem.sample("temperature", [[0.05, 0.0]]))  # 83.142 (Reddy, Table 5.4.3)
 
 A boundary condition named after a side set of the mesh acts on that side
-set.  The same problem as a YAML input file is ``examples/bus_bar.yaml`` (see
-:doc:`input_files`).
+set.  The complete script, with post-processors and output files, is
+``examples/bus_bar.py``.
 
 The dual mesh control domain method
 -----------------------------------
@@ -82,7 +78,7 @@ is the outward unit normal.  The secondary variables (fluxes, forces and
 moments) appear on the interfaces of the control domains, as in the finite
 volume method.  The gradients on these interfaces are evaluated from the
 finite element interpolation, so that no gradient reconstruction is needed.
-Chapter 5 of Reddy's book develops the method, and :doc:`theory/index`
+Chapter 5 of Reddy's book [Reddy2024]_ develops the method, and :doc:`theory/index`
 presents it in the form that the code implements.
 
 Physics modules
@@ -132,7 +128,7 @@ Capabilities
 
 **Four discretisations of one problem description.**  The dual mesh control
 domain method, the Galerkin finite element method, and the vertex-centred and
-cell-centred finite volume methods of Chapter 3 of Reddy's book.  Changing one
+cell-centred finite volume methods.  Changing one
 keyword changes the method and leaves the rest of the problem unchanged,
 which makes a comparison between methods meaningful.
 
@@ -168,7 +164,7 @@ used for the linear and nonlinear solvers.
 distributed solver across processes.
 
 **Verification.**  Every capability listed above is checked by a test.  The
-tests reproduce published tables of Reddy's book, analytical solutions and
+tests reproduce published reference solutions, analytical solutions and
 independent calculations with OpenFOAM.  A study by the method of
 manufactured solutions measures the order of convergence of every method on
 every element type it accepts, in one, two and three dimensions.  The
@@ -192,7 +188,6 @@ Contents
 
    user_guide/index
    tutorials/index
-   input_files
    objects
    api
 
@@ -225,6 +220,5 @@ Contents
 Citing
 ------
 
-If this software contributes to your work, please cite both the method and the
-software (see :doc:`references` and the ``CITATION.cff`` file in the
-repository).
+If this software contributes to your work, please cite the software (see the
+``CITATION.cff`` file in the repository).

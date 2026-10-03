@@ -22,6 +22,8 @@ Meshes
 .. autofunction:: dualmesh.generate_annulus_mesh
 .. autofunction:: dualmesh.read_mesh
 .. autofunction:: dualmesh.write_mesh
+.. autofunction:: dualmesh.sideset_summary
+.. autofunction:: dualmesh.write_sidesets
 .. autofunction:: dualmesh.mesh_from_arrays
 .. autofunction:: dualmesh.graded_coordinates
 .. autofunction:: dualmesh.annulus_coordinates
@@ -40,9 +42,6 @@ Results and expressions
 Parallel execution
 ------------------
 
-.. autoclass:: dualmesh.DistributedProblem
-   :members:
-
 .. autofunction:: dualmesh.partition_mesh
 .. autofunction:: dualmesh.have_mpi
 .. autofunction:: dualmesh.have_metis
@@ -53,6 +52,8 @@ Adaptive refinement
 -------------------
 
 .. autofunction:: dualmesh.solve_with_adaptive_refinement
+.. autoclass:: dualmesh.AdaptivityResult
+   :members:
 .. autofunction:: dualmesh.refine_marked
 .. autofunction:: dualmesh.mark_by_fraction
 .. autofunction:: dualmesh.mark_by_error_fraction
@@ -64,11 +65,29 @@ Manufactured solutions
 .. automodule:: dualmesh.mms
    :members:
 
-Physics helpers
----------------
+Uncertainty quantification
+--------------------------
+
+The theory, the sources and the verification are in
+:doc:`theory/uncertainty`.
+
+.. automodule:: dualmesh.uq
+   :members: Normal, LogNormal, Uniform, LogUniform, Distribution, propagate, Runs, wilks_samples, sobol, SobolIndices, GaussianProcess, calibrate, Posterior
+
+Physics and couplings
+---------------------
+
+The parameters of every physics and coupling are listed in the syntax
+reference (:doc:`syntax/index`) and by ``dualmesh describe <type>``.
 
 .. automodule:: dualmesh.physics
-   :members:
+   :members: Physics, Coupling, register, registered, describe
+
+Parameter declarations
+----------------------
+
+.. automodule:: dualmesh.parameters
+   :members: parameter, keyword_checked, check_keywords, describe, describe_fields
 
 Objects written in Python
 -------------------------
@@ -105,4 +124,4 @@ Command line
 ------------
 
 .. automodule:: dualmesh.cli
-   :members: main, run, build_problem, build_mesh
+   :members: main

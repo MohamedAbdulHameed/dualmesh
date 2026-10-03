@@ -3,7 +3,7 @@ r"""Bayesian calibration (inverse uncertainty quantification) of model
 parameters against measurements.
 
 The measurements :math:`y_E` and the model :math:`y_M(\theta)` are related
-by the model updating equation (Kennedy and O'Hagan 2001; Wu et al. 2018)
+by the model updating equation of Kennedy and O'Hagan (2001) and Wu et al. (2018)
 
 .. math:: y_E = y_M(\theta) + \delta + \varepsilon,
 
@@ -22,19 +22,23 @@ parameters is
 All the outputs and all the measurements enter one likelihood, in the space
 of the measurements.  With a Gaussian process surrogate,
 :math:`\Sigma_\text{surrogate}` is its predictive covariance, of low rank in
-the principal components plus the variance of the discarded components; the
+the principal components plus the variance of the discarded components.  The
 likelihood is then evaluated by the Woodbury identity at the cost of the
 number of components.  With ``discrepancy="gaussian_process"``,
-:math:`\delta` is a Gaussian process in the location of the measurements
-(time, burnup), fitted to the residuals at the prior mean of the parameters
-and then held fixed: its posterior mean is :math:`\hat\delta` and its
-posterior covariance :math:`\Sigma_\delta` (the improved modular Bayesian
-approach of Wu, Kozlowski, Meidani and Shirvan 2018).
+:math:`\delta` is a zero-mean Gaussian process in the location of the
+measurements (time, burnup) with a Matern 5/2 correlation, integrated out of
+the likelihood as Kennedy and O'Hagan (2001) do (Sect. 4.4): :math:`r = y_E -
+y_M(\theta)` and :math:`\Sigma_\delta` is its prior covariance.  Its variance
+and length scale are fixed at the joint posterior mode of the parameters and
+the hyperparameters (their Sect. 4.5).  A discrepancy fitted to the
+residuals at fixed parameter values and subtracted from the data would hold
+the posterior at those values whatever the data (Wu et al. 2018, Sect. 5).
 
 The posterior is sampled by independent ensembles of the affine-invariant
 stretch move (Goodman and Weare 2010), or by adaptive Metropolis chains
-(Andrieu and Thoms 2008, Algorithm 4).  The chains give the split
-:math:`\hat R` of Gelman et al. (2013), and the autocorrelation time the
+(Andrieu and Thoms 2008, Algorithm 4).  The chains give the rank
+normalized and folded split :math:`\hat R` of Vehtari et al. (2021), and the
+integrated autocorrelation time (Goodman and Weare 2010, Eq. 17) the
 effective sample size.
 """
 
@@ -45,7 +49,7 @@ import math
 import numpy as np
 from scipy import linalg, optimize
 
-from ._engine import check_inputs, evaluate, to_inputs, unit_design
+from ._engine import check_inputs, evaluate, to_inputs, unit_design, write_json
 from .gaussian_process import _kernel
 
 __all__ = ["Posterior", "calibrate"]
@@ -87,10 +91,7 @@ def _flatten(outputs, names, shapes, rows):
             raise KeyError(f"calibrate: the model does not return the observed output '{name}'.")
         v = np.asarray(outputs[name], dtype=float).reshape(rows, -1)
         if v.shape[1] != int(np.prod(shape)):
-            raise ValueError(
-                f"calibrate: the model output '{name}' has {v.shape[1]} values per run, the "
-                f"measurement {int(np.prod(shape))}."
-            )
+            raise ValueError(f"calibrate: the model output '{name}' has {v.shape[1]} values per run, the measurement {int(np.prod(shape))}.")
         parts.append(v)
     return np.concatenate(parts, axis=1)
 
@@ -98,49 +99,6 @@ def _flatten(outputs, names, shapes, rows):
 # ---------------------------------------------------------------------------
 # discrepancy
 # ---------------------------------------------------------------------------
-def _fit_discrepancy(d, loc, noise_cov):
-    """Zero-mean Matern 5/2 process in the location, fitted by maximum
-    likelihood to the residuals ``d`` with the known noise covariance.
-    Returns the posterior mean and covariance of the discrepancy at the
-    measurement locations."""
-    loc = np.asarray(loc, dtype=float).reshape(len(d), -1)
-    span = np.ptp(loc, axis=0)
-    span = np.where(span > 0, span, 1.0)
-    x = (loc - loc.min(axis=0)) / span
-    d2 = ((x[:, None, :] - x[None, :, :]) ** 2).sum(axis=-1)[..., None]
-
-    def corr(log_ell):
-        return _kernel("matern52", d2 / math.exp(2 * log_ell))[0]
-
-    def nll(theta):
-        s2, K = math.exp(theta[0]), corr(theta[1])
-        C = s2 * K + noise_cov
-        try:
-            c = linalg.cho_factor(C, lower=True)
-        except linalg.LinAlgError:
-            return 1e25
-        a = linalg.cho_solve(c, d)
-        return 0.5 * float(d @ a) + float(np.sum(np.log(np.diag(c[0]))))
-
-    v0 = max(float(np.var(d)), 1e-30)
-    best = None
-    for le in (math.log(0.05), math.log(0.2), math.log(1.0)):
-        res = optimize.minimize(
-            nll,
-            [math.log(v0), le],
-            method="L-BFGS-B",
-            bounds=[(math.log(v0) - 20, math.log(v0) + 5), (math.log(1e-3), math.log(10.0))],
-        )
-        if best is None or res.fun < best.fun:
-            best = res
-    s2, K = math.exp(best.x[0]), corr(best.x[1])
-    P = s2 * K
-    c = linalg.cho_factor(P + noise_cov, lower=True)
-    mean = P @ linalg.cho_solve(c, d)
-    cov = P - P @ linalg.cho_solve(c, P)
-    return mean, 0.5 * (cov + cov.T), dict(variance=s2, length_scale=math.exp(best.x[1]))
-
-
 # ---------------------------------------------------------------------------
 # likelihood
 # ---------------------------------------------------------------------------
@@ -179,8 +137,12 @@ class _Likelihood:
 # samplers
 # ---------------------------------------------------------------------------
 def _ensemble(logpost, x0, steps, rng, a=2.0):
-    """Stretch-move ensembles; x0 (C, W, k).  Returns the chain (steps, C,
-    W, k), its log posterior and the acceptance fraction."""
+    """Stretch-move ensembles (Goodman and Weare 2010, Eqs. (7) and (9), with
+    the acceptance probability min(1, Z^(k-1) p(Y)/p(X))).  x0 is (C, W, k).
+    The two halves of each ensemble move in turn, each walker with a partner
+    drawn from the other half, which leaves the target invariant because
+    each half is updated given the other.  Returns the chain (steps, C, W,
+    k), its log posterior and the acceptance fraction."""
     C, W, k = x0.shape
     x = x0.copy()
     lp = logpost(x.reshape(-1, k)).reshape(C, W)
@@ -242,12 +204,35 @@ def _metropolis(logpost, x0, cov0, steps, rng, target=0.234):
 # ---------------------------------------------------------------------------
 # diagnostics
 # ---------------------------------------------------------------------------
+def _classic_split_rhat(s):
+    """Split R-hat of Vehtari et al. (2021), Eqs. (1) to (4), of the columns
+    of ``s`` (one split chain per column)."""
+    N = s.shape[0]
+    B = N * s.mean(axis=0).var(ddof=1)
+    Wv = s.var(axis=0, ddof=1).mean()
+    if Wv <= 0:
+        return math.nan
+    return math.sqrt(((N - 1) / N * Wv + B / N) / Wv)
+
+
+def _normal_scores(s):
+    """Rank normalization of Vehtari et al. (2021), Eq. (14): the ranks r
+    of the pooled draws (average ranks for ties) mapped to
+    Phi^-1((r - 3/8)/(S + 1/4))."""
+    from scipy import special, stats
+
+    r = stats.rankdata(s.reshape(-1)).reshape(s.shape)
+    return special.ndtri((r - 0.375) / (s.size + 0.25))
+
+
 def _split_rhat(chain):
-    """Split R-hat (Gelman et al. 2013, Sect. 11.4) of one parameter.
-    ``chain`` is (steps, C, W): C independent ensembles (or chains, W = 1)
-    of W walkers.  Each ensemble is one Markov chain whose samples are the
-    positions of all its walkers; the first and second halves of each are
-    compared, 2C chains in all."""
+    """R-hat of one parameter as Vehtari et al. (Bayesian Analysis 2021)
+    recommend (Sect. 4.2): the larger of the split R-hat of the rank
+    normalized draws and that of the rank normalized folded draws
+    |theta - median(theta)|.  ``chain`` is (steps, C, W): C independent
+    ensembles (or chains, W = 1) of W walkers.  Each ensemble is one Markov
+    chain whose samples are the positions of all its walkers.  The first and
+    second halves of each are compared, 2C chains in all."""
     steps, C, W = chain.shape
     n = steps // 2
     if n < 2:
@@ -255,20 +240,16 @@ def _split_rhat(chain):
     halves = [chain[:n, c].reshape(-1) for c in range(C)]
     halves += [chain[n : 2 * n, c].reshape(-1) for c in range(C)]
     s = np.column_stack(halves)
-    N = s.shape[0]
-    B = N * s.mean(axis=0).var(ddof=1)
-    Wv = s.var(axis=0, ddof=1).mean()
-    if Wv <= 0:
-        return math.nan
-    # With W walkers the within-chain samples are not independent in N;
-    # the classical formula is kept, with N the number of samples per chain.
-    return math.sqrt(((N - 1) / N * Wv + B / N) / Wv)
+    folded = np.abs(s - np.median(s))
+    return max(_classic_split_rhat(_normal_scores(s)), _classic_split_rhat(_normal_scores(folded)))
 
 
 def _autocorr_time(seq, c=5.0):
-    """Integrated autocorrelation time of sequences (n, s), the
-    autocorrelation averaged over the sequences, with the automatic window
-    of Sokal (1997)."""
+    r"""Integrated autocorrelation time of sequences (n, s),
+    :math:`\tau = \sum_t C(t)/C(0)` (Goodman and Weare 2010, Eq. 17), with the
+    autocorrelation averaged over the sequences and the sum truncated at the
+    first lag m with m >= c tau(m), the self-consistent window that Goodman
+    and Weare use (Sect. 4)."""
     n = seq.shape[0]
     x = seq - seq.mean(axis=0)
     f = np.fft.rfft(x, n=2 * n, axis=0)
@@ -306,7 +287,7 @@ class Posterior:
         Parameter name -> posterior samples.
     contraction : dict
         :math:`1 - \\sigma^2_\\text{post}/\\sigma^2_\\text{prior}`: near 1,
-        the data determine the parameter; near 0, the data carry no
+        the data determine the parameter.  Near 0, the data carry no
         information on it (not identified).
     at_bound : dict
         ``"lower"`` or ``"upper"`` when more than a quarter of the posterior
@@ -322,8 +303,11 @@ class Posterior:
     surrogate : GaussianProcess or None
         The surrogate used, with its leave-one-out ``q2``.
     discrepancy : dict or None
-        Output name -> (mean, covariance, hyperparameters) of the fitted
-        discrepancy.
+        Output name -> ``variance`` and ``length_scale`` (relative to the
+        span of the locations) of the discrepancy process.
+    mode : dict or None
+        With a discrepancy, the parameters at the joint posterior mode at
+        which the hyperparameters of the discrepancy were estimated.
     """
 
     def __init__(self, dists, x, lp, chain, acceptance, level, context):
@@ -337,6 +321,7 @@ class Posterior:
         self._ctx = context
         self.surrogate = context.get("gp")
         self.discrepancy = context.get("discrepancy")
+        self.mode = context.get("mode")
         steps, C, W, k = chain.shape
         seqs = chain.reshape(steps, C * W, k)
         self.r_hat = {n: _split_rhat(chain[..., j]) for j, n in enumerate(self.names)}
@@ -347,7 +332,7 @@ class Posterior:
         self.contraction, self.at_bound = {}, {}
         for j, n in enumerate(self.names):
             d = dists[n]
-            v0 = d.std**2
+            v0 = d.standard_deviation**2
             self.contraction[n] = 1.0 - float(np.var(x[:, j])) / v0 if v0 > 0 else math.nan
             lo, hi = d.ppf(0.025), d.ppf(0.975)
             plo, phi = float(np.mean(x[:, j] < lo)), float(np.mean(x[:, j] > hi))
@@ -356,7 +341,7 @@ class Posterior:
     def mean(self, name):
         return float(np.mean(self.samples[name]))
 
-    def std(self, name):
+    def standard_deviation(self, name):
         return float(np.std(self.samples[name], ddof=1))
 
     def interval(self, name, level=None):
@@ -378,11 +363,7 @@ class Posterior:
         """Prior against posterior for every parameter, with the
         diagnostics."""
         lv = f"{self.level:.0%}"
-        head = (
-            f"{'parameter':<28}{'prior mean':>11}{'prior std':>10}{'post. mean':>11}"
-            f"{'post. std':>10}{'MAP':>10}  {lv + ' HPD':<22}{'contr.':>7}{'R-hat':>7}"
-            f"{'ESS':>7}  note"
-        )
+        head = f"{'parameter':<28}{'prior mean':>11}{'prior std':>10}{'post. mean':>11}{'post. std':>10}{'MAP':>10}  {lv + ' HPD':<22}{'contr.':>7}{'R-hat':>7}{'ESS':>7}  note"
         lines = [head, "-" * len(head)]
         mp = self.map
         for n in self.names:
@@ -395,20 +376,12 @@ class Posterior:
                 note.append(f"at the {self.at_bound[n]} end of the prior")
             if self.r_hat[n] > 1.01:
                 note.append("not converged")
-            lines.append(
-                f"{n:<28}{d.mean:11.4g}{d.std:10.3g}{self.mean(n):11.4g}{self.std(n):10.3g}"
-                f"{mp[n]:10.4g}  [{lo:9.4g}, {hi:9.4g}] {self.contraction[n]:7.2f}"
-                f"{self.r_hat[n]:7.3f}{self.effective_sample_size[n]:7.0f}  {'; '.join(note)}"
-            )
+            lines.append(f"{n:<28}{d.mean:11.4g}{d.standard_deviation:10.3g}{self.mean(n):11.4g}{self.standard_deviation(n):10.3g}{mp[n]:10.4g}  [{lo:9.4g}, {hi:9.4g}] {self.contraction[n]:7.2f}{self.r_hat[n]:7.3f}{self.effective_sample_size[n]:7.0f}  {'; '.join(note)}")
         lines.append("")
         lines.append(f"{len(self.x)} samples, acceptance {self.acceptance:.2f}")
         if self.surrogate is not None:
             q2 = np.atleast_1d(self.surrogate.q2)
-            lines.append(
-                f"surrogate: {len(self.surrogate._u_train)} runs, {self.surrogate.components} "
-                f"component(s), leave-one-out Q2 {np.nanmin(q2):.3f} (lowest) to "
-                f"{np.nanmax(q2):.3f}"
-            )
+            lines.append(f"surrogate: {len(self.surrogate._u_train)} runs, {self.surrogate.components} component(s), leave-one-out Q2 {np.nanmin(q2):.3f} (lowest) to {np.nanmax(q2):.3f}")
         return "\n".join(lines)
 
     def __repr__(self):
@@ -427,7 +400,10 @@ class Posterior:
         idx = rng.choice(len(self.x), size=min(samples, len(self.x)), replace=False)
         theta = self.x[idx]
         mean, v = ctx["predict"](theta)
-        mean = mean + ctx["delta"]
+        if ctx.get("Sdelta") is not None:
+            mean = mean + (ctx["Sdelta"] @ np.linalg.solve(ctx["D0"], (ctx["y"][None, :] - mean).T)).T
+        else:
+            mean = mean + ctx["delta"]
         D0 = ctx["D0"]
         L0 = np.linalg.cholesky(D0)
         draws = mean + rng.standard_normal(mean.shape) @ L0.T
@@ -443,55 +419,55 @@ class Posterior:
             lo = np.percentile(draws[:, sl], a, axis=0)
             hi = np.percentile(draws[:, sl], 100 - a, axis=0)
             inside = (y[sl] >= lo) & (y[sl] <= hi)
-            out[name] = dict(
-                mean=mean[:, sl].mean(axis=0).reshape(shape),
-                low=lo.reshape(shape),
-                high=hi.reshape(shape),
-                model_low=np.percentile(mean[:, sl], a, axis=0).reshape(shape),
-                model_high=np.percentile(mean[:, sl], 100 - a, axis=0).reshape(shape),
-                coverage=float(np.mean(inside)),
-            )
+            out[name] = dict(mean=mean[:, sl].mean(axis=0).reshape(shape), low=lo.reshape(shape), high=hi.reshape(shape), model_low=np.percentile(mean[:, sl], a, axis=0).reshape(shape), model_high=np.percentile(mean[:, sl], 100 - a, axis=0).reshape(shape), coverage=float(np.mean(inside)))
             j += m
         return out
 
+    def to_dict(self) -> dict:
+        """The posterior mean, standard deviation, highest density interval
+        and maximum of every parameter, with its contraction, its position
+        against the prior bounds and the convergence diagnostics."""
+        numbers = {
+            name: dict(mean=self.mean(name), standard_deviation=self.standard_deviation(name), interval=self.interval(name), map=self.map[name], contraction=self.contraction[name], at_bound=self.at_bound[name], r_hat=self.r_hat[name], effective_sample_size=self.effective_sample_size[name]) for name in self.names
+        }
+        return {"study": "calibrate", "level": self.level, "acceptance": self.acceptance, "parameters": numbers}
+
+    def write_json(self, path):
+        """Write :meth:`to_dict` to a JSON file (a non-finite value is written
+        as null)."""
+        write_json(self.to_dict(), path)
+
+    @property
+    def tables(self) -> dict:
+        """``parameters``: one row per parameter, with the prior and
+        posterior statistics, the highest density interval and the
+        diagnostics."""
+        from ..tables import Table
+
+        rows = []
+        for n in self.names:
+            d = self.distributions[n]
+            lo, hi = self.interval(n)
+            rows.append([n, float(d.mean), float(d.standard_deviation), float(self.mean(n)), float(self.standard_deviation(n)), float(self.map[n]), float(lo), float(hi), float(self.contraction[n]), float(self.r_hat[n]), float(self.effective_sample_size[n])])
+        return {"parameters": Table(["parameter", "prior_mean", "prior_standard_deviation", "posterior_mean", "posterior_standard_deviation", "map", "interval_low", "interval_high", "contraction", "r_hat", "effective_sample_size"], None, rows, title="Posterior of the parameters")}
+
+    def write_csv(self, path, table: str | None = None):
+        """Write the table ``parameters`` to a CSV file."""
+        from ..tables import ResultTables
+
+        ResultTables.write_csv(self, path, table)
+
     def save(self, path):
         """Write the samples and the diagnostics to a ``.npz`` file."""
-        np.savez(
-            path,
-            names=np.array(self.names),
-            samples=self.x,
-            log_posterior=self.log_posterior,
-            r_hat=np.array([self.r_hat[n] for n in self.names]),
-            effective_sample_size=np.array([self.effective_sample_size[n] for n in self.names]),
-            contraction=np.array([self.contraction[n] for n in self.names]),
-        )
+        np.savez(path, names=np.array(self.names), samples=self.x, log_posterior=self.log_posterior, r_hat=np.array([self.r_hat[n] for n in self.names]), effective_sample_size=np.array([self.effective_sample_size[n] for n in self.names]), contraction=np.array([self.contraction[n] for n in self.names]))
 
 
 # ---------------------------------------------------------------------------
 # driver
 # ---------------------------------------------------------------------------
-def calibrate(
-    model,
-    inputs,
-    observed,
-    noise,
-    surrogate="gaussian_process",
-    training_samples=None,
-    training=None,
-    discrepancy=None,
-    locations=None,
-    sampler="ensemble",
-    samples=20000,
-    walkers=None,
-    chains=4,
-    level=0.95,
-    seed=0,
-    processes=1,
-    store=None,
-    progress=False,
-) -> Posterior:
+def calibrate(model, inputs, observed, noise, surrogate="gaussian_process", training_samples=None, training=None, discrepancy=None, locations=None, sampler="ensemble", samples=20000, walkers=None, chains=4, level=0.95, seed=0, processes=1, store=None, progress=False) -> Posterior:
     r"""Sample the posterior distribution of the ``inputs`` of ``model``
-    given measurements; see the module documentation.
+    given measurements.  See the module documentation.
 
     ``inputs``
         Parameter name -> prior distribution.
@@ -536,11 +512,11 @@ def calibrate(
         from .gaussian_process import GaussianProcess
         from .propagate import propagate
 
+        if training is not None and training_samples is not None:
+            raise ValueError("calibrate: give training_samples or training, not both.")
         if training is None:
             m = int(training_samples) if training_samples else max(10 * k, 30)
-            training = propagate(
-                model, dists, m, "latin_hypercube", seed, processes, store, progress
-            )
+            training = propagate(model, dists, m, "latin_hypercube", seed, processes, store, progress)
         if list(training.distributions) != names:
             raise ValueError("calibrate: the training runs must have the same inputs, in order.")
         missing = [n for n in onames if n not in training.outputs]
@@ -569,31 +545,63 @@ def calibrate(
         raise ValueError("calibrate: surrogate must be 'gaussian_process' or None.")
     context["predict"] = predict
 
-    # Discrepancy, fitted at the prior mean and held fixed.
+    # Discrepancy: a zero-mean Gaussian process in the location of the
+    # measurements, integrated out of the likelihood (Kennedy and O'Hagan
+    # 2001, Sect. 4.4), with its hyperparameters fixed at the joint posterior
+    # mode of the parameters and the hyperparameters (their Sect. 4.5).
     delta = np.zeros_like(y)
     Sdelta = np.zeros_like(Sn)
     if discrepancy == "gaussian_process":
-        theta0 = np.array([[dists[n].mean for n in names]])
-        y0, v0 = predict(theta0)
-        resid = y - y0[0]
-        info = {}
+        blocks = []
         j = 0
         for name, shape in zip(onames, shapes):
             m = int(np.prod(shape)) if shape else 1
-            sl = slice(j, j + m)
-            loc = (
-                np.asarray(locations[name], dtype=float).reshape(m, -1)
-                if locations and name in locations
-                else np.arange(m, dtype=float)
-            )
-            ncov = Sn[sl, sl] + Sd[sl, sl]
-            if A is not None and v0 is not None:
-                ncov = ncov + (A[sl] * v0[0]) @ A[sl].T
-            dm, dc, hyp = _fit_discrepancy(resid[sl], loc, ncov)
-            delta[sl], Sdelta[sl, sl] = dm, dc
-            info[name] = (dm.reshape(shape), dc, hyp)
+            loc = np.asarray(locations[name], dtype=float).reshape(m, -1) if locations and name in locations else np.arange(m, dtype=float).reshape(m, 1)
+            span = np.ptp(loc, axis=0)
+            x = (loc - loc.min(axis=0)) / np.where(span > 0, span, 1.0)
+            blocks.append((name, shape, slice(j, j + m), ((x[:, None, :] - x[None, :, :]) ** 2).sum(axis=-1)[..., None]))
             j += m
+        theta0 = np.array([dists[n].mean for n in names])
+        scale = np.array([dists[n].standard_deviation for n in names])
+        r0 = y - predict(theta0[None])[0][0]
+        v0 = [max(float(np.var(r0[b[2]])), float(np.mean(np.diag(Sn)[b[2]])), 1e-30) for b in blocks]
+
+        def covariance(hyper):
+            P = np.zeros_like(Sn)
+            for b, (ls2, lell) in zip(blocks, hyper.reshape(-1, 2)):
+                P[b[2], b[2]] = math.exp(ls2) * _kernel("matern52", b[3] / math.exp(2 * lell))[0]
+            return P
+
+        def negative_log_posterior(z):
+            theta = theta0 + scale * z[:k]
+            prior = sum(dists[n].logpdf(np.array([theta[i]]))[0] for i, n in enumerate(names))
+            if not np.isfinite(prior):
+                return 1e25
+            mean, v = predict(theta[None])
+            C = Sn + Sd + covariance(z[k:])
+            if A is not None and v is not None:
+                C = C + (A * v[0]) @ A.T
+            try:
+                c = linalg.cho_factor(C, lower=True)
+            except linalg.LinAlgError:
+                return 1e25
+            r = y - mean[0]
+            return 0.5 * float(r @ linalg.cho_solve(c, r)) + float(np.sum(np.log(np.diag(c[0])))) - prior
+
+        best = None
+        for le in (math.log(0.2), math.log(1.0)):
+            z0 = np.concatenate([np.zeros(k)] + [[math.log(v), le] for v in v0])
+            bounds = [(-6.0, 6.0)] * k + [b for v in v0 for b in ((math.log(v) - 20, math.log(v) + 8), (math.log(1e-2), math.log(10.0)))]
+            res = optimize.minimize(negative_log_posterior, z0, method="L-BFGS-B", bounds=bounds)
+            if best is None or res.fun < best.fun:
+                best = res
+        Sdelta = covariance(best.x[k:])
+        theta_mode = theta0 + scale * best.x[:k]
+        info = {}
+        for (name, *_), (ls2, lell) in zip(blocks, best.x[k:].reshape(-1, 2)):
+            info[name] = dict(variance=math.exp(ls2), length_scale=math.exp(lell))
         context["discrepancy"] = info
+        context["mode"] = dict(zip(names, theta_mode))
     elif discrepancy is not None:
         raise ValueError("calibrate: discrepancy must be None or 'gaussian_process'.")
     context["delta"] = delta
@@ -601,6 +609,7 @@ def calibrate(
     D0 = Sn + Sd + Sdelta
     D0 = 0.5 * (D0 + D0.T) + 1e-12 * np.mean(np.diag(D0)) * np.eye(len(y))
     context["D0"] = D0
+    context["Sdelta"] = Sdelta if discrepancy == "gaussian_process" else None
     like = _Likelihood(y - delta, D0, A)
 
     def logpost(theta):
@@ -643,7 +652,7 @@ def calibrate(
         for c in range(C):
             cand = to_inputs(unit_design(pool, k, "monte_carlo", rng), dists)
             x0[c] = cand[int(np.argmax(logpost(cand)))]
-        cov0 = np.diag([dists[n].std ** 2 for n in names])
+        cov0 = np.diag([dists[n].standard_deviation ** 2 for n in names])
         chain, lps, acc = _metropolis(logpost, x0, cov0, 2 * keep, rng)
     else:
         raise ValueError("calibrate: sampler must be ensemble or metropolis.")

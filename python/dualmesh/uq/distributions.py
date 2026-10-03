@@ -37,7 +37,7 @@ class Distribution:
     """Base class: a one-dimensional distribution.
 
     Subclasses define :meth:`ppf`, :meth:`logpdf`, :meth:`cdf`, the support
-    (``lower``, ``upper``) and the moments (:attr:`mean`, :attr:`std`).
+    (``lower``, ``upper``) and the moments (:attr:`mean`, :attr:`standard_deviation`).
     """
 
     lower: float
@@ -52,7 +52,7 @@ class Distribution:
         raise NotImplementedError
 
     def logpdf(self, x):
-        """Natural logarithm of the density; ``-inf`` outside the support."""
+        """Natural logarithm of the density, ``-inf`` outside the support."""
         raise NotImplementedError
 
     def pdf(self, x):
@@ -64,7 +64,7 @@ class Distribution:
         raise NotImplementedError
 
     @property
-    def std(self) -> float:
+    def standard_deviation(self) -> float:
         raise NotImplementedError
 
     def sample(self, size, seed=None):
@@ -81,7 +81,7 @@ class Distribution:
 
 class _GaussianBase(Distribution):
     """A normal variable :math:`Y \\sim N(\\mu, s^2)` truncated to
-    ``[a, b]`` in :math:`Y`; the subclasses map :math:`Y` to the value."""
+    ``[a, b]`` in :math:`Y`.  The subclasses map :math:`Y` to the value."""
 
     def _setup(self, mu, s, a, b, name):
         if not s > 0.0 or not math.isfinite(s):
@@ -105,10 +105,7 @@ class _GaussianBase(Distribution):
         # Log of the normalising probability, accurate in the tails.
         if self._upper_tail:
             # Both bounds in the upper tail: use the survival functions.
-            self._logz = float(
-                special.log_ndtr(-self._alpha)
-                + np.log1p(-np.exp(special.log_ndtr(-self._beta) - special.log_ndtr(-self._alpha)))
-            )
+            self._logz = float(special.log_ndtr(-self._alpha) + np.log1p(-np.exp(special.log_ndtr(-self._beta) - special.log_ndtr(-self._alpha))))
         else:
             self._logz = math.log(self._z)
 
@@ -137,13 +134,12 @@ class _GaussianBase(Distribution):
 
 
 class Normal(_GaussianBase):
-    r"""Normal distribution of mean ``mean`` and standard deviation ``std``,
+    r"""Normal distribution of mean ``mean`` and standard deviation ``standard_deviation``,
     truncated to ``[lower, upper]`` when a bound is given.
 
-    For a truncated normal, ``mean`` and ``std`` are the parameters of the
-    untruncated distribution, and :attr:`mean` and :attr:`std` return the
-    moments of the truncated one (Johnson, Kotz and Balakrishnan 1994,
-    Sect. 10.1):
+    For a truncated normal, ``mean`` and ``standard_deviation`` are the parameters of the
+    untruncated distribution, and :attr:`mean` and :attr:`standard_deviation` return the
+    moments of the truncated one:
 
     .. math::
 
@@ -156,16 +152,16 @@ class Normal(_GaussianBase):
     :math:`Z = \Phi(\beta) - \Phi(\alpha)`.
     """
 
-    def __init__(self, mean: float, std: float, lower=None, upper=None):
+    def __init__(self, mean: float, standard_deviation: float, lower=None, upper=None):
         self.lower = -math.inf if lower is None else float(lower)
         self.upper = math.inf if upper is None else float(upper)
-        self._setup(mean, std, self.lower, self.upper, "Normal")
+        self._setup(mean, standard_deviation, self.lower, self.upper, "Normal")
 
     def __repr__(self):
         bounds = ""
         if math.isfinite(self.lower) or math.isfinite(self.upper):
             bounds = f", lower={self.lower:g}, upper={self.upper:g}"
-        return f"Normal(mean={self._mu:g}, std={self._s:g}{bounds})"
+        return f"Normal(mean={self._mu:g}, standard_deviation={self._s:g}{bounds})"
 
     def ppf(self, u):
         return np.clip(self._ppf_y(u), self.lower, self.upper)
@@ -182,7 +178,7 @@ class Normal(_GaussianBase):
         return self._mu + self._s * float(_phi(a) - _phi(b)) / self._z
 
     @property
-    def std(self) -> float:
+    def standard_deviation(self) -> float:
         a, b = self._alpha, self._beta
         pa, pb = float(_phi(a)), float(_phi(b))
         ta = a * pa if math.isfinite(a) else 0.0
@@ -257,7 +253,7 @@ class LogNormal(_GaussianBase):
         return self._moment(1)
 
     @property
-    def std(self) -> float:
+    def standard_deviation(self) -> float:
         m1 = self._moment(1)
         return math.sqrt(max(self._moment(2) - m1 * m1, 0.0))
 
@@ -289,7 +285,7 @@ class Uniform(Distribution):
         return 0.5 * (self.lower + self.upper)
 
     @property
-    def std(self) -> float:
+    def standard_deviation(self) -> float:
         return (self.upper - self.lower) / math.sqrt(12.0)
 
 
@@ -331,6 +327,6 @@ class LogUniform(Distribution):
         return self._moment(1)
 
     @property
-    def std(self) -> float:
+    def standard_deviation(self) -> float:
         m1 = self._moment(1)
         return math.sqrt(max(self._moment(2) - m1 * m1, 0.0))

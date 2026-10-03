@@ -14,7 +14,7 @@
 //    the deformed body is, per unit undeformed area, J k F^-1 F^-T Grad_X T
 //    (the conductivity tensor J k C^-1, with C = F^T F).
 //
-// F is read from the nine-component material property 'deformation_gradient'
+// F is read from the nine-component property 'deformation_gradient'
 // (row by row).  Its first dim rows and columns belong to the mesh directions
 // (x, y, z; or r, z in axisymmetric problems), and the others to the
 // directions out of the mesh (the hoop direction, and the axial direction of
@@ -39,7 +39,7 @@ addParameter(InputParameters & p, const std::string & what)
   p.addOptional("deformation_gradient_property",
                 ParameterKind::String,
                 std::string(""),
-                "Name of the deformation gradient material property (nine components, as "
+                "Name of the deformation gradient property (nine components, as "
                 "declared by finite_strain_stress and small_strain_stress as "
                 "'deformation_gradient'). When it is given, " +
                     what +

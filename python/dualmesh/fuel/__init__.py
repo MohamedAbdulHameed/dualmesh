@@ -8,18 +8,10 @@ A rod is described by input groups, each a dataclass, and run by
 
     from dualmesh import fuel
 
-    rod = fuel.FuelRod(
-        geometry=fuel.RodGeometry.from_diameters(8.19e-3, 8.36e-3, 9.50e-3, 0.1),
-        fuel=fuel.UO2Fuel(enrichment=0.045),
-        cladding=fuel.ZircaloyCladding(),
-        fill_gas=fuel.FillGas(pressure=2.0e6, plenum_volume=0.3e-6),
-        coolant=fuel.ForcedConvection(
-            inlet_temperature=565.0, pressure=15.5e6, mass_flux=3800.0, rod_pitch=12.6e-3
-        ),
-        power_history=fuel.PowerHistory(
-            linear_heat_rate=[20e3, 20e3], burnup=[0.0, 30.0], burnup_unit="MWd/kgHM"
-        ),
-    )
+    geometry = fuel.RodGeometry.from_diameters(8.19e-3, 8.36e-3, 9.50e-3, 0.1)
+    coolant = fuel.ForcedConvection(inlet_temperature=565.0, pressure=15.5e6, mass_flux=3800.0, rod_pitch=12.6e-3)
+    history = fuel.PowerHistory(linear_heat_rate=[20e3, 20e3], burnup=[0.0, 30.0], burnup_unit="MWd/kgHM")
+    rod = fuel.FuelRod(geometry=geometry, fuel=fuel.UO2Fuel(enrichment=0.045), cladding=fuel.ZircaloyCladding(), fill_gas=fuel.FillGas(pressure=2.0e6, plenum_volume=0.3e-6), coolant=coolant, power_history=history)
     result = rod.run()
 
 See the documentation chapter on fuel performance for the physics, the
@@ -27,54 +19,35 @@ source of every correlation, the verification and the benchmarks.
 """
 
 from .._core import fuel as properties
+from ..parameters import describe
 from . import dpa, triso, water
-from .atf import (
-    ChromiumCoating,
-    CoatedCladding,
-    DopedUO2Fuel,
-    FeCrAlCladding,
-    SiCCladding,
-    U3Si2Fuel,
-)
+from .atf import ChromiumCoating, CoatedCladding, DopedUO2Fuel, FeCrAlCladding, SiCCladding, U3Si2Fuel
 from .fields import IrradiationFields, TimeHistory, irradiation_fields
-from .gas import (
-    BoothFissionGasRelease,
-    FractionFissionGasRelease,
-    GrainFaceBubbles,
-    StormsFissionGasRelease,
-)
-from .materials import (
-    CladdingMaterial,
-    CustomCladding,
-    CustomFuel,
-    FuelMaterial,
-    RodContext,
-    UNFuel,
-    UO2Fuel,
-    ZircaloyCladding,
-)
-from .mesh import (
-    axisymmetric_rod_mesh,
-    graded_points,
-    radial_slice_mesh,
-    three_dimensional_rod_mesh,
-)
+from .gas import BoothFissionGasRelease, FractionFissionGasRelease, GrainFaceBubbles, StormsFissionGasRelease
+from .materials import CladdingMaterial, CustomCladding, CustomFuel, FuelMaterial, RodContext, UNFuel, UO2Fuel, ZircaloyCladding
+from .mesh import axisymmetric_rod_mesh, graded_points, radial_slice_mesh, three_dimensional_rod_mesh
 from .result import RodResult
 from .rod import FuelRod
-from .specification import (
-    FillGas,
-    ForcedConvection,
-    ModelFactors,
-    PowerHistory,
-    PrescribedCladdingTemperature,
-    RodGeometry,
-    RodMesh,
-    RodModels,
-    RodNumerics,
-    RodOutput,
-    describe,
-)
+from .specification import FillGas, ForcedConvection, ModelFactors, PowerHistory, PrescribedCladdingTemperature, RodGeometry, RodMesh, RodModels, RodNumerics, RodOutput
 from .units import BURNUP_UNITS, BurnupConverter
+
+
+def _check_the_keywords_of_the_input_groups() -> None:
+    """A misspelled keyword of an input group (a dataclass of this package or
+    of :mod:`dualmesh.fuel.triso`) is answered with the closest parameter
+    name and the list of the accepted ones."""
+    import dataclasses
+
+    from ..parameters import keyword_checked
+
+    for module_globals in (globals(), vars(triso)):
+        for value in list(module_globals.values()):
+            if isinstance(value, type) and dataclasses.is_dataclass(value) and value.__module__.startswith(__name__) and not getattr(value, "_keyword_checked", False):
+                keyword_checked(value)
+                value._keyword_checked = True
+
+
+_check_the_keywords_of_the_input_groups()
 
 __all__ = [
     "BURNUP_UNITS",

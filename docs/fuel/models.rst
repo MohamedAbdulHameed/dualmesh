@@ -24,8 +24,7 @@ other codes.
 dualmesh adopts from these codes the three rod models (1.5-dimensional,
 axisymmetric and three-dimensional, all using the same materials), the fully
 coupled Newton solution with an exact Jacobian, and the treatment of the gap
-as a pair of coupled boundaries.  The module is written from the published
-equations only, and every coefficient is cited to its source in
+as a pair of coupled boundaries.  Every coefficient is cited to its source in
 :doc:`correlations`.  In addition, the module offers four discretisations of
 the same rod (finite elements, the dual mesh control domain method and the
 vertex-centred and cell-centred finite volume methods), which provide a
@@ -44,9 +43,9 @@ In the fuel and in the cladding, the temperature :math:`T` obeys
 
 where :math:`\rho`, :math:`c_p` and :math:`k` are the density, the specific
 heat and the thermal conductivity of the material, and :math:`q'''` is the
-fission heat generated per unit volume in the fuel.  The materials
+fission heat generated per unit volume in the fuel.  The property objects
 ``UO2_thermal``, ``UN_thermal`` and ``Zircaloy_thermal`` provide :math:`k`,
-:math:`c_p` and :math:`\rho` as material properties, which are used by the
+:math:`c_p` and :math:`\rho` as properties, which are used by the
 kernels ``heat_conduction`` and ``heat_conduction_time_derivative``.
 
 The input of the calculation is the linear heat rate :math:`q'(z, t)` (W/m)
@@ -86,28 +85,38 @@ where :math:`T_p` and :math:`T_s` are the temperatures of the primary and the
 secondary surface.  The first term is the gas conduction across the gap of
 width :math:`g`, measured along the normal of the pellet between the displaced
 surfaces, with the roughnesses :math:`R_p` and :math:`R_s`, the roughness
-coefficient :math:`C_r = 1.5` and the temperature jump distance :math:`j`.  The
+coefficient :math:`C_r = 1.5` (the value of Ross and Stoute at a contact
+pressure of :math:`500\ \mathrm{kgf/cm^2}`, and 2.5 at :math:`100\
+\mathrm{kgf/cm^2}`) and the temperature jump distance :math:`j`.  The
 second term is the radiation between two grey surfaces, with :math:`F_\epsilon
 = 1 / (1/\epsilon_p + 1/\epsilon_s - 1)` and the Stefan-Boltzmann constant
 :math:`\sigma`.  The third term is the solid contact conductance, which acts
 once the surfaces are in contact, :math:`h_{solid} = C_s k_m P_c /
 (\sqrt{\delta} H)`, where :math:`k_m` is the harmonic mean of the
 conductivities, :math:`P_c` the contact pressure, :math:`H` the Meyer hardness
-of the cladding, :math:`C_s = 10\ \mathrm{m^{-1/2}}` and :math:`\delta = 0.8
-(R_p + R_s)`.  This is the form of Ross and Stoute [RossStoute1962]_.  The gas
-conductivity is that of the helium fill mixed with the released xenon and
-krypton, by the rule of Lindsay and Bromley [LindsayBromley1950]_ in the form
-of Brokaw [Brokaw1958]_.  The jump distance is the result of the kinetic
-theory of Kennard as used by Lanning and Hann [LanningHann1975]_,
+of the cladding, :math:`C_s = 1/a_0 = 20\ \mathrm{m^{-1/2}}` and :math:`\delta =
+\sqrt{(R_p^2 + R_s^2)/2}`.  This is the model of Ross and Stoute
+[RossStoute1962]_, Eqs. (A.9) and (A.15).  They found :math:`a_0` between 1/2
+and 1 :math:`\mathrm{cm^{1/2}}`, and about 1/2 :math:`\mathrm{cm^{1/2}}` for
+most of their pairs, which reproduced the measured solid conductance within a
+factor of about two.  This form agrees better with the fuel benchmarks than
+:math:`C_s = 10\ \mathrm{m^{-1/2}}` with :math:`\delta = 0.8 (R_p + R_s)`.  The gas conductivity is that of the helium fill mixed
+with the released xenon and krypton, by Eqs. (12) and (13) of Brokaw
+[Brokaw1958]_ with the collision integral ratios :math:`A^* = B^* = 1.1`.  The
+jump distance is the equation of Kennard as Lanning and Hann
+[LanningHann1975]_ write it for a mixture of monatomic gases (Appendix B),
 
 .. math::
 
-   j = 0.013757\, \frac{2 - \alpha}{\alpha}\, \frac{k_{gas} \sqrt{T}}{P}
+   j = 0.013748\, \frac{2 - \alpha}{\alpha}\, \frac{k_{gas} \sqrt{T}}{P}
    \left(\sum_i \frac{x_i}{M_i}\right)^{-1/2},
 
 in SI units, where :math:`\alpha` is the accommodation coefficient,
 :math:`P` the gas pressure, :math:`x_i` the mole fraction and :math:`M_i` the
-molar mass (g/mol) of gas :math:`i`.
+molar mass (g/mol) of gas :math:`i`.  The accommodation coefficients of helium,
+:math:`0.425 - 2.3\times10^{-4}T`, and xenon, :math:`0.749 -
+2.5\times10^{-4}T`, are the fits of Ullman et al. that Lanning and Hann use,
+interpolated by the mixture molar mass :math:`\sum_i x_i M_i`.
 
 The flux :math:`q` of :eq:`gap_flux` is the heat entering the pellet per unit
 area of the pellet surface.  The same heat, with the opposite sign and
@@ -142,7 +151,8 @@ the enthalpy balance of the channel,
 where :math:`\dot m = G A` is the mass flow rate, with the mass flux :math:`G`
 and the flow area :math:`A` of a square-lattice pin cell, and the water
 properties are those of IAPWS-IF97.  The heat transfer coefficient is given by
-the correlation of Dittus and Boelter [DittusBoelter1930]_ or of Weisman, on
+the correlation of Weisman (the default) or of Dittus and Boelter
+[DittusBoelter1930]_, on
 the hydraulic diameter of the pin cell, with the local properties of the
 coolant.  With :class:`~dualmesh.fuel.PrescribedCladdingTemperature`, the
 outer temperature of the cladding is prescribed as a function of the linear
@@ -180,7 +190,7 @@ of the cracked fuel fragments towards the cladding
 :math:`\boldsymbol{\varepsilon}_{g}`, and the creep strain
 :math:`\boldsymbol{\varepsilon}_{cr}`.  The stress is computed by
 ``small_strain_stress`` or, for large deformations, by
-``finite_strain_stress``, and the eigenstrains by materials such as
+``finite_strain_stress``, and the eigenstrains by property objects such as
 ``UO2_thermal_expansion_eigenstrain``, ``UO2_volumetric_swelling_eigenstrain``,
 ``UO2_relocation_eigenstrain`` and ``Zircaloy_irradiation_growth_eigenstrain``.
 
@@ -243,7 +253,18 @@ The pressure is updated after every time step.
 the power history needed to follow the history within 1 % of its largest
 linear heat rate (``RodNumerics.power_history_tolerance``).  The shutdowns and
 power steps are therefore resolved regardless of the length of the other
-steps.  The largest step is set by ``RodNumerics.max_time_step``.
+steps.  Between these points the interval is divided into equal steps, as
+few as keep every step within three limits: the time step
+(``RodNumerics.max_time_step``, default 30 days), the increase of the rod
+average burnup (``max_burnup_step``, default 0.2 MWd/kgHM) and the change of
+the rod average linear heat rate (``max_power_step``, default 2 kW/m).  The
+burnup limit sets the step of a rod at constant power, whose fission gas
+release depends on the step because the gas model is advanced between steps
+(the release is of first order in the step).  For the rod of
+:doc:`index` (20 kW/m to 30 MWd/kgHM) the default steps of 4.8 days give a
+release of 0.721 %, against 0.709 % extrapolated to zero step size from
+steps of 10 to 0.625 days, and 2.121 % with one step.  The power limit
+divides a ramp into steps, so that the temperatures and the gap follow it.
 
 **The 1.5-dimensional model.**  Each axial slice is a radial line through the
 fuel and the cladding in *generalized plane strain*.  The axial strain is
@@ -314,7 +335,7 @@ are singular at absolute zero: the polaron term of Fink contains
 root of the temperature, and the gas conductivity :math:`A T^B` with :math:`B
 < 1` has an infinite derivative at :math:`T = 0`.  Newton's method can visit
 such temperatures when it starts from a cold initial guess, e.g., a
-temperature left at its default initial value of zero.  The materials
+temperature left at its default initial value of zero.  The property objects
 therefore evaluate the correlations at :math:`\max(T, 200\ \mathrm{K})`, with a
 zero derivative below this value.  A converged solution of a reactor rod lies
 far above 200 K, so that this lower bound affects only the first iterations.
@@ -332,9 +353,9 @@ the temperature, the grain radius, the intragranular diffusion coefficient,
 the re-solution rate and the vacancy diffusivity on the grain boundaries.  The
 factors are intended for sensitivity and uncertainty studies.  A factor that
 cannot act on a given rod, e.g., a densification factor with the densification
-model switched off, is an error.  The material factors are applied by the
-material ``property_scaling``, which multiplies properties computed by the
-materials added before it.
+model switched off, is an error.  The property factors are applied by the
+property object ``property_scaling``, which multiplies properties computed by the
+property objects added before it.
 
 Verification
 ------------

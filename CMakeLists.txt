@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.18)
-project(dualmesh VERSION 0.1.0 LANGUAGES CXX)
+project(dualmesh VERSION 0.2.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -124,9 +124,6 @@ if(DUALMESH_ENABLE_PETSC)
   target_link_libraries(dualmesh_core PUBLIC PkgConfig::PETSC)
   target_compile_definitions(dualmesh_core PUBLIC DUALMESH_HAVE_PETSC)
 endif()
-
-# ---- command-line driver --------------------------------------------------------
-# (the Python package provides the full input-file driver: `dualmesh run input.yaml`)
 
 # ---- tests ---------------------------------------------------------------------
 if(DUALMESH_BUILD_TESTS)

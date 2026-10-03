@@ -30,25 +30,13 @@ def _stress_problem(mesh, material, displacements, coordinates="cartesian", meth
     p = dm.Problem(mesh, method=method, coordinates=coordinates)
     for d in displacements:
         p.add_variable(d)
-    formulation = {1: "axisymmetric_1d", 2: "plane_strain", 3: "three_dimensional"}[
-        len(displacements)
-    ]
+    formulation = {1: "axisymmetric_1d", 2: "plane_strain", 3: "three_dimensional"}[len(displacements)]
     if coordinates == "axisymmetric" and len(displacements) == 2:
         formulation = "axisymmetric"
-    p.add_material(
-        material,
-        "stress",
-        displacements=displacements,
-        formulation=formulation,
-        youngs_modulus=E,
-        poissons_ratio=NU,
-        **extra,
-    )
+    p.add_property(material, "stress", displacements=displacements, formulation=formulation, youngs_modulus=E, poissons_ratio=NU, **extra)
     stress = "first_piola_kirchhoff_stress" if material == "finite_strain_stress" else "stress"
     for i, d in enumerate(displacements):
-        p.add_kernel(
-            "stress_divergence", f"equilibrium_{d}", variable=d, component=i, stress_property=stress
-        )
+        p.add_kernel("stress_divergence", f"equilibrium_{d}", variable=d, component=i, stress_property=stress)
     return p
 
 
@@ -68,14 +56,7 @@ def test_at_small_strain_the_finite_strain_stress_is_the_small_strain_stress(met
     results = []
     for material in ("small_strain_stress", "finite_strain_stress"):
         p = _stress_problem(mesh, material, ["u"], coordinates="axisymmetric", method=method)
-        p.add_boundary_condition(
-            "pressure_boundary_condition",
-            "inside",
-            variable="u",
-            component=0,
-            boundary=["inner"],
-            pressure=pressure,
-        )
+        p.add_boundary_condition("pressure_boundary_condition", "inside", variable="u", component=0, boundary=["inner"], pressure=pressure)
         p.solve()
         results.append(np.asarray(p.values("u")))
     small, finite = results
@@ -104,20 +85,10 @@ def _uniaxial_neo_hookean(stretch):
 def test_a_neo_hookean_bar_stretched_uniaxially_has_the_exact_nominal_stress(stretch):
     pytest.importorskip("scipy")
     mesh = dm.generate_box_mesh(0, 1, 0, 1, 0, 1, 2, 2, 2)
-    p = _stress_problem(
-        mesh, "finite_strain_stress", ["ux", "uy", "uz"], stress_update="neo_Hookean"
-    )
+    p = _stress_problem(mesh, "finite_strain_stress", ["ux", "uy", "uz"], stress_update="neo_Hookean")
     for v, side in (("ux", "left"), ("uy", "bottom"), ("uz", "back")):
-        p.add_boundary_condition(
-            "Dirichlet_boundary_condition", f"hold_{v}", variable=v, boundary=[side], value=0.0
-        )
-    p.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "pull",
-        variable="ux",
-        boundary=["right"],
-        value=stretch - 1.0,
-    )
+        p.add_boundary_condition("Dirichlet_boundary_condition", f"hold_{v}", variable=v, boundary=[side], value=0.0)
+    p.add_boundary_condition("Dirichlet_boundary_condition", "pull", variable="ux", boundary=["right"], value=stretch - 1.0)
     p.solve(load_factors=[0.25, 0.5, 0.75, 1.0])
     exact_stress, lateral = _uniaxial_neo_hookean(stretch)
     force = -p.total_reaction("ux", "left")
@@ -145,22 +116,12 @@ def test_a_rigid_rotation_rotates_the_stress_and_adds_none(update):
     # The motion x = R(angle) diag(1 + stretch, 1) X on every boundary node;
     # with a homogeneous material the interior follows.
     a, s = "(pi/2*t)", repr(stretch)
-    for v, expression in (
-        ("ux", f"cos({a})*(1 + {s})*x - sin({a})*y - x"),
-        ("uy", f"sin({a})*(1 + {s})*x + cos({a})*y - y"),
-    ):
-        p.add_boundary_condition(
-            "Dirichlet_boundary_condition",
-            f"motion_{v}",
-            variable=v,
-            boundary=["left", "right", "top", "bottom"],
-            value=dm.ParsedFunction(expression),
-            scale_with_load=False,
-        )
+    for v, expression in (("ux", f"cos({a})*(1 + {s})*x - sin({a})*y - x"), ("uy", f"sin({a})*(1 + {s})*x + cos({a})*y - y")):
+        p.add_boundary_condition("Dirichlet_boundary_condition", f"motion_{v}", variable=v, boundary=["left", "right", "top", "bottom"], value=dm.ParsedFunction(expression), scale_with_load=False)
     p.time = 0.0
     p.solve()
     before = np.asarray(p.property_at_centroids("stress"))[0]
-    p.solve_transient(start_time=0.0, end_time=1.0, dt=1.0 / 45)
+    p.solve_transient(start_time=0.0, end_time=1.0, time_step=1.0 / 45)
     after = np.asarray(p.property_at_centroids("stress"))[0]
     # Voigt order xx, yy, zz, yz, xz, xy.  The Hughes-Winget update is exact
     # for a rigid rotation (its Cayley transform returns the angle of each
@@ -225,23 +186,8 @@ def test_a_thick_tube_inflated_to_large_strain_by_a_follower_pressure(method):
         mesh = dm.mesh_from_arrays(points, [[i, i + 1] for i in range(n)], "Edge2", dimension=1)
         mesh.add_sideset_from_faces("inner", [[0]])
         mesh.add_sideset_from_faces("outer", [[n]])
-        p = _stress_problem(
-            mesh,
-            "finite_strain_stress",
-            ["u"],
-            coordinates="axisymmetric",
-            method=method,
-            stress_update="neo_Hookean",
-        )
-        p.add_boundary_condition(
-            "pressure_boundary_condition",
-            "inside",
-            variable="u",
-            component=0,
-            boundary=["inner"],
-            pressure=pressure,
-            deformation_gradient_property="deformation_gradient",
-        )
+        p = _stress_problem(mesh, "finite_strain_stress", ["u"], coordinates="axisymmetric", method=method, stress_update="neo_Hookean")
+        p.add_boundary_condition("pressure_boundary_condition", "inside", variable="u", component=0, boundary=["inner"], pressure=pressure, deformation_gradient_property="deformation_gradient")
         p.solve(load_factors=list(np.linspace(0.1, 1.0, 10)))
         r = np.abs(p.entity_points()[:, 0])
         errors.append(np.abs(p.values("u") - reference(r)).max())
@@ -260,27 +206,10 @@ def test_the_axisymmetric_formulation_inflates_the_same_tube(method):
     b, c, pressure = 1.0, 2.0, 0.15 * E
     reference = _tube_reference(b, c, pressure)
     mesh = dm.generate_rectangle_mesh(b, c, 0.0, 0.25, 32, 2)
-    p = _stress_problem(
-        mesh,
-        "finite_strain_stress",
-        ["ur", "uz"],
-        coordinates="axisymmetric",
-        method=method,
-        stress_update="neo_Hookean",
-    )
-    p.add_boundary_condition(
-        "Dirichlet_boundary_condition", "ends", variable="uz", boundary=["top", "bottom"], value=0.0
-    )
+    p = _stress_problem(mesh, "finite_strain_stress", ["ur", "uz"], coordinates="axisymmetric", method=method, stress_update="neo_Hookean")
+    p.add_boundary_condition("Dirichlet_boundary_condition", "ends", variable="uz", boundary=["top", "bottom"], value=0.0)
     for i, v in enumerate(("ur", "uz")):
-        p.add_boundary_condition(
-            "pressure_boundary_condition",
-            f"inside_{v}",
-            variable=v,
-            component=i,
-            boundary=["left"],
-            pressure=pressure,
-            deformation_gradient_property="deformation_gradient",
-        )
+        p.add_boundary_condition("pressure_boundary_condition", f"inside_{v}", variable=v, component=i, boundary=["left"], pressure=pressure, deformation_gradient_property="deformation_gradient")
     p.solve(load_factors=list(np.linspace(0.1, 1.0, 10)))
     points = [[r, 0.1, 0.0] for r in np.linspace(b, c, 9)]
     sampled = np.asarray(p.sample("ur", points))

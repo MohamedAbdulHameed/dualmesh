@@ -17,8 +17,8 @@
 #include "dualmesh/base/Deformation.h"
 #include "dualmesh/base/Factory.h"
 #include "dualmesh/base/Kernel.h"
-#include "dualmesh/base/Material.h"
 #include "dualmesh/base/Problem.h"
+#include "dualmesh/base/Property.h"
 #include "dualmesh/core/ParsedFunction.h"
 #include "dualmesh/modules/FuelProperties.h"
 
@@ -56,14 +56,14 @@ formulationFromName(const std::string & name)
 
 /// Voigt ordering used for the "stress" and "strain" properties:
 /// 0: xx, 1: yy, 2: zz (hoop in the axisymmetric case), 3: yz, 4: xz, 5: xy.
-class LinearElasticStress : public Material
+class LinearElasticStress : public Property
 {
 public:
   static InputParameters validParams()
   {
-    InputParameters p = Material::validParams();
+    InputParameters p = Property::validParams();
     p.setClassDescription(
-        "Linear elastic stress from the displacement gradients. Declares the material properties "
+        "Linear elastic stress from the displacement gradients. Declares the properties "
         "'stress' and 'strain' (Voigt order xx, yy, zz, yz, xz, xy) and 'volumetric_strain'. The "
         "material is isotropic by default. For an orthotropic plane problem, give the reduced "
         "stiffnesses c11, c12, c22 and c66.");
@@ -146,7 +146,7 @@ public:
   }
 
   explicit LinearElasticStress(const InputParameters & p)
-      : Material(p), _formulation(formulationFromName(p.getString("formulation")))
+      : Property(p), _formulation(formulationFromName(p.getString("formulation")))
   {
     const double E = p.getReal("youngs_modulus");
     const double nu = p.getReal("poissons_ratio");
@@ -220,7 +220,7 @@ public:
 
   void initialSetup(Problem & problem) override
   {
-    Material::initialSetup(problem);
+    Property::initialSetup(problem);
     const auto names = _params.getStringList("displacements");
     const int dim = problem.mesh().dimension();
     const int expected = _formulation == Formulation::ThreeDimensional ? 3 : 2;
@@ -235,7 +235,7 @@ public:
     _temperature = temperature.empty() ? -1 : problem.variableIndex(temperature);
   }
 
-  void declareProperties(MaterialPropertyRegistry & r) override
+  void declareProperties(PropertyRegistry & r) override
   {
     _stress = r.declare("stress", 6);
     _strain = r.declare("strain", 6);
@@ -331,7 +331,7 @@ public:
     p.addOptional("stress_property",
                   ParameterKind::String,
                   std::string("stress"),
-                  "Material property holding the stress: six components in Voigt order "
+                  "Property holding the stress: six components in Voigt order "
                   "(the Cauchy stress of small_strain_stress), or nine components row by row "
                   "(the first Piola-Kirchhoff stress of finite_strain_stress, for equations "
                   "on the undeformed mesh). Default stress.");
@@ -374,7 +374,7 @@ public:
     for (int d = 0; d < ctx.dim; ++d)
     {
       // A nine-component stress (the first Piola-Kirchhoff stress of the
-      // finite-strain materials) is stored row by row and is not symmetric.
+      // finite-strain property objects) is stored row by row and is not symmetric.
       F[d] = _full ? ctx.property(_stress, 3 * _component + d)
                    : ctx.property(_stress, voigt[_component][d]);
       if (_thickness != 1.0)
@@ -401,19 +401,19 @@ private:
 };
 
 /// Linear elastic stress with temperature-dependent elastic constants and a
-/// sum of eigenstrains, for bodies whose moduli come from other materials
+/// sum of eigenstrains, for bodies whose moduli come from other property objects
 /// (fuel, cladding) and whose stress-free strain changes with temperature and
 /// irradiation.
-class SmallStrainStress : public Material
+class SmallStrainStress : public Property
 {
 public:
   static InputParameters validParams()
   {
-    InputParameters p = Material::validParams();
+    InputParameters p = Property::validParams();
     p.setClassDescription(
         "Small-strain stress of an isotropic material: sigma = lambda tr(eps_e) I + 2 mu eps_e of "
         "the elastic strain eps_e = eps - sum of the eigenstrains - creep strain, with Young's "
-        "modulus and Poisson's ratio taken from material properties (for instance those of "
+        "modulus and Poisson's ratio taken from properties (for instance those of "
         "UO2_elasticity) or given as constants, and optional creep. Formulations: axisymmetric "
         "(r, z mesh), axisymmetric_1d (a radial slice of a long body in generalized plane strain, "
         "whose uniform axial strain is given by 'axial_strain'), plane_strain and "
@@ -427,29 +427,29 @@ public:
     p.addOptional("youngs_modulus",
                   ParameterKind::Real,
                   0.0,
-                  "Constant Young's modulus, Pa. Default: not given, and the material "
-                  "property named by 'youngs_modulus_property' is used.");
+                  "Constant Young's modulus, Pa. Default: not given, and the property named by "
+                  "'youngs_modulus_property' is used.");
     p.addOptional("poissons_ratio",
                   ParameterKind::Real,
                   0.0,
-                  "Constant Poisson's ratio. Default: not given, and the material property "
+                  "Constant Poisson's ratio. Default: not given, and the property "
                   "named by 'poissons_ratio_property' is used.");
     p.addOptional("youngs_modulus_property",
                   ParameterKind::String,
                   std::string("youngs_modulus"),
-                  "The material property that holds Young's modulus when 'youngs_modulus' is "
-                  "not given. Default youngs_modulus, the name the elasticity materials "
+                  "The property that holds Young's modulus when 'youngs_modulus' is "
+                  "not given. Default youngs_modulus, the name the elasticity property objects "
                   "declare.");
     p.addOptional("poissons_ratio_property",
                   ParameterKind::String,
                   std::string("poissons_ratio"),
-                  "The material property that holds Poisson's ratio when 'poissons_ratio' is "
-                  "not given. Default poissons_ratio, the name the elasticity materials "
+                  "The property that holds Poisson's ratio when 'poissons_ratio' is "
+                  "not given. Default poissons_ratio, the name the elasticity property objects "
                   "declare.");
     p.addOptional("eigenstrain_names",
                   ParameterKind::StringList,
                   std::vector<std::string>{},
-                  "Names of the six-component eigenstrain material properties to subtract. "
+                  "Names of the six-component eigenstrain properties to subtract. "
                   "Default none.");
     p.addOptional("axial_strain",
                   ParameterKind::Function,
@@ -525,7 +525,7 @@ public:
     return p;
   }
   int stateSize() const override { return _creep == Creep::None ? 0 : 7; }
-  explicit SmallStrainStress(const InputParameters & p) : Material(p)
+  explicit SmallStrainStress(const InputParameters & p) : Property(p)
   {
     _formulation = p.getString("formulation");
     if (_formulation != "axisymmetric" && _formulation != "axisymmetric_1d" &&
@@ -587,7 +587,7 @@ public:
   }
   void initialSetup(Problem & problem) override
   {
-    Material::initialSetup(problem);
+    Property::initialSetup(problem);
     if (_creep != Creep::None)
     {
       if (_params.getString("temperature").empty())
@@ -617,7 +617,7 @@ public:
     for (const auto & n : _params.getStringList("eigenstrain_names"))
       _eigen.push_back(reg.id(n));
   }
-  void declareProperties(MaterialPropertyRegistry & r) override
+  void declareProperties(PropertyRegistry & r) override
   {
     _stress = r.declare("stress", 6);
     _strain = r.declare("strain", 6);
@@ -1006,7 +1006,7 @@ public:
   /// Rotated elastic strain (6), F - I (9), eigenstrain (6), creep strain (6)
   /// and equivalent creep strain (1) of the last committed state.
   int stateSize() const override { return 28; }
-  void declareProperties(MaterialPropertyRegistry & r) override
+  void declareProperties(PropertyRegistry & r) override
   {
     SmallStrainStress::declareProperties(r);
     _pk1 = r.declare("first_piola_kirchhoff_stress", 9);
@@ -1226,12 +1226,12 @@ private:
 };
 
 /// Isotropic thermal expansion with a constant coefficient, as an eigenstrain.
-class ThermalExpansionEigenstrain : public Material
+class ThermalExpansionEigenstrain : public Property
 {
 public:
   static InputParameters validParams()
   {
-    InputParameters p = Material::validParams();
+    InputParameters p = Property::validParams();
     p.setClassDescription(
         "Isotropic thermal strain alpha (T - T_ref) on the three normal components, as a "
         "six-component eigenstrain property for small_strain_stress.");
@@ -1244,16 +1244,16 @@ public:
     return p;
   }
   explicit ThermalExpansionEigenstrain(const InputParameters & p)
-      : Material(p), _alpha(p.getReal("thermal_expansion_coefficient")),
+      : Property(p), _alpha(p.getReal("thermal_expansion_coefficient")),
         _Tref(p.getReal("stress_free_temperature"))
   {
   }
   void initialSetup(Problem & problem) override
   {
-    Material::initialSetup(problem);
+    Property::initialSetup(problem);
     _T = coupledVariable(problem, "temperature");
   }
-  void declareProperties(MaterialPropertyRegistry & r) override
+  void declareProperties(PropertyRegistry & r) override
   {
     _prop = r.declare(_params.getString("eigenstrain_name"), 6);
   }
@@ -1349,8 +1349,10 @@ public:
     p.setClassDescription(
         "Prescribed component of the surface traction, in force per unit area. The component is "
         "the one belonging to the equation named by 'variable', so the object is added once per "
-        "displacement variable. Unlike pressure_boundary_condition, it has no 'component' "
-        "parameter.");
+        "displacement variable (or once with a 'variables' list). Unlike "
+        "pressure_boundary_condition, it has no 'component' parameter. The load is given either "
+        "as the traction itself or as the total force on the boundary, which is then spread "
+        "uniformly over its area.");
     p.addOptional("traction",
                   ParameterKind::Function,
                   0.0,
@@ -1358,6 +1360,15 @@ public:
                   "name of a function. A positive value acts along the positive direction "
                   "of that variable's coordinate axis, whichever way the outward normal "
                   "points. The value is multiplied by 'thickness'.");
+    p.addOptional("total_force",
+                  ParameterKind::Function,
+                  0.0,
+                  "The total force component conjugate to 'variable' on the whole boundary, "
+                  "in N, as a constant or the name of a function of time. It is applied as the "
+                  "uniform traction t = F / A, where A is the area of the boundary (with the "
+                  "factor 2 pi r in axisymmetric problems). In a plane problem A is the length "
+                  "of the boundary times 'thickness', so that F is the force on the whole "
+                  "thickness. Give either 'traction' or 'total_force'.");
     p.addOptional("thickness",
                   ParameterKind::Real,
                   1.0,
@@ -1381,16 +1392,87 @@ public:
   void initialSetup(Problem & problem) override
   {
     IntegratedBC::initialSetup(problem);
-    _t = getFunction(problem, "traction");
+    const bool by_force = _params.isSetByUser("total_force");
+    if (by_force && _params.isSetByUser("traction"))
+      throw InputError("traction_boundary_condition '" + _name +
+                       "': give only one of 'traction' and 'total_force'.");
+    if (!by_force)
+    {
+      _t = getFunction(problem, "traction");
+      _factor = _thickness;
+      return;
+    }
+    // The assembled load is the integral of factor * F over the boundary, in
+    // which the integration weight includes the coordinate factor.  With
+    // factor = 1 / A, A being that same integral of 1, the load equals F, and
+    // the thickness of a plane problem cancels.
+    _t = getFunction(problem, "total_force");
+    _area = problem.boundaryMeasure(_boundaries);
+    if (!(_area > 0.0))
+      throw InputError("traction_boundary_condition '" + _name +
+                       "': the boundary has zero area, so a total force cannot be spread over it.");
+    _factor = 1.0 / _area;
   }
   ADReal computeBoundaryFlux(const QpContext & ctx) const override
   {
-    return ADReal(_thickness * _t->value(ctx.x, ctx.time));
+    return ADReal(_factor * _t->value(ctx.x, ctx.time));
   }
 
 private:
   double _thickness;
+  double _factor = 1.0;
+  double _area = 0.0;
   FunctionPtr _t;
+};
+
+/// All displacement components held at zero on a boundary: the clamped
+/// support of structural mechanics (the Fixed Constraint of COMSOL).
+class FixedConstraint : public NodalBC
+{
+public:
+  static InputParameters validParams()
+  {
+    InputParameters p = NodalBC::validParams();
+    p.setClassDescription(
+        "All the displacement components listed in 'displacements' are zero on the boundary, "
+        "i.e., the boundary is clamped. The condition is created once per displacement, under "
+        "the names <name>_<displacement>, and is equivalent to Dirichlet_boundary_condition "
+        "with 'variables' set to the same list and 'value' 0. The two define the same "
+        "constraint, so only one of them is given for a boundary.");
+    p.addOptional("displacements",
+                  ParameterKind::StringList,
+                  std::vector<std::string>{},
+                  "The displacement variables to hold at zero, e.g., [u, v, w] in three "
+                  "dimensions. It takes the place of 'variable' and 'variables', which define "
+                  "the same thing and must not be given with it.");
+    return p;
+  }
+  explicit FixedConstraint(const InputParameters & p) : NodalBC(p) {}
+  double computeValue(const Point &, double) const override { return 0.0; }
+};
+
+/// A plane of symmetry: the displacement normal to the plane is zero.
+class SymmetryBC : public NodalBC
+{
+public:
+  static InputParameters validParams()
+  {
+    InputParameters p = NodalBC::validParams();
+    p.setClassDescription(
+        "A plane of symmetry of the body and its loads: the displacement normal to the plane "
+        "is zero and the tangential displacements are free, so that only one side of the "
+        "plane is modelled. The side set must lie in a plane normal to a coordinate axis, "
+        "which is found from the coordinates of its nodes, and the condition is created on "
+        "the displacement along that axis under the name <name>_<displacement>.");
+    p.addOptional("displacements",
+                  ParameterKind::StringList,
+                  std::vector<std::string>{},
+                  "The displacement variables in the order of the coordinate axes, e.g., [u, v, "
+                  "w] in three dimensions. It takes the place of 'variable' and 'variables'.");
+    return p;
+  }
+  explicit SymmetryBC(const InputParameters & p) : NodalBC(p) {}
+  double computeValue(const Point &, double) const override { return 0.0; }
 };
 
 /// Prescribed normal pressure: t_i = -p n_i.
@@ -1479,14 +1561,16 @@ void
 registerSolidMechanicsObjects(Factory & f)
 {
   const std::string m = "solid_mechanics";
-  f.add<LinearElasticStress>("linear_elastic_stress", ObjectCategory::Material, m);
+  f.add<LinearElasticStress>("linear_elastic_stress", ObjectCategory::Property, m);
   f.add<StressDivergence>("stress_divergence", ObjectCategory::Kernel, m);
   f.add<TractionBC>("traction_boundary_condition", ObjectCategory::BoundaryCondition, m);
   f.add<PressureBC>("pressure_boundary_condition", ObjectCategory::BoundaryCondition, m);
-  f.add<SmallStrainStress>("small_strain_stress", ObjectCategory::Material, m);
-  f.add<FiniteStrainStress>("finite_strain_stress", ObjectCategory::Material, m);
+  f.add<FixedConstraint>("fixed_constraint", ObjectCategory::NodalBC, m);
+  f.add<SymmetryBC>("symmetry_boundary_condition", ObjectCategory::NodalBC, m);
+  f.add<SmallStrainStress>("small_strain_stress", ObjectCategory::Property, m);
+  f.add<FiniteStrainStress>("finite_strain_stress", ObjectCategory::Property, m);
   f.add<GapContact>("gap_contact", ObjectCategory::BoundaryCondition, m);
-  f.add<ThermalExpansionEigenstrain>("thermal_expansion_eigenstrain", ObjectCategory::Material, m);
+  f.add<ThermalExpansionEigenstrain>("thermal_expansion_eigenstrain", ObjectCategory::Property, m);
   registerStructuralMemberObjects(f);
 }
 

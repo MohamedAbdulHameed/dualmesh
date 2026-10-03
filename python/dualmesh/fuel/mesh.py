@@ -87,29 +87,16 @@ def _axial_points(geometry: RodGeometry, num_axial: int) -> tuple[np.ndarray, np
     return zf, np.concatenate([zf, np.linspace(zf[-1], top, extra + 1)[1:]])
 
 
-def radial_slice_mesh(
-    geometry: RodGeometry, mesh: RodMesh | None = None, element_type: str = "Edge2"
-):
+def radial_slice_mesh(geometry: RodGeometry, mesh: RodMesh | None = None, element_type: str = "Edge2"):
     """One axial slice: a line of ``Edge2`` (or ``Edge3``) elements through
     the fuel, from the axis (or the bore of an annular pellet) to the pellet
     surface, and a separate line through the cladding wall."""
     mesh = mesh or RodMesh()
-    rf = graded_points(
-        geometry.pellet_inner_radius,
-        geometry.pellet_outer_radius,
-        mesh.num_fuel_radial_elements,
-        mesh.fuel_surface_grading,
-    )
+    rf = graded_points(geometry.pellet_inner_radius, geometry.pellet_outer_radius, mesh.num_fuel_radial_elements, mesh.fuel_surface_grading)
     rc, clad_blocks = _clad_radii(geometry, mesh)
     nf, nc = mesh.num_fuel_radial_elements, len(clad_blocks)
     cells = [[i, i + 1] for i in range(nf)] + [[nf + 1 + i, nf + 2 + i] for i in range(nc)]
-    out = mesh_from_arrays(
-        np.concatenate([rf, rc])[:, None],
-        cells,
-        "Edge2",
-        blocks=[FUEL_BLOCK] * nf + clad_blocks,
-        dimension=1,
-    )
+    out = mesh_from_arrays(np.concatenate([rf, rc])[:, None], cells, "Edge2", blocks=[FUEL_BLOCK] * nf + clad_blocks, dimension=1)
     _name_blocks(out, geometry.clad_coating_thickness > 0)
     out.add_sideset_from_faces("axis" if geometry.pellet_inner_radius == 0 else "fuel_inner", [[0]])
     out.add_sideset_from_faces("fuel_outer", [[nf]])
@@ -128,9 +115,7 @@ def _structured_grid(xs, ys, offset):
     X, Y = np.meshgrid(xs, ys, indexing="xy")
     points = np.column_stack([X.ravel(), Y.ravel()])
     idx = np.arange(len(xs) * len(ys)).reshape(len(ys), len(xs)) + offset
-    cells = np.column_stack(
-        [idx[:-1, :-1].ravel(), idx[:-1, 1:].ravel(), idx[1:, 1:].ravel(), idx[1:, :-1].ravel()]
-    )
+    cells = np.column_stack([idx[:-1, :-1].ravel(), idx[:-1, 1:].ravel(), idx[1:, 1:].ravel(), idx[1:, :-1].ravel()])
     return points, cells, idx
 
 
@@ -139,13 +124,7 @@ def _grid_edges(idx, side):
     return [[int(a), int(b)] for a, b in zip(column[:-1], column[1:])]
 
 
-def axisymmetric_rod_mesh(
-    geometry: RodGeometry,
-    mesh: RodMesh | None = None,
-    element_type: str = "Quad4",
-    num_coolant_radial_elements: int = 0,
-    coolant_outer_radius: float | None = None,
-):
+def axisymmetric_rod_mesh(geometry: RodGeometry, mesh: RodMesh | None = None, element_type: str = "Quad4", num_coolant_radial_elements: int = 0, coolant_outer_radius: float | None = None):
     """An r-z mesh (x = r, y = z) of the fuel stack as one smeared column and
     of the cladding, which extends ``plenum_height`` above the stack with the
     same axial spacing.
@@ -161,42 +140,27 @@ def axisymmetric_rod_mesh(
     """
     mesh = mesh or RodMesh()
     g = geometry
-    rf = graded_points(
-        g.pellet_inner_radius,
-        g.pellet_outer_radius,
-        mesh.num_fuel_radial_elements,
-        mesh.fuel_surface_grading,
-    )
+    rf = graded_points(g.pellet_inner_radius, g.pellet_outer_radius, mesh.num_fuel_radial_elements, mesh.fuel_surface_grading)
     rc, clad_blocks = _clad_radii(g, mesh)
     nc = len(clad_blocks)  # elements through the wall, the coating included
     coated = g.clad_coating_thickness > 0
     if num_coolant_radial_elements > 0 and coated:
-        raise ValueError(
-            "axisymmetric_rod_mesh: a coolant mesh with a coated cladding is not supported."
-        )
+        raise ValueError("axisymmetric_rod_mesh: a coolant mesh with a coated cladding is not supported.")
     if num_coolant_radial_elements > 0:
         if coolant_outer_radius is None or coolant_outer_radius <= g.clad_outer_radius:
-            raise ValueError(
-                "axisymmetric_rod_mesh: coolant_outer_radius must exceed clad_outer_radius."
-            )
+            raise ValueError("axisymmetric_rod_mesh: coolant_outer_radius must exceed clad_outer_radius.")
         if g.plenum_height > 0:
             raise ValueError("axisymmetric_rod_mesh: a coolant mesh needs plenum_height = 0.")
-        water = np.linspace(
-            g.clad_outer_radius, coolant_outer_radius, num_coolant_radial_elements + 1
-        )
+        water = np.linspace(g.clad_outer_radius, coolant_outer_radius, num_coolant_radial_elements + 1)
         rc = np.concatenate([rc, water[1:]])
     zf, zc = _axial_points(g, mesh.num_axial_elements)
     pf, cf, idf = _structured_grid(rf, zf, 0)
     pc, cc, idc = _structured_grid(rc, zc, len(pf))
     column = np.tile(np.arange(len(rc) - 1), len(zc) - 1)
     blocks = [FUEL_BLOCK] * len(cf) + [clad_blocks[c] if c < nc else 2 for c in column]
-    out = mesh_from_arrays(
-        np.vstack([pf, pc]), np.vstack([cf, cc]), "Quad4", blocks=blocks, dimension=2
-    )
+    out = mesh_from_arrays(np.vstack([pf, pc]), np.vstack([cf, cc]), "Quad4", blocks=blocks, dimension=2)
     _name_blocks(out, coated)
-    out.add_sideset_from_faces(
-        "axis" if g.pellet_inner_radius == 0 else "fuel_inner", _grid_edges(idf, "left")
-    )
+    out.add_sideset_from_faces("axis" if g.pellet_inner_radius == 0 else "fuel_inner", _grid_edges(idf, "left"))
     out.add_sideset_from_faces("fuel_outer", _grid_edges(idf, "right"))
     out.add_sideset_from_faces("fuel_bottom", _grid_edges(idf, "bottom"))
     out.add_sideset_from_faces("fuel_top", _grid_edges(idf, "top"))
@@ -220,9 +184,7 @@ def axisymmetric_rod_mesh(
         return out
     if element_type in ("Quad8", "Quad9"):
         return out.second_order(serendipity=element_type == "Quad8")
-    raise ValueError(
-        f"axisymmetric_rod_mesh: element_type must be Quad4, Quad8 or Quad9, not {element_type}."
-    )
+    raise ValueError(f"axisymmetric_rod_mesh: element_type must be Quad4, Quad8 or Quad9, not {element_type}.")
 
 
 def _disk_section(radius: float, core: int, rings: int, grading: float):
@@ -235,20 +197,9 @@ def _disk_section(radius: float, core: int, rings: int, grading: float):
     X, Y = np.meshgrid(s, s, indexing="xy")
     points = [np.column_stack([X.ravel(), Y.ravel()])]
     grid = np.arange((core + 1) ** 2).reshape(core + 1, core + 1)
-    quads = [
-        np.column_stack(
-            [
-                grid[:-1, :-1].ravel(),
-                grid[:-1, 1:].ravel(),
-                grid[1:, 1:].ravel(),
-                grid[1:, :-1].ravel(),
-            ]
-        )
-    ]
+    quads = [np.column_stack([grid[:-1, :-1].ravel(), grid[:-1, 1:].ravel(), grid[1:, 1:].ravel(), grid[1:, :-1].ravel()])]
     # The boundary of the square, counter-clockwise from (a, -a).
-    loop = np.array(
-        list(grid[0, :]) + list(grid[1:, -1]) + list(grid[-1, -2::-1]) + list(grid[-2:0:-1, 0])
-    )
+    loop = np.array(list(grid[0, :]) + list(grid[1:, -1]) + list(grid[-1, -2::-1]) + list(grid[-2:0:-1, 0]))
     square = points[0][loop]
     angles = np.arctan2(square[:, 1], square[:, 0])
     circle = radius * np.column_stack([np.cos(angles), np.sin(angles)])
@@ -269,14 +220,7 @@ def _annulus_section(radii: np.ndarray, angles: np.ndarray, offset: int):
     n = len(angles)
     points = np.vstack([np.column_stack([r * np.cos(angles), r * np.sin(angles)]) for r in radii])
     ids = np.arange(len(points)).reshape(len(radii), n) + offset
-    quads = np.column_stack(
-        [
-            ids[:-1, :].ravel(),
-            np.roll(ids[:-1, :], -1, axis=1).ravel(),
-            np.roll(ids[1:, :], -1, axis=1).ravel(),
-            ids[1:, :].ravel(),
-        ]
-    )
+    quads = np.column_stack([ids[:-1, :].ravel(), np.roll(ids[:-1, :], -1, axis=1).ravel(), np.roll(ids[1:, :], -1, axis=1).ravel(), ids[1:, :].ravel()])
     return points, quads, ids[0, :], ids[-1, :]
 
 
@@ -295,17 +239,10 @@ def three_dimensional_rod_mesh(geometry: RodGeometry, mesh: RodMesh | None = Non
     core = mesh.num_fuel_core_divisions
     if g.pellet_inner_radius > 0:
         angles = np.linspace(0.0, 2 * np.pi, 4 * core, endpoint=False)
-        rf = graded_points(
-            g.pellet_inner_radius,
-            g.pellet_outer_radius,
-            mesh.num_fuel_radial_elements,
-            mesh.fuel_surface_grading,
-        )
+        rf = graded_points(g.pellet_inner_radius, g.pellet_outer_radius, mesh.num_fuel_radial_elements, mesh.fuel_surface_grading)
         fp, fq, fuel_inner_loop, fuel_loop = _annulus_section(rf, angles, 0)
     else:
-        fp, fq, fuel_loop = _disk_section(
-            g.pellet_outer_radius, core, mesh.num_fuel_radial_elements, mesh.fuel_surface_grading
-        )
+        fp, fq, fuel_loop = _disk_section(g.pellet_outer_radius, core, mesh.num_fuel_radial_elements, mesh.fuel_surface_grading)
         fuel_inner_loop = None
         angles = np.arctan2(fp[fuel_loop, 1], fp[fuel_loop, 0])
     rc, clad_blocks = _clad_radii(g, mesh)
@@ -335,14 +272,7 @@ def three_dimensional_rod_mesh(geometry: RodGeometry, mesh: RodMesh | None = Non
                 a, b = loop[i], loop[(i + 1) % len(loop)]
                 if inward:
                     a, b = b, a
-                faces.append(
-                    [
-                        int(a + k * nsec),
-                        int(b + k * nsec),
-                        int(b + (k + 1) * nsec),
-                        int(a + (k + 1) * nsec),
-                    ]
-                )
+                faces.append([int(a + k * nsec), int(b + k * nsec), int(b + (k + 1) * nsec), int(a + (k + 1) * nsec)])
         return faces
 
     def cap(block, k):

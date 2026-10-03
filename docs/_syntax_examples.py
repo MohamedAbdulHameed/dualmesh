@@ -27,7 +27,7 @@ _add(
 ``diffusion`` is the generic second-order operator.  It is the appropriate
 kernel whenever the flux is proportional to the gradient of the unknown and no
 physics module provides a kernel with a more specific name.  The diffusivity
-may be a number, a named function of position and time, or a material
+may be a number, a named function of position and time, or a
 property, and it may additionally be multiplied by a polynomial in the unknown
 itself, which is the simplest way to make a problem nonlinear:
 
@@ -40,8 +40,7 @@ itself, which is the simplest way to make a problem nonlinear:
    problem.add_kernel("diffusion", "graded", variable="u", diffusivity="k")
 
    # A diffusivity that depends on the solution: k_eff = 1.0 * (1 + 0.5 u).
-   problem.add_kernel("diffusion", "nonlinear", variable="u",
-                      diffusivity=1.0, solution_polynomial=[1.0, 0.5])
+   problem.add_kernel("diffusion", "nonlinear", variable="u", diffusivity=1.0, solution_polynomial=[1.0, 0.5])
 
 The last form requires a nonlinear solve.  With ``nonlinear_solver="newton"``
 the derivative of the polynomial is carried exactly through the automatic
@@ -59,16 +58,15 @@ rock.  Give the tensor either as its diagonal or in full:
 .. code-block:: python
 
    # Orthotropic: ten times more conductive along x than along y.
-   problem.add_kernel("anisotropic_diffusion", "conduction",
-                      variable="temperature", diffusivity_tensor=[10.0, 1.0])
+   problem.add_kernel("anisotropic_diffusion", "conduction", variable="temperature", diffusivity_tensor=[10.0, 1.0])
 
    # The full tensor, row by row, for principal axes rotated by 30 degrees.
    import numpy as np
+
    c, s = np.cos(np.pi / 6), np.sin(np.pi / 6)
    k = np.array([[10.0, 0.0], [0.0, 1.0]])
    r = np.array([[c, -s], [s, c]])
-   problem.add_kernel("anisotropic_diffusion", "rotated", variable="temperature",
-                      diffusivity_tensor=list((r @ k @ r.T).ravel()))
+   problem.add_kernel("anisotropic_diffusion", "rotated", variable="temperature", diffusivity_tensor=list((r @ k @ r.T).ravel()))
 """,
 )
 
@@ -87,12 +85,10 @@ of the term: a positive coefficient removes the unknown.
    problem.add_kernel("reaction", "convection", variable="u", coefficient=400.0)
 
    # A beam on an elastic foundation of modulus 1e6.
-   problem.add_kernel("reaction", "foundation", variable="deflection",
-                      coefficient=1.0e6)
+   problem.add_kernel("reaction", "foundation", variable="deflection", coefficient=1.0e6)
 
    # A second-order chemical reaction, which is nonlinear.
-   problem.add_kernel("reaction", "consumption", variable="concentration",
-                      coefficient=0.1, exponent=2.0)
+   problem.add_kernel("reaction", "consumption", variable="concentration", coefficient=0.1, exponent=2.0)
 """,
 )
 
@@ -116,8 +112,7 @@ whole control domain, which this library names ``control_domain_trapezoid``:
 
 .. code-block:: python
 
-   problem.add_kernel("body_force", "source", variable="u", value="source",
-                      quadrature="control_domain_trapezoid")
+   problem.add_kernel("body_force", "source", variable="u", value="source", quadrature="control_domain_trapezoid")
 """,
 )
 
@@ -159,8 +154,7 @@ reaction:
    problem.add_variable("b")
    problem.add_kernel("diffusion", "diff_a", variable="a")
    problem.add_kernel("diffusion", "diff_b", variable="b")
-   problem.add_kernel("coupled_force", "b_feeds_a", variable="a",
-                      coupled_variable="b", coefficient=-1.0)
+   problem.add_kernel("coupled_force", "b_feeds_a", variable="a", coupled_variable="b", coefficient=-1.0)
 
 The derivative with respect to the coupled variable is carried through the
 automatic differentiation, so the off-diagonal block of the Jacobian is exact
@@ -180,7 +174,7 @@ which is what a mixed formulation requires for its moment equation.
    problem.add_variable("u", initial_condition=lambda x, y, z, t: np.sin(np.pi * x))
    problem.add_kernel("diffusion", "diffusion", variable="u")
    problem.add_kernel("time_derivative", "time", variable="u", coefficient=1.0)
-   problem.solve_transient(end_time=0.1, dt=0.001, theta=0.5)
+   problem.solve_transient(end_time=0.1, time_step=0.001, implicitness=0.5)
 
 The capacity is lumped, as is common in explicit and nearly explicit schemes,
 by a change of the quadrature:
@@ -202,13 +196,14 @@ reaction:
 
 .. code-block:: python
 
-   problem.add_boundary_condition("Dirichlet_boundary_condition", "hot", variable="temperature",
-                                  boundary="left", value=300.0)
+   problem.add_boundary_condition("Dirichlet_boundary_condition", "hot", variable="temperature", boundary="left", value=300.0)
 
    # A value that varies along the boundary.
    problem.add_function("profile", lambda x, y, z, t: np.cos(np.pi * x / 6.0))
-   problem.add_boundary_condition("Dirichlet_boundary_condition", "top", variable="temperature",
-                                  boundary="top", value="profile")
+   problem.add_boundary_condition("Dirichlet_boundary_condition", "top", variable="temperature", value="profile")
+
+   # One value on several variables: the condition is created once per variable.
+   problem.add_boundary_condition("Dirichlet_boundary_condition", "bottom", variables=["u", "v"], value=0.0)
 
    # The heat that must flow in through the left edge to hold it at 300.
    print(problem.total_reaction("temperature", "left"))
@@ -230,8 +225,7 @@ unknown *into* the body:
 .. code-block:: python
 
    # One watt per square metre entering through the right edge.
-   problem.add_boundary_condition("Neumann_boundary_condition", "inflow", variable="temperature",
-                                  boundary="right", flux=1.0)
+   problem.add_boundary_condition("Neumann_boundary_condition", "inflow", variable="temperature", boundary="right", flux=1.0)
 
 A boundary without a boundary condition has a zero flux, so an insulated or
 symmetry boundary requires no object.  Add this object only when the flux is
@@ -251,9 +245,7 @@ general form of which ``Neumann_boundary_condition`` is the special case
 .. code-block:: python
 
    # Convection from a fin tip into air at 20 degrees.
-   problem.add_boundary_condition("Robin_boundary_condition", "tip", variable="temperature",
-                                  boundary="right",
-                                  transfer_coefficient=2.0, ambient_value=20.0)
+   problem.add_boundary_condition("Robin_boundary_condition", "tip", variable="temperature", boundary="right", transfer_coefficient=2.0, ambient_value=20.0)
 
 For heat transfer, ``convective_heat_flux_boundary_condition`` expresses the
 same condition in the terminology of heat transfer and is the preferred
@@ -271,12 +263,10 @@ without a tolerance, so the point should coincide with a node of the mesh:
 .. code-block:: python
 
    # A concentrated force at the centre of the span.
-   problem.add_nodal_load("point_source", "tip_load", variable="deflection",
-                          value=-1000.0, points=[0.5, 0.0, 0.0])
+   problem.add_nodal_load("point_source", "tip_load", variable="deflection", value=-1000.0, points=[0.5, 0.0, 0.0])
 
    # A heat source at every node of a named node set.
-   problem.add_nodal_load("point_source", "heaters", variable="temperature",
-                          value=50.0, boundary="heater_nodes")
+   problem.add_nodal_load("point_source", "heaters", variable="temperature", value=50.0, boundary="heater_nodes")
 
 In a plane-stress or plane-strain model a traction is multiplied by the
 thickness, while the value of a point source is applied as given, so give the
@@ -285,40 +275,35 @@ total force through the thickness.
 )
 
 _add(
-    "generic_constant_material",
+    "constant_property",
     """
-``generic_constant_material`` defines named constant properties that kernels
+``constant_property`` defines named constant properties that kernels
 read.  It allows several kernels to share one value, and a property to take
 different values in different blocks:
 
 .. code-block:: python
 
-   problem.add_material("generic_constant_material", "copper",
-                        property_names=["conductivity"], property_values=[400.0],
-                        block=["copper_bar"])
-   problem.add_material("generic_constant_material", "steel",
-                        property_names=["conductivity"], property_values=[45.0],
-                        block=["steel_bar"])
-   problem.add_kernel("heat_conduction", "conduction", variable="temperature",
-                      thermal_conductivity_property="conductivity")
+   problem.add_property("constant_property", "copper", property_names=["conductivity"], property_values=[400.0], block=["copper_bar"])
+   problem.add_property("constant_property", "steel", property_names=["conductivity"], property_values=[45.0], block=["steel_bar"])
+   problem.add_kernel("heat_conduction", "conduction", variable="temperature", thermal_conductivity_property="conductivity")
 """,
 )
 
 _add(
-    "generic_function_material",
+    "function_property",
     """
-``generic_function_material`` is the counterpart of
-``generic_constant_material`` for a property that varies through the body.
+``function_property`` is the counterpart of
+``constant_property`` for a property that varies through the body.
 The functions must be registered on the problem first:
 
 .. code-block:: python
 
    problem.add_function("k_of_x", lambda x, y, z, t: 50.0 * (1.0 + x))
-   problem.add_material("generic_function_material", "graded",
-                        property_names=["conductivity"], functions=["k_of_x"])
+   problem.add_property("function_property", "graded", property_names=["conductivity"], functions=["k_of_x"])
 
-A property that depends on the *solution* requires a Python subclass of
-``Material``, as shown in :doc:`/user_guide/problem_setup`.
+A property that depends on the *solution* is given as a ``parsed_property``,
+or as a Python subclass of ``PythonProperty``, as shown in
+:doc:`/user_guide/problem_setup`.
 """,
 )
 
@@ -334,8 +319,7 @@ point of almost every thermal analysis:
 .. code-block:: python
 
    problem.add_variable("temperature")
-   problem.add_kernel("heat_conduction", "conduction", variable="temperature",
-                      thermal_conductivity=20.0)
+   problem.add_kernel("heat_conduction", "conduction", variable="temperature", thermal_conductivity=20.0)
 
 A temperature-dependent conductivity is written as a polynomial multiplying the
 base value, which is the form Reddy's nonlinear examples use:
@@ -343,9 +327,7 @@ base value, which is the form Reddy's nonlinear examples use:
 .. code-block:: python
 
    # k(T) = 45 (1 + 0.002 T)
-   problem.add_kernel("heat_conduction", "conduction", variable="temperature",
-                      thermal_conductivity=45.0,
-                      temperature_polynomial=[1.0, 0.002])
+   problem.add_kernel("heat_conduction", "conduction", variable="temperature", thermal_conductivity=45.0, temperature_polynomial=[1.0, 0.002])
    problem.solve(nonlinear_solver="newton")
 """,
 )
@@ -359,13 +341,11 @@ resin.
 
 .. code-block:: python
 
-   problem.add_kernel("heat_source", "joule", variable="temperature",
-                      heat_source=1.0e6)
+   problem.add_kernel("heat_source", "joule", variable="temperature", heat_source=1.0e6)
 
    # Generation that decays with depth.
    problem.add_function("q", lambda x, y, z, t: 2.0e6 * np.exp(-x / 0.01))
-   problem.add_kernel("heat_source", "absorption", variable="temperature",
-                      heat_source="q")
+   problem.add_kernel("heat_source", "absorption", variable="temperature", heat_source="q")
 """,
 )
 
@@ -377,11 +357,9 @@ and makes a thermal problem transient:
 
 .. code-block:: python
 
-   problem.add_kernel("heat_conduction", "conduction", variable="temperature",
-                      thermal_conductivity=45.0)
-   problem.add_kernel("heat_conduction_time_derivative", "storage",
-                      variable="temperature", density=7850.0, specific_heat=460.0)
-   problem.solve_transient(end_time=600.0, dt=5.0, theta=0.5)
+   problem.add_kernel("heat_conduction", "conduction", variable="temperature", thermal_conductivity=45.0)
+   problem.add_kernel("heat_conduction_time_derivative", "storage", variable="temperature", density=7850.0, specific_heat=460.0)
+   problem.solve_transient(end_time=600.0, time_step=5.0, implicitness=0.5)
 
 Only the product of density and specific heat enters, so a volumetric heat
 capacity may be given as the density with the specific heat set to one.
@@ -396,8 +374,7 @@ It applies, e.g., a heater, a measured flux, or an absorbed radiation load:
 
 .. code-block:: python
 
-   problem.add_boundary_condition("heat_flux_boundary_condition", "heater", variable="temperature",
-                                  boundary="bottom", heat_flux=5.0e4)
+   problem.add_boundary_condition("heat_flux_boundary_condition", "heater", variable="temperature", boundary="bottom", heat_flux=5.0e4)
 
 An insulated surface is the default and needs no object.
 """,
@@ -413,10 +390,7 @@ unknown in advance:
 
 .. code-block:: python
 
-   problem.add_boundary_condition("convective_heat_flux_boundary_condition", "air",
-                                  variable="temperature", boundary=["right", "top"],
-                                  heat_transfer_coefficient=25.0,
-                                  ambient_temperature=20.0)
+   problem.add_boundary_condition("convective_heat_flux_boundary_condition", "air", variable="temperature", boundary=["right", "top"], heat_transfer_coefficient=25.0, ambient_temperature=20.0)
 
 The condition is linear in the temperature, so it requires no additional
 Newton iterations.
@@ -433,9 +407,7 @@ power of the temperature, and it requires temperatures on an absolute scale:
 .. code-block:: python
 
    # A surface at a few hundred kelvin radiating to surroundings at 300 K.
-   problem.add_boundary_condition("radiative_heat_flux_boundary_condition", "radiation",
-                                  variable="temperature", boundary="top",
-                                  emissivity=0.8, ambient_temperature=300.0)
+   problem.add_boundary_condition("radiative_heat_flux_boundary_condition", "radiation", variable="temperature", boundary="top", emissivity=0.8, ambient_temperature=300.0)
    problem.solve(nonlinear_solver="newton")
 
 Radiation and convection usually act together.  When both objects are added
@@ -450,35 +422,27 @@ _add(
     "linear_elastic_stress",
     """
 ``linear_elastic_stress`` computes the stress from the displacement gradients
-and provides it as the material property that ``stress_divergence`` reads.
+and provides it as the property that ``stress_divergence`` reads.
 One instance supplies the stress to all the displacement equations:
 
 .. code-block:: python
 
    for name in ("displacement_x", "displacement_y"):
        problem.add_variable(name)
-   problem.add_material("linear_elastic_stress", "steel",
-                        displacements=["displacement_x", "displacement_y"],
-                        formulation="plane_stress",
-                        youngs_modulus=200.0e9, poissons_ratio=0.3)
+   problem.add_property("linear_elastic_stress", "steel", displacements=["displacement_x", "displacement_y"], formulation="plane_stress", youngs_modulus=200.0e9, poissons_ratio=0.3)
    for component, name in enumerate(("displacement_x", "displacement_y")):
-       problem.add_kernel("stress_divergence", f"equilibrium_{name}",
-                          variable=name, component=component)
+       problem.add_kernel("stress_divergence", f"equilibrium_{name}", variable=name, component=component)
 
 Thermal strain is included by naming a temperature variable *and* giving a
 non-zero expansion coefficient:
 
 .. code-block:: python
 
-   problem.add_material("linear_elastic_stress", "steel",
-                        displacements=["displacement_x", "displacement_y"],
-                        youngs_modulus=200.0e9, poissons_ratio=0.3,
-                        temperature="temperature",
-                        thermal_expansion_coefficient=1.2e-5,
-                        reference_temperature=20.0)
+   problem.add_property("linear_elastic_stress", "steel", displacements=["displacement_x", "displacement_y"], youngs_modulus=200.0e9, poissons_ratio=0.3, temperature="temperature", thermal_expansion_coefficient=1.2e-5, stress_free_temperature=20.0)
 
-The helper :func:`dualmesh.physics.add_plane_elasticity` adds the material and
-all the kernels in one call and is recommended for most analyses.
+The ``solid_mechanics`` physics adds the stress property object and all the kernels, and the
+``thermal_expansion`` coupling adds the thermal strain (see
+:doc:`/user_guide/problem_setup`).
 """,
 )
 
@@ -490,10 +454,8 @@ Add one instance per displacement, with ``component`` matching the variable:
 
 .. code-block:: python
 
-   problem.add_kernel("stress_divergence", "equilibrium_x",
-                      variable="displacement_x", component=0, thickness=0.01)
-   problem.add_kernel("stress_divergence", "equilibrium_y",
-                      variable="displacement_y", component=1, thickness=0.01)
+   problem.add_kernel("stress_divergence", "equilibrium_x", variable="displacement_x", component=0, thickness=0.01)
+   problem.add_kernel("stress_divergence", "equilibrium_y", variable="displacement_y", component=1, thickness=0.01)
 
 The thickness multiplies the whole equation in a plane problem and must match
 the thickness given to every traction and pressure boundary condition of the
@@ -507,14 +469,36 @@ _add(
     """
 ``traction_boundary_condition`` applies a surface traction component.  The
 object has no ``component`` keyword: the component is that of the equation
-named by ``variable``, so add one object per displacement:
+named by ``variable``.  The load is given either as the traction itself, in
+force per unit area, or as the total force on the boundary, which the code
+spreads uniformly over the area of the boundary.  ``traction`` and
+``total_force`` define the same load, so a condition gives one of them and
+never both:
 
 .. code-block:: python
 
    # A uniform shear of 1 MPa on the right edge, acting along +y.
-   problem.add_boundary_condition("traction_boundary_condition", "shear",
-                                  variable="displacement_y", boundary="right",
-                                  traction=1.0e6, thickness=0.01)
+   problem.add_boundary_condition("traction_boundary_condition", "shear", variable="displacement_y", boundary="right", traction=1.0e6, thickness=0.01)
+
+   # A force of 150 N along -y on the side set 'grip', whatever its area.
+   problem.add_boundary_condition("traction_boundary_condition", "grip", variable="v", total_force=-150.0)
+""",
+)
+
+_add(
+    "fixed_constraint",
+    """
+``fixed_constraint`` clamps a boundary: every displacement listed in
+``displacements`` is zero there.  It is the usual support of a solid that is
+held by a much stiffer part, e.g., a bolted or welded face.  It is equivalent
+to ``Dirichlet_boundary_condition`` with ``variables`` set to the same list
+and ``value`` 0, and the two define the same constraint, so a boundary is
+given one of them and never both:
+
+.. code-block:: python
+
+   # The jaws of a wrench held by a rigid nut.
+   problem.add_boundary_condition("fixed_constraint", "jaws", displacements=["u", "v", "w"])
 """,
 )
 
@@ -529,9 +513,7 @@ to which it contributes:
 .. code-block:: python
 
    for component, name in enumerate(("displacement_x", "displacement_y")):
-       problem.add_boundary_condition("pressure_boundary_condition", f"internal_{name}",
-                                      variable=name, boundary="inner",
-                                      component=component, pressure=10.0e6)
+       problem.add_boundary_condition("pressure_boundary_condition", f"internal_{name}", variable=name, boundary="inner", component=component, pressure=10.0e6)
 
 A positive pressure acts inward, opposite to the outward normal.
 """,
@@ -553,19 +535,14 @@ second-order equations.  Add the kernel once per variable, with identical parame
    for name in ("axial", "deflection", "moment"):
        problem.add_variable(name)
    for name in ("axial", "deflection", "moment"):
-       problem.add_kernel("beam_Euler_Bernoulli_mixed", f"beam_{name}", variable=name,
-                          axial_displacement="axial",
-                          transverse_displacement="deflection",
-                          bending_moment="moment",
-                          extensional_stiffness=a_xx, bending_stiffness=d_xx,
-                          transverse_load=-1.0e3)
+       problem.add_kernel("beam_Euler_Bernoulli_mixed", f"beam_{name}", variable=name, axial_displacement="axial", transverse_displacement="deflection", bending_moment="moment", extensional_stiffness=a_xx, bending_stiffness=d_xx, transverse_load=-1.0e3)
 
 The boundary conditions follow the duality pairs: a clamped end prescribes the
 deflection and leaves the moment free, because the vanishing slope is the
 natural condition of the moment equation.  A simply supported end prescribes
 the deflection *and* prescribes the moment to be zero.
 
-:func:`dualmesh.physics.add_beam` adds all three kernels in one call.
+The ``beam`` physics adds all three kernels.
 """,
 )
 
@@ -579,16 +556,10 @@ kernel is therefore split into two instances:
 
 .. code-block:: python
 
-   common = dict(axial_displacement="axial", transverse_displacement="deflection",
-                 rotation="rotation", extensional_stiffness=a_xx,
-                 bending_stiffness=d_xx, shear_stiffness=s_xz,
-                 transverse_load=-1.0e3)
+   common = dict(axial_displacement="axial", transverse_displacement="deflection", rotation="rotation", extensional_stiffness=a_xx, bending_stiffness=d_xx, shear_stiffness=s_xz, transverse_load=-1.0e3)
    for name in ("axial", "deflection", "rotation"):
-       problem.add_kernel("beam_Timoshenko_displacement", f"bend_{name}",
-                          variable=name, shear_treatment="exclude", **common)
-       problem.add_kernel("beam_Timoshenko_displacement", f"shear_{name}",
-                          variable=name, shear_treatment="only",
-                          quadrature="midpoint", reduced_integration=True, **common)
+       problem.add_kernel("beam_Timoshenko_displacement", f"bend_{name}", variable=name, shear_treatment="exclude", **common)
+       problem.add_kernel("beam_Timoshenko_displacement", f"shear_{name}", variable=name, shear_treatment="only", quadrature="midpoint", reduced_integration=True, **common)
 
 Using ``shear_treatment`` with only one of the two kernels omits terms and
 gives a wrong result.
@@ -607,12 +578,7 @@ the two Timoshenko models, and the rotation is recovered afterwards from
 .. code-block:: python
 
    for name in ("axial", "deflection", "moment"):
-       problem.add_kernel("beam_Timoshenko_mixed", f"beam_{name}", variable=name,
-                          axial_displacement="axial",
-                          transverse_displacement="deflection",
-                          bending_moment="moment",
-                          extensional_stiffness=a_xx, bending_stiffness=d_xx,
-                          shear_stiffness=s_xz, transverse_load=-1.0e3)
+       problem.add_kernel("beam_Timoshenko_mixed", f"beam_{name}", variable=name, axial_displacement="axial", transverse_displacement="deflection", bending_moment="moment", extensional_stiffness=a_xx, bending_stiffness=d_xx, shear_stiffness=s_xz, transverse_load=-1.0e3)
 """,
 )
 
@@ -628,12 +594,7 @@ reduced-integration kernel:
 
    mesh = dm.generate_line_mesh(start=0.0, end=radius, num_elements=32)
    problem = dm.Problem(mesh, coordinates="axisymmetric")
-   dm.physics.add_circular_plate(problem, theory="first_order",
-                                 extensional_stiffness=a_rr,
-                                 coupling_stiffness=b_rr,
-                                 bending_stiffness=d_rr,
-                                 shear_stiffness=s_rz,
-                                 poissons_ratio=0.3, transverse_load=q0)
+   plate = problem.add_physics("circular_plate", "plate", theory="first_order", extensional_stiffness=a_rr, coupling_stiffness=b_rr, bending_stiffness=d_rr, shear_stiffness=s_rz, poissons_ratio=0.3, transverse_load=q0)
 
 Symmetry at the centre prescribes the radial displacement and the rotation to
 be zero.  The edge condition prescribes the deflection, and a clamped edge
@@ -652,19 +613,9 @@ moment.  This is Reddy's DM-CP(M) model:
 
    mesh = dm.generate_line_mesh(start=0.0, end=radius, num_elements=32)
    problem = dm.Problem(mesh, coordinates="axisymmetric")
-   dm.physics.add_circular_plate(problem, theory="classical",
-                                 extensional_stiffness=a_rr,
-                                 coupling_stiffness=b_rr,
-                                 bending_stiffness=d_rr,
-                                 poissons_ratio=0.3, transverse_load=q0)
-   problem.add_boundary_condition("Dirichlet_boundary_condition", "centre",
-                                  variable="radial_displacement",
-                                  boundary="left", value=0.0)
-   problem.add_boundary_condition("Dirichlet_boundary_condition", "edge_u",
-                                  variable="radial_displacement",
-                                  boundary="right", value=0.0)
-   problem.add_boundary_condition("Dirichlet_boundary_condition", "edge_w",
-                                  variable="deflection", boundary="right", value=0.0)
+   plate = problem.add_physics("circular_plate", "plate", theory="classical", extensional_stiffness=a_rr, coupling_stiffness=b_rr, bending_stiffness=d_rr, poissons_ratio=0.3, transverse_load=q0)
+   plate.add_boundary_condition("Dirichlet_boundary_condition", "left", variable="radial_displacement", value=0.0)
+   plate.add_boundary_condition("Dirichlet_boundary_condition", "right", variables=["radial_displacement", "deflection"], value=0.0)
    # A simply supported edge adds: bending_moment = 0 on "right".
    # A clamped edge adds nothing: the vanishing slope is natural there.
 
@@ -685,14 +636,7 @@ enough to stretch its mid-plane:
 
 .. code-block:: python
 
-   dm.physics.add_plate(problem,
-                        in_plane_displacements=["u", "v"],
-                        transverse_displacement="w",
-                        rotations=["phi_x", "phi_y"],
-                        extensional_stiffness=a, coupling_stiffness=b,
-                        bending_stiffness=d, shear_stiffness=s,
-                        poissons_ratio=0.3, transverse_load=q0,
-                        von_karman=True)
+   plate = problem.add_physics("plate", "plate", in_plane_displacements=["u", "v"], transverse_displacement="w", rotations=["phi_x", "phi_y"], extensional_stiffness=a, coupling_stiffness=b, bending_stiffness=d, shear_stiffness=s, poissons_ratio=0.3, transverse_load=q0, von_karman=True)
    problem.solve(load_factors=[0.1 * k for k in range(1, 11)])
 
 The nonlinear case requires load stepping, because a solve that starts from
@@ -714,12 +658,9 @@ the penalty term it describes Stokes flow, and the addition of
 
    velocities = ["velocity_x", "velocity_y"]
    for component, name in enumerate(velocities):
-       problem.add_kernel("viscous_stress", f"viscous_{name}", variable=name,
-                          velocities=velocities, component=component,
-                          dynamic_viscosity=1.0)
+       problem.add_kernel("viscous_stress", f"viscous_{name}", variable=name, velocities=velocities, component=component, dynamic_viscosity=1.0)
 
-:func:`dualmesh.physics.add_incompressible_flow` adds the complete set of
-kernels.
+The ``incompressible_flow`` physics adds the complete set of kernels.
 """,
 )
 
@@ -733,9 +674,7 @@ velocities alone.  The penalty term must then be under-integrated:
 .. code-block:: python
 
    for component, name in enumerate(velocities):
-       problem.add_kernel("penalty_incompressibility", f"penalty_{name}",
-                          variable=name, velocities=velocities,
-                          component=component, penalty_parameter=1.0e8)
+       problem.add_kernel("penalty_incompressibility", f"penalty_{name}", variable=name, velocities=velocities, component=component, penalty_parameter=1.0e8)
 
 The default settings select the one-point rule and the centroid evaluation.  A
 velocity field that is identically zero almost certainly indicates that the
@@ -754,10 +693,8 @@ preferable to setting its density to zero:
 .. code-block:: python
 
    for component, name in enumerate(velocities):
-       problem.add_kernel("convective_inertia", f"inertia_{name}", variable=name,
-                          velocities=velocities, component=component, density=1.0)
-   problem.solve(nonlinear_solver="newton",
-                 load_factors=[0.1, 0.25, 0.5, 0.75, 1.0])
+       problem.add_kernel("convective_inertia", f"inertia_{name}", variable=name, velocities=velocities, component=component, density=1.0)
+   problem.solve(nonlinear_solver="newton", load_factors=[0.1, 0.25, 0.5, 0.75, 1.0])
 
 At a high Reynolds number, a solve that starts from rest at the full velocity
 usually diverges.  Either increase the boundary velocity in increments with
@@ -778,14 +715,15 @@ temperature difference) the coefficient :math:`\\rho_0 \\beta g` becomes :math:`
 
 .. code-block:: python
 
-   problem.add_kernel("Boussinesq_buoyancy", "buoyancy", variable="v", component=1,
-                      temperature="temperature", gravity=[0.0, -1.0],
-                      thermal_expansion=rayleigh * prandtl, scale_with_load=True)
+   problem.add_kernel("Boussinesq_buoyancy", "buoyancy", variable="v", component=1, temperature="temperature", gravity=[0.0, -1.0], thermal_expansion_coefficient=rayleigh * prandtl, scale_with_load=True)
    problem.solve(load_factors=[0.01, 0.1, 1.0])
 
 With ``scale_with_load=True`` load stepping increases the Rayleigh number in
 increments, which allows a strongly buoyant flow to be computed from a fluid
-at rest.  The complete problem is in ``examples/natural_convection.py``.
+at rest.  The ``nonisothermal_flow`` coupling of a ``heat_transfer`` and an
+``incompressible_flow`` physics adds this kernel when it is given ``gravity``
+and ``thermal_expansion_coefficient``.  The complete problem is in
+``examples/natural_convection.py``.
 """,
 )
 
@@ -798,12 +736,16 @@ so the Jacobian of Newton's method contains the coupling in both directions:
 
 .. code-block:: python
 
-   velocities = dm.physics.add_incompressible_flow(problem, velocities=["u", "v"],
-                                                   dynamic_viscosity=0.71, density=1.0)
-   problem.add_variable("temperature")
-   problem.add_kernel("heat_conduction", "conduction", variable="temperature")
-   problem.add_kernel("heat_convection", "convection", variable="temperature",
-                      velocities=velocities, density=1.0, specific_heat=1.0)
+   problem.add_kernel("heat_convection", "convection", variable="temperature", velocities=["u", "v"], density=1.0, specific_heat=1.0)
+
+The ``nonisothermal_flow`` coupling of a ``heat_transfer`` and an
+``incompressible_flow`` physics adds this kernel:
+
+.. code-block:: python
+
+   flow = problem.add_physics("incompressible_flow", "flow", velocities=["u", "v"], dynamic_viscosity=0.71, density=1.0)
+   heat = problem.add_physics("heat_transfer", "heat", thermal_conductivity=1.0)
+   problem.add_coupling("nonisothermal_flow", "coupling", heat_transfer="heat", incompressible_flow="flow")
 
 The term is written in the advective (non-conservative) form, which is exact
 for an incompressible flow.
@@ -815,13 +757,12 @@ _add(
     """
 The penalty formulation eliminates the pressure from the unknowns, so the
 pressure is recovered afterwards from the velocity divergence.
-``penalty_pressure`` provides it as a material property, which the
+``penalty_pressure`` provides it as a property, which the
 post-processing evaluates at the element centroids:
 
 .. code-block:: python
 
-   problem.add_material("penalty_pressure", "pressure", velocities=velocities,
-                        penalty_parameter=1.0e8)
+   problem.add_property("penalty_pressure", "pressure", velocities=velocities, penalty_parameter=1.0e8)
    problem.solve()
    pressure = problem.property_at_centroids("pressure")
 
@@ -835,20 +776,18 @@ _add(
     """
 ``pressure_gradient`` is the pressure part of the stress in one momentum
 equation of the pressure-velocity formulation.  It is normally added by the
-helper, together with the viscous stress and the mass equation:
+``incompressible_flow`` physics, together with the viscous stress and the
+mass equation:
 
 .. code-block:: python
 
-   dm.physics.add_incompressible_flow(problem, velocities=["u", "v"],
-                                      dynamic_viscosity=1.0, density=100.0,
-                                      formulation="pressure", pin_pressure=(0.5, 0.0))
+   flow = problem.add_physics("incompressible_flow", "flow", velocities=["u", "v"], dynamic_viscosity=1.0, density=100.0, formulation="pressure", pressure_pin_point=(0.5, 0.0))
 
 To add it manually, create one instance per velocity component:
 
 .. code-block:: python
 
-   problem.add_kernel("pressure_gradient", "grad_p_u", variable="u",
-                      pressure="pressure", component=0)
+   problem.add_kernel("pressure_gradient", "grad_p_u", variable="u", pressure="pressure", component=0)
 """,
 )
 
@@ -861,12 +800,8 @@ force of the momentum equations must also be given to it:
 
 .. code-block:: python
 
-   problem.add_kernel("mass_conservation", "mass", variable="pressure",
-                      velocities=["u", "v"], density=100.0, dynamic_viscosity=1.0,
-                      body_force=["0", "-9.81"])
-   problem.add_boundary_condition("mass_flux_boundary_condition", "mass_flux", variable="pressure",
-                                  boundary=["left", "right", "bottom", "top"],
-                                  velocities=["u", "v"])
+   problem.add_kernel("mass_conservation", "mass", variable="pressure", velocities=["u", "v"], density=100.0, dynamic_viscosity=1.0, body_force=["0", "-9.81"])
+   problem.add_boundary_condition("mass_flux_boundary_condition", "mass_flux", variable="pressure", boundary=["left", "right", "bottom", "top"], velocities=["u", "v"])
 
 In an enclosed flow the pressure level must also be fixed, with a
 ``point_Dirichlet_boundary_condition``.
@@ -882,9 +817,7 @@ equation of a flow with inertia.  It takes the same parameters as
 
 .. code-block:: python
 
-   problem.add_kernel("momentum_stabilization", "supg_u", variable="u", component=0,
-                      pressure="pressure", velocities=["u", "v"], density=100.0,
-                      dynamic_viscosity=1.0)
+   problem.add_kernel("momentum_stabilization", "supg_u", variable="u", component=0, pressure="pressure", velocities=["u", "v"], density=100.0, dynamic_viscosity=1.0)
 """,
 )
 
@@ -893,13 +826,12 @@ _add(
     """
 ``mass_flux_boundary_condition`` adds to the mass equation the flow through
 the boundary, computed from the discrete velocity.  Apply it on every boundary
-without a prescribed pressure, which with the helper is every side set:
+without a prescribed pressure.  The ``incompressible_flow`` physics applies it
+on the side sets of its ``mass_flux_boundaries``, by default every side set:
 
 .. code-block:: python
 
-   problem.add_boundary_condition("mass_flux_boundary_condition", "mass_flux", variable="pressure",
-                                  boundary=["inlet", "outlet", "walls"],
-                                  velocities=["u", "v"])
+   problem.add_boundary_condition("mass_flux_boundary_condition", "mass_flux", variable="pressure", boundary=["inlet", "outlet", "walls"], velocities=["u", "v"])
 """,
 )
 
@@ -912,8 +844,7 @@ flow:
 
 .. code-block:: python
 
-   problem.add_boundary_condition("point_Dirichlet_boundary_condition", "pressure_level",
-                                  variable="pressure", point=[0.5, 0.0], value=0.0)
+   problem.add_boundary_condition("point_Dirichlet_boundary_condition", "pressure_level", variable="pressure", point=[0.5, 0.0], value=0.0)
 """,
 )
 
@@ -934,10 +865,7 @@ function, and radiation is added when both emissivities are positive:
 
 .. code-block:: python
 
-   problem.add_boundary_condition("gap_heat_transfer", "gap", variable="T",
-                                  boundary=["fuel_outer"],
-                                  secondary_boundary=["clad_inner"],
-                                  gap_conductance=5000.0)
+   problem.add_boundary_condition("gap_heat_transfer", "gap", variable="T", boundary=["fuel_outer"], secondary_boundary=["clad_inner"], gap_conductance=5000.0)
 """,
 )
 
@@ -953,11 +881,7 @@ with the stiffness of the bodies divided by their size:
 .. code-block:: python
 
    for i, d in enumerate(["disp_r", "disp_z"]):
-       problem.add_boundary_condition("gap_contact", f"contact_{d}", variable=d,
-                                      component=i, displacements=["disp_r", "disp_z"],
-                                      boundary=["fuel_outer"],
-                                      secondary_boundary=["clad_inner"],
-                                      penalty=1e15)
+       problem.add_boundary_condition("gap_contact", f"contact_{d}", variable=d, component=i, displacements=["disp_r", "disp_z"], boundary=["fuel_outer"], secondary_boundary=["clad_inner"], penalty=1e15)
 """,
 )
 
@@ -966,15 +890,12 @@ _add(
     """
 ``thermal_expansion_eigenstrain`` is the thermal strain of a material with a
 constant expansion coefficient, :math:`\\varepsilon^* = \\alpha (T - T_0)
-\\mathbf{I}`, stored as a material property under ``eigenstrain_name`` so
+\\mathbf{I}`, stored as a property under ``eigenstrain_name`` so
 that ``EigenstrainElasticStress`` can subtract it from the total strain:
 
 .. code-block:: python
 
-   problem.add_material("thermal_expansion_eigenstrain", "expansion", temperature="T",
-                        thermal_expansion_coefficient=1.0e-5,
-                        reference_temperature=293.15,
-                        eigenstrain_name="thermal_strain")
+   problem.add_property("thermal_expansion_eigenstrain", "expansion", temperature="T", thermal_expansion_coefficient=1.0e-5, reference_temperature=293.15, eigenstrain_name="thermal_strain")
 """,
 )
 
@@ -988,18 +909,12 @@ integrates itself by a backward Euler radial return and stores between time
 steps.  ``formulation`` selects axisymmetric :math:`(r, z)`, plane strain,
 three-dimensional, or ``axisymmetric_1d``, the radial slice of a long rod with
 a uniform ``axial_strain`` (generalized plane strain).  Young's modulus and
-Poisson's ratio are numbers or the properties of another material:
+Poisson's ratio are numbers or the properties of another property object:
 
 .. code-block:: python
 
-   problem.add_material("FuelElasticProperties", "clad_elastic", block=["clad"],
-                        material_type="zircaloy", temperature="T")
-   problem.add_material("EigenstrainElasticStress", "clad_stress", block=["clad"],
-                        displacements=["disp_r", "disp_z"],
-                        formulation="axisymmetric",
-                        eigenstrains=["clad_thermal_strain"],
-                        creep_model="zircaloy", temperature="T",
-                        fast_flux=6e17)
+   problem.add_property("FuelElasticProperties", "clad_elastic", block=["clad"], material_type="zircaloy", temperature="T")
+   problem.add_property("EigenstrainElasticStress", "clad_stress", block=["clad"], displacements=["disp_r", "disp_z"], formulation="axisymmetric", eigenstrains=["clad_thermal_strain"], creep_model="zircaloy", temperature="T", fast_flux=6e17)
 """,
 )
 
@@ -1017,11 +932,8 @@ may be a function of position and time:
 
 .. code-block:: python
 
-   problem.add_material("UO2_thermal", "fuel_thermal", block=["fuel"],
-                        temperature="T", model="fink_lucuta",
-                        burnup=0.02, density_fraction=0.95)
-   problem.add_kernel("heat_conduction", "conduction", variable="T",
-                      thermal_conductivity_property="thermal_conductivity")
+   problem.add_property("UO2_thermal", "fuel_thermal", block=["fuel"], temperature="T", model="fink_lucuta", burnup=0.02, density_fraction=0.95)
+   problem.add_kernel("heat_conduction", "conduction", variable="T", thermal_conductivity_property="thermal_conductivity")
 """,
 )
 
@@ -1034,8 +946,7 @@ and Peddicord (1990), with the conductivity corrected for porosity:
 
 .. code-block:: python
 
-   problem.add_material("UN_thermal", "fuel_thermal", block=["fuel"],
-                        temperature="T", density_fraction=0.95)
+   problem.add_property("UN_thermal", "fuel_thermal", block=["fuel"], temperature="T", density_fraction=0.95)
 """,
 )
 
@@ -1047,8 +958,7 @@ _add(
 
 .. code-block:: python
 
-   problem.add_material("Zircaloy_thermal", "clad_thermal", block=["clad"],
-                        temperature="T")
+   problem.add_property("Zircaloy_thermal", "clad_thermal", block=["clad"], temperature="T")
 """,
 )
 
@@ -1062,9 +972,7 @@ read:
 
 .. code-block:: python
 
-   problem.add_material("FuelElasticProperties", "fuel_elastic", block=["fuel"],
-                        material_type="uo2", temperature="T",
-                        density_fraction=0.95)
+   problem.add_property("FuelElasticProperties", "fuel_elastic", block=["fuel"], material_type="uo2", temperature="T", density_fraction=0.95)
 """,
 )
 
@@ -1078,11 +986,7 @@ differ, so ``geometry`` must specify which direction is the axis of the rod:
 
 .. code-block:: python
 
-   problem.add_material("FuelThermalExpansionEigenstrain", "clad_expansion",
-                        block=["clad"], material_type="zircaloy",
-                        temperature="T", reference_temperature=293.15,
-                        eigenstrain_name="clad_thermal_strain",
-                        geometry="axisymmetric")
+   problem.add_property("FuelThermalExpansionEigenstrain", "clad_expansion", block=["clad"], material_type="zircaloy", temperature="T", reference_temperature=293.15, eigenstrain_name="clad_thermal_strain", geometry="axisymmetric")
 """,
 )
 
@@ -1097,10 +1001,7 @@ volume change is stored as an isotropic eigenstrain:
 
 .. code-block:: python
 
-   problem.add_material("UO2VolumetricEigenstrain", "fuel_volumetric",
-                        block=["fuel"], temperature="T", burnup=0.01,
-                        total_densification=0.01,
-                        eigenstrain_name="fuel_volumetric_strain")
+   problem.add_property("UO2VolumetricEigenstrain", "fuel_volumetric", block=["fuel"], temperature="T", burnup=0.01, total_densification=0.01, eigenstrain_name="fuel_volumetric_strain")
 """,
 )
 
@@ -1113,9 +1014,7 @@ stored as an isotropic eigenstrain:
 
 .. code-block:: python
 
-   problem.add_material("UNSwellingEigenstrain", "fuel_swelling", block=["fuel"],
-                        temperature="T", burnup=0.01,
-                        eigenstrain_name="fuel_volumetric_strain")
+   problem.add_property("UNSwellingEigenstrain", "fuel_swelling", block=["fuel"], temperature="T", burnup=0.01, eigenstrain_name="fuel_volumetric_strain")
 """,
 )
 
@@ -1130,10 +1029,7 @@ cold pellet diameter and diametral gap are inputs:
 
 .. code-block:: python
 
-   problem.add_material("FuelRelocationEigenstrain", "fuel_relocation",
-                        block=["fuel"], linear_power=20000.0, burnup=0.0,
-                        pellet_diameter=8.19e-3, diametral_gap=1.7e-4,
-                        eigenstrain_name="fuel_relocation_strain")
+   problem.add_property("FuelRelocationEigenstrain", "fuel_relocation", block=["fuel"], linear_power=20000.0, burnup=0.0, pellet_diameter=8.19e-3, diametral_gap=1.7e-4, eigenstrain_name="fuel_relocation_strain")
 """,
 )
 
@@ -1147,8 +1043,7 @@ that keeps the volume unchanged:
 
 .. code-block:: python
 
-   problem.add_material("ZircaloyGrowthEigenstrain", "clad_growth", block=["clad"],
-                        fast_fluence=1e25, eigenstrain_name="clad_growth_strain")
+   problem.add_property("ZircaloyGrowthEigenstrain", "clad_growth", block=["clad"], fast_fluence=1e25, eigenstrain_name="clad_growth_strain")
 """,
 )
 
@@ -1157,8 +1052,8 @@ _add(
     """
 ``FuelGapHeatTransfer`` is ``gap_heat_transfer`` with the conductance of a fuel
 rod gap computed at every point: conduction through the gas mixture (the
-Ross-Stoute form with the Brokaw mixing rule and the temperature jump
-distances), radiation between the fuel and cladding surfaces, and solid
+model of Ross and Stoute with the mixture conductivity of Brokaw and the
+temperature jump distances of Kennard), radiation between the fuel and cladding surfaces, and solid
 conduction once they are in contact.  With ``displacements`` the gap width
 follows the deformation.  With ``contact_penalty`` (the same value as in
 ``gap_contact``) the contact pressure raises the solid conductance.  The gas
@@ -1166,9 +1061,220 @@ pressure and the mole fractions may be numbers or functions:
 
 .. code-block:: python
 
-   problem.add_boundary_condition("FuelGapHeatTransfer", "gap", variable="T",
-                                  boundary=["fuel_outer"],
-                                  secondary_boundary=["clad_inner"],
-                                  helium_fraction=1.0, gas_pressure=2.0e6)
+   problem.add_boundary_condition("FuelGapHeatTransfer", "gap", variable="T", boundary=["fuel_outer"], secondary_boundary=["clad_inner"], helium_fraction=1.0, gas_pressure=2.0e6)
+""",
+)
+
+
+# ---------------------------------------------------------------------------
+# Physics and couplings
+# ---------------------------------------------------------------------------
+_add(
+    "symmetry_boundary_condition",
+    """
+``symmetry_boundary_condition`` models a plane of symmetry of the body and of
+its loads, so that only one side of the plane is meshed.  The displacement
+normal to the plane is zero and the tangential displacements are free.  The
+plane is found from the coordinates of the nodes of the side set, which must
+all share one coordinate:
+
+.. code-block:: python
+
+   solid = problem.add_physics("solid_mechanics", "solid", displacements=["u", "v"], formulation="plane_stress", youngs_modulus=200.0e9, poissons_ratio=0.3)
+   solid.add_boundary_condition("symmetry_boundary_condition", "left")
+   solid.add_boundary_condition("symmetry_boundary_condition", "bottom")
+""",
+)
+
+_add(
+    "heat_transfer",
+    """
+The bus bar of Reddy's Example 5.4.3, with fixed temperatures on two sides
+and convection on the top:
+
+.. code-block:: python
+
+   heat = problem.add_physics("heat_transfer", "heat", thermal_conductivity=20.0, heat_source=1.0e6)
+   heat.add_boundary_condition("Dirichlet_boundary_condition", "left", value=40.0)
+   heat.add_boundary_condition("Dirichlet_boundary_condition", "right", value=10.0)
+   heat.add_boundary_condition("convective_heat_flux_boundary_condition", "top", heat_transfer_coefficient=75.0)
+
+A transient problem gives ``density`` and ``specific_heat``, and a
+conductivity that differs between blocks comes from the property objects when
+``thermal_conductivity`` is not given.
+""",
+)
+
+_add(
+    "coefficient_form_PDE",
+    """
+The coefficient form writes a scalar equation that no other physics names,
+
+.. math::
+
+   d_t \\frac{\\partial u}{\\partial t} + \\nabla \\cdot \\left( -c \\nabla u - \\boldsymbol{\\alpha} u \\right) + \\boldsymbol{\\beta} \\cdot \\nabla u + a u = f ,
+
+where :math:`c` is the diffusion coefficient, :math:`\\boldsymbol{\\alpha}` the
+conservative flux convection coefficient, :math:`\\boldsymbol{\\beta}` the
+convection coefficient, :math:`a` the absorption coefficient, :math:`f` the
+source and :math:`d_t` the time derivative coefficient.  A steady
+advection-diffusion-reaction problem with a diffusion coefficient that
+depends on the solution reads:
+
+.. code-block:: python
+
+   pde = problem.add_physics("coefficient_form_PDE", "transport", variable="c", diffusion_coefficient="1 + 0.5*c", convection_coefficient=[1.0, 0.5], absorption_coefficient=2.0, source="sin(pi*y)")
+   pde.add_boundary_condition("Dirichlet_boundary_condition", "left", value=1.0)
+   pde.add_boundary_condition("Neumann_boundary_condition", "right", flux=0.5)
+
+A diffusion or absorption coefficient that depends on the variable makes the
+equation nonlinear, and Newton's method receives its exact derivative.  A
+coefficient that depends on both the variable and the position is given as a
+``parsed_property`` with ``property_name="diffusion_coefficient"``, which the
+physics reads when ``diffusion_coefficient`` is not given.
+""",
+)
+
+_add(
+    "neutron_diffusion",
+    """
+The ``neutron_diffusion`` physics solves the multigroup neutron diffusion
+equations.  It makes one flux variable for each energy group.  Use it with a
+``multigroup_cross_sections`` property object in each region of the core.
+This example calculates the effective multiplication factor of a bare
+two-group core of 1 m by 1 m:
+
+.. code-block:: python
+
+   mesh = dm.generate_rectangle_mesh(x_min=0.0, x_max=1.0, y_min=0.0, y_max=1.0, num_x_elements=20, num_y_elements=20)
+   problem = dm.Problem(mesh)
+   neutrons = problem.add_physics("neutron_diffusion", "neutrons", groups=2)
+   problem.add_property("multigroup_cross_sections", "fuel", diffusion_coefficient=[0.015, 0.004], absorption_cross_section=[1.0, 8.0], scattering_cross_section=[[0.0, 2.0], [0.0, 0.0]], nu_fission_cross_section=[0.0, 13.5])
+   neutrons.add_boundary_condition("vacuum_boundary_condition", "outer", boundary=["left", "right", "bottom", "top"])
+   result = problem.solve_eigenvalue()
+   print(result)
+
+The variables are ``neutron_flux_1`` and ``neutron_flux_2``.  Group 1 has the
+highest energy.  The parameter ``transverse_buckling`` adds the axial leakage
+of a two-dimensional model.  :ref:`theory-neutronics` gives the equations.
+""",
+)
+
+_add(
+    "multigroup_cross_sections",
+    """
+The ``multigroup_cross_sections`` property object gives the group constants
+of one region to the ``neutron_diffusion`` physics.  Give one value for each
+group.  Give the scattering matrix as one row for each source group.  The
+units are SI: :math:`\\mathrm{m}` for the diffusion coefficients and
+:math:`\\mathrm{m}^{-1}` for the cross sections.  This example sets a fuel
+region and a reflector region:
+
+.. code-block:: python
+
+   problem.add_property("multigroup_cross_sections", "fuel", block=["fuel"], diffusion_coefficient=[0.015, 0.004], absorption_cross_section=[1.0, 8.0], scattering_cross_section=[[0.0, 2.0], [0.0, 0.0]], nu_fission_cross_section=[0.0, 13.5])
+   problem.add_property("multigroup_cross_sections", "reflector", block=["reflector"], diffusion_coefficient=[0.02, 0.003], absorption_cross_section=[0.0, 1.0], scattering_cross_section=[[0.0, 4.0], [0.0, 0.0]])
+
+The default fission spectrum puts all fission neutrons in group 1.  The
+parameter ``fission_spectrum`` gives another spectrum.  Its sum must be 1.
+""",
+)
+
+_add(
+    "solid_mechanics",
+    """
+A three-dimensional wrench held at its jaws and loaded at its grip by a force
+of 150 N (``examples/wrench``):
+
+.. code-block:: python
+
+   solid = problem.add_physics("solid_mechanics", "solid", displacements=["u", "v", "w"], youngs_modulus=200.0e9, poissons_ratio=0.3)
+   solid.add_boundary_condition("fixed_constraint", "jaws")
+   solid.add_boundary_condition("traction_boundary_condition", "grip", total_force=[0.0, -150.0, 0.0])
+
+A two-dimensional problem gives ``formulation="plane_stress"`` or
+``formulation="plane_strain"``.
+""",
+)
+
+_add(
+    "incompressible_flow",
+    """
+The lid-driven cavity of Reddy's Example 9.8.4 at a Reynolds number of 1000,
+with the velocity of the lid increased in load steps:
+
+.. code-block:: python
+
+   flow = problem.add_physics("incompressible_flow", "flow", velocities=["u", "v"], dynamic_viscosity=1.0, density=1000.0)
+   flow.add_boundary_condition("Dirichlet_boundary_condition", "walls", boundary=["left", "right", "bottom"], value=[0.0, 0.0])
+   flow.add_boundary_condition("Dirichlet_boundary_condition", "top", value=[1.0, 0.0], scale_with_load=True)
+   problem.solve(load_factors=[0.1, 0.25, 0.5, 0.75, 1.0])
+""",
+)
+
+_add(
+    "beam",
+    """
+A pinned beam under a uniform load, of which half is modelled, in the mixed
+Euler-Bernoulli model:
+
+.. code-block:: python
+
+   beam = problem.add_physics("beam", "beam", model="beam_Euler_Bernoulli_mixed", extensional_stiffness=3.0e7, bending_stiffness=2.5e6, transverse_load=0.5)
+   beam.add_boundary_condition("Dirichlet_boundary_condition", "left", variables=["axial_displacement", "deflection", "bending_moment"], value=0.0)
+   beam.add_boundary_condition("Dirichlet_boundary_condition", "right", variable="axial_displacement", value=0.0)
+""",
+)
+
+_add(
+    "plate",
+    """
+A rectangular plate of the first-order theory under a uniform load:
+
+.. code-block:: python
+
+   plate = problem.add_physics("plate", "plate", in_plane_displacements=["u", "v"], transverse_displacement="w", rotations=["phi_x", "phi_y"], extensional_stiffness=a, bending_stiffness=d, shear_stiffness=s, poissons_ratio=0.3, transverse_load=q0)
+""",
+)
+
+_add(
+    "circular_plate",
+    """
+A clamped circular plate in the classical theory, on a radial mesh in
+axisymmetric coordinates:
+
+.. code-block:: python
+
+   problem = dm.Problem(dm.generate_line_mesh(start=0.0, end=radius, num_elements=32), coordinates="axisymmetric")
+   plate = problem.add_physics("circular_plate", "plate", theory="classical", extensional_stiffness=a_rr, bending_stiffness=d_rr, poissons_ratio=0.3, transverse_load=q0)
+   plate.add_boundary_condition("Dirichlet_boundary_condition", "left", variable="radial_displacement", value=0.0)
+   plate.add_boundary_condition("Dirichlet_boundary_condition", "right", variables=["radial_displacement", "deflection"], value=0.0)
+""",
+)
+
+_add(
+    "thermal_expansion",
+    """
+The thermal stress of a body heated by conduction:
+
+.. code-block:: python
+
+   heat = problem.add_physics("heat_transfer", "heat", thermal_conductivity=50.0)
+   solid = problem.add_physics("solid_mechanics", "solid", formulation="plane_strain", youngs_modulus=200.0e9, poissons_ratio=0.3)
+   problem.add_coupling("thermal_expansion", "expansion", heat_transfer="heat", solid_mechanics="solid", thermal_expansion_coefficient=1.2e-5, stress_free_temperature=293.15)
+""",
+)
+
+_add(
+    "nonisothermal_flow",
+    """
+Natural convection in a cavity (``examples/natural_convection.py``), in the
+non-dimensional form of de Vahl Davis (1983):
+
+.. code-block:: python
+
+   flow = problem.add_physics("incompressible_flow", "flow", velocities=["u", "v"], dynamic_viscosity=0.71, density=1.0, penalty_parameter=1.0e7)
+   heat = problem.add_physics("heat_transfer", "heat", thermal_conductivity=1.0)
+   problem.add_coupling("nonisothermal_flow", "coupling", heat_transfer="heat", incompressible_flow="flow", gravity=[0.0, -1.0], thermal_expansion_coefficient=1.0e5 * 0.71, scale_with_load=True)
 """,
 )

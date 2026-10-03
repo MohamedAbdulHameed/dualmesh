@@ -15,7 +15,7 @@ Requirements
   by the build
 
 Optional at run time: `meshio <https://github.com/nschloe/meshio>`_ for reading
-and writing mesh files, `PyYAML <https://pyyaml.org>`_ for input files, and
+and writing mesh files, and
 `matplotlib <https://matplotlib.org>`_ for the plotting in the examples.
 
 From PyPI
@@ -29,7 +29,7 @@ imported as ``dualmesh`` and the command-line program is ``dualmesh``.
 .. code-block:: console
 
    pip install dualmesh-multiphysics
-   pip install "dualmesh-multiphysics[all]"   # meshio, PyYAML, matplotlib, SymPy, SciPy
+   pip install "dualmesh-multiphysics[all]"   # meshio, matplotlib, SymPy, SciPy
    python -c "import dualmesh; print(dualmesh.__version__)"
    dualmesh --version
 

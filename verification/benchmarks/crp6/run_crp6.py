@@ -59,11 +59,7 @@ ANALYTIC_VALUES = {
     ("4c", "SiC", "end"): 86.5,
 }
 
-QUANTITY = {
-    "IPyC_tangential": ("IPyC", "tangential"),
-    "SiC_tangential": ("SiC", "tangential"),
-    "interface_radial": ("IPyC/SiC", "radial"),
-}
+QUANTITY = {"IPyC_tangential": ("IPyC", "tangential"), "SiC_tangential": ("SiC", "tangential"), "interface_radial": ("IPyC/SiC", "radial")}
 
 
 def load_participants():
@@ -102,16 +98,8 @@ def series(result, quantity):
 
 
 FLUENCE_LABEL = r"Fast fluence ($10^{25}$ n/m$^2$, $E > 0.18$ MeV)"
-TITLES = {
-    "IPyC_tangential": "IPyC, inner surface, tangential stress",
-    "SiC_tangential": "SiC, inner surface, tangential stress",
-    "interface_radial": "IPyC/SiC interface, radial stress",
-}
-SUFFIX = {
-    "IPyC_tangential": "ipyc_tangential",
-    "SiC_tangential": "sic_tangential",
-    "interface_radial": "interface_radial",
-}
+TITLES = {"IPyC_tangential": "IPyC, inner surface, tangential stress", "SiC_tangential": "SiC, inner surface, tangential stress", "interface_radial": "IPyC/SiC interface, radial stress"}
+SUFFIX = {"IPyC_tangential": "ipyc_tangential", "SiC_tangential": "sic_tangential", "interface_radial": "interface_radial"}
 
 
 def plot_case(case, result, participants, out: Path):
@@ -125,30 +113,13 @@ def plot_case(case, result, participants, out: Path):
         curves = participants.get((case, quantity), {})
         for i, (_, (f, s)) in enumerate(sorted(curves.items())):
             f, s = _break_jumps(np.asarray(f), np.asarray(s))
-            ax.plot(
-                f,
-                s,
-                color=PARTICIPANT,
-                linewidth=1.0,
-                label="CRP-6 participants" if i == 0 else None,
-            )
+            ax.plot(f, s, color=PARTICIPANT, linewidth=1.0, label="CRP-6 participants" if i == 0 else None)
         x, y = series(result, quantity)
         ax.plot(x, y, color=DUALMESH, linewidth=2.2, label="dualmesh")
         layer = QUANTITY[quantity][0]
         ref = ANALYTIC_VALUES.get((case, layer, "end"))
         if ref is not None and QUANTITY[quantity][1] == "tangential":
-            ax.plot(
-                [3.0],
-                [ref],
-                "o",
-                color=ANALYTIC,
-                markersize=9,
-                markeredgecolor="white",
-                markeredgewidth=1.5,
-                clip_on=False,
-                zorder=5,
-                label="Closed form (report)",
-            )
+            ax.plot([3.0], [ref], "o", color=ANALYTIC, markersize=9, markeredgecolor="white", markeredgewidth=1.5, clip_on=False, zorder=5, label="Closed form (report)")
         plotstyle.style(ax, FLUENCE_LABEL, "Stress (MPa)", f"CRP-6 case {case}: {TITLES[quantity]}")
         ax.set_xlim(0.0, 3.0)
         plotstyle.legend_below(ax, ncol=3)
@@ -183,13 +154,8 @@ def compute():
     solutions = {}
     for case in CASES:
         particle, history = triso.crp6_case(case)
-        result = triso.solve_particle(particle, history)
-        solutions[case] = dict(
-            end_fluence=history.end_fluence,
-            fluence=result.fluence,
-            tangential=result.inner_tangential_stress,
-            radial=result.interface_radial_stress,
-        )
+        result = triso.TrisoParticleModel(particle=particle, history=history).run()
+        solutions[case] = dict(end_fluence=history.end_fluence, fluence=result.fluence, tangential=result.inner_tangential_stress, radial=result.interface_radial_stress)
     return solutions
 
 
@@ -205,21 +171,12 @@ def main():
     for case in CASES:
         cached = solutions[case]
         history = SimpleNamespace(end_fluence=cached["end_fluence"])
-        result = SimpleNamespace(
-            fluence=cached["fluence"],
-            inner_tangential_stress=cached["tangential"],
-            interface_radial_stress=cached["radial"],
-        )
+        result = SimpleNamespace(fluence=cached["fluence"], inner_tangential_stress=cached["tangential"], interface_radial_stress=cached["radial"])
         for layer, values in result.inner_tangential_stress.items():
             if layer == "OPyC":
                 continue
             quantity = f"{layer}_tangential"
-            for statistic, value in (
-                ("start", values[0]),
-                ("max", values.max()),
-                ("min", values.min()),
-                ("end", values[-1]),
-            ):
+            for statistic, value in (("start", values[0]), ("max", values.max()), ("min", values.min()), ("end", values[-1])):
                 if history.end_fluence == 0.0 and statistic != "start":
                     continue
                 ref = ANALYTIC_VALUES.get((case, layer, statistic))
@@ -239,35 +196,10 @@ def main():
 
     with (HERE / "crp6_results.csv").open("w", newline="") as fh:
         writer = csv.writer(fh)
-        writer.writerow(
-            [
-                "case",
-                "location",
-                "component",
-                "statistic",
-                "dualmesh_MPa",
-                "closed_form_MPa",
-                "participants_low_MPa",
-                "participants_high_MPa",
-            ]
-        )
+        writer.writerow(["case", "location", "component", "statistic", "dualmesh_MPa", "closed_form_MPa", "participants_low_MPa", "participants_high_MPa"])
         for case, loc, comp, stat, value, ref, rng in rows:
-            writer.writerow(
-                [
-                    case,
-                    loc,
-                    comp,
-                    stat,
-                    f"{value:.2f}",
-                    "" if ref is None else ref,
-                    "" if rng is None else f"{rng[0]:.1f}",
-                    "" if rng is None else f"{rng[1]:.1f}",
-                ]
-            )
-    print(
-        f"{'case':>4} {'where':>9} {'comp':>10} {'stat':>5} {'dualmesh':>9} "
-        f"{'closed':>8} {'participants':>16}"
-    )
+            writer.writerow([case, loc, comp, stat, f"{value:.2f}", "" if ref is None else ref, "" if rng is None else f"{rng[0]:.1f}", "" if rng is None else f"{rng[1]:.1f}"])
+    print(f"{'case':>4} {'where':>9} {'comp':>10} {'stat':>5} {'dualmesh':>9} {'closed':>8} {'participants':>16}")
     for case, loc, comp, stat, value, ref, rng in rows:
         r = "" if ref is None else f"{ref:.2f}"
         p = "" if rng is None else f"{rng[0]:.1f} to {rng[1]:.1f}"

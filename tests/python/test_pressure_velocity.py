@@ -38,29 +38,15 @@ _ROOT = Path(__file__).resolve().parents[2]
 
 # A divergence-free velocity (from a stream function) and a pressure with no
 # symmetry, on a square that is not centred on a symmetry line of either.
-CARTESIAN = {
-    "u": "sin(pi*x)*cos(pi*y)",
-    "v": "-cos(pi*x)*sin(pi*y)",
-    "pressure": "sin(2*x)*cos(y) + x*y",
-}
+CARTESIAN = {"u": "sin(pi*x)*cos(pi*y)", "v": "-cos(pi*x)*sin(pi*y)", "pressure": "sin(2*x)*cos(y) + x*y"}
 # An axisymmetric field that is regular on the axis: u_r odd and u_z even in
 # r, from the Stokes stream function psi = r^2 (1 + r^2) cos z.
-AXISYMMETRIC = {
-    "u": "x*(1 + x**2)*sin(y)",
-    "v": "(2 + 4*x**2)*cos(y)",
-    "pressure": "cos(x)*sin(y) + x**2*y",
-}
+AXISYMMETRIC = {"u": "x*(1 + x**2)*sin(y)", "v": "(2 + 4*x**2)*cos(y)", "pressure": "cos(x)*sin(y) + x**2*y"}
 
 
 def _square(n, element_type="Quad4"):
     mesh = dm.generate_rectangle_mesh(0.1, 1.1, 0.2, 1.2, n, n, element_type=element_type)
-    mesh.transform_nodes(
-        lambda x, y, z: [
-            x + 0.6 * (x - 0.1) * (1.1 - x) * (y - 0.2) * (1.2 - y) * np.sin(3 * y),
-            y - 0.5 * (x - 0.1) * (1.1 - x) * (y - 0.2) * (1.2 - y),
-            0.0,
-        ]
-    )
+    mesh.transform_nodes(lambda x, y, z: [x + 0.6 * (x - 0.1) * (1.1 - x) * (y - 0.2) * (1.2 - y) * np.sin(3 * y), y - 0.5 * (x - 0.1) * (1.1 - x) * (y - 0.2) * (1.2 - y), 0.0])
     return mesh
 
 
@@ -70,27 +56,26 @@ def _check(result, velocity):
     assert result.order("pressure", "l2") > 1.2
 
 
+def _flow_study(fields, velocities, dimension, coordinates="cartesian", outflow=None, **options):
+    """A manufactured incompressible flow in the stabilised pressure formulation."""
+    study = mms.ManufacturedSolution(fields, dimension=dimension, coordinates=coordinates, flux_boundaries=outflow)
+    study.add_physics("incompressible_flow", "flow", velocities=velocities, formulation="pressure", **options)
+    return study
+
+
 @pytest.mark.parametrize("method", METHODS)
 @pytest.mark.parametrize("density", [0.0, 1.0])
 def test_manufactured_flow_on_distorted_quadrilaterals(method, density):
     """Velocity O(h^2) in L2 and O(h) in H1, pressure better than O(h) in L2.
     The right side is an outlet with the exact traction, so the pressure is
-    determined without being pinned (see ``mms.IncompressibleFlow``)."""
-    study = mms.ManufacturedSolution(
-        CARTESIAN,
-        [mms.IncompressibleFlow(["u", "v"], density=density, outflow={"right": (1.0, 0.0)})],
-        dimension=2,
-    )
+    determined without being pinned (see ``mms.ManufacturedSolution``)."""
+    study = _flow_study(CARTESIAN, ["u", "v"], 2, outflow={"right": (1.0, 0.0)}, density=density)
     _check(study.convergence_study(_square, [8, 16, 32], method=method), "u")
 
 
 @pytest.mark.parametrize("method", METHODS)
 def test_manufactured_flow_on_triangles(method):
-    study = mms.ManufacturedSolution(
-        CARTESIAN,
-        [mms.IncompressibleFlow(["u", "v"], density=1.0, outflow={"right": (1.0, 0.0)})],
-        dimension=2,
-    )
+    study = _flow_study(CARTESIAN, ["u", "v"], 2, outflow={"right": (1.0, 0.0)}, density=1.0)
     result = study.convergence_study(lambda n: _square(n, "Tri3"), [8, 16, 32], method=method)
     _check(result, "u")
 
@@ -101,15 +86,8 @@ def test_manufactured_axisymmetric_flow_including_the_axis(method):
     carries the hoop stress sigma_tt / r = (2 mu u_r / r - p) / r, and the
     cell-centred method evaluates fluxes on the axis itself, which needs the
     manufactured forcing in a form that is finite there."""
-    study = mms.ManufacturedSolution(
-        AXISYMMETRIC,
-        [mms.IncompressibleFlow(["u", "v"], density=1.0, outflow={"top": (0.0, 1.0)})],
-        dimension=2,
-        coordinates="axisymmetric",
-    )
-    result = study.convergence_study(
-        lambda n: dm.generate_rectangle_mesh(0.0, 1.0, 0.0, 1.0, n, n), [8, 16, 32], method=method
-    )
+    study = _flow_study(AXISYMMETRIC, ["u", "v"], 2, coordinates="axisymmetric", outflow={"top": (0.0, 1.0)}, density=1.0)
+    result = study.convergence_study(lambda n: dm.generate_rectangle_mesh(0.0, 1.0, 0.0, 1.0, n, n), [8, 16, 32], method=method)
     _check(result, "u")
 
 
@@ -118,14 +96,8 @@ def test_manufactured_flow_in_three_dimensions(method):
     """Pre-asymptotic on these meshes, so only the ratio of successive errors
     is checked: at least 2.5 for the velocity and 2 for the pressure (the
     measured ratios are 2.9 to 3.6)."""
-    study = mms.ManufacturedSolution(
-        {"u": "sin(y+z)", "v": "sin(x+z)", "w": "sin(x+y)", "pressure": "cos(x)*y*z + x"},
-        [mms.IncompressibleFlow(["u", "v", "w"], density=1.0, outflow={"right": (1.0, 0.0, 0.0)})],
-        dimension=3,
-    )
-    result = study.convergence_study(
-        lambda n: dm.generate_box_mesh(0, 1, 0, 1, 0, 1, n, n, n), [4, 8], method=method
-    )
+    study = _flow_study({"u": "sin(y+z)", "v": "sin(x+z)", "w": "sin(x+y)", "pressure": "cos(x)*y*z + x"}, ["u", "v", "w"], 3, outflow={"right": (1.0, 0.0, 0.0)}, density=1.0)
+    result = study.convergence_study(lambda n: dm.generate_box_mesh(0, 1, 0, 1, 0, 1, n, n, n), [4, 8], method=method)
     u = result.errors[("u", "l2")]
     p = result.errors[("pressure", "l2")]
     assert u[0] / u[1] > 2.5
@@ -138,11 +110,7 @@ def test_newton_converges_quadratically(method):
     from the solution satisfy s_{k+1} <= C s_k^2.  Before the cell-source
     gradients of the cell-centred method were differentiated, that method
     converged only linearly, at a rate of about 0.1 per iteration."""
-    study = mms.ManufacturedSolution(
-        CARTESIAN,
-        [mms.IncompressibleFlow(["u", "v"], density=20.0, outflow={"right": (1.0, 0.0)})],
-        dimension=2,
-    )
+    study = _flow_study(CARTESIAN, ["u", "v"], 2, outflow={"right": (1.0, 0.0)}, density=20.0)
     problem = study.build(_square(16), method=method)
     for variable in ("u", "v", "pressure"):
         problem.set_values(variable, 0.5 * problem.values(variable))
@@ -157,35 +125,13 @@ def test_newton_converges_quadratically(method):
 def _cavity(method, n, reynolds_number):
     mesh = dm.generate_rectangle_mesh(0, 1, 0, 1, n, n)
     problem = dm.Problem(mesh, method=method)
-    dm.physics.add_incompressible_flow(
-        problem,
-        velocities=["u", "v"],
-        dynamic_viscosity=1.0,
-        density=reynolds_number,
-        formulation="pressure",
-        pressure_pin_point=(0.5, 0.0),
-    )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "lid",
-        variable="u",
-        boundary="top",
-        value=1.0,
-        scale_with_load=True,
-    )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", "lid_v", variable="v", boundary="top", value=0.0
-    )
+    problem.add_physics("incompressible_flow", "flow", velocities=["u", "v"], dynamic_viscosity=1.0, density=reynolds_number, formulation="pressure", pressure_pin_point=(0.5, 0.0))
+    problem.add_boundary_condition("Dirichlet_boundary_condition", "lid", variable="u", boundary="top", value=1.0, scale_with_load=True)
+    problem.add_boundary_condition("Dirichlet_boundary_condition", "lid_v", variable="v", boundary="top", value=0.0)
     # The walls are added last, so that the two top corner nodes of the node
     # based methods belong to the walls: the lid does not leak.
     for variable in ("u", "v"):
-        problem.add_boundary_condition(
-            "Dirichlet_boundary_condition",
-            f"walls_{variable}",
-            variable=variable,
-            boundary=["left", "right", "bottom"],
-            value=0.0,
-        )
+        problem.add_boundary_condition("Dirichlet_boundary_condition", f"walls_{variable}", variable=variable, boundary=["left", "right", "bottom"], value=0.0)
     problem.solve()
     return problem
 
@@ -195,18 +141,12 @@ def test_cavity_matches_ghia(method):
     """Re = 100 on a 32 by 32 mesh: the centreline velocities are within 0.015
     of the tabulated values of Ghia, Ghia and Shin (1982); the measured
     differences are 0.002 to 0.014."""
-    spec = importlib.util.spec_from_file_location(
-        "compare_cavity", _ROOT / "verification" / "openfoam" / "compare_cavity.py"
-    )
+    spec = importlib.util.spec_from_file_location("compare_cavity", _ROOT / "verification" / "openfoam" / "compare_cavity.py")
     reference = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(reference)
     problem = _cavity(method, 32, 100.0)
-    u = problem.sample(
-        "u", np.column_stack([np.full_like(reference.GHIA_Y, 0.5), reference.GHIA_Y])
-    )
-    v = problem.sample(
-        "v", np.column_stack([reference.GHIA_X, np.full_like(reference.GHIA_X, 0.5)])
-    )
+    u = problem.sample("u", np.column_stack([np.full_like(reference.GHIA_Y, 0.5), reference.GHIA_Y]))
+    v = problem.sample("v", np.column_stack([reference.GHIA_X, np.full_like(reference.GHIA_X, 0.5)]))
     assert np.max(np.abs(u - reference.GHIA_U)) < 0.015
     assert np.max(np.abs(v - reference.GHIA_V)) < 0.015
 
@@ -217,47 +157,17 @@ def test_natural_convection_with_the_pressure_formulation(method):
     force is part of the stabilisation and scales with the load factor like
     the force itself; without it the stabilisation pushes against the flow.
     Measured: Nusselt number within 2.1 %, velocity maxima within 2.1 %."""
-    spec = importlib.util.spec_from_file_location(
-        "natural_convection", _ROOT / "examples" / "natural_convection.py"
-    )
+    spec = importlib.util.spec_from_file_location("natural_convection", _ROOT / "examples" / "natural_convection.py")
     example = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(example)
     rayleigh_number = 1.0e5
     problem = dm.Problem(example.cavity_mesh(32), method=method)
-    problem.add_variable("temperature")
-    velocities = dm.physics.add_incompressible_flow(
-        problem,
-        velocities=["u", "v"],
-        dynamic_viscosity=example.PRANDTL,
-        density=1.0,
-        formulation="pressure",
-        pressure_pin_point=(0.5, 0.0),
-        buoyancy={
-            "temperature": "temperature",
-            "gravity": [0.0, -1.0],
-            "thermal_expansion_coefficient": rayleigh_number * example.PRANDTL,
-            "reference_temperature": 0.0,
-            "scale_with_load": True,
-        },
-    )
-    problem.add_kernel("heat_conduction", "conduction", variable="temperature")
-    problem.add_kernel(
-        "heat_convection", "convection", variable="temperature", velocities=velocities
-    )
-    for variable in velocities:
-        problem.add_boundary_condition(
-            "Dirichlet_boundary_condition",
-            f"no_slip_{variable}",
-            variable=variable,
-            boundary=["left", "right", "bottom", "top"],
-            value=0.0,
-        )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", "hot", variable="temperature", boundary="left", value=0.5
-    )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", "cold", variable="temperature", boundary="right", value=-0.5
-    )
+    heat = problem.add_physics("heat_transfer", "heat", thermal_conductivity=1.0)
+    flow = problem.add_physics("incompressible_flow", "flow", velocities=["u", "v"], dynamic_viscosity=example.PRANDTL, density=1.0, formulation="pressure", pressure_pin_point=(0.5, 0.0))
+    problem.add_coupling("nonisothermal_flow", "coupling", heat_transfer="heat", incompressible_flow="flow", gravity=[0.0, -1.0], thermal_expansion_coefficient=rayleigh_number * example.PRANDTL, reference_temperature=0.0, scale_with_load=True)
+    flow.add_boundary_condition("Dirichlet_boundary_condition", "no_slip", boundary=["left", "right", "bottom", "top"], value=[0.0, 0.0])
+    heat.add_boundary_condition("Dirichlet_boundary_condition", "left", value=0.5)
+    heat.add_boundary_condition("Dirichlet_boundary_condition", "right", value=-0.5)
     problem.solve(load_factors=[0.01, 0.1, 1.0], max_iterations=40)
     computed = example.measure(problem)
     reference = example.BENCHMARK[rayleigh_number]
@@ -272,9 +182,7 @@ def test_cell_centred_jacobian_of_a_gradient_source_is_exact():
     of the residual to the accuracy of the difference."""
     mesh = dm.generate_rectangle_mesh(0, 1, 0, 1, 6, 6, element_type="Tri3")
     problem = dm.Problem(mesh, method="zfvm")
-    dm.physics.add_incompressible_flow(
-        problem, velocities=["u", "v"], dynamic_viscosity=1.0, density=30.0, formulation="pressure"
-    )
+    problem.add_physics("incompressible_flow", "flow", velocities=["u", "v"], dynamic_viscosity=1.0, density=30.0, formulation="pressure")
     rng = np.random.default_rng(3)
     count = len(problem.entity_points())
     for variable in ("u", "v", "pressure"):
@@ -300,15 +208,9 @@ def test_cell_centred_axis_needs_no_boundary_condition():
     there with an empty equation and the matrix singular.  The axis is now a
     symmetry line without a condition, and the solution converges at second
     order."""
-    study = mms.ManufacturedSolution(
-        {"u": "cos(x)*sin(y) + x*x"}, [mms.Diffusion("u")], dimension=2, coordinates="axisymmetric"
-    )
-    result = study.convergence_study(
-        lambda n: dm.generate_rectangle_mesh(0, 1, 0, 1, n, n),
-        [8, 16, 32],
-        method="zfvm",
-        boundary=["right", "top", "bottom"],
-    )
+    study = mms.ManufacturedSolution({"u": "cos(x)*sin(y) + x*x"}, dimension=2, coordinates="axisymmetric")
+    study.add_physics("coefficient_form_PDE", "diffusion", diffusion_coefficient=1.0)
+    result = study.convergence_study(lambda n: dm.generate_rectangle_mesh(0, 1, 0, 1, n, n), [8, 16, 32], method="zfvm", boundary=["right", "top", "bottom"])
     assert result.order("u", "l2") > 1.9
 
 
@@ -317,12 +219,8 @@ def test_point_dirichlet_fixes_the_nearest_entity():
     problem = dm.Problem(mesh, method="fem")
     problem.add_variable("u")
     problem.add_kernel("diffusion", "diffusion", variable="u")
-    problem.add_boundary_condition(
-        "point_Dirichlet_boundary_condition", "pin", variable="u", point=[0.49, 0.26], value=2.0
-    )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", "outer", variable="u", boundary=["left"], value=2.0
-    )
+    problem.add_boundary_condition("point_Dirichlet_boundary_condition", "pin", variable="u", point=[0.49, 0.26], value=2.0)
+    problem.add_boundary_condition("Dirichlet_boundary_condition", "outer", variable="u", boundary=["left"], value=2.0)
     problem.solve()
     points = problem.entity_points()
     nearest = int(np.argmin(np.hypot(points[:, 0] - 0.5, points[:, 1] - 0.25)))

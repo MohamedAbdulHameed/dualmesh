@@ -115,6 +115,21 @@ simplexQuadrature(int dim, int degree, std::vector<Point> & points, std::vector<
 /// Measure (length/area/volume) of element e.
 double elementMeasure(const Mesh & mesh, Index e);
 
+/// Measure (length in two dimensions, area in three) of a boundary side,
+/// integrated with the isoparametric map, so that a curved quadratic side is
+/// measured exactly.  In axisymmetric and spherical coordinates the measure
+/// includes the coordinate factor (2 pi r and 4 pi r^2), i.e., it is the area
+/// of the surface of revolution that the side represents.
+double sideMeasure(const Mesh & mesh,
+                   const Side & side,
+                   CoordinateSystem coord = CoordinateSystem::Cartesian);
+
+/// Total measure of the sides of the named side sets.  A side that belongs to
+/// several of them is counted once.
+double sidesetMeasure(const Mesh & mesh,
+                      const std::vector<std::string> & names,
+                      CoordinateSystem coord = CoordinateSystem::Cartesian);
+
 /// Find the element containing x and its reference coordinates.
 /// Returns false if no element contains the point.
 class PointLocator

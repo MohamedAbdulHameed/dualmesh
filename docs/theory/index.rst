@@ -34,3 +34,10 @@ of the fuel performance module are described in :doc:`/fuel/models`.
 
    heat_and_fluids
    solid_mechanics
+   neutronics
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Studies
+
+   uncertainty

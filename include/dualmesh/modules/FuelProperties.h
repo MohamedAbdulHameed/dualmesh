@@ -4,14 +4,13 @@
 // uranium mononitride (UN), Zircaloy-4 cladding and the fill and fission
 // gases of the fuel-cladding gap.
 //
-// Every correlation is written from the open literature named next to it.  No
-// code of another fuel performance program was consulted.  The documentation
+// The source of every correlation is named next to it, and the documentation
 // chapter on the fuel correlations lists every correlation with its source.
 //
 // Units are SI throughout, with temperatures in kelvin, unless a comment says
 // otherwise.  The functions are templates so that they can be evaluated both
 // on plain numbers and on automatic differentiation numbers (ADReal), which
-// is how the materials obtain the exact Jacobian of a temperature-dependent
+// is how the property objects obtain the exact Jacobian of a temperature-dependent
 // property.
 #pragma once
 
@@ -37,12 +36,12 @@ valueOf(const ADReal & x)
   return x.value();
 }
 
-/// The lowest temperature (K) at which the materials evaluate a correlation.
+/// The lowest temperature (K) at which the property objects evaluate a correlation.
 /// The correlations are fits to data above room temperature, and several are
 /// singular at absolute zero (Fink's T^(-5/2) exp(-16.35/t), the square root
 /// in Lucuta's factor, the gas conductivity A T^B with B < 1).  Newton's
 /// method can visit such temperatures when it starts from a cold guess (a
-/// temperature left at its default initial value of zero), so the materials
+/// temperature left at its default initial value of zero), so the property objects
 /// evaluate the correlations at max(T, 200 K), with zero derivative below.
 /// Converged reactor temperatures are far above this floor.
 constexpr double kMinimumCorrelationTemperature = 200.0;
@@ -76,11 +75,11 @@ constexpr double kGasConstant = 8.314462618;        ///< J/(mol K)
 constexpr double kStefanBoltzmann = 5.670374419e-8; ///< W/(m^2 K^4)
 constexpr double kJoulePerMeV = 1.602176634e-13;
 /// Molar masses (kg/mol) of the heavy-metal compounds, natural isotopics.
-constexpr double kMolarMassUO2 = 0.2700277; ///< the value used by Fink (2000)
+constexpr double kMolarMassUO2 = 0.2700277; ///< 238.02891 + 2 x 15.9994 g/mol
 constexpr double kMolarMassUN = 0.25204;    ///< 238.03 + 14.007 g/mol
 /// Theoretical densities (kg/m^3).
 constexpr double kDensityUO2 = 10963.0; ///< at 273 K, Fink (2000)
-constexpr double kDensityUN = 14330.0;  ///< at 298 K, from Hayes et al. (1990a)
+constexpr double kDensityUN = 14326.0;  ///< at 298 K, Hayes et al. (1990, part I), Eq. (3)
 
 // =============================================================================
 // Uranium dioxide
@@ -113,14 +112,11 @@ uo2ConductivityFink100(const T & temperature)
 /// Hastings, J. Nucl. Mater. 232 (1996) 166-180, for dissolved fission
 /// products (kappa_1d), precipitated fission products (kappa_1p), porosity
 /// with non-conducting spherical pores (kappa_2p, Maxwell-Eucken) and
-/// radiation damage (kappa_4r).  beta is the burnup in atom per cent (FIMA
-/// times 100) and p the porosity fraction.  The factors kappa_1d and
-/// kappa_1p are as given in IAEA-TECDOC-1496 (2008) Sect. 6.1.2, and all four
-/// factors as given in S. G. Popov et al., ORNL/TM-2000/351 (2000),
-/// Eqs. (6.4)-(6.7).  Popov writes the porosity factor as (1 - p)/(1 + 2 p);
-/// the Maxwell-Eucken form (1 - p)/(1 + 0.5 p) for spherical pores is used
-/// here, and only for the departure from 95 % density (see
-/// uo2ConductivityFinkLucuta).
+/// radiation damage (kappa_4r), Eqs. (14b), (14c), (14d) and (14f).  beta is
+/// the burnup in atom per cent (FIMA times 100) and p the porosity fraction.
+/// The porosity factor (1 - p)/(1 + (s - 1) p) with the shape factor s = 1.5
+/// of spherical pores is (1 - p)/(1 + 0.5 p).  It is used only for the
+/// departure from 95 % density (see uo2ConductivityFinkLucuta).
 template <typename T>
 T
 lucutaDissolved(const T & temperature, double beta)
@@ -167,7 +163,8 @@ uo2ConductivityFinkLucuta(const T & temperature, double beta, double porosity)
 }
 
 /// The modified NFI conductivity of UO2 (and UO2-Gd2O3), W/(m K), as given
-/// in the FRAPCON-4.0 code description (Geelhood et al., PNNL-19418) after
+/// in the FRAPCON-4.0 code description (Geelhood et al., PNNL-19418 Vol. 1
+/// Rev. 2, Eqs. 2.52 to 2.56) after
 /// K. Ohira and N. Itagaki (1997) with the PNNL modifications (Lanning et al.,
 /// NUREG/CR-6534 Vol. 4, 2005).  burnup is in MWd/kgU (GWd/tU), gadolinia
 /// the weight fraction of Gd2O3, density_fraction the fraction of theoretical
@@ -187,33 +184,34 @@ uo2ConductivityNFI(const T & temperature, double burnup, double gadolinia, doubl
   return 1.0789 * k95 * d / (1.0 + 0.5 * (1.0 - d));
 }
 
-/// The Halden conductivity of irradiated UO2, W/(m K), recommended for
-/// irradiated fuel by IAEA-TECDOC-1496 (2006), Sect. 6.1.2, after
-/// W. Wiesenack, HWR-469, 1996:
-///   k95 = 1 / (0.1148 + 0.0035 B + 2.475e-4 (1 - 0.00333 B) T_C)
+/// The Halden conductivity of irradiated UO2, W/(m K), of W. Wiesenack,
+/// "Assessment of UO2 conductivity degradation based on in-pile temperature
+/// data" (Sect. V), recommended for irradiated fuel by IAEA-TECDOC-1496
+/// (2006), Sect. 6.1.2:
+///   k95 = 1 / (0.1148 + 0.0035 B + 2.475e-4 (1 - 0.00333 B) min(T_C, 1650))
 ///         + 0.0132 exp(0.00188 T_C),
 /// for 95 % dense fuel, with T_C in degrees Celsius and the burnup B in
 /// MWd/kgUO2, valid to 75 MWd/kgUO2 (uncertainty within 20 % up to 2000 K).
-/// It is corrected to the actual density with the ratio of Maxwell-Eucken
-/// factors, 1.0789 d / (1 + 0.5 (1 - d)), as CASL-U-2019-1870 Eq. (2).
-/// burnup_uo2 is in MWd/kgUO2.  CASL-U-2019-1870 Eq. (1) writes the same
-/// correlation per kgU (0.004 Bu) and caps T_C at 1650 C in the phonon term,
-/// which the TECDOC form does not; the two differ only above 1923 K.
+/// The temperature of the phonon term is limited to 1650 C, as Wiesenack
+/// states (Sect. III.A) and CASL-U-2019-1870 Eq. (1) writes.  It is corrected
+/// to the actual density with the ratio of Maxwell-Eucken factors,
+/// 1.0789 d / (1 + 0.5 (1 - d)), as CASL-U-2019-1870 Eq. (2).
 template <typename T>
 T
 uo2ConductivityHalden(const T & temperature, double burnup_uo2, double density_fraction)
 {
   const T tc = temperature - 273.15;
+  const T phonon_tc = valueOf(tc) > 1650.0 ? tc * 0.0 + 1650.0 : tc;
   const double B = std::max(0.0, burnup_uo2);
-  const T k95 = 1.0 / (0.1148 + 0.0035 * B + 2.475e-4 * (1.0 - 0.00333 * B) * tc) +
+  const T k95 = 1.0 / (0.1148 + 0.0035 * B + 2.475e-4 * (1.0 - 0.00333 * B) * phonon_tc) +
                 0.0132 * exp(0.00188 * tc);
   const double d = density_fraction;
   return 1.0789 * k95 * d / (1.0 + 0.5 * (1.0 - d));
 }
 
 /// Relocation of UO2 fragments as a transverse strain (the diametral strain
-/// dD/D), in the ESCORE form documented in the BISON theory manual (Hales et
-/// al. 2013): dD/D = 0.80 Q (G0/D0)(0.005 Bu^0.3 - 0.20 D0 + 0.3), with the
+/// dD/D), the ESCORE model of FALCON MOD01 Vol. 1 (EPRI 1011307, 2004),
+/// Eqs. 5-30 and 5-31: dD/D = 0.80 Q (G0/D0)(0.005 Bu^0.3 - 0.20 D0 + 0.3), with the
 /// linear heat rate q' in kW/ft (Q = 0 below 6, (q' - 6)^(1/3) up to 14 and
 /// (q' - 10)/2 above), the cold diametral gap G0 and pellet diameter D0 (the
 /// bracket takes D0 in inches) and the burnup in MWd/tU, held at
@@ -270,9 +268,7 @@ uo2SpecificHeatMATPRO(const T & temperature, double oxygen_to_metal = 2.0)
 }
 
 /// Linear dimension of UO2 relative to its value at 273 K, L(T)/L(273):
-/// D. G. Martin, J. Nucl. Mater. 152 (1988) 94-101 (as reproduced in
-/// IAEA-TECDOC-1496; the cubic coefficient 4.391e-13 is the one consistent
-/// with Martin's expansion coefficient).
+/// D. G. Martin, J. Nucl. Mater. 152 (1988) 94-101, Eqs. (1a) and (1b).
 template <typename T>
 T
 uo2RelativeLengthMartin(const T & temperature)
@@ -306,12 +302,15 @@ uo2YoungsModulus(const T & temperature, double density_fraction)
 }
 constexpr double kPoissonRatioUO2 = 0.316; ///< MATPRO, independent of temperature
 
-/// Densification of UO2 as a (negative) volumetric strain, in the ESCORE form
-/// documented publicly for BISON (after Rashid et al., EPRI 1011308, 2004):
-///   eps = dRho0 [exp(Bu ln(0.01) / (C_D Bu_D)) - 1],
-///   C_D = 7.235 - 0.0086 (T_C - 25) below 750 C and 1 above,
-/// with dRho0 the total densification (fraction of theoretical density) and
-/// Bu_D the burnup at which it is complete, both inputs.
+/// Densification of UO2 as a (negative) volumetric strain, the ESCORE model
+/// of FALCON MOD01 (EPRI 1011307, 2004), Eqs. 5-22 and 5-24:
+///   eps = dRho0 [exp(Bu ln(0.01) / (C Bu_D)) - 1],
+///   C = 7.235 - 0.0086 (T_C - 25) below 750 C and 1 above,
+/// with dRho0 the total densification (fraction of theoretical density), Bu_D
+/// the burnup at which it is complete, both inputs, and Bu the pellet-average
+/// burnup.  The intercept 7.235 = 1 + 0.0086 (750 - 25) makes C, and so the
+/// densification, continuous at 750 C (FALCON prints it rounded to 7.2).
+/// burnup and complete_burnup in the same unit.
 template <typename T>
 T
 uo2DensificationESCORE(const T & temperature, double burnup, double total, double complete_burnup)
@@ -319,8 +318,8 @@ uo2DensificationESCORE(const T & temperature, double burnup, double total, doubl
   if (total <= 0 || complete_burnup <= 0)
     return T(0.0);
   const T tc = temperature - 273.15;
-  const T cd = valueOf(tc) < 750.0 ? 7.235 - 0.0086 * (tc - 25.0) : T(1.0);
-  return total * (exp(burnup * std::log(0.01) / (cd * complete_burnup)) - 1.0);
+  const T c = valueOf(tc) < 750.0 ? 7.235 - 0.0086 * (tc - 25.0) : T(1.0);
+  return total * (exp(burnup * std::log(0.01) / (c * complete_burnup)) - 1.0);
 }
 
 /// Densification of UO2 as a (negative) linear strain, fraction: MATPRO FUDENS,
@@ -453,12 +452,15 @@ unSpecificHeatHayes(const T & temperature)
   return cp / kMolarMassUN;
 }
 
-/// Theoretical density of UN, kg/m^3, 298-2523 K: Hayes et al. (1990, part I).
+/// Theoretical density of UN, kg/m^3, 298-2523 K: Hayes et al. (1990, part I),
+/// Eq. (3) in the body of the paper, the fit of the density of the lattice
+/// parameter of Eq. (1).  The abstract prints 2.779e-4 for the linear
+/// coefficient, which departs from that density by 0.056 g/cm^3.
 template <typename T>
 T
 unDensityHayes(const T & temperature)
 {
-  return 1000.0 * (14.42 - 2.779e-4 * temperature - 4.897e-8 * temperature * temperature);
+  return 1000.0 * (14.42 - 2.997e-4 * temperature - 4.897e-8 * temperature * temperature);
 }
 
 /// Linear thermal strain of UN between a reference temperature and T, from
@@ -489,12 +491,12 @@ unPoissonRatio(double density_percent)
 
 /// Creep rate of UN, 1/s, the sum of three terms, with sigma in MPa:
 ///  * dislocation creep of dense UN, 2.054e-3 sigma^4.5 exp(-39369.5/T)
-///    (Hayes, Thomas and Peddicord, J. Nucl. Mater. 171 (1990) 271-288; read
-///    in the abstract, and as Eq. (1) of AbdulHameed et al. 2025);
+///    (Hayes, Thomas and Peddicord, J. Nucl. Mater. 171 (1990) 271-288);
 ///  * grain-boundary (Coble) creep, 582610.427 sigma / (T d^3)
 ///    exp(-2.28 eV / k T) with the grain size d in micrometres (M.
 ///    AbdulHameed, B. Beeler, C. O. T. Galvin, M. W. D. Cooper, N. Elamrawy
-///    and A. Claisse, arXiv:2503.03231v4 (2025), Eqs. (14) and (15));
+///    and A. Claisse, J. Nucl. Mater. 617 (2025) 156153, Eqs. (14) and
+///    (15));
 ///  * irradiation creep, 2.9e-22 sigma G exp(0.2 P) per hour with the fission
 ///    rate G in fissions/(cm^3 s) and the porosity P in per cent (I. I.
 ///    Konovalov, B. A. Tarasov and E. M. Glagovsky, IOP Conf. Ser. Mater. Sci.
@@ -775,9 +777,10 @@ gasConductivity(Gas g, const T & temperature)
   return kGasA[i] * pow(temperature, kGasB[i]);
 }
 
-/// Conductivity of a gas mixture with mole fractions x, W/(m K): the
-/// Lindsay-Bromley rule in Brokaw's simplified form (R. S. Brokaw, J. Chem.
-/// Phys. 29 (1958) 391-397), as in MATPRO.
+/// Conductivity of a gas mixture with mole fractions x, W/(m K): Eqs. (12)
+/// and (13) of R. S. Brokaw, J. Chem. Phys. 29 (1958) 391-397, with the
+/// collision integral ratios A* = B* = 1.1, which give the factors 2.41 and
+/// 0.142 of MATPRO GTHCON.
 template <typename T>
 T
 gasMixtureConductivity(const double * x, const T & temperature)
@@ -807,18 +810,20 @@ gasMixtureConductivity(const double * x, const T & temperature)
 }
 
 /// Sum of the temperature jump distances at the two surfaces of the gap, m:
-/// the kinetic-theory form of E. H. Kennard as used by D. D. Lanning and
-/// C. R. Hann (BNWL-1894, 1975), written in SI units,
-///   g1 + g2 = 0.013757 (2 - a)/a k sqrt(T) / P (sum x_i / M_i)^(-1/2),
-/// with k in W/(m K), P in Pa and M in g/mol.  The constant agrees to 0.1 %
-/// with an independent derivation for a monatomic gas; for the diatomic H2
-/// and N2 it overstates the jump distance by half.  The accommodation
-/// coefficient a is interpolated between helium (0.425 - 2.3e-4 T) and xenon
-/// (0.749 - 2.5e-4 T) by the mixture molar mass (the linear fits of the
-/// FRAPCON gap model).  The helium fit turns negative at
-/// 1848 K, so both fits are bounded below by 0.07, the MATPRO estimate for
-/// helium on Zircaloy (NUREG/CR-6150 Vol. 4 Table 13-4).  The helium bound
-/// acts above 1543 K; the xenon fit reaches it only above 2700 K.
+/// the equation of E. H. Kennard for a mixture of monatomic gases as D. D.
+/// Lanning and C. R. Hann (BNWL-1894, 1975), Appendix B, Sect. 2, write it,
+///   g = 2878 (2 - a)/a k sqrt(T) / P (sum x_i / M_i)^(-1/2)
+/// per surface, with k in cal/(s cm K), P in dyn/cm^2 and g in cm.  In SI
+/// units (k in W/(m K), P in Pa, g in m, M in g/mol) the constant of the sum
+/// g1 + g2 is 2 x 2878 / 41868 = 0.013748.  For the diatomic H2 and N2 the
+/// monatomic heat capacities overstate the jump distance by half.  The
+/// accommodation coefficient a is interpolated between helium (0.425 -
+/// 2.3e-4 T) and xenon (0.749 - 2.5e-4 T), the fits of Ullman et al., by the
+/// mixture molar mass sum x_i M_i (Lanning and Hann, Appendix B, Sect. 1).
+/// The helium fit turns negative at 1848 K, so both fits are bounded below by
+/// 0.07, the MATPRO estimate for helium on Zircaloy (NUREG/CR-6150 Vol. 4
+/// Table 13-4).  The helium bound acts above 1543 K, and the xenon fit reaches
+/// it only above 2700 K.
 template <typename T>
 T
 gasJumpDistance(const double * x, const T & temperature, double pressure, const T & k_mix)
@@ -838,7 +843,29 @@ gasJumpDistance(const double * x, const T & temperature, double pressure, const 
   if (valueOf(axe) < 0.07)
     axe = temperature * 0.0 + 0.07;
   const T a = ahe + (axe - ahe) * ((mass - mhe) / (mxe - mhe));
-  return 0.013757 * (2.0 - a) / a * k_mix * sqrt(temperature) / pressure / std::sqrt(inverse);
+  return 0.013748 * (2.0 - a) / a * k_mix * sqrt(temperature) / pressure / std::sqrt(inverse);
+}
+
+/// Conductance of the solid contact between two rough surfaces, W/(m^2 K):
+/// Eq. (A.9) of A. M. Ross and R. L. Stoute (AECL-1552, 1962),
+///   h_s = k_m P_c / (a_0 R^(1/2) H),  R = ((R_1^2 + R_2^2)/2)^(1/2),
+/// with the harmonic mean conductivity k_m = 2 k_1 k_2/(k_1 + k_2), the
+/// contact pressure P_c, the Meyer hardness H of the softer surface and the
+/// arithmetic mean roughnesses R_1 and R_2.  coefficient is 1/a_0,
+/// m^(-1/2).  Ross and Stoute found a_0 between 1/2 and 1 cm^(1/2), and
+/// about 1/2 cm^(1/2) (coefficient 20 m^(-1/2)) for most of their pairs
+/// (Sect. 6.1).
+template <typename T>
+T
+solidContactConductance(const T & mean_conductivity,
+                        const T & contact_pressure,
+                        const T & hardness,
+                        double roughness_1,
+                        double roughness_2,
+                        double coefficient)
+{
+  const double R = std::sqrt(0.5 * (roughness_1 * roughness_1 + roughness_2 * roughness_2));
+  return coefficient * mean_conductivity * contact_pressure / (std::sqrt(R) * hardness);
 }
 
 } // namespace fuel

@@ -25,15 +25,7 @@ POISSON = 0.3
 
 
 def circular_plate_stiffness(power_law_index):
-    return dm.fgm.beam_stiffness(
-        modulus_top=MODULUS_TOP,
-        modulus_bottom=MODULUS_BOTTOM,
-        power_law_index=power_law_index,
-        height=CIRCULAR_THICKNESS,
-        width=1.0,
-        poisson_ratio=POISSON,
-        plate=True,
-    )
+    return dm.fgm.beam_stiffness(modulus_top=MODULUS_TOP, modulus_bottom=MODULUS_BOTTOM, power_law_index=power_law_index, height=CIRCULAR_THICKNESS, width=1.0, poissons_ratio=POISSON, plate=True)
 
 
 def circular_plate(num_elements, power_law_index=0.0, support="hinged"):
@@ -43,68 +35,18 @@ def circular_plate(num_elements, power_law_index=0.0, support="hinged"):
     problem = dm.Problem(mesh, coordinates="axisymmetric")
     for name in ("radial_displacement", "deflection", "rotation"):
         problem.add_variable(name)
-    common = dict(
-        radial_displacement="radial_displacement",
-        transverse_displacement="deflection",
-        rotation="rotation",
-        extensional_stiffness=s.extensional,
-        coupling_stiffness=s.coupling,
-        bending_stiffness=s.bending,
-        shear_stiffness=s.shear,
-        poissons_ratio=POISSON,
-        transverse_load=CIRCULAR_LOAD,
-    )
+    common = dict(radial_displacement="radial_displacement", transverse_displacement="deflection", rotation="rotation", extensional_stiffness=s.extensional, coupling_stiffness=s.coupling, bending_stiffness=s.bending, shear_stiffness=s.shear, poissons_ratio=POISSON, transverse_load=CIRCULAR_LOAD)
     for variable in ("radial_displacement", "deflection", "rotation"):
-        problem.add_kernel(
-            "circular_plate_first_order",
-            f"bending_{variable}",
-            variable=variable,
-            shear_treatment="exclude",
-            **common,
-        )
-        problem.add_kernel(
-            "circular_plate_first_order",
-            f"shear_{variable}",
-            variable=variable,
-            shear_treatment="only",
-            quadrature="midpoint",
-            reduced_integration=True,
-            **common,
-        )
+        problem.add_kernel("circular_plate_first_order", f"bending_{variable}", variable=variable, shear_treatment="exclude", **common)
+        problem.add_kernel("circular_plate_first_order", f"shear_{variable}", variable=variable, shear_treatment="only", quadrature="midpoint", reduced_integration=True, **common)
     # Symmetry at r = 0
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "centre_u",
-        variable="radial_displacement",
-        boundary="left",
-        value=0.0,
-    )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "centre_rotation",
-        variable="rotation",
-        boundary="left",
-        value=0.0,
-    )
+    problem.add_boundary_condition("Dirichlet_boundary_condition", "centre_u", variable="radial_displacement", boundary="left", value=0.0)
+    problem.add_boundary_condition("Dirichlet_boundary_condition", "centre_rotation", variable="rotation", boundary="left", value=0.0)
     # Edge conditions at r = a
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "edge_u",
-        variable="radial_displacement",
-        boundary="right",
-        value=0.0,
-    )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", "edge_w", variable="deflection", boundary="right", value=0.0
-    )
+    problem.add_boundary_condition("Dirichlet_boundary_condition", "edge_u", variable="radial_displacement", boundary="right", value=0.0)
+    problem.add_boundary_condition("Dirichlet_boundary_condition", "edge_w", variable="deflection", boundary="right", value=0.0)
     if support == "clamped":
-        problem.add_boundary_condition(
-            "Dirichlet_boundary_condition",
-            "edge_rotation",
-            variable="rotation",
-            boundary="right",
-            value=0.0,
-        )
+        problem.add_boundary_condition("Dirichlet_boundary_condition", "edge_rotation", variable="rotation", boundary="right", value=0.0)
     problem.solve()
     return problem
 
@@ -168,121 +110,36 @@ PLATE_LOAD = 1.0
 
 
 def rectangular_plate_stiffness(power_law_index):
-    return dm.fgm.beam_stiffness(
-        modulus_top=3.0e7,
-        modulus_bottom=3.0e6,
-        power_law_index=power_law_index,
-        height=PLATE_THICKNESS,
-        width=1.0,
-        poisson_ratio=POISSON,
-        plate=True,
-    )
+    return dm.fgm.beam_stiffness(modulus_top=3.0e7, modulus_bottom=3.0e6, power_law_index=power_law_index, height=PLATE_THICKNESS, width=1.0, poissons_ratio=POISSON, plate=True)
 
 
-def rectangular_plate(
-    num_elements,
-    power_law_index=0.0,
-    support="clamped",
-    method="dmcdm",
-    von_karman=False,
-    load=PLATE_LOAD,
-):
+def rectangular_plate(num_elements, power_law_index=0.0, support="clamped", method="dmcdm", von_karman=False, load=PLATE_LOAD):
     """Quarter model of a rectangular plate, first-order shear deformation theory."""
     s = rectangular_plate_stiffness(power_law_index)
-    mesh = dm.generate_rectangle_mesh(
-        x_min=0.0,
-        x_max=PLATE_SIDE / 2,
-        y_min=0.0,
-        y_max=PLATE_SIDE / 2,
-        num_x_elements=num_elements,
-        num_y_elements=num_elements,
-    )
+    mesh = dm.generate_rectangle_mesh(x_min=0.0, x_max=PLATE_SIDE / 2, y_min=0.0, y_max=PLATE_SIDE / 2, num_x_elements=num_elements, num_y_elements=num_elements)
     problem = dm.Problem(mesh, method=method)
     variables = ["u", "v", "w", "rotation_x", "rotation_y"]
     for name in variables:
         problem.add_variable(name)
-    common = dict(
-        in_plane_displacements=["u", "v"],
-        transverse_displacement="w",
-        rotations=["rotation_x", "rotation_y"],
-        extensional_stiffness=s.extensional,
-        coupling_stiffness=s.coupling,
-        bending_stiffness=s.bending,
-        shear_stiffness=s.shear,
-        poissons_ratio=POISSON,
-        transverse_load=load,
-        von_karman=von_karman,
-    )
+    common = dict(in_plane_displacements=["u", "v"], transverse_displacement="w", rotations=["rotation_x", "rotation_y"], extensional_stiffness=s.extensional, coupling_stiffness=s.coupling, bending_stiffness=s.bending, shear_stiffness=s.shear, poissons_ratio=POISSON, transverse_load=load, von_karman=von_karman)
     for variable in variables:
-        problem.add_kernel(
-            "plate_first_order",
-            f"bending_{variable}",
-            variable=variable,
-            shear_treatment="exclude",
-            **common,
-        )
-        problem.add_kernel(
-            "plate_first_order",
-            f"shear_{variable}",
-            variable=variable,
-            shear_treatment="only",
-            quadrature="midpoint",
-            reduced_integration=True,
-            **common,
-        )
+        problem.add_kernel("plate_first_order", f"bending_{variable}", variable=variable, shear_treatment="exclude", **common)
+        problem.add_kernel("plate_first_order", f"shear_{variable}", variable=variable, shear_treatment="only", quadrature="midpoint", reduced_integration=True, **common)
     # Symmetry: u = phi_x = 0 on x = 0 and v = phi_y = 0 on y = 0
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", "sym_u", variable="u", boundary="left", value=0.0
-    )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", "sym_px", variable="rotation_x", boundary="left", value=0.0
-    )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", "sym_v", variable="v", boundary="bottom", value=0.0
-    )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "sym_py",
-        variable="rotation_y",
-        boundary="bottom",
-        value=0.0,
-    )
+    problem.add_boundary_condition("Dirichlet_boundary_condition", "sym_u", variable="u", boundary="left", value=0.0)
+    problem.add_boundary_condition("Dirichlet_boundary_condition", "sym_px", variable="rotation_x", boundary="left", value=0.0)
+    problem.add_boundary_condition("Dirichlet_boundary_condition", "sym_v", variable="v", boundary="bottom", value=0.0)
+    problem.add_boundary_condition("Dirichlet_boundary_condition", "sym_py", variable="rotation_y", boundary="bottom", value=0.0)
     if support == "clamped":
         for name in variables:
-            problem.add_boundary_condition(
-                "Dirichlet_boundary_condition",
-                f"clamped_{name}",
-                variable=name,
-                boundary=["right", "top"],
-                value=0.0,
-            )
+            problem.add_boundary_condition("Dirichlet_boundary_condition", f"clamped_{name}", variable=name, boundary=["right", "top"], value=0.0)
     else:  # simply supported (SS-1)
-        problem.add_boundary_condition(
-            "Dirichlet_boundary_condition", "ss_v", variable="v", boundary="right", value=0.0
-        )
-        problem.add_boundary_condition(
-            "Dirichlet_boundary_condition", "ss_w_right", variable="w", boundary="right", value=0.0
-        )
-        problem.add_boundary_condition(
-            "Dirichlet_boundary_condition",
-            "ss_py",
-            variable="rotation_y",
-            boundary="right",
-            value=0.0,
-        )
-        problem.add_boundary_condition(
-            "Dirichlet_boundary_condition", "ss_u", variable="u", boundary="top", value=0.0
-        )
-        problem.add_boundary_condition(
-            "Dirichlet_boundary_condition", "ss_w_top", variable="w", boundary="top", value=0.0
-        )
-        problem.add_boundary_condition(
-            "Dirichlet_boundary_condition",
-            "ss_px",
-            variable="rotation_x",
-            boundary="top",
-            value=0.0,
-        )
+        problem.add_boundary_condition("Dirichlet_boundary_condition", "ss_v", variable="v", boundary="right", value=0.0)
+        problem.add_boundary_condition("Dirichlet_boundary_condition", "ss_w_right", variable="w", boundary="right", value=0.0)
+        problem.add_boundary_condition("Dirichlet_boundary_condition", "ss_py", variable="rotation_y", boundary="right", value=0.0)
+        problem.add_boundary_condition("Dirichlet_boundary_condition", "ss_u", variable="u", boundary="top", value=0.0)
+        problem.add_boundary_condition("Dirichlet_boundary_condition", "ss_w_top", variable="w", boundary="top", value=0.0)
+        problem.add_boundary_condition("Dirichlet_boundary_condition", "ss_px", variable="rotation_x", boundary="top", value=0.0)
     return problem
 
 
@@ -326,9 +183,7 @@ def test_clamped_plate_matches_the_classical_thin_plate_solution():
 def test_plate_reduced_integration_is_required_for_thin_plates():
     """Without reduced integration of the shear terms the plate locks."""
     s = rectangular_plate_stiffness(0.0)
-    mesh = dm.generate_rectangle_mesh(
-        x_min=0.0, x_max=0.5, y_min=0.0, y_max=0.5, num_x_elements=8, num_y_elements=8
-    )
+    mesh = dm.generate_rectangle_mesh(x_min=0.0, x_max=0.5, y_min=0.0, y_max=0.5, num_x_elements=8, num_y_elements=8)
     problem = dm.Problem(mesh)
     variables = ["u", "v", "w", "rotation_x", "rotation_y"]
     for name in variables:
@@ -348,26 +203,12 @@ def test_plate_reduced_integration_is_required_for_thin_plates():
             poissons_ratio=POISSON,
             transverse_load=PLATE_LOAD,
         )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", "a", variable="u", boundary="left", value=0.0
-    )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", "b", variable="rotation_x", boundary="left", value=0.0
-    )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", "c", variable="v", boundary="bottom", value=0.0
-    )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", "d", variable="rotation_y", boundary="bottom", value=0.0
-    )
+    problem.add_boundary_condition("Dirichlet_boundary_condition", "a", variable="u", boundary="left", value=0.0)
+    problem.add_boundary_condition("Dirichlet_boundary_condition", "b", variable="rotation_x", boundary="left", value=0.0)
+    problem.add_boundary_condition("Dirichlet_boundary_condition", "c", variable="v", boundary="bottom", value=0.0)
+    problem.add_boundary_condition("Dirichlet_boundary_condition", "d", variable="rotation_y", boundary="bottom", value=0.0)
     for name in variables:
-        problem.add_boundary_condition(
-            "Dirichlet_boundary_condition",
-            f"e_{name}",
-            variable=name,
-            boundary=["right", "top"],
-            value=0.0,
-        )
+        problem.add_boundary_condition("Dirichlet_boundary_condition", f"e_{name}", variable=name, boundary=["right", "top"], value=0.0)
     problem.solve()
     locked = problem.values("w")[problem.node_at((0.0, 0.0))]
 
@@ -380,15 +221,14 @@ def test_plate_reduced_integration_is_required_for_thin_plates():
 # ---------------------------------------------------------------------------
 # Chapter 8, mixed classical plate theory model DM-CP(M)
 # ---------------------------------------------------------------------------
-def classical_circular_plate(
-    num_elements, power_law_index=0.0, support="hinged", von_karman=False, load=CIRCULAR_LOAD
-):
+def classical_circular_plate(num_elements, power_law_index=0.0, support="hinged", von_karman=False, load=CIRCULAR_LOAD):
     """Axisymmetric circular plate, mixed classical (Kirchhoff) theory."""
     s = circular_plate_stiffness(power_law_index)
     mesh = dm.generate_line_mesh(start=0.0, end=CIRCULAR_RADIUS, num_elements=num_elements)
     problem = dm.Problem(mesh, coordinates="axisymmetric")
-    dm.physics.add_circular_plate(
-        problem,
+    problem.add_physics(
+        "circular_plate",
+        "plate",
         theory="classical",
         radial_displacement="radial_displacement",
         transverse_displacement="deflection",
@@ -402,31 +242,11 @@ def classical_circular_plate(
     )
     # Symmetry at r = 0: u(0) = 0.  The slope dw/dr is the natural boundary
     # quantity of the moment equation, so dw/dr(0) = 0 needs no condition.
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "centre_u",
-        variable="radial_displacement",
-        boundary="left",
-        value=0.0,
-    )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "edge_u",
-        variable="radial_displacement",
-        boundary="right",
-        value=0.0,
-    )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", "edge_w", variable="deflection", boundary="right", value=0.0
-    )
+    problem.add_boundary_condition("Dirichlet_boundary_condition", "centre_u", variable="radial_displacement", boundary="left", value=0.0)
+    problem.add_boundary_condition("Dirichlet_boundary_condition", "edge_u", variable="radial_displacement", boundary="right", value=0.0)
+    problem.add_boundary_condition("Dirichlet_boundary_condition", "edge_w", variable="deflection", boundary="right", value=0.0)
     if support == "hinged":
-        problem.add_boundary_condition(
-            "Dirichlet_boundary_condition",
-            "edge_m",
-            variable="bending_moment",
-            boundary="right",
-            value=0.0,
-        )
+        problem.add_boundary_condition("Dirichlet_boundary_condition", "edge_m", variable="bending_moment", boundary="right", value=0.0)
     if von_karman:
         problem.solve(load_factors=[0.1 * k for k in range(1, 11)])
     else:

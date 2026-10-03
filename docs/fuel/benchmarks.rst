@@ -29,7 +29,7 @@ All cases use the default models of :mod:`dualmesh.fuel` (see
 * Heat transfer across the gap by gas conduction, radiation and solid
   contact (Ross and Stoute 1962), with the mixture conductivity of the fill
   gas and the released gas.
-* Fuel relocation (ESCORE), densification (MATPRO FUDENS), solid swelling
+* Fuel relocation (ESCORE), densification (ESCORE), solid swelling
   (MATPRO) and gaseous swelling from the volume of the gas bubbles of the
   fission gas model (Pastore et al. 2013, Eqs. 9 and 10), thermal
   expansion and creep of fuel and cladding, and frictionless contact.
@@ -88,10 +88,11 @@ micrometres (half the stated grain diameter), a 0.1 m stack with a plenum of
    FUMEX-II case 27(1): the onset of 1 % release.
 
 dualmesh lies inside the spread of the codes in both idealised cases.  In
-27(2a) it releases 0.1 % at 50 MWd/kgU and 7.2 % at 100 MWd/kgU, where most
-codes give below 1 % and 1 to 35 %.  In 27(1) its onset of release lies 54
-to 239 K below the Vitanza threshold (175 K on average over the 12 powers,
-the largest distance at the lowest power), at the lower edge of the codes.
+27(2a) it releases 0.2 % at 50 MWd/kgU and 7.3 % at 100 MWd/kgU, where most
+codes give below 1 % and 1 to 35 %.  In 27(1) its onset of release lies 162
+to 228 K below the Vitanza threshold at the 9 powers whose burnup lies
+within the drawn threshold (185 K on average, the largest distance at the
+lowest of them), at the lower edge of the codes.
 At low power the grain-face bubbles fill slowly and release starts once
 they saturate, which the Booth diffusion with the Turnbull coefficient
 reaches at a lower temperature than the Halden data indicate.  The CASL
@@ -123,15 +124,15 @@ and of the ratio 1.85 on its printed page 52 (the sentence on printed page
    IFA-534.14 rods 18 and 19: the release during the Halden irradiation,
    measured by puncture and computed by dualmesh.
 
-dualmesh gives 4.64 % for rod 18 (measured 4.68 %) and 11.4 % for rod 19
+dualmesh gives 4.64 % for rod 18 (measured 4.68 %) and 11.5 % for rod 19
 (measured 8.89 %).  Most of the Halden release comes from the shutdowns and
 start-ups of the Halden history, each of which cracks part of the grain
 faces and vents their gas (Barani et al. 2017).  The release measured after
 the refabrication shutdown is compared, since the gas released when the
 rods cooled at the end of the base irradiation was removed at the
-refabrication.  dualmesh is closer to the measurement than all 20 FUMEX-II
-codes for rod 18, and 8 of the 20 are closer for rod 19, where dualmesh is
-28 % high.  No BISON result is published for these rods.
+refabrication.  For rod 18 dualmesh lies 0.04 percentage points from the
+measurement, the closest of the 20 FUMEX-II codes 0.06 and the next 0.34.
+For rod 19, where dualmesh is 29 % high, 8 of the 20 codes are closer.  No BISON result is published for these rods.
 
 Cr2O3-doped UO2: Halden IFA-716.1 rod 1
 ---------------------------------------
@@ -176,7 +177,7 @@ report (2019) with the doped diffusivity of its Eq. 16, and Cooper et al.
      - BISON (2019, 2021)
      - Measured
    * - Thermocouple, median of calculated minus measured (K)
-     - :math:`-11`
+     - :math:`-9`
      - :math:`-94`, +92
      - 0
    * - Thermocouple, root mean square difference (K)
@@ -184,30 +185,30 @@ report (2019) with the doped diffusivity of its Eq. 16, and Cooper et al.
      - 116, 158
      - 0
    * - Release at 620 days, doped case A (%)
-     - 3.98
+     - 4.05
      - 6.70 (2021)
      - 5.6 :math:`\pm` 1.4
    * - Release at 620 days, doped case B (%)
-     - 6.58
+     - 6.85
      - 8.71 (2021)
      - 5.6 :math:`\pm` 1.4
    * - Release at 620 days, CASL Eq. 16 diffusivity (%)
-     - 5.82
+     - 6.02
      - 2.43 (2019)
      - 5.6 :math:`\pm` 1.4
    * - Root mean square difference from the measured release curve, case
        A, case B and CASL Eq. 16 (%)
-     - 0.95, 2.28, 1.68
+     - 0.93, 2.44, 1.79
      - 1.87, 3.56 (2021), 1.99 (2019)
      -
 
-dualmesh follows the thermocouple within 11 K in the median and 48 K root
+dualmesh follows the thermocouple within 9 K in the median and 48 K root
 mean square, less than half the difference of either BISON calculation.
 Every doped diffusivity gives a release within or near the 1.4 %
 uncertainty of the measurement at 620 days, and each is closer to the
 measured release curve than the BISON calculation with the same
-diffusivity: 0.95 % root mean square with case A (BISON 1.87 %) and 2.28 %
-with case B (BISON 3.56 %).  With the CASL diffusivity dualmesh gives 5.82 %
+diffusivity: 0.93 % root mean square with case A (BISON 1.87 %) and 2.44 %
+with case B (BISON 3.56 %).  With the CASL diffusivity dualmesh gives 6.02 %
 against BISON's 2.43 % for a measured 5.6 %.
 
 Cr2O3-doped UO2: Halden IFA-677.1 rods 1 and 5
@@ -278,19 +279,19 @@ shutdowns are Fig. 8(a) of the report.
      - BISON
      - Measured
    * - Rod 1, upper and lower thermocouples, root mean square difference (K)
-     - 98, 104
+     - 97, 103
      - 121, 137
      - 0
    * - Rod 1, upper and lower thermocouples, median difference (K)
-     - :math:`-54`, :math:`-52`
+     - :math:`-53`, :math:`-52`
      - +24, +15
      - 0
    * - Rod 5, upper and lower thermocouples, root mean square difference (K)
-     - 162, 143
+     - 161, 142
      - 108, 114
      - 0
    * - Rod 5, upper and lower thermocouples, median difference (K)
-     - :math:`-105`, :math:`-84`
+     - :math:`-104`, :math:`-83`
      - :math:`-39`, :math:`-17`
      - 0
    * - Rod 1 and rod 5, rod pressure at power, median difference (MPa)
@@ -298,19 +299,19 @@ shutdowns are Fig. 8(a) of the report.
      - 0.20, 0.20
      - 0
    * - Rod 1, release at 29.85 MWd/kgU, cases A, B and CASL Eq. 16 (%)
-     - 8.0, 11.2, 10.1
+     - 8.0, 11.4, 10.3
      - 16.5
      - 22.1
    * - Rod 1, root mean square difference from the measured curve (%)
-     - 7.2, 5.6, 6.1
+     - 7.2, 5.5, 6.1
      - 3.98
      -
    * - Rod 5, release at 29.85 MWd/kgU, cases A, B and CASL Eq. 16 (%)
-     - 8.9, 13.0, 11.7
+     - 8.9, 13.4, 11.9
      - 13.3
      - 16.7 (16.0 puncture)
    * - Rod 5, root mean square difference from the measured curve (%)
-     - 3.4, 1.5, 2.0
+     - 3.3, 1.4, 1.9
      - 2.21
      -
 
@@ -332,8 +333,8 @@ The following parts of the fuel benchmarks are not finished.
   against 16.5 % for BISON and 22.1 % measured.  The measured release rises
   from 3.5 to 15 % between 16.5 and 20 MWd/kgU, when the rod returns to 42
   kW/m after the third cycle, and dualmesh does not reproduce that step.
-* **IFA-677.1 temperatures in the first three cycles.** dualmesh is 85 to
-  120 K below the thermocouples of both rods at 35 to 43 kW/m, while its
+* **IFA-677.1 temperatures in the first three cycles.** dualmesh is 83 to
+  119 K below the thermocouples of both rods at 35 to 43 kW/m, while its
   first days at power agree with them.  In the first 6 MWd/kgU the
   calculated temperature falls by about 140 K at constant power as the gap
   closes, while the measured temperature stays constant.  The rod 5

@@ -137,8 +137,9 @@ The creep law is integrated with the :math:`\theta` method,
    \Delta\boldsymbol\varepsilon^c = K\,\Delta\Phi\,\mathbf J\,
    [(1-\theta)\boldsymbol\sigma_n + \theta\,\boldsymbol\sigma_{n+1}],
 
-with :math:`\theta = 1/2` (the trapezoidal rule, second order accurate) by
-default.  Since the law is linear, the stress at the end of a step follows
+where :math:`\theta` is the ``implicitness`` of
+:class:`~dualmesh.fuel.triso.ParticleNumerics`, 1/2 by default (the
+trapezoidal rule, second order accurate).  Since the law is linear, the stress at the end of a step follows
 from one linear solve with the algorithmic stiffness
 
 .. math::
@@ -688,31 +689,21 @@ Usage
    from dualmesh.fuel import triso
 
    particle, history = triso.crp6_case("6")
-   result = triso.solve_particle(particle, history)
-   print(result.maximum_tangential_stress("IPyC") / 1e6)   # MPa
-   print(result.inner_tangential_stress["SiC"][-1] / 1e6)
+   result = triso.TrisoParticleModel(particle=particle, history=history).run()
+   print(result.summary())
+   print(result.maximum_tangential_stress("IPyC") / 1e6)  # MPa
+   result.write_csv("particle.csv")
 
 A particle of one's own is built from layers:
 
 .. code-block:: python
 
-   pyc = dict(youngs_modulus=3.96e10, poissons_ratio=0.33,
-              creep_coefficient=2.71e-35, swelling="a")
-   particle = triso.TrisoParticle(
-       kernel_diameter=425e-6,
-       buffer_thickness=100e-6,
-       layers=(
-           triso.CoatingLayer("IPyC", 40e-6, **pyc),
-           triso.CoatingLayer("SiC", 35e-6, 3.7e11, 0.13),
-           triso.CoatingLayer("OPyC", 40e-6, **pyc),
-       ),
-   )
-   history = triso.ParticleHistory(
-       end_fluence=3e25,
-       internal_pressure=((0.0, 3e25), (0.0, 20e6)),   # linear ramp
-       temperature=1273.0,
-   )
-   result = triso.solve_particle(particle, history)
+   pyc = dict(youngs_modulus=3.96e10, poissons_ratio=0.33, creep_coefficient=2.71e-35, swelling="a")
+   layers = (triso.CoatingLayer(name="IPyC", thickness=40e-6, **pyc), triso.CoatingLayer(name="SiC", thickness=35e-6, youngs_modulus=3.7e11, poissons_ratio=0.13), triso.CoatingLayer(name="OPyC", thickness=40e-6, **pyc))
+   particle = triso.TrisoParticle(kernel_diameter=425e-6, buffer_thickness=100e-6, layers=layers)
+   # The internal pressure rises linearly from 0 to 20 MPa over the irradiation.
+   history = triso.ParticleHistory(end_fluence=3e25, internal_pressure=((0.0, 3e25), (0.0, 20e6)), temperature=1273.0)
+   result = triso.TrisoParticleModel(particle=particle, history=history, numerics=triso.ParticleNumerics(steps=600, elements_per_layer=32)).run()
 
 The creep coefficient is in SI units, :math:`1/(\mathrm{Pa}\cdot
 \mathrm{n/m^2})`: :math:`2.71\times10^{-4}\,(\mathrm{MPa}\cdot10^{25}\,

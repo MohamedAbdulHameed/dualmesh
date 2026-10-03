@@ -23,6 +23,8 @@ Every piece is checked against something known independently of the code:
 
 from __future__ import annotations
 
+import types
+
 import dualmesh as dm
 import numpy as np
 import pytest
@@ -40,9 +42,7 @@ def test_uo2_conductivity_reproduces_fink():
     """Fink (2000): 3.47 W/m/K at 1000 K for 95 % dense UO2 (IAEA-TECDOC-1496
     lists 3.47 and, for fully dense fuel, 3.87)."""
     assert props.uo2_conductivity(1000.0, model="fink") == pytest.approx(3.467, abs=1e-3)
-    assert props.uo2_conductivity(
-        1000.0, model="fink", theoretical_density_fraction=1.0
-    ) == pytest.approx(3.874, abs=1e-3)
+    assert props.uo2_conductivity(1000.0, model="fink", theoretical_density_fraction=1.0) == pytest.approx(3.874, abs=1e-3)
 
 
 def test_uo2_conductivity_burnup_models():
@@ -53,17 +53,11 @@ def test_uo2_conductivity_burnup_models():
     ((1 - 0.04)/(1 + 0.02))/((1 - 0.05)/(1 + 0.025))."""
     k1d, k1p, k2p, k4r = props.lucuta_factors(1000.0, 0.03, 0.95)
     assert (k1d, k1p, k2p, k4r) == pytest.approx((0.8345, 1.0023, 1.0, 0.9555), abs=1e-4)
-    assert props.uo2_conductivity(1000.0, 0.0, 0.95) == pytest.approx(
-        props.uo2_conductivity(1000.0, 0.0, 0.95, "fink"), rel=1e-12
-    )
+    assert props.uo2_conductivity(1000.0, 0.0, 0.95) == pytest.approx(props.uo2_conductivity(1000.0, 0.0, 0.95, "fink"), rel=1e-12)
     ratio = (0.96 / 1.02) / (0.95 / 1.025)
-    assert props.uo2_conductivity(1000.0, 0.0, 0.96) == pytest.approx(
-        ratio * props.uo2_conductivity(1000.0, 0.0, 0.95), rel=1e-12
-    )
+    assert props.uo2_conductivity(1000.0, 0.0, 0.96) == pytest.approx(ratio * props.uo2_conductivity(1000.0, 0.0, 0.95), rel=1e-12)
     for burnup, expected in ((0.0, 3.434), (30.0, 2.563), (60.0, 2.132)):
-        assert props.uo2_conductivity(1000.0, burnup / 938.3, 0.95, "nfi") == pytest.approx(
-            expected, abs=1e-3
-        )
+        assert props.uo2_conductivity(1000.0, burnup / 938.3, 0.95, "nfi") == pytest.approx(expected, abs=1e-3)
     # Burnup degrades the conductivity.
     assert props.uo2_conductivity(1000.0, 0.03) < props.uo2_conductivity(1000.0, 0.0)
     # Halden correlation (IAEA-TECDOC-1496, Sect. 6.1.2), 95 % dense fuel at
@@ -76,8 +70,42 @@ def test_uo2_conductivity_burnup_models():
     assert halden == pytest.approx(2.8466 * 0.99996, abs=1e-4)
     halden = props.uo2_conductivity(1273.15, 10.0 / ratio / 938.3, 0.95, "halden")
     assert halden == pytest.approx(2.6568 * 0.99996, abs=1e-4)
+    # Wiesenack limits the temperature of the phonon term to 1650 C: at 2000 C
+    # the fresh fuel has 1/(0.1148 + 2.475e-4 x 1650) + 0.0132 exp(0.00188 x 2000).
+    halden = props.uo2_conductivity(2273.15, 0.0, 0.95, "halden")
+    assert halden == pytest.approx(2.478217, abs=1e-5)
     with pytest.raises(Exception, match="fink, fink_lucuta, nfi or halden"):
         props.uo2_conductivity(1000.0, model="fink95")
+
+
+def test_escore_densification_follows_falcon():
+    """FALCON MOD01 Eqs. 5-22 and 5-24 with the intercept 7.235, which makes C
+    continuous at 750 C: C = 7.235 - 0.0086 (T_C - 25) below 750 C and 1
+    above, with the pellet-average burnup. The rod passes the pellet-average
+    burnup to the escore model."""
+
+    def expected(temperature_c, burnup):
+        c = 7.235 - 0.0086 * (temperature_c - 25.0) if temperature_c < 750.0 else 1.0
+        return 0.01 * (np.exp(burnup * np.log(0.01) / (c * 5.0)) - 1.0)
+
+    for temperature_c in (25.0, 500.0, 749.0, 800.0):
+        for burnup in (0.5, 2.0, 5.0):
+            assert props.uo2_densification_escore(temperature_c + 273.15, burnup, 0.01, 5.0) == pytest.approx(expected(temperature_c, burnup), rel=1e-12)
+    # C is continuous at 750 C, so the densification has no step there.
+    below = props.uo2_densification_escore(750.0 - 1e-9 + 273.15, 2.0, 0.01, 5.0)
+    above = props.uo2_densification_escore(750.0 + 273.15, 2.0, 0.01, 5.0)
+    assert below == pytest.approx(above, rel=1e-9)
+    calls = []
+
+    class Recorder:
+        def add_property(self, type_name, name, **parameters):
+            calls.append((type_name, parameters))
+
+    context = types.SimpleNamespace(models=fuel.RodModels(relocation=False, gaseous_swelling=False, densification=True, solid_swelling=True), geometry=None, temperature="temperature", stress_free_temperature=293.15, formulation="axisymmetric", factors=None, burnup=dict(burnup="burnup", burnup_unit="FIMA"))
+    fuel.UO2Fuel(densification_model="escore").add_eigenstrains(Recorder(), "fuel", context)
+    swelling = [parameters for type_name, parameters in calls if type_name == "UO2_volumetric_swelling_eigenstrain"]
+    assert swelling[0]["densification_burnup"] == "pellet_average_burnup"
+    assert swelling[0]["burnup"] == "burnup"
 
 
 def test_uo2_heat_capacity_expansion_and_swelling():
@@ -102,7 +130,12 @@ def test_uranium_nitride_correlations():
     """Hayes et al. (1990) and Ross et al. (1990), with densities as fractions
     of the theoretical density and burnups in FIMA."""
     assert props.un_conductivity(1000.0, 1.0) == pytest.approx(1.864 * 1000.0**0.361, rel=1e-12)
-    assert props.un_density(298.0) == pytest.approx(14333.0, abs=1.0)
+    # Hayes I Eq. (3) in the body, 2.997e-4, which fits the density of the
+    # lattice parameter of Eq. (1) within 0.004 g/cm^3 from 298 to 2523 K.
+    assert props.un_density(298.0) == pytest.approx(1000.0 * (14.42 - 2.997e-4 * 298.0 - 4.897e-8 * 298.0**2), rel=1e-12)
+    temperature = np.linspace(298.0, 2523.0, 20)
+    lattice = 1e-10 * (4.879 + 3.264e-5 * temperature + 6.889e-9 * temperature**2)
+    assert props.un_density(temperature) == pytest.approx(4 * (238.0289e-3 + 14.0067e-3) / 6.02214076e23 / lattice**3, abs=4.0)
     assert props.un_youngs_modulus(298.0, 1.0) / 1e9 == pytest.approx(258.5, abs=0.1)
     assert props.un_poissons_ratio(1.0) == pytest.approx(0.281, abs=1e-3)
     assert props.un_volumetric_swelling(1500.0, 0.02, 0.95) == pytest.approx(0.0661, abs=1e-4)
@@ -136,6 +169,32 @@ def test_zircaloy_and_gas_correlations():
     j1 = props.gas_jump_distance({"helium": 1.0}, 600.0, 1e6)
     j2 = props.gas_jump_distance({"helium": 1.0}, 600.0, 2e6)
     assert j1 / j2 == pytest.approx(2.0, rel=1e-12)
+    # Lanning and Hann (BNWL-1894), Appendix B: g = 2878 (2 - a)/a k T^(1/2)/P
+    # (sum x/M)^(-1/2) per surface in cal, cm and dyn units, with a
+    # interpolated between the fits for helium and xenon by sum x M.
+    T, P = 700.0, 3e6
+    composition = {"helium": 0.8, "xenon": 0.2}
+    k = props.gas_conductivity(composition, T)
+    mass = 0.8 * 4.0026 + 0.2 * 131.293
+    a_he, a_xe = 0.425 - 2.3e-4 * T, 0.749 - 2.5e-4 * T
+    a = a_he + (a_xe - a_he) * (mass - 4.0026) / (131.293 - 4.0026)
+    g_cm = 2878.0 * (2 - a) / a * (k / 418.68) * np.sqrt(T) / (10 * P) / np.sqrt(0.8 / 4.0026 + 0.2 / 131.293)
+    assert props.gas_jump_distance(composition, T, P) == pytest.approx(2 * g_cm / 100, rel=1e-5)
+    # Brokaw (1958) Eqs. (12) and (13) with A* = B* = 1.1.
+    x = np.array([0.8, 0.2])
+    M = np.array([4.0026, 131.293])
+    kp = np.array([props.gas_conductivity({"helium": 1.0}, T), props.gas_conductivity({"xenon": 1.0}, T)])
+    total = 0.0
+    for i in range(2):
+        j = 1 - i
+        phi = (1 + np.sqrt(kp[i] / kp[j]) * (M[i] / M[j]) ** 0.25) ** 2 / (2**1.5 * np.sqrt(1 + M[i] / M[j]))
+        psi = phi * (1 + ((M[i] - M[j]) / (M[i] + M[j])) ** 2 * (15 / (4 * 1.1) - 1) * (1 + (12 * 1.1 + 5) / (30 - 8 * 1.1) * M[j] / (M[i] - M[j])))
+        total += kp[i] / (1 + psi * x[j] / x[i])
+    assert k == pytest.approx(total, rel=2e-3)
+    # Ross and Stoute (1962), Eq. (A.9): h_s = k_m P/(a_0 R^(1/2) H) with
+    # R = ((R_1^2 + R_2^2)/2)^(1/2) and a_0 = 1/2 cm^(1/2).
+    R = np.sqrt((2e-6**2 + 1e-6**2) / 2)
+    assert props.solid_contact_conductance(5.0, 10e6, 1e9, 2e-6, 1e-6) == pytest.approx(5.0 * 10e6 / (0.05 * np.sqrt(R) * 1e9), rel=1e-12)
     growth = props.zircaloy_irradiation_growth([1e25, 2e25])
     assert 0 < growth[0] < growth[1]
 
@@ -172,13 +231,8 @@ def test_an_object_gives_the_same_answer_in_either_burnup_unit():
     for burnup, unit in ((0.04, "FIMA"), (0.04 * mwd_per_kg_per_fima(), "MWd/kgHM")):
         p = dm.Problem(mesh)
         p.add_variable("T", initial_condition=1200.0)
-        p.add_material("UO2_thermal", "uo2", temperature="T", burnup=burnup, burnup_unit=unit)
-        p.add_kernel(
-            "heat_conduction",
-            "k",
-            variable="T",
-            thermal_conductivity_property="thermal_conductivity",
-        )
+        p.add_property("UO2_thermal", "uo2", temperature="T", burnup=burnup, burnup_unit=unit)
+        p.add_kernel("heat_conduction", "k", variable="T", thermal_conductivity_property="thermal_conductivity")
         p.apply_initial_conditions()
         conductivities.append(np.asarray(p.property_at_centroids("thermal_conductivity")))
     assert conductivities[0] == pytest.approx(conductivities[1], rel=1e-13)
@@ -194,24 +248,14 @@ KF, KC, H, Q3, T0 = 3.0, 16.0, 5000.0, 3.0e8, 600.0
 
 
 def _geometry(fuel_stack_height=0.02, pellet_inner_radius=0.0):
-    return fuel.RodGeometry(
-        pellet_outer_radius=A,
-        clad_inner_radius=B,
-        clad_outer_radius=C,
-        fuel_stack_height=fuel_stack_height,
-        pellet_inner_radius=pellet_inner_radius,
-    )
+    return fuel.RodGeometry(pellet_outer_radius=A, clad_inner_radius=B, clad_outer_radius=C, fuel_stack_height=fuel_stack_height, pellet_inner_radius=pellet_inner_radius)
 
 
 def _exact_temperature(r):
     qp = Q3 * np.pi * A**2
     t_clad_inner = T0 + qp / (2 * np.pi * KC) * np.log(C / B)
     t_surface = t_clad_inner + qp / (2 * np.pi * A * H)
-    return np.where(
-        r <= A + 1e-9,
-        t_surface + Q3 * (A**2 - r**2) / (4 * KF),
-        T0 + qp / (2 * np.pi * KC) * np.log(C / np.maximum(r, B)),
-    )
+    return np.where(r <= A + 1e-9, t_surface + Q3 * (A**2 - r**2) / (4 * KF), T0 + qp / (2 * np.pi * KC) * np.log(C / np.maximum(r, B)))
 
 
 def _gap_problem(mesh, method, coordinates):
@@ -220,17 +264,8 @@ def _gap_problem(mesh, method, coordinates):
     p.add_kernel("heat_conduction", "kf", variable="T", thermal_conductivity=KF, block=["fuel"])
     p.add_kernel("heat_conduction", "kc", variable="T", thermal_conductivity=KC, block=["clad"])
     p.add_kernel("heat_source", "q", variable="T", heat_source=Q3, block=["fuel"])
-    p.add_boundary_condition(
-        "gap_heat_transfer",
-        "gap",
-        variable="T",
-        boundary=["fuel_outer"],
-        secondary_boundary=["clad_inner"],
-        gap_conductance=H,
-    )
-    p.add_boundary_condition(
-        "Dirichlet_boundary_condition", "cool", variable="T", boundary=["clad_outer"], value=T0
-    )
+    p.add_boundary_condition("gap_heat_transfer", "gap", variable="T", boundary=["fuel_outer"], secondary_boundary=["clad_inner"], gap_conductance=H)
+    p.add_boundary_condition("Dirichlet_boundary_condition", "cool", variable="T", boundary=["clad_outer"], value=T0)
     p.solve()
     return p
 
@@ -242,14 +277,7 @@ def test_gap_heat_transfer_in_a_radial_slice(method):
     outer surface of the tube."""
     errors = []
     for n in (8, 16, 32):
-        mesh = fuel.radial_slice_mesh(
-            _geometry(),
-            fuel.RodMesh(
-                num_fuel_radial_elements=n,
-                num_clad_radial_elements=max(2, n // 4),
-                fuel_surface_grading=1.0,
-            ),
-        )
+        mesh = fuel.radial_slice_mesh(_geometry(), fuel.RodMesh(num_fuel_radial_elements=n, num_clad_radial_elements=max(2, n // 4), fuel_surface_grading=1.0))
         p = _gap_problem(mesh, method, "axisymmetric")
         r = np.abs(p.entity_points()[:, 0])
         errors.append(np.abs(p.values("T") - _exact_temperature(r)).max())
@@ -261,10 +289,7 @@ def test_gap_heat_transfer_in_a_radial_slice(method):
 @pytest.mark.parametrize("method", METHODS)
 def test_gap_heat_transfer_axisymmetric(method):
     geometry = _geometry()
-    mesh = fuel.axisymmetric_rod_mesh(
-        geometry,
-        fuel.RodMesh(num_fuel_radial_elements=24, num_clad_radial_elements=6, num_axial_elements=3),
-    )
+    mesh = fuel.axisymmetric_rod_mesh(geometry, fuel.RodMesh(num_fuel_radial_elements=24, num_clad_radial_elements=6, num_axial_elements=3))
     p = _gap_problem(mesh, method, "axisymmetric")
     r = np.abs(p.entity_points()[:, 0])
     assert np.abs(p.values("T") - _exact_temperature(r)).max() < 1.0
@@ -279,26 +304,11 @@ def test_gap_heat_transfer_in_three_dimensions(method):
     error must fall as the section is refined."""
     errors = []
     for core, rings in ((4, 6), (8, 12)):
-        mesh = fuel.three_dimensional_rod_mesh(
-            _geometry(),
-            fuel.RodMesh(
-                num_fuel_core_divisions=core,
-                num_fuel_radial_elements=rings,
-                num_clad_radial_elements=2,
-                num_axial_elements=1,
-                fuel_surface_grading=0.6,
-            ),
-        )
+        mesh = fuel.three_dimensional_rod_mesh(_geometry(), fuel.RodMesh(num_fuel_core_divisions=core, num_fuel_radial_elements=rings, num_clad_radial_elements=2, num_axial_elements=1, fuel_surface_grading=0.6))
         p = _gap_problem(mesh, method, "cartesian")
         pts = p.entity_points()
-        errors.append(
-            np.abs(p.values("T") - _exact_temperature(np.hypot(pts[:, 0], pts[:, 1]))).max()
-        )
-        volume = sum(
-            m
-            for m, e in zip(mesh.element_measures(), range(mesh.num_elements))
-            if mesh.element_block(e) == 0
-        )
+        errors.append(np.abs(p.values("T") - _exact_temperature(np.hypot(pts[:, 0], pts[:, 1]))).max())
+        volume = sum(m for m, e in zip(mesh.element_measures(), range(mesh.num_elements)) if mesh.element_block(e) == 0)
         assert -p.total_reaction("T", "clad_outer") == pytest.approx(Q3 * volume, rel=1e-9)
     assert errors[1] < 0.35 * errors[0]
 
@@ -318,11 +328,7 @@ def test_annular_pellet_meshes_have_a_bore(builder):
     names = set(mesh.sideset_names())
     assert "fuel_inner" in names and "axis" not in names
     if builder == "axisymmetric":
-        area = sum(
-            m
-            for m, e in zip(mesh.element_measures(), range(mesh.num_elements))
-            if mesh.element_block(e) == 0
-        )
+        area = sum(m for m, e in zip(mesh.element_measures(), range(mesh.num_elements)) if mesh.element_block(e) == 0)
         assert area == pytest.approx((A - 0.9e-3) * 0.01, rel=1e-12)
 
 
@@ -350,42 +356,16 @@ def test_thermal_stress_of_a_long_cylinder(method):
         p.add_variable("u")
         p.add_kernel("diffusion", "conduction", variable="T")
         p.add_kernel("body_force", "heat", variable="T", value=4 * DT / a**2)
-        p.add_boundary_condition(
-            "Dirichlet_boundary_condition",
-            "surface_T",
-            variable="T",
-            boundary=["surface"],
-            value=0.0,
-        )
-        p.add_material(
-            "thermal_expansion_eigenstrain",
-            "thermal",
-            temperature="T",
-            thermal_expansion_coefficient=ALPHA,
-            stress_free_temperature=0.0,
-            eigenstrain_name="thermal_strain",
-        )
-        p.add_material(
-            "small_strain_stress",
-            "stress",
-            displacements=["u"],
-            formulation="axisymmetric_1d",
-            youngs_modulus=E,
-            poissons_ratio=NU,
-            eigenstrain_names=["thermal_strain"],
-            axial_strain=ALPHA * DT / 2,
-        )
+        p.add_boundary_condition("Dirichlet_boundary_condition", "surface_T", variable="T", boundary=["surface"], value=0.0)
+        p.add_property("thermal_expansion_eigenstrain", "thermal", temperature="T", thermal_expansion_coefficient=ALPHA, stress_free_temperature=0.0, eigenstrain_name="thermal_strain")
+        p.add_property("small_strain_stress", "stress", displacements=["u"], formulation="axisymmetric_1d", youngs_modulus=E, poissons_ratio=NU, eigenstrain_names=["thermal_strain"], axial_strain=ALPHA * DT / 2)
         p.add_kernel("stress_divergence", "equilibrium", variable="u", component=0)
-        p.add_boundary_condition(
-            "Dirichlet_boundary_condition", "axis", variable="u", boundary=["axis"], value=0.0
-        )
+        p.add_boundary_condition("Dirichlet_boundary_condition", "axis", variable="u", boundary=["axis"], value=0.0)
         p.solve()
         s = np.asarray(p.property_at_centroids("stress"))
         r = p.entity_points()[:n, 0] if method == "zfvm" else 0.5 * (points[1:, 0] + points[:-1, 0])
         c = ALPHA * E * DT / (1 - NU)
-        exact = np.column_stack(
-            [c * (r**2 / a**2 - 1) / 4, c * (r**2 / a**2 - 0.5), c * (3 * r**2 / a**2 - 1) / 4]
-        )
+        exact = np.column_stack([c * (r**2 / a**2 - 1) / 4, c * (r**2 / a**2 - 0.5), c * (3 * r**2 / a**2 - 1) / 4])
         errors.append(np.abs(s[:, :3] - exact).max() / c)
     assert errors[-1] < 1e-3
     assert np.log2(errors[-2] / errors[-1]) > 1.4
@@ -404,31 +384,10 @@ def test_thick_tube_under_pressure(method):
     mesh.add_sideset_from_faces("outer", [[n]])
     p = dm.Problem(mesh, method=method, coordinates="axisymmetric")
     p.add_variable("u")
-    p.add_material(
-        "small_strain_stress",
-        "stress",
-        displacements=["u"],
-        formulation="axisymmetric_1d",
-        youngs_modulus=E,
-        poissons_ratio=NU,
-    )
+    p.add_property("small_strain_stress", "stress", displacements=["u"], formulation="axisymmetric_1d", youngs_modulus=E, poissons_ratio=NU)
     p.add_kernel("stress_divergence", "equilibrium", variable="u", component=0)
-    p.add_boundary_condition(
-        "pressure_boundary_condition",
-        "p_in",
-        variable="u",
-        component=0,
-        boundary=["inner"],
-        pressure=pi,
-    )
-    p.add_boundary_condition(
-        "pressure_boundary_condition",
-        "p_out",
-        variable="u",
-        component=0,
-        boundary=["outer"],
-        pressure=po,
-    )
+    p.add_boundary_condition("pressure_boundary_condition", "p_in", variable="u", component=0, boundary=["inner"], pressure=pi)
+    p.add_boundary_condition("pressure_boundary_condition", "p_out", variable="u", component=0, boundary=["outer"], pressure=po)
     p.solve()
     s = np.asarray(p.property_at_centroids("stress"))
     r = p.entity_points()[:n, 0] if method == "zfvm" else 0.5 * (points[1:, 0] + points[:-1, 0])
@@ -443,35 +402,15 @@ def _creep_bar(model, temperature, stress, method, extra):
     for v in ("T", "ux", "uy", "uz"):
         p.add_variable(v)
     p.add_kernel("diffusion", "conduction", variable="T")
-    p.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "T",
-        variable="T",
-        boundary=list(mesh.sideset_names()),
-        value=temperature,
-    )
-    p.add_material(
-        "small_strain_stress",
-        "stress",
-        displacements=["ux", "uy", "uz"],
-        formulation="three_dimensional",
-        youngs_modulus=1e11,
-        poissons_ratio=0.3,
-        creep_model=model,
-        temperature="T",
-        **extra,
-    )
+    p.add_boundary_condition("Dirichlet_boundary_condition", "T", variable="T", boundary=list(mesh.sideset_names()), value=temperature)
+    p.add_property("small_strain_stress", "stress", displacements=["ux", "uy", "uz"], formulation="three_dimensional", youngs_modulus=1e11, poissons_ratio=0.3, creep_model=model, temperature="T", **extra)
     for i, v in enumerate(("ux", "uy", "uz")):
         p.add_kernel("stress_divergence", f"equilibrium_{v}", variable=v, component=i)
     for name, variable, side in (("x", "ux", "left"), ("y", "uy", "bottom"), ("z", "uz", "back")):
-        p.add_boundary_condition(
-            "Dirichlet_boundary_condition", name, variable=variable, boundary=[side], value=0.0
-        )
-    p.add_boundary_condition(
-        "traction_boundary_condition", "pull", variable="uz", boundary=["front"], traction=stress
-    )
+        p.add_boundary_condition("Dirichlet_boundary_condition", name, variable=variable, boundary=[side], value=0.0)
+    p.add_boundary_condition("traction_boundary_condition", "pull", variable="uz", boundary=["front"], traction=stress)
     p.solve()
-    p.solve_transient(end_time=1e6, dt=1e5)
+    p.solve_transient(end_time=1e6, time_step=1e5)
     return p.sample("uz", [[0.5e-3, 0.5e-3, 1e-3 * (1 - 1e-9)]])[0] / 1e-3
 
 
@@ -479,27 +418,9 @@ def _creep_bar(model, temperature, stress, method, extra):
 @pytest.mark.parametrize(
     "model, temperature, stress, extra, rate",
     [
-        (
-            "zircaloy",
-            650.0,
-            150e6,
-            {"fast_neutron_flux": 1e18},
-            lambda: props.zircaloy_creep_rate(150e6, 650.0, fast_neutron_flux=1e18),
-        ),
-        (
-            "uo2",
-            1400.0,
-            40e6,
-            {"fission_rate": 1e19},
-            lambda: props.uo2_creep_rate(40e6, 1400.0, 1e19, 0.95, 5e-6),
-        ),
-        (
-            "un",
-            1400.0,
-            30e6,
-            {"fission_rate": 1e19},
-            lambda: props.un_creep_rate(30e6, 1400.0, 1e19, 0.95, 5e-6),
-        ),
+        ("zircaloy", 650.0, 150e6, {"fast_neutron_flux": 1e18}, lambda: props.zircaloy_creep_rate(150e6, 650.0, fast_neutron_flux=1e18)),
+        ("uo2", 1400.0, 40e6, {"fission_rate": 1e19}, lambda: props.uo2_creep_rate(40e6, 1400.0, 1e19, 0.95, 5e-6)),
+        ("un", 1400.0, 30e6, {"fission_rate": 1e19}, lambda: props.un_creep_rate(30e6, 1400.0, 1e19, 0.95, 5e-6)),
     ],
 )
 def test_creep_under_constant_stress(method, model, temperature, stress, extra, rate):
@@ -534,26 +455,10 @@ def test_booth_diffusion_is_exact():
 # ---------------------------------------------------------------------------
 # The rod
 # ---------------------------------------------------------------------------
-def _rod(
-    model="axisymmetric",
-    method="fem",
-    fuel_material=None,
-    geometry=None,
-    coolant=None,
-    history=None,
-    models=None,
-    mesh=None,
-    output_times=None,
-    max_time_step=10 * DAY,
-    **output,
-):
+def _rod(model="axisymmetric", method="fem", fuel_material=None, geometry=None, coolant=None, history=None, models=None, mesh=None, output_times=None, max_time_step=10 * DAY, **output):
     geometry = geometry or fuel.RodGeometry.from_diameters(8.19e-3, 8.36e-3, 9.50e-3, 0.05)
-    coolant = coolant or fuel.ForcedConvection(
-        inlet_temperature=565.0, pressure=15.5e6, mass_flux=3800.0, rod_pitch=12.6e-3
-    )
-    history = history or fuel.PowerHistory(
-        linear_heat_rate=[1e3, 25e3, 25e3], time=[0, 3600, 100 * DAY]
-    )
+    coolant = coolant or fuel.ForcedConvection(inlet_temperature=565.0, pressure=15.5e6, mass_flux=3800.0, rod_pitch=12.6e-3)
+    history = history or fuel.PowerHistory(linear_heat_rate=[1e3, 25e3, 25e3], time=[0, 3600, 100 * DAY])
     rod = fuel.FuelRod(
         geometry,
         fuel_material or fuel.UO2Fuel(),
@@ -562,15 +467,8 @@ def _rod(
         coolant,
         history,
         models=models,
-        numerics=fuel.RodNumerics(
-            model=model,
-            method=method,
-            mesh=mesh or fuel.RodMesh(num_axial_elements=2, num_axial_slices=1),
-            max_time_step=max_time_step,
-        ),
-        output=fuel.RodOutput(
-            output_times=output_times, print_input=False, print_steps=False, **output
-        ),
+        numerics=fuel.RodNumerics(model=model, method=method, mesh=mesh or fuel.RodMesh(num_axial_elements=2, num_axial_slices=1), max_time_step=max_time_step),
+        output=fuel.RodOutput(output_times=output_times, print_input=False, print_steps=False, **output),
     )
     return rod, rod.run()
 
@@ -579,15 +477,17 @@ def test_axisymmetric_and_one_and_a_half_dimensional_rods_agree():
     """The same rod, with thermal expansion, densification, swelling,
     relocation, creep and fission gas release, in two models and two
     methods: the centerline temperatures agree within 10 K and the gaps
-    within 2.5 micrometres (about 7 % of the gap after 100 days; the 1.5D
+    within 3 micrometres (about 8 % of the gap after 100 days). The 1.5D
     slices have no axial shear between fuel and cladding, which the r-z model
-    has, so the two drift apart slowly as the fuel creeps and swells)."""
+    has, so the two drift apart slowly as the fuel creeps, swells and
+    densifies (2.8 micrometres with the ESCORE densification, 2.0 with
+    MATPRO's)."""
     times = [0, 3600, 50 * DAY, 100 * DAY]
     _, rz = _rod("axisymmetric", "fem", output_times=times)
     _, slices = _rod("1.5d", "dmcdm", output_times=times)
     T_rz, T_slices = rz.fuel_centerline_temperature, slices.fuel_centerline_temperature
     assert np.abs(T_rz.max(axis=1) - T_slices.max(axis=1)).max() < 10.0
-    assert np.abs(rz.gap_width.mean(axis=1) - slices.gap_width.mean(axis=1)).max() < 2.5e-6
+    assert np.abs(rz.gap_width.mean(axis=1) - slices.gap_width.mean(axis=1)).max() < 3.0e-6
     # The hot gap is narrower than the cold one, and the cladding creeps down
     # under the coolant pressure.
     assert rz.gap_width[1, 0] < rz.gap_width[0, 0]
@@ -597,24 +497,12 @@ def test_axisymmetric_and_one_and_a_half_dimensional_rods_agree():
 def test_pellet_cladding_contact_closes_the_gap():
     """A rod with a 30 micrometre gap at 40 kW/m: the gap closes, the
     penetration is small (the penalty is stiff) and the four methods agree."""
-    geometry = fuel.RodGeometry(
-        pellet_outer_radius=4.15e-3,
-        clad_inner_radius=4.18e-3,
-        clad_outer_radius=4.75e-3,
-        fuel_stack_height=0.05,
-    )
+    geometry = fuel.RodGeometry(pellet_outer_radius=4.15e-3, clad_inner_radius=4.18e-3, clad_outer_radius=4.75e-3, fuel_stack_height=0.05)
     history = fuel.PowerHistory(linear_heat_rate=[1e3, 40e3, 40e3], time=[0, 3600, 7200])
     models = fuel.RodModels(creep=False, fission_gas_release="none")
     hoops = []
     for method in METHODS:
-        _, out = _rod(
-            "axisymmetric",
-            method,
-            geometry=geometry,
-            history=history,
-            models=models,
-            max_time_step=None,
-        )
+        _, out = _rod("axisymmetric", method, geometry=geometry, history=history, models=models, max_time_step=None)
         assert -0.2e-6 < out.gap_width[-1, 0] < 0.0
         hoops.append(out.clad_hoop_strain[-1, 0])
     assert max(hoops) - min(hoops) < 0.03 * max(hoops)
@@ -624,12 +512,7 @@ def test_uranium_nitride_rod_runs_with_all_its_models():
     """A UN rod (Hayes conductivity, Ross swelling, Hayes creep, Storms gas
     release) in the axisymmetric model."""
     history = fuel.PowerHistory(linear_heat_rate=[1e3, 40e3, 40e3], time=[0, 3600, 200 * DAY])
-    rod, out = _rod(
-        fuel_material=fuel.UNFuel(),
-        history=history,
-        output_times=[0, 3600, 100 * DAY, 200 * DAY],
-        max_time_step=20 * DAY,
-    )
+    rod, out = _rod(fuel_material=fuel.UNFuel(), history=history, output_times=[0, 3600, 100 * DAY, 200 * DAY], max_time_step=20 * DAY)
     assert rod.active_models.relocation is False
     assert rod.active_models.fission_gas_release == "storms"
     # UN conducts heat far better than UO2: at 40 kW/m its centerline stays
@@ -651,25 +534,11 @@ def test_three_dimensional_rod_agrees_with_the_axisymmetric_one():
     models = fuel.RodModels(mechanics=False, fission_gas_release="none")
     rises = {}
     for model, core in (("axisymmetric", 4), ("three_dimensional", 4), ("three_dimensional", 8)):
-        _, out = _rod(
-            model,
-            history=history,
-            models=models,
-            mesh=fuel.RodMesh(
-                num_axial_elements=2,
-                num_fuel_core_divisions=core,
-                num_fuel_radial_elements=8 if model == "three_dimensional" else 12,
-            ),
-            max_time_step=None,
-        )
-        rises[model, core] = (
-            out.fuel_centerline_temperature[-1, 0] - out.clad_outer_temperature[-1, 0]
-        )
+        _, out = _rod(model, history=history, models=models, mesh=fuel.RodMesh(num_axial_elements=2, num_fuel_core_divisions=core, num_fuel_radial_elements=8 if model == "three_dimensional" else 12), max_time_step=None)
+        rises[model, core] = out.fuel_centerline_temperature[-1, 0] - out.clad_outer_temperature[-1, 0]
     reference = rises["axisymmetric", 4]
     assert rises["three_dimensional", 8] == pytest.approx(reference, rel=0.03)
-    assert abs(rises["three_dimensional", 8] - reference) < abs(
-        rises["three_dimensional", 4] - reference
-    )
+    assert abs(rises["three_dimensional", 8] - reference) < abs(rises["three_dimensional", 4] - reference)
 
 
 def test_the_rod_keeps_its_books():
@@ -680,25 +549,14 @@ def test_the_rod_keeps_its_books():
     f, g = rod.fuel, rod.geometry
     energy = 1e3 * 0 + 0.5 * (1e3 + 25e3) * 3600 + 25e3 * (100 * DAY - 3600)
     fima = energy / (f.energy_per_fission * f.heavy_metal_atom_density() * g.fuel_cross_section)
-    assert out.rod_average_burnup[-1] == pytest.approx(
-        rod.converter.from_fima(fima, "MWd/kgHM"), rel=1e-12
-    )
+    assert out.rod_average_burnup[-1] == pytest.approx(rod.converter.from_fima(fima, "MWd/kgHM"), rel=1e-12)
     assert out.gas_amount == pytest.approx(rod.fill_amount, rel=1e-12)
     assert out.helium_fraction == pytest.approx(1.0)
     # Burnup history: 20 and 40 MWd/kgU at 20 and then 15 kW/m.
-    history = fuel.PowerHistory(
-        linear_heat_rate=[20e3, 20e3, 15e3], burnup=[0.0, 20.0, 40.0], burnup_unit="MWd/kgU"
-    )
-    _, out = _rod(
-        history=history,
-        models=fuel.RodModels(mechanics=False, fission_gas_release="none"),
-        max_time_step=None,
-        burnup_unit="GWd/tHM",
-    )
+    history = fuel.PowerHistory(linear_heat_rate=[20e3, 20e3, 15e3], burnup=[0.0, 20.0, 40.0], burnup_unit="MWd/kgU")
+    _, out = _rod(history=history, models=fuel.RodModels(mechanics=False, fission_gas_release="none"), max_time_step=None, burnup_unit="GWd/tHM")
     assert out.rod_average_burnup == pytest.approx([0.0, 20.0, 40.0], rel=1e-12)
-    assert out.burnup_in("FIMA", rod_average=True)[-1] == pytest.approx(
-        40.0 / rod.converter.mwd_per_kg_per_fima, rel=1e-12
-    )
+    assert out.burnup_in("FIMA", rod_average=True)[-1] == pytest.approx(40.0 / rod.converter.mwd_per_kg_per_fima, rel=1e-12)
 
 
 def test_an_annular_rod_runs_hotter_in_burnup_and_colder_at_the_centre():
@@ -734,12 +592,7 @@ def test_gaseous_swelling_opens_no_gap_and_closes_it_faster():
     history = fuel.PowerHistory(linear_heat_rate=[1e3, 30e3, 30e3], time=[0, 3600, 300 * DAY])
     gaps = {}
     for swelling in (False, True):
-        _, out = _rod(
-            history=history,
-            fuel_material=fuel.UO2Fuel(gaseous_swelling_model="matpro"),
-            models=fuel.RodModels(gaseous_swelling=swelling, fission_gas_release="none"),
-            max_time_step=30 * DAY,
-        )
+        _, out = _rod(history=history, fuel_material=fuel.UO2Fuel(gaseous_swelling_model="matpro"), models=fuel.RodModels(gaseous_swelling=swelling, fission_gas_release="none"), max_time_step=30 * DAY)
         gaps[swelling] = out.gap_width[-1].min()
     assert gaps[True] < gaps[False]
 
@@ -750,11 +603,13 @@ def test_the_output_is_announced_and_written(tmp_path, capsys):
     rod, out = _rod(directory=str(tmp_path), file_base="case")
     report = out.input_report
     assert "fuel_stack_height" in report and "(default)" in report and "given" in report
-    history = np.genfromtxt(tmp_path / "case_history.csv", delimiter=",", names=True, comments="#")
-    assert history["gas_pressure"] == pytest.approx(out.gas_pressure)
-    second = (tmp_path / "case_history.csv").read_text().splitlines()[1]
-    assert second.startswith("# units: s, d, W/m, MWd/kgHM, Pa")
-    axial = np.genfromtxt(tmp_path / "case_axial.csv", delimiter=",", names=True, comments="#")
+    # One header line with the units in the column names, then the rows.
+    lines = (tmp_path / "case_history.csv").read_text().splitlines()
+    assert lines[0].startswith("time (s),time_days (d),rod_average_linear_heat_rate (W/m),rod_average_burnup (MWd/kgHM),gas_pressure (Pa)")
+    values = np.loadtxt(tmp_path / "case_history.csv", delimiter=",", skiprows=1)
+    assert values[:, lines[0].split(",").index("gas_pressure (Pa)")] == pytest.approx(out.gas_pressure)
+    assert out.tables["history"]["gas_pressure"] == pytest.approx(out.gas_pressure)
+    axial = np.loadtxt(tmp_path / "case_axial.csv", delimiter=",", skiprows=1)
     assert len(axial) == len(out.time) * len(out.axial_positions)
     assert "Summary" in out.summary()
     assert (tmp_path / "case_input.txt").exists()
@@ -764,12 +619,7 @@ def test_the_output_is_announced_and_written(tmp_path, capsys):
 
 def test_specifications_refuse_nonsense_with_the_reason():
     with pytest.raises(ValueError, match="pellet_outer_radius < clad_inner_radius"):
-        fuel.RodGeometry(
-            pellet_outer_radius=5e-3,
-            clad_inner_radius=4e-3,
-            clad_outer_radius=6e-3,
-            fuel_stack_height=0.1,
-        )
+        fuel.RodGeometry(pellet_outer_radius=5e-3, clad_inner_radius=4e-3, clad_outer_radius=6e-3, fuel_stack_height=0.1)
     with pytest.raises(ValueError, match="sum to 1.2"):
         fuel.FillGas(pressure=1e6, plenum_volume=0.0, composition={"helium": 1.0, "argon": 0.2})
     with pytest.raises(ValueError, match="either 'time' or 'burnup'"):
@@ -777,14 +627,7 @@ def test_specifications_refuse_nonsense_with_the_reason():
     with pytest.raises(ValueError, match="Unknown burnup unit"):
         fuel.PowerHistory(linear_heat_rate=[1.0, 2.0], burnup=[0, 1], burnup_unit="GWd/t")
     with pytest.raises(TypeError, match="'coolant' must be a ForcedConvection"):
-        fuel.FuelRod(
-            fuel.RodGeometry.from_diameters(8e-3, 8.2e-3, 9e-3, 0.1),
-            fuel.UO2Fuel(),
-            fuel.ZircaloyCladding(),
-            fuel.FillGas(pressure=1e6, plenum_volume=0.0),
-            600.0,
-            fuel.PowerHistory(linear_heat_rate=[1.0, 2.0], time=[0, 1]),
-        )
+        fuel.FuelRod(fuel.RodGeometry.from_diameters(8e-3, 8.2e-3, 9e-3, 0.1), fuel.UO2Fuel(), fuel.ZircaloyCladding(), fuel.FillGas(pressure=1e6, plenum_volume=0.0), 600.0, fuel.PowerHistory(linear_heat_rate=[1.0, 2.0], time=[0, 1]))
 
 
 def test_describe_marks_the_defaults():
@@ -822,54 +665,28 @@ def test_conjugate_fuel_rod_and_coolant_flow(method):
 
 
 def test_interface_conditions_are_refused_by_the_distributed_solver():
-    mesh = fuel.axisymmetric_rod_mesh(
-        _geometry(fuel_stack_height=0.01),
-        fuel.RodMesh(num_fuel_radial_elements=4, num_clad_radial_elements=2, num_axial_elements=2),
-    )
-    distributed = dm.DistributedProblem(mesh, method="fem", coordinates="axisymmetric")
-    p = distributed.local
+    mesh = fuel.axisymmetric_rod_mesh(_geometry(fuel_stack_height=0.01), fuel.RodMesh(num_fuel_radial_elements=4, num_clad_radial_elements=2, num_axial_elements=2))
+    p = dm.Problem(mesh, method="fem", coordinates="axisymmetric", distributed=True)
     p.add_variable("T")
     p.add_kernel("heat_conduction", "k", variable="T")
-    p.add_boundary_condition(
-        "gap_heat_transfer",
-        "gap",
-        variable="T",
-        boundary=["fuel_outer"],
-        secondary_boundary=["clad_inner"],
-        gap_conductance=1e4,
-    )
+    p.add_boundary_condition("gap_heat_transfer", "gap", variable="T", boundary=["fuel_outer"], secondary_boundary=["clad_inner"], gap_conductance=1e4)
     with pytest.raises(Exception, match="does not support"):
-        distributed.solve()
+        p.solve()
 
 
 def test_fuel_materials_start_from_a_cold_guess():
     """With the temperature left at its default initial value of zero, the
     fuel correlations (singular at absolute zero) must still give Newton's
     method a finite first Jacobian: they are evaluated at max(T, 200 K)."""
-    mesh = fuel.axisymmetric_rod_mesh(
-        fuel.RodGeometry.from_diameters(8.19e-3, 8.36e-3, 9.5e-3, 0.1)
-    )
+    mesh = fuel.axisymmetric_rod_mesh(fuel.RodGeometry.from_diameters(8.19e-3, 8.36e-3, 9.5e-3, 0.1))
     p = dm.Problem(mesh, method="fem", coordinates="axisymmetric")
     p.add_variable("T")
-    p.add_material(
-        "UO2_thermal", "fuel", block=["fuel"], temperature="T", burnup=0.02, burnup_unit="FIMA"
-    )
-    p.add_material("Zircaloy_thermal", "clad", block=["clad"], temperature="T")
-    p.add_kernel(
-        "heat_conduction", "k", variable="T", thermal_conductivity_property="thermal_conductivity"
-    )
+    p.add_property("UO2_thermal", "fuel", block=["fuel"], temperature="T", burnup=0.02, burnup_unit="FIMA")
+    p.add_property("Zircaloy_thermal", "clad", block=["clad"], temperature="T")
+    p.add_kernel("heat_conduction", "k", variable="T", thermal_conductivity_property="thermal_conductivity")
     p.add_kernel("heat_source", "q", variable="T", heat_source=3e8, block=["fuel"])
-    p.add_boundary_condition(
-        "gas_gap_heat_transfer",
-        "gap",
-        variable="T",
-        boundary=["fuel_outer"],
-        secondary_boundary=["clad_inner"],
-        gas_pressure=2.0e6,
-    )
-    p.add_boundary_condition(
-        "Dirichlet_boundary_condition", "cool", variable="T", boundary=["clad_outer"], value=600.0
-    )
+    p.add_boundary_condition("gas_gap_heat_transfer", "gap", variable="T", boundary=["fuel_outer"], secondary_boundary=["clad_inner"], gas_pressure=2.0e6)
+    p.add_boundary_condition("Dirichlet_boundary_condition", "cool", variable="T", boundary=["clad_outer"], value=600.0)
     p.solve()
     T = np.asarray(p.solution())
     assert np.all(np.isfinite(T))
@@ -884,33 +701,17 @@ def test_fuel_materials_start_from_a_cold_guess():
 # Konovalov et al. 2016), written as expressions.
 UN_AS_EXPRESSIONS = dict(
     thermal_conductivity="1.864*exp(-2.14*porosity)*temperature^0.361",
-    specific_heat=(
-        "(51.14*(365.7/temperature)^2*exp(365.7/temperature)/(exp(365.7/temperature) - 1)^2"
-        " + 9.491e-3*temperature + 2.642e11/temperature^2*exp(-18081/temperature))/0.25204"
-    ),
-    youngs_modulus=(
-        "1e6*0.258*(100*theoretical_density_fraction)^3.002*(1 - 2.375e-5*temperature)"
-    ),
+    specific_heat=("(51.14*(365.7/temperature)^2*exp(365.7/temperature)/(exp(365.7/temperature) - 1)^2 + 9.491e-3*temperature + 2.642e11/temperature^2*exp(-18081/temperature))/0.25204"),
+    youngs_modulus=("1e6*0.258*(100*theoretical_density_fraction)^3.002*(1 - 2.375e-5*temperature)"),
     poissons_ratio="1.26e-3*(100*theoretical_density_fraction)^1.174",
     thermal_strain="(7.096e-6 + 1.409e-9*temperature)*(temperature - 298)",
-    creep_rate=(
-        "2.054e-3*(von_mises_stress/1e6)^4.5*exp(-39369.5/temperature)"
-        " + 582610.427*(von_mises_stress/1e6)/(temperature*(2e6*grain_radius)^3)"
-        "*exp(-2.28/(8.617333262e-5*temperature))"
-        " + 2.9e-22*(von_mises_stress/1e6)*(fission_rate*1e-6)*exp(20*porosity)/3600"
-    ),
+    creep_rate=("2.054e-3*(von_mises_stress/1e6)^4.5*exp(-39369.5/temperature) + 582610.427*(von_mises_stress/1e6)/(temperature*(2e6*grain_radius)^3)*exp(-2.28/(8.617333262e-5*temperature)) + 2.9e-22*(von_mises_stress/1e6)*(fission_rate*1e-6)*exp(20*porosity)/3600"),
 )
 
 
 def _custom_un(**changes):
     un = fuel.UNFuel()
-    data = dict(
-        name="UN written out",
-        theoretical_density=14330.0,
-        compound_molar_mass=un.compound_molar_mass,
-        heavy_metal_molar_mass=un.heavy_metal_molar_mass,
-        **UN_AS_EXPRESSIONS,
-    )
+    data = dict(name="UN written out", theoretical_density=14326.0, compound_molar_mass=un.compound_molar_mass, heavy_metal_molar_mass=un.heavy_metal_molar_mass, **UN_AS_EXPRESSIONS)
     data.update(changes)
     return fuel.CustomFuel(**data)
 
@@ -925,9 +726,7 @@ def test_a_custom_fuel_reproduces_the_built_in_fuel_it_writes_out(model):
     models = fuel.RodModels(solid_swelling=False, fission_gas_release="none")
     results = []
     for material in (fuel.UNFuel(), _custom_un()):
-        _, out = _rod(
-            model, fuel_material=material, history=history, models=models, max_time_step=20 * DAY
-        )
+        _, out = _rod(model, fuel_material=material, history=history, models=models, max_time_step=20 * DAY)
         results.append(out)
     built_in, custom = results
     for name in ("fuel_centerline_temperature", "gap_width", "clad_hoop_strain", "gas_pressure"):
@@ -941,11 +740,7 @@ def test_a_custom_fuel_has_its_own_gas_release_and_swelling():
     history = fuel.PowerHistory(linear_heat_rate=[1e3, 40e3, 40e3], time=[0, 3600, 200 * DAY])
     gaps = {}
     for swelling in (None, "0.02*burnup/0.01"):
-        material = _custom_un(
-            volumetric_swelling=swelling,
-            fission_gas_release="fraction",
-            fission_gas_release_fraction="min(0.05 + 0*temperature + 0*burnup, 1)",
-        )
+        material = _custom_un(volumetric_swelling=swelling, fission_gas_release="fraction", fission_gas_release_fraction="min(0.05 + 0*temperature + 0*burnup, 1)")
         _, out = _rod(fuel_material=material, history=history, max_time_step=20 * DAY)
         gaps[swelling] = out.gap_width[-1].min()
         # Five per cent of the gas produced is released from the first step on.
@@ -971,9 +766,7 @@ def test_a_custom_cladding_reproduces_zircaloy_heat_conduction():
     does not reproduce)."""
     zircaloy_like = fuel.CustomCladding(
         name="Zircaloy written out",
-        thermal_conductivity=(
-            "12.767 - 5.4348e-4*min(temperature, 1800) + 8.9818e-6*min(temperature, 1800)^2"
-        ),
+        thermal_conductivity=("12.767 - 5.4348e-4*min(temperature, 1800) + 8.9818e-6*min(temperature, 1800)^2"),
         specific_heat="255.66 + 0.1024*temperature",
         density=6550.0,
         youngs_modulus=9.9e10,
@@ -993,9 +786,7 @@ def test_a_custom_cladding_reproduces_zircaloy_heat_conduction():
             fuel.UO2Fuel(),
             cladding,
             fuel.FillGas(pressure=2.0e6, plenum_volume=0.15e-6),
-            fuel.ForcedConvection(
-                inlet_temperature=565.0, pressure=15.5e6, mass_flux=3800.0, rod_pitch=12.6e-3
-            ),
+            fuel.ForcedConvection(inlet_temperature=565.0, pressure=15.5e6, mass_flux=3800.0, rod_pitch=12.6e-3),
             history,
             models=models,
             numerics=fuel.RodNumerics(mesh=fuel.RodMesh(num_axial_elements=2)),
@@ -1012,9 +803,7 @@ def test_a_custom_cladding_reproduces_zircaloy_heat_conduction():
         fuel.UO2Fuel(),
         zircaloy_like,
         fuel.FillGas(pressure=2.0e6, plenum_volume=0.15e-6),
-        fuel.ForcedConvection(
-            inlet_temperature=565.0, pressure=15.5e6, mass_flux=3800.0, rod_pitch=12.6e-3
-        ),
+        fuel.ForcedConvection(inlet_temperature=565.0, pressure=15.5e6, mass_flux=3800.0, rod_pitch=12.6e-3),
         fuel.PowerHistory(linear_heat_rate=[1e3, 25e3, 25e3], time=[0, 3600, 100 * DAY]),
         models=fuel.RodModels(fission_gas_release="none"),
         numerics=fuel.RodNumerics(mesh=fuel.RodMesh(num_axial_elements=2), max_time_step=20 * DAY),
@@ -1060,24 +849,15 @@ def test_finite_strain_agrees_with_small_strain_in_normal_operation(model):
             fuel.UO2Fuel(),
             fuel.ZircaloyCladding(),
             fuel.FillGas(pressure=2.0e6, plenum_volume=0.15e-6),
-            fuel.ForcedConvection(
-                inlet_temperature=565.0, pressure=15.5e6, mass_flux=3800.0, rod_pitch=12.6e-3
-            ),
+            fuel.ForcedConvection(inlet_temperature=565.0, pressure=15.5e6, mass_flux=3800.0, rod_pitch=12.6e-3),
             fuel.PowerHistory(linear_heat_rate=[1e3, 25e3, 25e3], time=[0, 3600, 100 * DAY]),
             models=fuel.RodModels(fission_gas_release="none"),
-            numerics=fuel.RodNumerics(
-                model=model,
-                strain=strain,
-                mesh=fuel.RodMesh(num_axial_elements=2, num_axial_slices=1),
-                max_time_step=20 * DAY,
-            ),
+            numerics=fuel.RodNumerics(model=model, strain=strain, mesh=fuel.RodMesh(num_axial_elements=2, num_axial_slices=1), max_time_step=20 * DAY),
             output=fuel.RodOutput(print_input=False, print_steps=False),
         )
         results[strain] = rod.run()
     small, finite = results["small"], results["finite"]
-    assert finite.fuel_centerline_temperature == pytest.approx(
-        small.fuel_centerline_temperature, rel=1e-3
-    )
+    assert finite.fuel_centerline_temperature == pytest.approx(small.fuel_centerline_temperature, rel=1e-3)
     # Gaps of tens of micrometres agree within 0.5 micrometre, hoop strains
     # within 2 % of their range.
     assert np.abs(finite.gap_width - small.gap_width).max() < 0.5e-6
@@ -1099,10 +879,7 @@ def test_gaseous_swelling_of_the_gas_model_is_the_bubble_volume():
         burnup = np.full(3, 1e-3 * (k + 1))  # FIMA, for the micro-cracking
         model.advance(5 * DAY, np.array([1200.0, 1500.0, 1700.0]), np.full(3, 1.2e19), 5e6, burnup)
     faces = model.faces
-    expected = (
-        4.0 / 3.0 * np.pi * model.intragranular_bubble_radius** 3 * model.bubble_density
-        + faces.density * faces.volume() * 3.0 / (2.0 * 10e-6)
-    )
+    expected = 4.0 / 3.0 * np.pi * model.intragranular_bubble_radius**3 * model.bubble_density + faces.density * faces.volume() * 3.0 / (2.0 * 10e-6)
     assert model.gaseous_swelling() == pytest.approx(expected, rel=1e-12)
     assert np.all(model.gaseous_swelling() > 0)
     # Hotter fuel holds more gas in bigger face bubbles.
@@ -1146,6 +923,27 @@ def test_the_steps_land_on_a_short_shutdown():
     assert len(result.time) == len(out)
     rod.numerics.power_history_tolerance = None
     assert list(rod._step_boundaries(out)) == list(out)
+
+
+def test_the_rod_state_is_recorded_at_the_history_points_or_every_output_interval():
+    """By default the rod state is recorded at the points of the power
+    history. With RodOutput.output_interval it is recorded every interval from
+    the first point and at the last point. RodOutput refuses both
+    output_times and output_interval."""
+    history = fuel.PowerHistory(linear_heat_rate=[1e3, 20e3, 20e3], time=[0, 3600, 25 * DAY])
+    models = fuel.RodModels(mechanics=False, fission_gas_release="none")
+    _, by_points = _rod(history=history, models=models)
+    assert list(by_points.time) == pytest.approx([0, 3600, 25 * DAY])
+    _, by_interval = _rod(history=history, models=models, output_interval=10 * DAY)
+    assert list(by_interval.time) == pytest.approx([0, 10 * DAY, 20 * DAY, 25 * DAY])
+    _, even = _rod(history=fuel.PowerHistory(linear_heat_rate=[1e3, 20e3, 20e3], time=[0, 3600, 20 * DAY]), models=models, output_interval=10 * DAY)
+    assert list(even.time) == pytest.approx([0, 10 * DAY, 20 * DAY])
+    # The steps still land on the end of the ramp, so both runs agree there.
+    assert by_interval.fuel_centerline_temperature[-1, 0] == pytest.approx(by_points.fuel_centerline_temperature[-1, 0], rel=1e-6)
+    with pytest.raises(ValueError, match="output_times or output_interval"):
+        fuel.RodOutput(output_times=[0, DAY], output_interval=DAY)
+    with pytest.raises(ValueError, match="output_interval must be positive"):
+        fuel.RodOutput(output_interval=0.0)
 
 
 def test_relocation_opens_crack_volume():

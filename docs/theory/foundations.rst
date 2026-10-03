@@ -138,7 +138,7 @@ Assembly is element by element.  For an element :math:`e` the code
 
 1. builds the integration points of the sub-cells (volume terms) and of the
    interfaces (surface terms) from the reference description of the dual mesh,
-2. evaluates :math:`u`, :math:`\nabla u`, and the material properties at those
+2. evaluates :math:`u`, :math:`\nabla u`, and the properties at those
    points from the element's nodal values, and
 3. adds :math:`\int S \,\mathrm{d}V` to the owning node's equation and
    :math:`\mp \mathbf{F}\cdot\mathbf{n}\,\Delta S` to the two nodes that share
@@ -187,7 +187,7 @@ Galerkin weak form of the same canonical equation,
        + \int_{\Omega} \psi_I \, S \, \mathrm{d}V
        - \oint_{\partial\Omega} \psi_I \, q_n \, \mathrm{d}S = 0 ,
 
-so the two methods are driven by the same kernels, the same materials, the same
+so the two methods are driven by the same kernels, the same property objects, the same
 boundary conditions, and the same solvers.  Two consequences follow, and both
 are checked in the test suite:
 

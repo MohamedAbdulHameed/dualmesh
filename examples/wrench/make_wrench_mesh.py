@@ -52,10 +52,7 @@ def build(size_mm=2.0, order=2, path=None):
     half = NUT_ACROSS_FLATS / 2.0
     corner = half / math.cos(math.pi / 6.0)
     cx, cy = NUT_CENTRE
-    points = [
-        occ.addPoint(cx + corner * math.cos(a), cy + corner * math.sin(a), 0.0)
-        for a in [k * math.pi / 3.0 for k in range(6)]
-    ]
+    points = [occ.addPoint(cx + corner * math.cos(a), cy + corner * math.sin(a), 0.0) for a in [k * math.pi / 3.0 for k in range(6)]]
     lines = [occ.addLine(points[k], points[(k + 1) % 6]) for k in range(6)]
     hexagon = occ.addPlaneSurface([occ.addCurveLoop(lines)])
     channel = occ.addRectangle(cx - 40.0, cy - half, 0.0, 40.0, 2.0 * half)
@@ -67,10 +64,7 @@ def build(size_mm=2.0, order=2, path=None):
     # Split the jaw flats where the flats of the nut end, and the handle where
     # the grip begins and ends, so that both regions are surfaces of their own.
     flat_end = cx - corner / 2.0  # the nut flats span cx -+ corner/2
-    cutters = [
-        occ.addPoint(flat_end, half, 0.0),
-        occ.addPoint(flat_end, -half, 0.0),
-    ]
+    cutters = [occ.addPoint(flat_end, half, 0.0), occ.addPoint(flat_end, -half, 0.0)]
     grip = occ.addRectangle(GRIP[0], -HANDLE_WIDTH / 2, 0.0, GRIP[1] - GRIP[0], HANDLE_WIDTH)
     body, _ = occ.fragment(body, [(2, grip)] + [(0, p) for p in cutters])
     faces = [e for e in body if e[0] == 2]
@@ -82,26 +76,11 @@ def build(size_mm=2.0, order=2, path=None):
 
     def surfaces_in(xmin, ymin, zmin, xmax, ymax, zmax):
         eps = 1e-3  # mm, larger than the tolerance of the OpenCASCADE boxes
-        return [
-            tag
-            for _, tag in gmsh.model.getEntitiesInBoundingBox(
-                (xmin - eps) * MM,
-                (ymin - eps) * MM,
-                (zmin - eps) * MM,
-                (xmax + eps) * MM,
-                (ymax + eps) * MM,
-                (zmax + eps) * MM,
-                dim=2,
-            )
-        ]
+        return [tag for _, tag in gmsh.model.getEntitiesInBoundingBox((xmin - eps) * MM, (ymin - eps) * MM, (zmin - eps) * MM, (xmax + eps) * MM, (ymax + eps) * MM, (zmax + eps) * MM, dim=2)]
 
     t2 = THICKNESS / 2.0
-    jaws = surfaces_in(flat_end, half, -t2, cx + corner / 2.0, half, t2) + surfaces_in(
-        flat_end, -half, -t2, cx + corner / 2.0, -half, t2
-    )
-    grip_faces = surfaces_in(GRIP[0], -HANDLE_WIDTH / 2, t2, GRIP[1], HANDLE_WIDTH / 2, t2) + (
-        surfaces_in(GRIP[0], -HANDLE_WIDTH / 2, -t2, GRIP[1], HANDLE_WIDTH / 2, -t2)
-    )
+    jaws = surfaces_in(flat_end, half, -t2, cx + corner / 2.0, half, t2) + surfaces_in(flat_end, -half, -t2, cx + corner / 2.0, -half, t2)
+    grip_faces = surfaces_in(GRIP[0], -HANDLE_WIDTH / 2, t2, GRIP[1], HANDLE_WIDTH / 2, t2) + (surfaces_in(GRIP[0], -HANDLE_WIDTH / 2, -t2, GRIP[1], HANDLE_WIDTH / 2, -t2))
     if len(jaws) != 2 or len(grip_faces) != 2:
         raise RuntimeError(f"expected 2 jaw and 2 grip faces, found {jaws} and {grip_faces}")
     gmsh.model.addPhysicalGroup(3, [t for _, t in gmsh.model.getEntities(3)], 1, "steel")

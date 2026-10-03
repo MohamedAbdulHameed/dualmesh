@@ -37,7 +37,7 @@ The fuels are UO2, Cr2O3-doped UO2, UN and U3Si2, and the claddings are
 Zircaloy, FeCrAl, SiC/SiC composite and chromium-coated Zircaloy.  A fuel or
 cladding of the user's own can be defined by expressions
 (:class:`~dualmesh.fuel.CustomFuel`, :class:`~dualmesh.fuel.CustomCladding`).
-A rod is computed in one of three forms, which share the materials: an
+A rod is computed in one of three forms, which share the property objects: an
 axisymmetric (r-z) model of the whole rod, a 1.5-dimensional model of axial
 slices in generalized plane strain, and a three-dimensional model.  Each of
 the four discretisations of dualmesh (finite elements, the dual mesh control
@@ -58,26 +58,16 @@ A first fuel rod
 
 A rod is described by input groups, each a Python dataclass whose fields carry
 their units and their defaults.  The following script computes a PWR rod at a
-constant linear heat rate of 20 kW/m up to 30 MWd/kgHM, with time steps of at
-most ten days:
+constant linear heat rate of 20 kW/m up to 30 MWd/kgHM:
 
 .. code-block:: python
 
    from dualmesh import fuel
 
-   rod = fuel.FuelRod(
-       geometry=fuel.RodGeometry.from_diameters(
-           pellet_outer_diameter=8.19e-3, clad_inner_diameter=8.36e-3,
-           clad_outer_diameter=9.50e-3, fuel_stack_height=0.1),
-       fuel=fuel.UO2Fuel(enrichment=0.045),
-       cladding=fuel.ZircaloyCladding(),
-       fill_gas=fuel.FillGas(pressure=2.0e6, plenum_volume=0.3e-6),
-       coolant=fuel.ForcedConvection(
-           inlet_temperature=565.0, pressure=15.5e6, mass_flux=3800.0, rod_pitch=12.6e-3),
-       power_history=fuel.PowerHistory(
-           linear_heat_rate=[20e3, 20e3], burnup=[0.0, 30.0], burnup_unit="MWd/kgHM"),
-       numerics=fuel.RodNumerics(max_time_step=10 * 86400.0),
-   )
+   geometry = fuel.RodGeometry.from_diameters(pellet_outer_diameter=8.19e-3, clad_inner_diameter=8.36e-3, clad_outer_diameter=9.50e-3, fuel_stack_height=0.1)
+   coolant = fuel.ForcedConvection(inlet_temperature=565.0, pressure=15.5e6, mass_flux=3800.0, rod_pitch=12.6e-3)
+   history = fuel.PowerHistory(linear_heat_rate=[20e3, 20e3], burnup=[0.0, 30.0], burnup_unit="MWd/kgHM")
+   rod = fuel.FuelRod(geometry=geometry, fuel=fuel.UO2Fuel(enrichment=0.045), cladding=fuel.ZircaloyCladding(), fill_gas=fuel.FillGas(pressure=2.0e6, plenum_volume=0.3e-6), coolant=coolant, power_history=history)
    result = rod.run()
    print(result.summary())
 
@@ -119,13 +109,18 @@ The input groups are:
      - The rod model (axisymmetric, 1.5-dimensional or three-dimensional),
        the discretisation, the mesh and the time steps.
    * - :class:`~dualmesh.fuel.RodOutput`
-     - The output times and files.
+     - The output times and files. The rod state is recorded at the points of
+       the power history by default, every ``output_interval`` when that is
+       given, or at the listed ``output_times``.
    * - :class:`~dualmesh.fuel.ModelFactors`
      - Multipliers on the models (all equal to one by default), for
        sensitivity and uncertainty studies.
 
-Before a calculation, the rod prints every input value with its unit, and
-marks the values that were left at their defaults.  The result holds the
+``dualmesh describe FuelRod`` lists the input groups of a rod, and
+``dualmesh describe RodNumerics`` (or the name of any other group) lists the
+parameters of a group with their units, their defaults and the reasons for
+the defaults.  Before a calculation, the rod prints every input value with
+its unit, and marks the values that were left at their defaults.  The result holds the
 history of the rod (e.g., the gas pressure, the fission gas release and the
 centre temperature) and the axial profiles at every output time, and it can be
 written to CSV files.

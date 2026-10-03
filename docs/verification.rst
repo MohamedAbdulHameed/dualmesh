@@ -170,10 +170,14 @@ exactly, and its observed order between two meshes is
             {\ln (h_1 / h_2)} .
 
 :mod:`dualmesh.mms` does the symbolic work with SymPy: a
-:class:`~dualmesh.mms.ManufacturedSolution` holds the fields and the terms of
-the equations (diffusion with a variable or solution-dependent coefficient,
-advection in either form, reaction, the time derivative, and linear
-elasticity), derives the forcing, including the metric factors of the
+:class:`~dualmesh.mms.ManufacturedSolution` holds the exact fields and the
+physics of the equations, added with ``add_physics`` as to a problem
+(``coefficient_form_PDE`` for diffusion with a variable or solution-dependent
+coefficient, convection in either form, absorption and the time derivative,
+``heat_transfer``, ``solid_mechanics`` and ``incompressible_flow``).  Each
+physics states, in SymPy, the flux and the source of the objects it
+generates, so that the forcing is derived from the equations the code
+assembles.  The study derives the forcing, including the metric factors of the
 axisymmetric and spherical divergences, and runs the convergence study.  The
 errors are measured by :meth:`~dualmesh.Problem.error_norms` in the two norms
 in which the convergence theory of every method is stated,
@@ -259,17 +263,66 @@ A user-defined study requires only a few lines:
    import dualmesh as dm
    from dualmesh import mms
 
-   study = mms.ManufacturedSolution(
-       {"u": "sin(pi*x)*cos(pi*y) + x*y"},
-       [mms.Diffusion("u", diffusivity="1 + 0.5*x*y")],
-       dimension=2,
-   )
-   result = study.convergence_study(
-       lambda n: dm.generate_rectangle_mesh(0, 1, 0, 1, n, n, element_type="Tri6"),
-       [4, 8, 16, 32],
-       method="fem",
-   )
-   print(result.table())          # errors and observed orders
+   study = mms.ManufacturedSolution({"u": "sin(pi*x)*cos(pi*y) + x*y"}, dimension=2)
+   study.add_physics("coefficient_form_PDE", "diffusion", diffusion_coefficient="1 + 0.5*x*y")
+   result = study.convergence_study(lambda n: dm.generate_rectangle_mesh(0, 1, 0, 1, n, n, element_type="Tri6"), [4, 8, 16, 32], method="fem")
+   print(result.table())  # errors and observed orders
+
+Neutron diffusion: the 2D IAEA PWR benchmark
+--------------------------------------------
+
+The two-dimensional IAEA PWR benchmark is a quarter of a PWR core
+([ANL7416]_, problem 11-A2).  The core has 177 fuel assemblies of
+:math:`20\ \mathrm{cm}`, two fuel compositions and nine fully rodded
+assemblies.  A water reflector of :math:`20\ \mathrm{cm}` surrounds the core.
+The model is two-group diffusion theory with an axial buckling of
+:math:`0.8 \times 10^{-4}\ \mathrm{cm}^{-2}` in all regions and groups.
+The outer boundary has no incoming current, which the benchmark gives as
+:math:`\partial \phi_g / \partial n = -0.4692\, \phi_g / D_g`.  The script
+``verification/benchmarks/neutronics/run_iaea_2d_pwr.py`` uses the
+``vacuum_boundary_condition`` with ``extrapolation_distance_ratio=2.1312``
+for this condition.  The reference is the extrapolated finite-difference
+solution of problem 11-A2-1: :math:`k_\mathrm{eff} = 1.02959` (Table 1) and
+the zone average thermal fluxes (Table 3).  The assembly powers follow from
+these fluxes and are normalised to a core average of one.
+
+:numref:`iaea-2d-results` gives the error of :math:`k_\mathrm{eff}` and
+of the assembly powers.  Each 20 cm assembly has :math:`m \times m`
+square elements.
+
+.. _iaea-2d-results:
+
+.. table:: The 2D IAEA PWR benchmark: error of :math:`k_\mathrm{eff}` (pcm)
+   and largest error of the assembly powers (%) for :math:`m \times m`
+   elements per assembly.
+
+   ======  ===============  ===============  ===============  ===============
+   m       ``fem``          ``dmcdm``        ``hfvm``         ``zfvm``
+   ======  ===============  ===============  ===============  ===============
+   4       25.9 / 8.38      46.8 / 12.4      43.5 / 12.9      -35.0 / 13.9
+   8       5.5 / 2.18       9.9 / 3.21       9.0 / 3.39       -15.6 / 5.17
+   16      1.2 / 0.61       2.2 / 0.87       2.0 / 0.92       -4.6 / 1.44
+   32      0.2 / 0.22       0.4 / 0.29       0.4 / 0.30       -1.3 / 0.34
+   ======  ===============  ===============  ===============  ===============
+
+All four methods converge to the reference.  The node-based methods converge
+at second order in the element size.  At :math:`m = 32` their error of
+:math:`k_\mathrm{eff}` is less than 0.5 pcm, and their largest error of the
+assembly powers is less than 0.3 %.  The cell-centred method approaches
+second order on the finer meshes.  Its error of :math:`k_\mathrm{eff}` has
+the opposite sign.
+
+.. figure:: _static/figures/neutronics/iaea_2d_pwr_k_convergence.png
+   :width: 85%
+
+   The 2D IAEA PWR benchmark: error of :math:`k_\mathrm{eff}` against the
+   element size.
+
+.. figure:: _static/figures/neutronics/iaea_2d_pwr_assembly_power_error.png
+   :width: 85%
+
+   The 2D IAEA PWR benchmark: error of the assembly powers with ``fem`` and
+   32 elements per assembly.
 
 Coupled problems
 ----------------

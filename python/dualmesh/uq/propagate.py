@@ -7,7 +7,7 @@ from __future__ import annotations
 import numpy as np
 from scipy import stats
 
-from ._engine import check_inputs, evaluate, to_inputs, unit_design
+from ._engine import check_inputs, evaluate, to_inputs, unit_design, write_json
 
 __all__ = ["Runs", "propagate", "wilks_samples"]
 
@@ -31,7 +31,7 @@ def _prcc(x, y):
     """Partial rank correlation coefficients (Marino et al. 2008): for each
     input, the correlation of the ranks of the input and of the output once
     the linear effect of the ranks of the other inputs is removed from both.
-    ``x`` (n, k), ``y`` (n, m); returns (k, m)."""
+    ``x`` is (n, k) and ``y`` (n, m).  Returns (k, m)."""
     rx, ry = _rank(x), _rank(y)
     n, k = rx.shape
     out = np.empty((k, ry.shape[1]))
@@ -48,7 +48,8 @@ def _binom_cdf(k, n, p):
 
 
 def wilks_samples(coverage=0.95, confidence=0.95, order=1, side="upper") -> int:
-    r"""The smallest number of runs for a Wilks (1941) tolerance limit.
+    r"""The smallest number of runs for a Wilks (1941) tolerance limit
+    (his Eqs. (1) and (6), the distributions of the coverage).
 
     With :math:`n` independent runs, the :math:`r`-th largest output is an
     upper limit that covers at least the fraction :math:`\gamma`
@@ -126,8 +127,8 @@ class Runs:
         """Sample mean of an output (per component for a vector output)."""
         return self._values(name)[0].mean(axis=0)
 
-    def std(self, name):
-        """Sample standard deviation (with :math:`n-1`; NaN for one run)."""
+    def standard_deviation(self, name):
+        """Sample standard deviation (with :math:`n-1`, NaN for one run)."""
         y = self._values(name)[0]
         if len(y) < 2:
             return np.full(y.shape[1:], np.nan) if y.ndim > 1 else np.nan
@@ -146,17 +147,13 @@ class Runs:
 
     def bootstrap(self, name, statistic="mean", level=0.95, resamples=2000, seed=0):
         """A statistic of an output with its bootstrap confidence interval
-        (percentile method, Efron and Tibshirani 1993): ``(value, low,
-        high)``.  ``statistic`` is mean, std, median or a function of an
+        (percentile method): ``(value, low,
+        high)``.  ``statistic`` is mean, standard_deviation, median or a function of an
         array of runs (first axis) that returns one value per component."""
-        funcs = {
-            "mean": lambda a: a.mean(axis=0),
-            "std": lambda a: a.std(axis=0, ddof=1),
-            "median": lambda a: np.median(a, axis=0),
-        }
+        funcs = {"mean": lambda a: a.mean(axis=0), "standard_deviation": lambda a: a.std(axis=0, ddof=1), "median": lambda a: np.median(a, axis=0)}
         f = funcs.get(statistic, statistic) if isinstance(statistic, str) else statistic
         if isinstance(f, str) or not callable(f):
-            raise ValueError("bootstrap: statistic must be mean, std, median or a function.")
+            raise ValueError("bootstrap: statistic must be mean, standard_deviation, median or a function.")
         y = self._values(name)[0]
         rng = np.random.default_rng(seed)
         idx = rng.integers(0, len(y), size=(resamples, len(y)))
@@ -174,19 +171,13 @@ class Runs:
         (``method="monte_carlo"``)."""
         _check_side(side)
         if self.method != "monte_carlo":
-            raise ValueError(
-                "tolerance_limit: Wilks limits need independent random runs; propagate with "
-                "method='monte_carlo'."
-            )
+            raise ValueError("tolerance_limit: Wilks limits need independent random runs; propagate with method='monte_carlo'.")
         y = np.sort(self._values(name)[0], axis=0)
         n = len(y)
         per = 2 if side == "two" else 1
         if _binom_cdf(n - per, n, coverage) < confidence:
             need = wilks_samples(coverage, confidence, 1, side)
-            raise ValueError(
-                f"tolerance_limit: {n} successful runs are too few for a {coverage:.0%}/"
-                f"{confidence:.0%} {side} limit; at least {need} are needed."
-            )
+            raise ValueError(f"tolerance_limit: {n} successful runs are too few for a {coverage:.0%}/{confidence:.0%} {side} limit; at least {need} are needed.")
         r = 1
         while _binom_cdf(n - per * (r + 1), n, coverage) >= confidence:
             r += 1
@@ -214,40 +205,27 @@ class Runs:
             c = _prcc(x, y2)
         else:
             raise ValueError("sensitivity: method must be spearman, pearson or prcc.")
-        return {
-            n: (float(c[j, 0]) if shape == () else c[j].reshape(shape))
-            for j, n in enumerate(self.names)
-        }
+        return {n: (float(c[j, 0]) if shape == () else c[j].reshape(shape)) for j, n in enumerate(self.names)}
 
     # ---- reporting --------------------------------------------------------
     def summary(self, level=0.95) -> str:
         """A table of every output: mean and standard deviation with their
         bootstrap intervals, the central interval, and the two inputs of
         largest rank correlation."""
-        lines = [
-            f"{len(self)} runs ({self.method}), {self.successful} successful, "
-            f"{len(self.failed)} failed",
-            "",
-        ]
+        lines = [f"{len(self)} runs ({self.method}), {self.successful} successful, {len(self.failed)} failed", ""]
         for name, y in self.outputs.items():
             if y.ndim > 1:
                 m = self.mean(name)
-                s = self.std(name)
-                lines.append(
-                    f"{name}: shape {y.shape[1:]}, mean {np.nanmin(m):.4g} to {np.nanmax(m):.4g}, "
-                    f"largest std {np.nanmax(s):.4g}"
-                )
+                s = self.standard_deviation(name)
+                lines.append(f"{name}: shape {y.shape[1:]}, mean {np.nanmin(m):.4g} to {np.nanmax(m):.4g}, largest std {np.nanmax(s):.4g}")
                 continue
             m, ml, mh = self.bootstrap(name, "mean", level)
-            s, sl, sh = self.bootstrap(name, "std", level)
+            s, sl, sh = self.bootstrap(name, "standard_deviation", level)
             lo, hi = self.interval(name, level)
             rho = self.sensitivity(name)
             top = sorted(rho.items(), key=lambda kv: -abs(kv[1]) if np.isfinite(kv[1]) else 0)
             top_s = ", ".join(f"{k} {v:+.2f}" for k, v in top[:2])
-            lines.append(
-                f"{name}: mean {m:.4g} [{ml:.4g}, {mh:.4g}], std {s:.4g} [{sl:.4g}, {sh:.4g}], "
-                f"{level:.0%} of runs in [{lo:.4g}, {hi:.4g}]; Spearman: {top_s}"
-            )
+            lines.append(f"{name}: mean {m:.4g} [{ml:.4g}, {mh:.4g}], std {s:.4g} [{sl:.4g}, {sh:.4g}], {level:.0%} of runs in [{lo:.4g}, {hi:.4g}]; Spearman: {top_s}")
         if self.failed:
             first = next(iter(self.failed.values())).strip().splitlines()[-1]
             lines += ["", f"first failure: {first}"]
@@ -256,30 +234,40 @@ class Runs:
     def __repr__(self):
         return f"Runs({len(self)} runs, outputs: {', '.join(self.outputs)})"
 
+    def to_dict(self, level=0.95) -> dict:
+        """The statistics of every output: the mean, the standard deviation,
+        the central interval of probability ``level`` and the Spearman rank
+        correlation with each input, and the number of failed runs."""
+        numbers = {name: dict(mean=self.mean(name), standard_deviation=self.standard_deviation(name), interval=self.interval(name, level), spearman=self.sensitivity(name)) for name in self.outputs}
+        return {"study": "propagate", "runs": len(self), "failed_runs": len(self.failed), "level": level, "outputs": numbers}
+
+    def write_json(self, path, level=0.95):
+        """Write :meth:`to_dict` to a JSON file (a non-finite value is written
+        as null)."""
+        write_json(self.to_dict(level), path)
+
+    @property
+    def tables(self) -> dict:
+        """``runs``: one row per run, with the inputs, the scalar outputs and
+        whether the run failed (a vector output is kept by :meth:`save`)."""
+        from ..tables import Table
+
+        scalars = [n for n, y in self.outputs.items() if y.ndim == 1]
+        rows = [[*map(float, self.x[i]), *(float(self.outputs[n][i]) for n in scalars), i in self.failed] for i in range(len(self.x))]
+        return {"runs": Table([*self.names, *scalars, "failed"], None, rows, title=f"{len(self)} runs ({self.method})")}
+
+    def write_csv(self, path, table: str | None = None):
+        """Write the table ``runs`` to a CSV file."""
+        from ..tables import ResultTables
+
+        ResultTables.write_csv(self, path, table)
+
     def save(self, path):
         """Write the inputs, the design and the outputs to a ``.npz`` file."""
-        np.savez(
-            path,
-            input_names=np.array(self.names),
-            x=self.x,
-            u=self.u,
-            method=np.array(self.method),
-            failed=np.array(sorted(self.failed), dtype=int),
-            output_names=np.array(list(self.outputs)),
-            **{"output:" + k: v for k, v in self.outputs.items()},
-        )
+        np.savez(path, input_names=np.array(self.names), x=self.x, u=self.u, method=np.array(self.method), failed=np.array(sorted(self.failed), dtype=int), output_names=np.array(list(self.outputs)), **{"output:" + k: v for k, v in self.outputs.items()})
 
 
-def propagate(
-    model,
-    inputs,
-    samples,
-    method="latin_hypercube",
-    seed=0,
-    processes=1,
-    store=None,
-    progress=False,
-) -> Runs:
+def propagate(model, inputs, samples, method="latin_hypercube", seed=0, processes=1, store=None, progress=False) -> Runs:
     r"""Run ``model`` at ``samples`` points drawn from the ``inputs`` and
     return the :class:`Runs`.
 
@@ -290,7 +278,7 @@ def propagate(
     ``method``
         ``latin_hypercube`` (default: one run in each of ``samples``
         equal-probability intervals of every input), ``sobol`` (a scrambled
-        Sobol' sequence, whose means converge faster for smooth models;
+        Sobol' sequence, whose means converge faster for smooth models,
         best with a power of 2) or ``monte_carlo`` (independent random
         runs, which Wilks tolerance limits need).
     ``processes``

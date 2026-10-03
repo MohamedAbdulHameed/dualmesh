@@ -66,7 +66,7 @@ here :math:`\mathbf{n}\cdot\mathbf{F}_i = h\,n_j\sigma_{ij} = h\,t_i`, the
 traction component is the natural partner of the displacement component with
 no further construction.
 
-The module splits the work between two kinds of object.  The **material**,
+The module splits the work between two kinds of object.  The **property object**,
 ``linear_elastic_stress``, is independent of the equilibrium statement: given
 the displacement gradients at an integration point it computes the strain and
 the stress and provides them as the properties ``stress``, ``strain`` and
@@ -84,19 +84,18 @@ The separation has three advantages.  First, one kernel serves all four
 formulations and both the dual mesh control domain method and the finite
 element method, because equilibrium is the same statement in every case and
 only the stress differs.  Second, a new constitutive model needs only a
-material that declares a ``stress`` property in the same layout, with no change
-to the equilibrium code.  Third, because materials and kernels are written in
+property object that declares a ``stress`` property in the same layout, with no change
+to the equilibrium code.  Third, because property objects and kernels are written in
 the forward-mode automatic differentiation type used throughout the framework,
 the
 derivative of the stress with respect to every degree of freedom is carried
 through the constitutive law, so the Newton Jacobian stays exact even when the
 stress depends on another field such as the temperature.
 
-In Python the whole set is assembled by
-:func:`dualmesh.physics.add_plane_elasticity`, which creates the displacement
-variables if needed, adds one material and one kernel per component, and, when
-a ``body_force`` is given, adds a ``body_force`` kernel per component whose
-intensity has already been multiplied by the thickness.
+The ``solid_mechanics`` physics assembles the whole set: it creates the
+displacement variables, adds one property object and one kernel per component, and,
+when a ``body_force`` is given, adds a ``body_force`` kernel per component
+whose intensity has already been multiplied by the thickness.
 
 Kinematics and the constitutive law
 -----------------------------------
@@ -152,7 +151,7 @@ The constitutive law is a matrix product in the same ordering,
 
    \sigma_I = \sum_{J=0}^{5} C_{IJ}\, \varepsilon_J ,
 
-with :math:`C_{IJ}` assembled once when the material is constructed.  The
+with :math:`C_{IJ}` assembled once when the property object is constructed.  The
 isotropic stiffness is built from Young's modulus :math:`E`, a stiffness in
 force per unit area, and Poisson's ratio :math:`\nu`, the ratio of transverse
 contraction to axial extension, which must satisfy :math:`-1 < \nu < 1/2`.  It
@@ -213,7 +212,7 @@ With :math:`f = E / [(1+\nu)(1-2\nu)]` the in-plane law is
    \begin{Bmatrix} \varepsilon_{xx} \\ \varepsilon_{yy} \\ \gamma_{xy} \end{Bmatrix} .
 
 Because the out-of-plane strain vanishes while the out-of-plane stress does
-not, the material also fills the :math:`zz` row with :math:`C_{20} = C_{21} =
+not, the property object also fills the :math:`zz` row with :math:`C_{20} = C_{21} =
 f\nu` and :math:`C_{22} = f(1-\nu)`.  With :math:`\varepsilon_{zz} = 0` that
 row returns :math:`\sigma_{zz} = f\nu\,(\varepsilon_{xx} + \varepsilon_{yy}) =
 \nu\,(\sigma_{xx} + \sigma_{yy})`, post-computed for reporting.  It plays no
@@ -293,7 +292,7 @@ a physical axisymmetric body.
 On the axis :math:`r = 0` both :eq:`elasticity-hoop-strain` and the source are
 indeterminate, and each is handled explicitly.  A regular solution has
 :math:`u_r(0) = 0`, so the limit of :math:`u_r/r` as :math:`r \to 0` is
-:math:`\partial u_r/\partial r`, and that derivative is what the material uses
+:math:`\partial u_r/\partial r`, and that derivative is what the property object uses
 whenever an integration point falls exactly on the axis.  There the hoop
 strain and the radial strain coincide.  The kernel returns a zero source at
 :math:`r = 0`, which is consistent because the measure :math:`2\pi r` of the
@@ -411,7 +410,7 @@ thermal load, which is seldom the intended behaviour.
 The ``temperature`` parameter names an ordinary variable of the problem, and
 this has a useful consequence.  If that variable is itself being solved for,
 by a heat conduction kernel elsewhere in the same problem, the thermal stress
-depends on an unknown of the system.  Because the material is written in the
+depends on an unknown of the system.  Because the property object is written in the
 automatic differentiation type, the derivative of the stress with respect to
 the temperature degrees of freedom is carried through :eq:`elasticity-thermal`
 alongside the derivatives with respect to the displacements.  The
@@ -554,9 +553,9 @@ distributed loading alike and so cancels out of the displacement solution of a
 linear problem.  An inconsistent one produces a model whose loading is scaled
 by one thickness and whose stiffness is scaled by another, which changes the
 answer by their ratio and is difficult to detect afterwards.  The
-``add_plane_elasticity`` helper removes the risk for the kernels and the body
-force by passing one value to all of them, but boundary conditions are added
-separately and must be given the same value by hand.
+``solid_mechanics`` physics removes the risk by passing its ``thickness`` to
+its kernels, its body force and its traction and pressure conditions.  At the
+object level the same value must be given to each of them.
 
 One load is deliberately excluded from this rule.  A ``point_source`` is
 applied **without** the thickness factor, because a concentrated load is a

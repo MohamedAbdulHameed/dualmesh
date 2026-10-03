@@ -6,6 +6,7 @@
 #include <cmath>
 #include <limits>
 #include <map>
+#include <set>
 #include <stdexcept>
 #include <tuple>
 
@@ -318,6 +319,44 @@ elementMeasure(const Mesh & mesh, Index e)
   for (const auto & p : ref.elementPatches())
     m += patchMeasure(mesh, el, p);
   return m;
+}
+
+double
+sideMeasure(const Mesh & mesh, const Side & side, CoordinateSystem coord)
+{
+  QuadratureSpec spec;
+  spec.points = 3;
+  std::vector<IntegrationPoint> points;
+  buildSidePoints(mesh, side, false, spec, points);
+  const auto & el = mesh.element(side.first);
+  MappedPoint mp;
+  double total = 0.0;
+  for (const auto & ip : points)
+  {
+    const double area = std::sqrt(dot(ip.area, ip.area));
+    double factor = 1.0;
+    if (coord != CoordinateSystem::Cartesian)
+    {
+      mapPoint(mesh, el, ip.xi, mp);
+      factor = coord == CoordinateSystem::Axisymmetric ? 2.0 * M_PI * mp.x[0]
+                                                       : 4.0 * M_PI * mp.x[0] * mp.x[0];
+    }
+    total += area * factor;
+  }
+  return total;
+}
+
+double
+sidesetMeasure(const Mesh & mesh, const std::vector<std::string> & names, CoordinateSystem coord)
+{
+  std::set<Side> sides;
+  for (const auto & name : names)
+    for (const Side & side : mesh.sideset(name))
+      sides.insert(side);
+  double total = 0.0;
+  for (const Side & side : sides)
+    total += sideMeasure(mesh, side, coord);
+  return total;
 }
 
 namespace

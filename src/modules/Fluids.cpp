@@ -39,8 +39,8 @@
 // linear pressure) satisfy the inf-sup condition and need no stabilisation.
 #include "dualmesh/base/Factory.h"
 #include "dualmesh/base/Kernel.h"
-#include "dualmesh/base/Material.h"
 #include "dualmesh/base/Problem.h"
+#include "dualmesh/base/Property.h"
 #include "dualmesh/fe/Assembly.h"
 
 #include <cmath>
@@ -94,7 +94,7 @@ public:
                   "Dynamic viscosity mu in pascal seconds, as a constant or the name of a "
                   "function of (x, y, z, t). Because it is evaluated from position and time only, "
                   "this kernel describes a Newtonian fluid. A shear-rate dependent viscosity "
-                  "requires a user-written material and kernel.");
+                  "requires a user-written property object and kernel.");
     return p;
   }
   explicit ViscousStress(const InputParameters & p)
@@ -661,8 +661,7 @@ public:
         "the momentum residual without its viscous part and tau is the parameter of Tezduyar. Set "
         "'stabilization' to false for Taylor-Hood elements, which are stable without it. The "
         "boundary condition mass_flux_boundary_condition must be applied on every boundary where "
-        "the pressure is not prescribed, and dualmesh.physics.add_incompressible_flow applies it "
-        "there.");
+        "the pressure is not prescribed, and the incompressible_flow physics applies it there.");
     addMomentumResidualParams(p);
     p.addOptional("stabilization",
                   ParameterKind::Boolean,
@@ -821,14 +820,14 @@ private:
 };
 
 /// Pressure recovered from the penalty relation (for post-processing).
-class PenaltyPressure : public Material
+class PenaltyPressure : public Property
 {
 public:
   static InputParameters validParams()
   {
-    InputParameters p = Material::validParams();
+    InputParameters p = Property::validParams();
     p.setClassDescription(
-        "Declares the material property 'pressure' = -gamma div v, the pressure recovered "
+        "Declares the property 'pressure' = -gamma div v, the pressure recovered "
         "from the penalty relation. Evaluate it at element centroids (the reduced-order "
         "points), where it is most accurate.");
     p.addRequired("velocities",
@@ -845,20 +844,17 @@ public:
     return p;
   }
   explicit PenaltyPressure(const InputParameters & p)
-      : Material(p), _gamma(p.getReal("penalty_parameter"))
+      : Property(p), _gamma(p.getReal("penalty_parameter"))
   {
   }
   void initialSetup(Problem & problem) override
   {
-    Material::initialSetup(problem);
+    Property::initialSetup(problem);
     _v =
         resolveVelocities(problem, _params.getStringList("velocities"), problem.mesh().dimension());
     _axisymmetric = problem.coordinateSystem() == CoordinateSystem::Axisymmetric;
   }
-  void declareProperties(MaterialPropertyRegistry & r) override
-  {
-    _pressure = r.declare("pressure", 1);
-  }
+  void declareProperties(PropertyRegistry & r) override { _pressure = r.declare("pressure", 1); }
   void computeProperties(QpContext & ctx) const override
   {
     ADReal divergence(0.0);
@@ -890,7 +886,7 @@ registerFluidObjects(Factory & f)
   f.add<MassConservation>("mass_conservation", ObjectCategory::Kernel, m);
   f.add<MomentumStabilization>("momentum_stabilization", ObjectCategory::Kernel, m);
   f.add<MassFluxBC>("mass_flux_boundary_condition", ObjectCategory::BoundaryCondition, m);
-  f.add<PenaltyPressure>("penalty_pressure", ObjectCategory::Material, m);
+  f.add<PenaltyPressure>("penalty_pressure", ObjectCategory::Property, m);
 }
 
 } // namespace dualmesh

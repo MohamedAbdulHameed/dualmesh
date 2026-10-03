@@ -11,6 +11,28 @@ program can read.
    :depth: 2
    :class: this-will-duplicate-information-and-it-is-still-useful-here
 
+The results of the studies
+--------------------------
+
+Every study returns a result with the same four methods: ``summary()``
+returns a text report, ``to_dict()`` the numbers as a dictionary,
+``write_json(path)`` writes that dictionary to a JSON file and
+``write_csv(path)`` writes the table of the result to a CSV file.  The
+results are the :class:`~dualmesh.SolveResult` of
+:meth:`~dualmesh.Problem.solve` and
+:meth:`~dualmesh.Problem.solve_transient` (one row per Newton iteration), the
+:class:`~dualmesh.AdaptivityResult` of adaptive refinement (one row per
+cycle), the :class:`~dualmesh.mms.ConvergenceResult` of a convergence study
+(one row per mesh), the results of the uncertainty studies (one row per
+run, per index or per parameter), and the results of the fuel rod and the
+TRISO particle.
+
+.. code-block:: python
+
+   result = problem.solve()
+   print(result.summary())
+   result.write_csv("newton_history.csv")
+
 Location of the unknowns
 ------------------------
 
@@ -31,8 +53,8 @@ the positions of the degrees of freedom directly:
 
 .. code-block:: python
 
-   values = problem.values("temperature")     # one number per degree of freedom
-   points = problem.entity_points()           # (num_dofs, 3), the same order
+   values = problem.values("temperature")  # one number per degree of freedom
+   points = problem.entity_points()  # (num_dofs, 3), the same order
 
 ``points[i]`` is the position of ``values[i]`` for every method.  Code written
 against :meth:`~dualmesh.Problem.entity_points` works unchanged for all four
@@ -47,9 +69,9 @@ Reading values out
 
 .. code-block:: python
 
-   problem.values("temperature")                     # the whole field
-   problem.set_values("temperature", array)          # overwrite it
-   problem.values_at_nodes("temperature", [0, 5, 9]) # at chosen nodes
+   problem.values("temperature")  # the whole field
+   problem.set_values("temperature", array)  # overwrite it
+   problem.values_at_nodes("temperature", [0, 5, 9])  # at chosen nodes
    problem.sample("temperature", [[0.05, 0.0], [0.08, 0.0]])
 
 :meth:`~dualmesh.Problem.sample` interpolates at arbitrary points, as required
@@ -72,19 +94,19 @@ numbering.
 ``comparison_table`` formats a table of computed against published values of the
 kind used throughout :doc:`/verification`.
 
-Gradients, fluxes and material properties
+Gradients, fluxes and properties
 -----------------------------------------
 
 .. code-block:: python
 
-   problem.gradient_at_centroids("temperature")   # (num_elements, 3)
-   problem.kernel_flux_at_centroids("conduction") # (num_elements, 3)
-   problem.property_at_centroids("stress")        # (num_elements, 6)
+   problem.gradient_at_centroids("temperature")  # (num_elements, 3)
+   problem.kernel_flux_at_centroids("conduction")  # (num_elements, 3)
+   problem.property_at_centroids("stress")  # (num_elements, 6)
 
 These are evaluated at element centroids, one row per element, because that is
 where a piecewise quantity is best represented and where Gauss-point quantities
 are most accurate.  ``property_at_centroids`` returns any property that a
-material declared, so ``"stress"``, ``"strain"`` and ``"volumetric_strain"`` are
+property object declared, so ``"stress"``, ``"strain"`` and ``"volumetric_strain"`` are
 available from ``linear_elastic_stress`` without further setup.  Stress and
 strain use the Voigt ordering :math:`(xx, yy, zz, yz, xz, xy)`, and the ``zz``
 component is filled in for plane strain and axisymmetric problems as well as
@@ -118,7 +140,7 @@ one of the main reasons to use the dual mesh control domain method.
 
 .. code-block:: python
 
-   problem.reactions("temperature", "left")       # [(node, value), ...]
+   problem.reactions("temperature", "left")  # [(node, value), ...]
    problem.total_reaction("temperature", "left")  # their sum
 
 In a finite element code a reaction is recovered after the solution, by
@@ -155,7 +177,7 @@ The error indicator
 
 .. code-block:: python
 
-   indicators = problem.error_indicator("temperature")   # one per element
+   indicators = problem.error_indicator("temperature")  # one per element
 
 The indicator is one number per element: the square root of the integral over
 that element of the squared difference between the computed gradient and a
@@ -177,7 +199,7 @@ Writing files
    problem.write_mesh_file("mesh.msh")
 
 :meth:`~dualmesh.Problem.write_vtu` writes a VTK unstructured grid file
-containing the mesh, every variable as point data, and any material property
+containing the mesh, every variable as point data, and any property
 named in ``cell_properties`` as cell data.  For the cell-centred method the
 variables are written as cell data, because they are cell values.  Quadratic
 elements are written as the corresponding quadratic VTK cell types (e.g.,

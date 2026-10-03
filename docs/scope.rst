@@ -29,9 +29,9 @@ which is the sense of MOOSE [MOOSE2025]_:
 2. **Physics as composable terms.**  The flux :math:`\mathbf{F}` and the
    source :math:`S` of each equation are the sum of the contributions of
    *kernels*, and each kernel may read the value and the gradient of any
-   variable and any *material property*.  A material property may in turn
+   variable and any *property*.  A property may in turn
    depend on any variable.  Two physics are therefore coupled by adding a
-   kernel or a material that reads the other field, such as
+   kernel or a property object that reads the other field, such as
    ``heat_convection`` (the flow carries the heat), ``Boussinesq_buoyancy``
    (the temperature drives the flow), the thermal strain of
    ``linear_elastic_stress`` (the temperature loads the solid), or
@@ -105,7 +105,8 @@ What is in place
      - Reddy's book examples, analytical solutions, OpenFOAM cross-checks, and
        a method-of-manufactured-solutions study of every method and element.
    * - Interfaces
-     - Python API, YAML input files, command-line driver.
+     - Python API, command-line tools for the object reference and the side
+       sets of a mesh file.
 
 How far it is from MOOSE and COMSOL
 -----------------------------------
@@ -119,7 +120,7 @@ reader can judge whether dualmesh suits a given problem.
 uses: registered objects with validated parameters, a canonical residual form,
 monolithic coupling, and Jacobians by automatic differentiation.  A coupled
 problem is set up in dualmesh as it would be in MOOSE, by listing variables,
-kernels, materials and boundary conditions.
+kernels, property objects and boundary conditions.
 
 **Where dualmesh offers something the others do not.**  dualmesh provides the
 dual mesh control domain method, and it solves one problem description by four
@@ -167,11 +168,12 @@ much each limitation restricts the problems that can be solved:
    graphical interface, and MOOSE provides input-file syntax checking and a
    graphical front end.  dualmesh generates simple meshes itself and reads
    everything else (for instance from Gmsh) through meshio, and is driven from
-   Python or a YAML file.
+   Python.
 
 In summary, dualmesh is a multiphysics framework in its architecture and in the
-way problems are coupled and solved, and it is verified to the same standard as
-these larger codes.  It covers a far narrower range of physics, and it is not
+way problems are coupled and solved, and every capability is verified against
+analytical solutions, manufactured solutions or published reference results.
+It covers a far narrower range of physics, and it is not
 designed for very large parallel runs.  Items 2 and 3 would most extend its
 capabilities: a pressure-velocity formulation of flow, and a PETSc backend for
 the linear algebra and the distributed mesh.

@@ -11,8 +11,8 @@
 #include "dualmesh/base/Deformation.h"
 #include "dualmesh/base/Factory.h"
 #include "dualmesh/base/Kernel.h"
-#include "dualmesh/base/Material.h"
 #include "dualmesh/base/Problem.h"
+#include "dualmesh/base/Property.h"
 #include "dualmesh/modules/FuelProperties.h"
 
 #include <algorithm>
@@ -140,15 +140,14 @@ addTemperatureParam(InputParameters & p)
 // Thermal properties
 // ---------------------------------------------------------------------------
 
-class UO2Thermal : public Material
+class UO2Thermal : public Property
 {
 public:
   static InputParameters validParams()
   {
-    InputParameters p = Material::validParams();
-    p.setClassDescription(
-        "Thermal properties of UO2 fuel: the material properties 'thermal_conductivity' "
-        "(W/m/K), 'specific_heat' (J/kg/K) and 'density' (kg/m^3).");
+    InputParameters p = Property::validParams();
+    p.setClassDescription("Thermal properties of UO2 fuel: the properties 'thermal_conductivity' "
+                          "(W/m/K), 'specific_heat' (J/kg/K) and 'density' (kg/m^3).");
     addTemperatureParam(p);
     addDensityParam(p);
     addBurnupParams(p, "Local burnup, as a constant or a function of position and time.");
@@ -175,7 +174,7 @@ public:
     return p;
   }
   explicit UO2Thermal(const InputParameters & p)
-      : Material(p), _burnup_unit(p, name()), _density(checkedDensity(p, name()))
+      : Property(p), _burnup_unit(p, name()), _density(checkedDensity(p, name()))
   {
     const auto m = p.getString("thermal_conductivity_model");
     if (m == "fink")
@@ -202,11 +201,11 @@ public:
   }
   void initialSetup(Problem & problem) override
   {
-    Material::initialSetup(problem);
+    Property::initialSetup(problem);
     _T = coupledVariable(problem, "temperature");
     _burnup = getFunction(problem, "burnup");
   }
-  void declareProperties(MaterialPropertyRegistry & r) override
+  void declareProperties(PropertyRegistry & r) override
   {
     _k = r.declare("thermal_conductivity", 1);
     _cp = r.declare("specific_heat", 1);
@@ -245,12 +244,12 @@ private:
   FunctionPtr _burnup;
 };
 
-class UNThermal : public Material
+class UNThermal : public Property
 {
 public:
   static InputParameters validParams()
   {
-    InputParameters p = Material::validParams();
+    InputParameters p = Property::validParams();
     p.setClassDescription(
         "Thermal properties of uranium mononitride fuel from Hayes, Thomas and Peddicord (1990): "
         "'thermal_conductivity' = 1.864 exp(-2.14 P) T^0.361 W/m/K with the porosity P, "
@@ -260,15 +259,15 @@ public:
     addDensityParam(p);
     return p;
   }
-  explicit UNThermal(const InputParameters & p) : Material(p), _density(checkedDensity(p, name()))
+  explicit UNThermal(const InputParameters & p) : Property(p), _density(checkedDensity(p, name()))
   {
   }
   void initialSetup(Problem & problem) override
   {
-    Material::initialSetup(problem);
+    Property::initialSetup(problem);
     _T = coupledVariable(problem, "temperature");
   }
-  void declareProperties(MaterialPropertyRegistry & r) override
+  void declareProperties(PropertyRegistry & r) override
   {
     _k = r.declare("thermal_conductivity", 1);
     _cp = r.declare("specific_heat", 1);
@@ -287,12 +286,12 @@ private:
   int _T = -1, _k = -1, _cp = -1, _rho = -1;
 };
 
-class ZircaloyThermal : public Material
+class ZircaloyThermal : public Property
 {
 public:
   static InputParameters validParams()
   {
-    InputParameters p = Material::validParams();
+    InputParameters p = Property::validParams();
     p.setClassDescription(
         "Thermal properties of Zircaloy-2 and Zircaloy-4 cladding: 'thermal_conductivity' "
         "(IAEA-TECDOC-1496, 12.767 - 5.4348e-4 T + 8.9818e-6 T^2, 300-1800 K), "
@@ -301,13 +300,13 @@ public:
     addTemperatureParam(p);
     return p;
   }
-  explicit ZircaloyThermal(const InputParameters & p) : Material(p) {}
+  explicit ZircaloyThermal(const InputParameters & p) : Property(p) {}
   void initialSetup(Problem & problem) override
   {
-    Material::initialSetup(problem);
+    Property::initialSetup(problem);
     _T = coupledVariable(problem, "temperature");
   }
-  void declareProperties(MaterialPropertyRegistry & r) override
+  void declareProperties(PropertyRegistry & r) override
   {
     _k = r.declare("thermal_conductivity", 1);
     _cp = r.declare("specific_heat", 1);
@@ -329,24 +328,24 @@ private:
 // Elastic constants
 // ---------------------------------------------------------------------------
 
-/// Base of the elasticity materials: declares 'youngs_modulus' and
+/// Base of the elasticity property objects: declares 'youngs_modulus' and
 /// 'poissons_ratio'.
-class ElasticityBase : public Material
+class ElasticityBase : public Property
 {
 public:
   static InputParameters validParams()
   {
-    InputParameters p = Material::validParams();
+    InputParameters p = Property::validParams();
     addTemperatureParam(p);
     return p;
   }
-  using Material::Material;
+  using Property::Property;
   void initialSetup(Problem & problem) override
   {
-    Material::initialSetup(problem);
+    Property::initialSetup(problem);
     _T = coupledVariable(problem, "temperature");
   }
-  void declareProperties(MaterialPropertyRegistry & r) override
+  void declareProperties(PropertyRegistry & r) override
   {
     _E = r.declare("youngs_modulus", 1);
     _nu = r.declare("poissons_ratio", 1);
@@ -363,7 +362,7 @@ public:
   {
     InputParameters p = ElasticityBase::validParams();
     p.setClassDescription(
-        "Elastic constants of UO2 as the material properties 'youngs_modulus' (Pa) and "
+        "Elastic constants of UO2 as the properties 'youngs_modulus' (Pa) and "
         "'poissons_ratio': MATPRO FELMOD, E = 2.334e11 (1 - 1.0915e-4 T)(1 - 2.752 P), and "
         "FPOIR, nu = 0.316.");
     addDensityParam(p);
@@ -475,29 +474,29 @@ axialSlot(const std::string & formulation)
                    "'. Use axisymmetric, axisymmetric_1d or three_dimensional.");
 }
 
-/// Base of the eigenstrain materials: declares one six-component property.
-class EigenstrainBase : public Material
+/// Base of the eigenstrain property objects: declares one six-component property.
+class EigenstrainBase : public Property
 {
 public:
   static InputParameters validParams()
   {
-    InputParameters p = Material::validParams();
+    InputParameters p = Property::validParams();
     p.addRequired("eigenstrain_name",
                   ParameterKind::String,
-                  "Name of the material property (six Voigt components) this eigenstrain is "
-                  "stored in. List it in the 'eigenstrain_names' of the stress material.");
+                  "Name of the property (six Voigt components) this eigenstrain is "
+                  "stored in. List it in the 'eigenstrain_names' of the stress property object.");
     p.addRequired("formulation",
                   ParameterKind::String,
-                  "The formulation of the stress material it feeds: axisymmetric (an r, z "
+                  "The formulation of the stress property object it feeds: axisymmetric (an r, z "
                   "mesh), axisymmetric_1d (a radial slice in generalized plane strain) or "
                   "three_dimensional (a rod along z).");
     return p;
   }
-  explicit EigenstrainBase(const InputParameters & p) : Material(p)
+  explicit EigenstrainBase(const InputParameters & p) : Property(p)
   {
     _axial = axialSlot(p.getString("formulation"));
   }
-  void declareProperties(MaterialPropertyRegistry & r) override
+  void declareProperties(PropertyRegistry & r) override
   {
     _prop = r.declare(_params.getString("eigenstrain_name"), 6);
   }
@@ -613,7 +612,8 @@ public:
     InputParameters p = EigenstrainBase::validParams();
     p.setClassDescription(
         "Volumetric strain of UO2 fuel from irradiation: densification (MATPRO FUDENS or "
-        "the ESCORE form), solid fission-product swelling (MATPRO, 5.577e-5 rho per FIMA) and "
+        "the ESCORE model of FALCON MOD01), solid fission-product swelling (MATPRO, 5.577e-5 rho "
+        "per FIMA) and "
         "an optional element field holding the accumulated gaseous swelling. One third of "
         "the volumetric strain is applied to each normal component. Densification is "
         "evaluated at the highest temperature the fuel has reached (an element field kept "
@@ -635,7 +635,8 @@ public:
                   ParameterKind::String,
                   std::string("matpro"),
                   "'matpro' (FUDENS, NUREG/CR-6150 Vol. 4 Eqs. 2-81, 2-82 and 2-85) or 'escore' "
-                  "(the ESCORE form after Rashid et al., EPRI 1011308). Default matpro.");
+                  "(the ESCORE model, FALCON MOD01 Vol. 1, EPRI 1011307, Eqs. 5-22 and 5-24). "
+                  "Default matpro.");
     p.addOptional("maximum_temperature_field",
                   ParameterKind::String,
                   std::string(""),
@@ -647,6 +648,12 @@ public:
                   5.0,
                   "Burnup at which densification is complete, for the escore model only, in "
                   "MWd/kgHM regardless of 'burnup_unit'. Default 5 MWd/kgHM, the ESCORE value.");
+    p.addOptional("densification_burnup",
+                  ParameterKind::String,
+                  std::string(""),
+                  "Name of the function giving the burnup of the escore densification, in the "
+                  "unit of 'burnup'. FALCON MOD01 Eq. 5-22 uses the pellet-average burnup. "
+                  "Default empty (the function 'burnup').");
     p.addOptional("include_solid_swelling",
                   ParameterKind::Boolean,
                   true,
@@ -684,6 +691,9 @@ public:
     EigenstrainBase::initialSetup(problem);
     _T = coupledVariable(problem, "temperature");
     _burnup = getFunction(problem, "burnup");
+    _densification_burnup = _params.getString("densification_burnup").empty()
+                                ? _burnup
+                                : getFunction(problem, "densification_burnup");
     const auto field = _params.getString("gaseous_swelling_field");
     _gas = field.empty() ? nullptr : &problem.elementField(field);
     const auto tmax = _params.getString("maximum_temperature_field");
@@ -696,9 +706,15 @@ public:
     if (_Tmax && ctx.element >= 0 && (*_Tmax)[ctx.element] > T.value())
       T = ADReal((*_Tmax)[ctx.element]);
     const double mwd = _burnup_unit.toMWdPerKg(fima);
-    ADReal volumetric =
-        _escore ? uo2DensificationESCORE(T, mwd, _total, _complete)
-                : ADReal(3.0 * uo2DensificationMATPRO(T.value(), mwd, _total * kDensityUO2));
+    ADReal volumetric = ADReal(0.0);
+    if (_escore)
+    {
+      const double average =
+          std::max(0.0, _burnup_unit.toFima(_densification_burnup->value(ctx.x, ctx.time)));
+      volumetric = uo2DensificationESCORE(T, _burnup_unit.toMWdPerKg(average), _total, _complete);
+    }
+    else
+      volumetric = ADReal(3.0 * uo2DensificationMATPRO(T.value(), mwd, _total * kDensityUO2));
     if (_solid)
       volumetric += _solid_factor * uo2SolidSwellingRate(kDensityUO2 * _density) * fima;
     if (_gas && ctx.element >= 0)
@@ -713,7 +729,7 @@ private:
   double _total = 0.01, _complete = 5.0, _solid_factor = 1.0;
   bool _solid = true, _escore = false;
   int _T = -1;
-  FunctionPtr _burnup;
+  FunctionPtr _burnup, _densification_burnup;
   const std::vector<double> * _gas = nullptr;
   const std::vector<double> * _Tmax = nullptr;
 };
@@ -778,8 +794,8 @@ public:
     InputParameters p = EigenstrainBase::validParams();
     p.setClassDescription(
         "Relocation of cracked fuel fragments towards the cladding, as a strain in the plane "
-        "normal to the rod axis, in the ESCORE form documented in the BISON theory manual "
-        "(Hales et al. 2013): dD/D = 0.80 Q (G0/D0)(0.005 Bu^0.3 - 0.20 D0 + 0.3) with the "
+        "normal to the rod axis, the ESCORE model of FALCON MOD01 Vol. 1 (EPRI 1011307, "
+        "Eqs. 5-30 and 5-31): dD/D = 0.80 Q (G0/D0)(0.005 Bu^0.3 - 0.20 D0 + 0.3) with the "
         "linear heat rate q' in kW/ft (Q = 0 below 6, (q' - 6)^(1/3) up to 14 and (q' - 10)/2 "
         "above), the cold diametral gap G0 and pellet diameter D0 in inches and the burnup "
         "in MWd/tU. The same strain is applied radially and circumferentially, which moves "
@@ -867,17 +883,17 @@ public:
     InputParameters p = InterfaceBC::validParams();
     p.setClassDescription(
         "Heat transfer across a gas-filled gap, such as the pellet-cladding gap of a fuel rod: "
-        "gas conduction, radiation and solid contact, h_gap = h_gas + h_rad + h_solid (Ross and "
-        "Stoute 1962). The gas conductance is k_gas / (g + C_r (R_p + R_s) + j), with the width g "
-        "of the gap measured along the primary normal between the displaced surfaces, the "
-        "roughnesses R, the roughness coefficient C_r and the temperature jump distance j (the "
-        "kinetic theory of Kennard as used by Lanning and Hann 1975). k_gas is the "
-        "Lindsay-Bromley/Brokaw mixture conductivity of the fill and fission gases (MATPRO fits). "
-        "Radiation is between two parallel grey surfaces. The solid contact conductance, used "
-        "when a contact penalty is given and the gap is closed, is C_s k_m P_c / (sqrt(delta) H) "
-        "with the harmonic mean conductivity k_m, the contact pressure P_c, the Meyer hardness H "
-        "and delta = 0.8 (R_p + R_s) (Ross-Stoute form of the BISON theory manual, 2013). "
-        "Temperatures must be in kelvin.");
+        "gas conduction, radiation and solid contact, h_gap = h_gas + h_rad + h_solid, the model "
+        "of Ross and Stoute (AECL-1552, 1962, Eqs. A.9 and A.15). The gas conductance is k_gas / "
+        "(g + C_r (R_p + R_s) + j), with the width g of the gap measured along the primary normal "
+        "between the displaced surfaces, the roughnesses R, the roughness coefficient C_r and the "
+        "temperature jump distance j (the equation of Kennard as Lanning and Hann, BNWL-1894, "
+        "1975, write it). k_gas is the mixture conductivity of the fill and fission gases by "
+        "Brokaw's Eqs. (12) and (13). Radiation is between two parallel grey surfaces. The solid "
+        "contact conductance, used when a contact penalty is given and the gap is closed, is C_s "
+        "k_m P_c / (sqrt(R) H) with the harmonic mean conductivity k_m, the contact pressure "
+        "P_c, the Meyer hardness H and R = sqrt((R_p^2 + R_s^2)/2). Temperatures must be in "
+        "kelvin.");
     p.addOptional("displacements",
                   ParameterKind::StringList,
                   std::vector<std::string>{},
@@ -908,7 +924,8 @@ public:
                   ParameterKind::Real,
                   1.5,
                   "C_r, the factor on the summed roughnesses in the gas conductance. Default "
-                  "1.5, the Ross-Stoute value.");
+                  "1.5, the value of Ross and Stoute at 500 kgf/cm^2 of contact pressure (2.5 at "
+                  "100 kgf/cm^2, Sect. 6.2.1).");
     p.addOptional("primary_emissivity",
                   ParameterKind::Real,
                   0.8,
@@ -935,11 +952,13 @@ public:
                   "'constant' (meyer_hardness) or 'zircaloy' (MATPRO CMHARD at the temperature of "
                   "the secondary surface, from 2 GPa at room temperature to 0.2 GPa at 875 K). "
                   "Default constant.");
-    p.addOptional("solid_contact_coefficient",
-                  ParameterKind::Real,
-                  10.0,
-                  "C_s of the solid contact conductance, m^(-1/2). Default 10, the "
-                  "Ross-Stoute value.");
+    p.addOptional(
+        "solid_contact_coefficient",
+        ParameterKind::Real,
+        20.0,
+        "C_s = 1/a_0 of the solid contact conductance, m^(-1/2). Default 20: a_0 = 1/2 "
+        "cm^(1/2), the value Ross and Stoute found for most of their UO2/Zircaloy-2 pairs "
+        "(Sect. 6.1, range 1/2 to 1 cm^(1/2)).");
     p.addOptional("gas_conductance_factor",
                   ParameterKind::Real,
                   1.0,
@@ -954,7 +973,7 @@ public:
                   ParameterKind::Function,
                   3.0,
                   "Conductivity of the primary body at its surface (W/m/K), used by the solid "
-                  "contact term only when no 'thermal_conductivity' material property exists. "
+                  "contact term only when no 'thermal_conductivity' property exists. "
                   "Default 3 W/m/K, UO2 near 1000 K.");
     p.addOptional("secondary_conductivity",
                   ParameterKind::Function,
@@ -977,6 +996,8 @@ public:
       throw InputError("'" + name() + "': meyer_hardness_model must be constant or zircaloy.");
     _zircaloy_hardness = hm == "zircaloy";
     _Cs = p.getReal("solid_contact_coefficient");
+    if (_Cs < 0.0)
+      throw InputError("'" + name() + "': solid_contact_coefficient must not be negative.");
     _gas_factor = p.getReal("gas_conductance_factor");
     _contact_factor = p.getReal("contact_conductance_factor");
     if (!(_gas_factor >= 0.0) || !(_contact_factor >= 0.0))
@@ -1048,7 +1069,7 @@ public:
       const ADReal km = 2.0 * kp * ks / (kp + ks);
       const ADReal Pc = -_penalty * g;
       const ADReal H = _zircaloy_hardness ? zryMeyerHardness(Ts) : ADReal(_H);
-      h += _contact_factor * _Cs * km * Pc / (std::sqrt(0.8 * (_Rp + _Rs)) * H);
+      h += _contact_factor * solidContactConductance(km, Pc, H, _Rp, _Rs, _Cs);
     }
     const ADReal q = h * (Ts - Tp);
     return _Fprop >= 0 ? q * deformation::areaRatio(ctx, _Fprop) : q;
@@ -1060,7 +1081,7 @@ private:
   FunctionPtr _x[kNumGases];
   FunctionPtr _P, _kp, _ks;
   int _kprop = -1;
-  double _Rp = 2e-6, _Rs = 1e-6, _Cr = 1.5, _F = 0.0, _penalty = 0.0, _H = 6.8e8, _Cs = 10.0;
+  double _Rp = 2e-6, _Rs = 1e-6, _Cr = 1.5, _F = 0.0, _penalty = 0.0, _H = 6.8e8, _Cs = 20.0;
   double _gas_factor = 1.0, _contact_factor = 1.0;
   bool _zircaloy_hardness = false;
 };
@@ -1071,25 +1092,25 @@ void
 registerFuelObjects(Factory & f)
 {
   const std::string m = "fuel_performance";
-  f.add<UO2Thermal>("UO2_thermal", ObjectCategory::Material, m);
-  f.add<UNThermal>("UN_thermal", ObjectCategory::Material, m);
-  f.add<ZircaloyThermal>("Zircaloy_thermal", ObjectCategory::Material, m);
-  f.add<UO2Elasticity>("UO2_elasticity", ObjectCategory::Material, m);
-  f.add<UNElasticity>("UN_elasticity", ObjectCategory::Material, m);
-  f.add<ZircaloyElasticity>("Zircaloy_elasticity", ObjectCategory::Material, m);
+  f.add<UO2Thermal>("UO2_thermal", ObjectCategory::Property, m);
+  f.add<UNThermal>("UN_thermal", ObjectCategory::Property, m);
+  f.add<ZircaloyThermal>("Zircaloy_thermal", ObjectCategory::Property, m);
+  f.add<UO2Elasticity>("UO2_elasticity", ObjectCategory::Property, m);
+  f.add<UNElasticity>("UN_elasticity", ObjectCategory::Property, m);
+  f.add<ZircaloyElasticity>("Zircaloy_elasticity", ObjectCategory::Property, m);
   f.add<UO2ThermalExpansionEigenstrain>(
-      "UO2_thermal_expansion_eigenstrain", ObjectCategory::Material, m);
+      "UO2_thermal_expansion_eigenstrain", ObjectCategory::Property, m);
   f.add<UNThermalExpansionEigenstrain>(
-      "UN_thermal_expansion_eigenstrain", ObjectCategory::Material, m);
+      "UN_thermal_expansion_eigenstrain", ObjectCategory::Property, m);
   f.add<ZircaloyThermalExpansionEigenstrain>(
-      "Zircaloy_thermal_expansion_eigenstrain", ObjectCategory::Material, m);
+      "Zircaloy_thermal_expansion_eigenstrain", ObjectCategory::Property, m);
   f.add<UO2VolumetricSwellingEigenstrain>(
-      "UO2_volumetric_swelling_eigenstrain", ObjectCategory::Material, m);
+      "UO2_volumetric_swelling_eigenstrain", ObjectCategory::Property, m);
   f.add<UNVolumetricSwellingEigenstrain>(
-      "UN_volumetric_swelling_eigenstrain", ObjectCategory::Material, m);
-  f.add<UO2RelocationEigenstrain>("UO2_relocation_eigenstrain", ObjectCategory::Material, m);
+      "UN_volumetric_swelling_eigenstrain", ObjectCategory::Property, m);
+  f.add<UO2RelocationEigenstrain>("UO2_relocation_eigenstrain", ObjectCategory::Property, m);
   f.add<ZircaloyIrradiationGrowthEigenstrain>(
-      "Zircaloy_irradiation_growth_eigenstrain", ObjectCategory::Material, m);
+      "Zircaloy_irradiation_growth_eigenstrain", ObjectCategory::Property, m);
   f.add<GasGapHeatTransfer>("gas_gap_heat_transfer", ObjectCategory::BoundaryCondition, m);
 }
 

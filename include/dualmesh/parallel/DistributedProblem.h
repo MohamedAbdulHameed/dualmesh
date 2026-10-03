@@ -7,7 +7,7 @@
 // The mesh is partitioned into one group of elements per rank.  Each rank
 // builds the sub-mesh of its own elements, together with every node those
 // elements touch, and then defines exactly the same variables, kernels,
-// materials and boundary conditions on that sub-mesh as a serial run would.
+// property objects and boundary conditions on that sub-mesh as a serial run would.
 // The rank-local object is an ordinary Problem, so every discretization, every
 // physics module and the automatic differentiation all work unchanged.
 //
@@ -141,6 +141,11 @@ public:
   /// Inner product that counts every degree of freedom exactly once.
   double dot(const Vector & a, const Vector & b) const;
   double norm(const Vector & a) const { return std::sqrt(dot(a, a)); }
+
+  /// Change the settings of the linear solver: everything in @p options
+  /// except the partitioner and the overlap, which define the subdomains and
+  /// are fixed at construction.
+  void setLinearSolver(const DistributedOptions & options);
 
   SolveResult solveSteady(const SolverOptions & options = {});
   SolveResult solveTransient(const TransientOptions & transient,

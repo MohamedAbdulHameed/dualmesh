@@ -7,6 +7,7 @@ by Newton's method remains exact::
 
     import dualmesh as dm
 
+
     class NonlinearBar(dm.PythonKernel):
         "Axial bar with a = EA (1 + 1.5 u' + 0.5 u'^2)."
 
@@ -31,17 +32,7 @@ from . import _core
 _counter = itertools.count()
 
 
-def _base_parameters(
-    valid_params,
-    variable=None,
-    name=None,
-    block=(),
-    quadrature="gauss2",
-    reduced_integration=False,
-    scale_with_load=False,
-    boundary=None,
-    type_name="PythonObject",
-):
+def _base_parameters(valid_params, variable=None, name=None, block=(), quadrature="gauss2", reduced_integration=False, scale_with_load=False, boundary=None, type_name="PythonObject"):
     params = valid_params()
     if variable is not None:
         params.set("variable", variable)
@@ -71,26 +62,8 @@ class _PythonObjectMixin:
 class PythonKernel(_core.Kernel, _PythonObjectMixin):
     """A kernel implemented in Python (flux and/or source)."""
 
-    def __init__(
-        self,
-        variable: str,
-        name: str | None = None,
-        block=(),
-        quadrature: str = "gauss2",
-        reduced_integration: bool = False,
-        scale_with_load: bool = False,
-        **parameters,
-    ):
-        params = _base_parameters(
-            _core.Kernel.valid_params,
-            variable=variable,
-            name=name,
-            block=block,
-            quadrature=quadrature,
-            reduced_integration=reduced_integration,
-            scale_with_load=scale_with_load,
-            type_name=type(self).__name__,
-        )
+    def __init__(self, variable: str, name: str | None = None, block=(), quadrature: str = "gauss2", reduced_integration: bool = False, scale_with_load: bool = False, **parameters):
+        params = _base_parameters(_core.Kernel.valid_params, variable=variable, name=name, block=block, quadrature=quadrature, reduced_integration=reduced_integration, scale_with_load=scale_with_load, type_name=type(self).__name__)
         _core.Kernel.__init__(self, params)
         self.parameters = dict(parameters)
         for key, value in parameters.items():
@@ -122,28 +95,8 @@ class PythonBoundaryCondition(_core.IntegratedBC, _PythonObjectMixin):
     ``compute_boundary_flux`` returns the outward normal flux ``q = n . F``.
     """
 
-    def __init__(
-        self,
-        variable: str,
-        boundary,
-        name: str | None = None,
-        block=(),
-        quadrature: str = "gauss2",
-        reduced_integration: bool = False,
-        scale_with_load: bool = False,
-        **parameters,
-    ):
-        params = _base_parameters(
-            _core.IntegratedBC.valid_params,
-            variable=variable,
-            boundary=boundary,
-            name=name,
-            block=block,
-            quadrature=quadrature,
-            reduced_integration=reduced_integration,
-            scale_with_load=scale_with_load,
-            type_name=type(self).__name__,
-        )
+    def __init__(self, variable: str, boundary, name: str | None = None, block=(), quadrature: str = "gauss2", reduced_integration: bool = False, scale_with_load: bool = False, **parameters):
+        params = _base_parameters(_core.IntegratedBC.valid_params, variable=variable, boundary=boundary, name=name, block=block, quadrature=quadrature, reduced_integration=reduced_integration, scale_with_load=scale_with_load, type_name=type(self).__name__)
         _core.IntegratedBC.__init__(self, params)
         self.parameters = dict(parameters)
         for key, value in parameters.items():
@@ -161,22 +114,8 @@ class PythonBoundaryCondition(_core.IntegratedBC, _PythonObjectMixin):
 class PythonNodalBoundaryCondition(_core.NodalBC, _PythonObjectMixin):
     """An essential (Dirichlet) boundary condition implemented in Python."""
 
-    def __init__(
-        self,
-        variable: str,
-        boundary,
-        name: str | None = None,
-        scale_with_load: bool = False,
-        **parameters,
-    ):
-        params = _base_parameters(
-            _core.NodalBC.valid_params,
-            variable=variable,
-            boundary=boundary,
-            name=name,
-            scale_with_load=scale_with_load,
-            type_name=type(self).__name__,
-        )
+    def __init__(self, variable: str, boundary, name: str | None = None, scale_with_load: bool = False, **parameters):
+        params = _base_parameters(_core.NodalBC.valid_params, variable=variable, boundary=boundary, name=name, scale_with_load=scale_with_load, type_name=type(self).__name__)
         _core.NodalBC.__init__(self, params)
         self.parameters = dict(parameters)
         for key, value in parameters.items():
@@ -191,13 +130,13 @@ class PythonNodalBoundaryCondition(_core.NodalBC, _PythonObjectMixin):
         return 0.0
 
 
-class PythonMaterial(_core.Material, _PythonObjectMixin):
-    """A material implemented in Python.
+class PythonProperty(_core.Property, _PythonObjectMixin):
+    """A property object implemented in Python.
 
     Declare properties in ``declare_properties`` and fill them in
     ``compute_properties``::
 
-        class TemperatureDependentConductivity(dm.PythonMaterial):
+        class TemperatureDependentConductivity(dm.PythonProperty):
             def declare_properties(self, registry):
                 self.conductivity_id = registry.declare("thermal_conductivity")
 
@@ -210,17 +149,17 @@ class PythonMaterial(_core.Material, _PythonObjectMixin):
     """
 
     def __init__(self, name: str | None = None, block=(), **parameters):
-        params = _core.Material.valid_params()
+        params = _core.Property.valid_params()
         params.set("block", [block] if isinstance(block, str) else list(block))
         params.set("_name", name or f"{type(self).__name__}_{next(_counter)}")
         params.set("_type", type(self).__name__)
-        _core.Material.__init__(self, params)
+        _core.Property.__init__(self, params)
         self.parameters = dict(parameters)
         for key, value in parameters.items():
             setattr(self, key, value)
 
     def initial_setup(self, problem):
-        _core.Material.initial_setup(self, problem)
+        _core.Property.initial_setup(self, problem)
         self.problem = problem
         self.setup(problem)
 

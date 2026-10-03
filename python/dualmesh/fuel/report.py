@@ -14,7 +14,7 @@ from __future__ import annotations
 import dataclasses
 
 from ..console import RULE, header, table
-from .specification import describe
+from ..parameters import describe
 
 
 def _group(title: str, spec, indent: int = 0) -> list[str]:
@@ -31,17 +31,7 @@ def _group(title: str, spec, indent: int = 0) -> list[str]:
 def input_report(rod) -> str:
     """Every input group of a :class:`FuelRod`, with derived quantities."""
     lines = [header("dualmesh fuel rod")]
-    groups = [
-        ("geometry", rod.geometry),
-        ("fuel", rod.fuel),
-        ("cladding", rod.cladding),
-        ("fill_gas", rod.fill_gas),
-        ("coolant", rod.coolant),
-        ("power_history", rod.power_history),
-        ("models", rod.models),
-        ("numerics", rod.numerics),
-        ("output", rod.output),
-    ]
+    groups = [("geometry", rod.geometry), ("fuel", rod.fuel), ("cladding", rod.cladding), ("fill_gas", rod.fill_gas), ("coolant", rod.coolant), ("power_history", rod.power_history), ("models", rod.models), ("numerics", rod.numerics), ("output", rod.output)]
     for title, spec in groups:
         lines.extend(_group(title, spec))
     derived = rod.derived_quantities()
@@ -51,24 +41,11 @@ def input_report(rod) -> str:
     return "\n".join(lines)
 
 
-STEP_COLUMNS = (
-    ("time", "d"),
-    ("q'", "kW/m"),
-    ("burnup", None),
-    ("T_centerline max", "K"),
-    ("T_clad_outer max", "K"),
-    ("gap min", "um"),
-    ("pressure", "MPa"),
-    ("FGR", "%"),
-    ("Newton", ""),
-)
+STEP_COLUMNS = (("time", "d"), ("q'", "kW/m"), ("burnup", None), ("T_centerline max", "K"), ("T_clad_outer max", "K"), ("gap min", "um"), ("pressure", "MPa"), ("FGR", "%"), ("Newton", ""))
 
 
 def _step_headers(burnup_unit: str) -> list[str]:
-    return [
-        f"{name} ({burnup_unit if unit is None else unit})" if unit != "" else name
-        for name, unit in STEP_COLUMNS
-    ]
+    return [f"{name} ({burnup_unit if unit is None else unit})" if unit != "" else name for name, unit in STEP_COLUMNS]
 
 
 def _widths(burnup_unit: str) -> list[int]:
@@ -86,15 +63,6 @@ def step_header(burnup_unit: str) -> str:
 def step_row(result, k: int) -> str:
     """Row ``k`` of the step table: the state at output time ``k``."""
     rod, axial = result.rod, result.axial
-    values = [
-        rod["time_days"][k],
-        rod["rod_average_linear_heat_rate"][k] / 1e3,
-        rod["rod_average_burnup"][k],
-        rod["max_fuel_centerline_temperature"][k],
-        float(max(axial["clad_outer_temperature"][k])),
-        rod["min_gap_width"][k] * 1e6,
-        rod["gas_pressure"][k] / 1e6,
-        100.0 * rod["fission_gas_release"][k],
-    ]
+    values = [rod["time_days"][k], rod["rod_average_linear_heat_rate"][k] / 1e3, rod["rod_average_burnup"][k], rod["max_fuel_centerline_temperature"][k], float(max(axial["clad_outer_temperature"][k])), rod["min_gap_width"][k] * 1e6, rod["gas_pressure"][k] / 1e6, 100.0 * rod["fission_gas_release"][k]]
     cells = [f"{v:.6g}" for v in values] + [str(int(rod["nonlinear_iterations"][k]))]
     return "  " + "  ".join(c.rjust(w) for c, w in zip(cells, _widths(result.burnup_unit)))

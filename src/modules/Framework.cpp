@@ -2,12 +2,12 @@
 //
 // Generic framework objects (MOOSE "framework" equivalents): diffusion,
 // reaction, body force, advection, time derivative, standard boundary
-// conditions, point sources, and generic materials.
+// conditions, point sources, and constant and function properties.
 #include "dualmesh/modules/Framework.h"
 #include "dualmesh/base/Factory.h"
 #include "dualmesh/base/Kernel.h"
-#include "dualmesh/base/Material.h"
 #include "dualmesh/base/Problem.h"
+#include "dualmesh/base/Property.h"
 
 #include <limits>
 
@@ -29,11 +29,11 @@ Diffusion::validParams()
                 1.0,
                 "Diffusivity k, given as a constant or as the name of a registered function "
                 "of (x, y, z, t). It must be positive. It is ignored when "
-                "'diffusivity_property' names a material property.");
+                "'diffusivity_property' names a property.");
   p.addOptional("diffusivity_property",
                 ParameterKind::String,
                 std::string(""),
-                "Name of a material property to use as the diffusivity (overrides "
+                "Name of a property to use as the diffusivity (overrides "
                 "'diffusivity').");
   p.addOptional("solution_polynomial",
                 ParameterKind::RealList,
@@ -155,6 +155,13 @@ Reaction::validParams()
                 "Coefficient c in the source S = c u^p, as a constant or the name of a function. "
                 "The source enters the residual as written, so a positive c removes u (a decay, "
                 "or the restoring action of an elastic foundation) and a negative c produces it.");
+  p.addOptional("coefficient_property",
+                ParameterKind::String,
+                std::string(""),
+                "Name of a property that multiplies 'coefficient' in c. A property "
+                "that depends on the solution, such as a parsed_property of the variable, makes "
+                "the term nonlinear, and its derivative enters the Jacobian through the "
+                "automatic differentiation. Default none.");
   p.addOptional("exponent",
                 ParameterKind::Real,
                 1.0,
@@ -164,19 +171,24 @@ Reaction::validParams()
   return p;
 }
 
-Reaction::Reaction(const InputParameters & p) : Kernel(p), _p(p.getReal("exponent")) {}
+Reaction::Reaction(const InputParameters & p)
+    : Kernel(p), _p(p.getReal("exponent")), _prop_name(p.getString("coefficient_property"))
+{
+}
 
 void
 Reaction::initialSetup(Problem & problem)
 {
   Kernel::initialSetup(problem);
   _c = getFunction(problem, "coefficient");
+  _prop = _prop_name.empty() ? -1 : problem.propertyRegistry().id(_prop_name);
 }
 
 ADReal
 Reaction::computeSource(const QpContext & ctx) const
 {
-  const double c = _c->value(ctx.x, ctx.time);
+  const ADReal c = _prop >= 0 ? ctx.property(_prop) * _c->value(ctx.x, ctx.time)
+                              : ADReal(_c->value(ctx.x, ctx.time));
   const ADReal & u = ctx.value(_var);
   if (_p == 1.0)
     return c * u;
@@ -360,10 +372,19 @@ CoupledForce::validParams()
                 "Coefficient c in the source S = -c v, as a constant or the name of a function. A "
                 "positive c makes the coupled variable v a source for this equation, and a "
                 "negative c makes it a sink.");
+  p.addOptional("coefficient_property",
+                ParameterKind::String,
+                std::string(""),
+                "Name of a property that multiplies 'coefficient' in c, for a "
+                "coefficient that differs between regions (e.g., a scattering or fission "
+                "cross section). Default none.");
   return p;
 }
 
-CoupledForce::CoupledForce(const InputParameters & p) : Kernel(p) {}
+CoupledForce::CoupledForce(const InputParameters & p)
+    : Kernel(p), _prop_name(p.getString("coefficient_property"))
+{
+}
 
 void
 CoupledForce::initialSetup(Problem & problem)
@@ -371,11 +392,14 @@ CoupledForce::initialSetup(Problem & problem)
   Kernel::initialSetup(problem);
   _v = coupledVariable(problem, "coupled_variable");
   _c = getFunction(problem, "coefficient");
+  _prop = _prop_name.empty() ? -1 : problem.propertyRegistry().id(_prop_name);
 }
 
 ADReal
 CoupledForce::computeSource(const QpContext & ctx) const
 {
+  if (_prop >= 0)
+    return -ctx.property(_prop) * _c->value(ctx.x, ctx.time) * ctx.value(_v);
   return -_c->value(ctx.x, ctx.time) * ctx.value(_v);
 }
 
@@ -571,14 +595,14 @@ RobinBC::computeBoundaryFlux(const QpContext & ctx) const
 }
 
 // ---------------------------------------------------------------------------
-// Materials
+// Property objects
 // ---------------------------------------------------------------------------
 InputParameters
-GenericConstantMaterial::validParams()
+ConstantProperty::validParams()
 {
-  InputParameters p = Material::validParams();
+  InputParameters p = Property::validParams();
   p.setClassDescription(
-      "Declares scalar material properties that are constant in space and time. The "
+      "Declares scalar properties that are constant in space and time. The "
       "properties are then available to any kernel or boundary condition on the same "
       "blocks: a kernel consumes one by being given its name in the matching *_property "
       "parameter, for example the 'diffusivity_property' of the diffusion kernel.");
@@ -595,7 +619,7 @@ GenericConstantMaterial::validParams()
   return p;
 }
 
-GenericConstantMaterial::GenericConstantMaterial(const InputParameters & p) : Material(p)
+ConstantProperty::ConstantProperty(const InputParameters & p) : Property(p)
 {
   _names = p.getStringList("property_names");
   _values = p.getRealList("property_values");
@@ -604,7 +628,7 @@ GenericConstantMaterial::GenericConstantMaterial(const InputParameters & p) : Ma
 }
 
 void
-GenericConstantMaterial::declareProperties(MaterialPropertyRegistry & r)
+ConstantProperty::declareProperties(PropertyRegistry & r)
 {
   _ids.clear();
   for (const auto & n : _names)
@@ -612,7 +636,7 @@ GenericConstantMaterial::declareProperties(MaterialPropertyRegistry & r)
 }
 
 void
-GenericConstantMaterial::computeProperties(QpContext & ctx) const
+ConstantProperty::computeProperties(QpContext & ctx) const
 {
   for (std::size_t i = 0; i < _ids.size(); ++i)
     ctx.property(_ids[i]) = ADReal(_values[i]);
@@ -620,40 +644,40 @@ GenericConstantMaterial::computeProperties(QpContext & ctx) const
 
 namespace
 {
-/// A material that computes nothing of its own and only scales properties
-/// that the materials added before it computed.
-class PropertyScaling : public Material
+/// A property object that computes nothing of its own and only scales properties
+/// that the property objects added before it computed.
+class PropertyScaling : public Property
 {
 public:
   static InputParameters validParams()
   {
-    InputParameters p = Material::validParams();
+    InputParameters p = Property::validParams();
     p.setClassDescription(
-        "Multiplies material properties computed by the materials added before it, on its blocks, "
+        "Multiplies properties computed by the property objects added before it, on its blocks, "
         "by constant factors: 'scaled_properties' names them and 'property_factors' gives the "
         "factors. It is intended for sensitivity and uncertainty studies, in which a correlation "
-        "is scaled without a change to the material that computes it.");
+        "is scaled without a change to the property object that computes it.");
     return p;
   }
-  explicit PropertyScaling(const InputParameters & p) : Material(p)
+  explicit PropertyScaling(const InputParameters & p) : Property(p)
   {
     if (p.getStringList("scaled_properties").empty())
       throw InputError("'" + name() + "': give at least one of 'scaled_properties'.");
   }
-  void declareProperties(MaterialPropertyRegistry &) override {}
+  void declareProperties(PropertyRegistry &) override {}
   void computeProperties(QpContext &) const override {}
 };
 } // namespace
 
 InputParameters
-GenericFunctionMaterial::validParams()
+FunctionProperty::validParams()
 {
-  InputParameters p = Material::validParams();
+  InputParameters p = Property::validParams();
   p.setClassDescription(
-      "Declares scalar material properties whose values come from functions of position and time. "
+      "Declares scalar properties whose values come from functions of position and time. "
       "The functions must already be registered on the problem. Use this for a property that "
       "varies through the body, such as a graded conductivity. A property that depends on the "
-      "solution itself requires a material written in Python or C++.");
+      "solution itself requires a parsed_property, or a property object written in Python or C++.");
   p.addRequired("property_names",
                 ParameterKind::StringList,
                 "Names under which the values are declared, in the same order as 'functions', and "
@@ -667,7 +691,7 @@ GenericFunctionMaterial::validParams()
   return p;
 }
 
-GenericFunctionMaterial::GenericFunctionMaterial(const InputParameters & p) : Material(p)
+FunctionProperty::FunctionProperty(const InputParameters & p) : Property(p)
 {
   _names = p.getStringList("property_names");
   _fnames = p.getStringList("functions");
@@ -676,16 +700,16 @@ GenericFunctionMaterial::GenericFunctionMaterial(const InputParameters & p) : Ma
 }
 
 void
-GenericFunctionMaterial::initialSetup(Problem & problem)
+FunctionProperty::initialSetup(Problem & problem)
 {
-  Material::initialSetup(problem);
+  Property::initialSetup(problem);
   _f.clear();
   for (const auto & n : _fnames)
     _f.push_back(problem.function(n));
 }
 
 void
-GenericFunctionMaterial::declareProperties(MaterialPropertyRegistry & r)
+FunctionProperty::declareProperties(PropertyRegistry & r)
 {
   _ids.clear();
   for (const auto & n : _names)
@@ -693,7 +717,7 @@ GenericFunctionMaterial::declareProperties(MaterialPropertyRegistry & r)
 }
 
 void
-GenericFunctionMaterial::computeProperties(QpContext & ctx) const
+FunctionProperty::computeProperties(QpContext & ctx) const
 {
   for (std::size_t i = 0; i < _ids.size(); ++i)
     ctx.property(_ids[i]) = ADReal(_f[i]->value(ctx.x, ctx.time));
@@ -716,9 +740,9 @@ registerFrameworkObjects(Factory & f)
   f.add<NeumannBC>("Neumann_boundary_condition", ObjectCategory::BoundaryCondition, m);
   f.add<RobinBC>("Robin_boundary_condition", ObjectCategory::BoundaryCondition, m);
   f.add<NodalLoad>("point_source", ObjectCategory::NodalLoad, m);
-  f.add<GenericConstantMaterial>("generic_constant_material", ObjectCategory::Material, m);
-  f.add<PropertyScaling>("property_scaling", ObjectCategory::Material, m);
-  f.add<GenericFunctionMaterial>("generic_function_material", ObjectCategory::Material, m);
+  f.add<ConstantProperty>("constant_property", ObjectCategory::Property, m);
+  f.add<PropertyScaling>("property_scaling", ObjectCategory::Property, m);
+  f.add<FunctionProperty>("function_property", ObjectCategory::Property, m);
 }
 
 } // namespace dualmesh

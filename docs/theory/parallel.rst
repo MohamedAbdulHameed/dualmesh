@@ -21,22 +21,24 @@ Nothing has to be set up: a threaded run needs one call to
 ``OMP_NUM_THREADS`` environment variable is set.  This level is limited to the
 cores of a single machine, and to problems that fit in that machine's memory.
 
-**Distributed memory.**  Across processes, :class:`~dualmesh.DistributedProblem`
-splits the elements of the mesh among the MPI ranks.  Each rank holds only its
+**Distributed memory.**  Across processes, a :class:`~dualmesh.Problem` splits
+the elements of the mesh among the MPI ranks.  Each rank holds only its
 own part of the problem, so the memory of a whole cluster is available, and the
 ranks exchange data explicitly through MPI.  A distributed script is launched
-with ``mpirun``, as in ``mpirun -n 8 python my_analysis.py``.
+with ``mpirun``, as in ``mpirun -n 8 python my_analysis.py``, and the same
+script runs serially with ``python my_analysis.py``.  The problem splits itself
+when it runs on more than one process, and ``dm.Problem(mesh,
+distributed=True)`` takes the distributed path on one process as well.
 
 The two levels compose: four ranks of four threads each is a sensible
 configuration for a sixteen-core node.  The appropriate level depends on the
 limiting resource.  Threading is the simpler of the two and is usually
 sufficient when the problem fits in one machine.  Distributed execution is
 required when it does not, and it is the only way to use more than one machine.
-Whether the installed extension can actually talk to other processes is reported by
-:func:`~dualmesh.have_mpi`.  A build without MPI still exposes
-:class:`~dualmesh.DistributedProblem`, on one rank, where every collective is
-the identity and every exchange is empty, so it reproduces the serial answer
-exactly.  The test suite uses this single-rank configuration to exercise the
+Whether the installed extension can talk to other processes is reported by
+:func:`~dualmesh.have_mpi`.  A build without MPI still runs a problem with
+``distributed=True`` on one rank, where every collective is the identity and
+every exchange is empty, so it reproduces the serial answer exactly.  The test suite uses this single-rank configuration to exercise the
 distributed code path without launching a parallel job.
 
 Threading the assembly
@@ -59,7 +61,7 @@ separating one node's control domain from another's within :math:`K`, and both
 are visited
 inside the single loop over :math:`K`.  Computing :math:`R_K` requires the
 element's geometry, the current values of the unknowns at its nodes, the
-quadrature rule, and calls into the kernels and materials of the problem.  None
+quadrature rule, and calls into the kernels and property objects of the problem.  None
 of that depends on any other element.  The element loop is therefore
 *embarrassingly parallel*: the work
 splits without reordering, and the only difficulty is the accumulation in
@@ -114,7 +116,7 @@ will be used.  The second can be smaller than the first, for three reasons.
 The first reason is that an extension compiled without OpenMP always runs the
 loop serially.  The other two reasons are described below.
 
-**An object of the problem is defined in Python.**  A kernel, a material, a
+**An object of the problem is defined in Python.**  A kernel, a property object, a
 function or an initial condition written in Python has to be called back into
 the interpreter, and CPython's global interpreter lock permits only one thread
 to execute Python bytecode at a time.  Several threads calling such an object
@@ -227,7 +229,7 @@ each of its local nodes.  Blocks are preserved and side sets are restricted to
 the sides that remain on the rank.  A side set that is empty on a rank is still
 created, so a boundary condition naming it remains valid everywhere.  On that
 sub-mesh the rank builds an ordinary :class:`~dualmesh.Problem`, and the user
-defines exactly the same variables, kernels, materials and boundary conditions
+defines exactly the same variables, kernels, property objects and boundary conditions
 on it as in a serial run.  Every discretisation, every physics module and the
 automatic differentiation work unchanged, because the rank-local object is an
 ordinary problem posed on a smaller mesh.
@@ -537,7 +539,7 @@ evenly the work is shared) and the communication volume, measured by the
 *edge cut*, the number of mesh faces whose two elements lie in different parts.
 Three partitioners are available through
 :func:`~dualmesh.partition_mesh` and through the ``partitioner``
-argument of :class:`~dualmesh.DistributedProblem`.
+argument of :class:`~dualmesh.Problem`.
 
 **Recursive coordinate bisection** is purely geometric.  It computes the
 centroid of every element, finds the longest axis of the bounding box of those
@@ -557,7 +559,7 @@ that the parts start from the edge of the remaining region.  Parts produced this
 way are connected and follow the mesh connectivity, independently of the
 coordinate axes, and any
 element left over from a disconnected piece joins the smallest part.  This is
-the default for :class:`~dualmesh.DistributedProblem`.
+the default of :class:`~dualmesh.Problem`.
 
 **METIS** calls the multilevel :math:`k`-way algorithm of Karypis and Kumar
 [KarypisKumar1998]_ on the same element adjacency graph.  It coarsens the graph
@@ -616,10 +618,10 @@ between 1.24 and 1.55 (see the table above), and what fraction of a whole solve 
 depends entirely on how expensive the linear solve is for the problem at hand.
 
 **Gathering the solution does not scale.**
-:meth:`~dualmesh.DistributedProblem.gathered_values` builds a vector of the
+:meth:`~dualmesh.Problem.gathered_values` builds a vector of the
 global size on every rank.  It is intended for testing and for small problems.
 Large runs should write results with
-:meth:`~dualmesh.DistributedProblem.write_vtu`, which produces one ``.vtu`` file
+:meth:`~dualmesh.Problem.write_vtu`, which produces one ``.vtu`` file
 per rank plus a ``.pvtu`` index that ParaView and VisIt open as a single data
 set.
 

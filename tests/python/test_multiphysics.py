@@ -43,9 +43,7 @@ def test_natural_convection_matches_de_vahl_davis(method, rayleigh_number):
     assert computed["v_max"] == pytest.approx(reference["v_max"], rel=1.5e-2)
     # Energy balance: the heat entering through the hot wall leaves through
     # the cold one, because the top and bottom are adiabatic.
-    assert problem.total_reaction("temperature", "right") == pytest.approx(
-        -computed["nusselt"], rel=1e-9
-    )
+    assert problem.total_reaction("temperature", "right") == pytest.approx(-computed["nusselt"], rel=1e-9)
     # Newton's method with the exact coupled Jacobian: a handful of
     # iterations per decade of Rayleigh number.
     decades = len([r for r in (1e3, 1e4, 1e5, 1e6) if r <= rayleigh_number])
@@ -74,15 +72,9 @@ def test_penalty_flow_is_refused_by_the_cell_centred_method():
     imposes it at every face and locks.  It is refused with an explanation."""
     mesh = dm.generate_rectangle_mesh(0.0, 1.0, 0.0, 1.0, 4, 4)
     problem = dm.Problem(mesh, method="zfvm")
-    dm.physics.add_incompressible_flow(problem, velocities=["u", "v"])
+    problem.add_physics("incompressible_flow", "flow", velocities=["u", "v"])
     for variable in ("u", "v"):
-        problem.add_boundary_condition(
-            "Dirichlet_boundary_condition",
-            f"walls_{variable}",
-            variable=variable,
-            boundary=["left", "right", "bottom", "top"],
-            value=0.0,
-        )
+        problem.add_boundary_condition("Dirichlet_boundary_condition", f"walls_{variable}", variable=variable, boundary=["left", "right", "bottom", "top"], value=0.0)
     with pytest.raises(ValueError, match="cell-centred finite volume method"):
         problem.solve()
 
@@ -97,65 +89,39 @@ def test_the_vertex_centred_method_does_not_lock_the_penalty_term():
     for method in ("dmcdm", "hfvm"):
         mesh = dm.generate_rectangle_mesh(0.0, 1.0, 0.0, 1.0, 16, 16)
         problem = dm.Problem(mesh, method=method)
-        dm.physics.add_incompressible_flow(problem, velocities=["u", "v"])
+        problem.add_physics("incompressible_flow", "flow", velocities=["u", "v"])
         for variable in ("u", "v"):
-            problem.add_boundary_condition(
-                "Dirichlet_boundary_condition",
-                f"walls_{variable}",
-                variable=variable,
-                boundary=["left", "right", "bottom"],
-                value=0.0,
-            )
-        problem.add_boundary_condition(
-            "Dirichlet_boundary_condition", "lid", variable="u", boundary="top", value=1.0
-        )
-        problem.add_boundary_condition(
-            "Dirichlet_boundary_condition", "lid_v", variable="v", boundary="top", value=0.0
-        )
+            problem.add_boundary_condition("Dirichlet_boundary_condition", f"walls_{variable}", variable=variable, boundary=["left", "right", "bottom"], value=0.0)
+        problem.add_boundary_condition("Dirichlet_boundary_condition", "lid", variable="u", boundary="top", value=1.0)
+        problem.add_boundary_condition("Dirichlet_boundary_condition", "lid_v", variable="v", boundary="top", value=0.0)
         problem.solve()
         values[method] = problem.sample("u", [[0.5, 0.25]])[0]
     assert values["hfvm"] == pytest.approx(values["dmcdm"], rel=0.05)
     assert values["dmcdm"] < -0.1
 
 
-def test_the_buoyancy_helper_adds_the_same_kernels():
-    """``dm.physics.add_boussinesq_buoyancy`` adds one kernel per component
-    along which gravity acts, and gives the example's answer exactly."""
+def test_the_physics_and_couplings_equal_the_objects():
+    """The incompressible_flow and heat_transfer physics with the
+    heat_convection and Boussinesq_buoyancy couplings of the example generate
+    the same equations as the objects written one by one, and give the same
+    answer to round-off."""
     reference, _ = natural_convection.solve(1.0e4, 16)
     problem = dm.Problem(natural_convection.cavity_mesh(16))
-    velocities = dm.physics.add_incompressible_flow(
-        problem, velocities=["u", "v"], dynamic_viscosity=0.71, density=1.0, penalty_parameter=1e7
-    )
-    problem.add_variable("temperature")
-    problem.add_kernel("heat_conduction", "conduction", variable="temperature")
-    problem.add_kernel(
-        "heat_convection", "convection", variable="temperature", velocities=velocities
-    )
-    added = dm.physics.add_boussinesq_buoyancy(
-        problem,
-        "temperature",
-        velocities,
-        gravity=[0.0, -1.0],
-        thermal_expansion_coefficient=1.0e4 * 0.71,
-        reference_temperature=0.0,
-        scale_with_load=True,
-    )
-    assert added == ["v"]
+    velocities = ["u", "v"]
     for variable in velocities:
-        problem.add_boundary_condition(
-            "Dirichlet_boundary_condition",
-            f"no_slip_{variable}",
-            variable=variable,
-            boundary=["left", "right", "bottom", "top"],
-            value=0.0,
-        )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", "hot", variable="temperature", boundary="left", value=0.5
-    )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", "cold", variable="temperature", boundary="right", value=-0.5
-    )
+        problem.add_variable(variable)
+    problem.add_variable("temperature")
+    for component, variable in enumerate(velocities):
+        problem.add_kernel("viscous_stress", f"viscous_{variable}", variable=variable, component=component, velocities=velocities, dynamic_viscosity=0.71)
+        problem.add_kernel("penalty_incompressibility", f"penalty_{variable}", variable=variable, component=component, velocities=velocities, penalty_parameter=1e7)
+        problem.add_kernel("convective_inertia", f"inertia_{variable}", variable=variable, component=component, velocities=velocities, density=1.0)
+    problem.add_property("penalty_pressure", "pressure", velocities=velocities, penalty_parameter=1e7)
+    problem.add_kernel("heat_conduction", "conduction", variable="temperature")
+    problem.add_kernel("heat_convection", "convection", variable="temperature", velocities=velocities)
+    problem.add_kernel("Boussinesq_buoyancy", "buoyancy", variable="v", component=1, temperature="temperature", gravity=[0.0, -1.0], thermal_expansion_coefficient=1.0e4 * 0.71, reference_temperature=0.0, scale_with_load=True)
+    for variable in velocities:
+        problem.add_boundary_condition("Dirichlet_boundary_condition", f"no_slip_{variable}", variable=variable, boundary=["left", "right", "bottom", "top"], value=0.0)
+    problem.add_boundary_condition("Dirichlet_boundary_condition", "hot", variable="temperature", boundary="left", value=0.5)
+    problem.add_boundary_condition("Dirichlet_boundary_condition", "cold", variable="temperature", boundary="right", value=-0.5)
     problem.solve(load_factors=[0.1, 1.0], max_iterations=40)
-    assert problem.values("temperature") == pytest.approx(
-        reference.values("temperature"), abs=1e-10
-    )
+    assert problem.values("temperature") == pytest.approx(reference.values("temperature"), abs=1e-10)

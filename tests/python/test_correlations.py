@@ -54,34 +54,25 @@ def test_coolant_enthalpy_balance_and_correlations():
     """A PWR channel (pitch 12.6 mm, cladding radius 4.75 mm, 3500
     kg/(m^2 s), 15.5 MPa, 565 K inlet) heated by 17.9 kW/m over 3.66 m: the
     enthalpy balance with IAPWS properties gives 601.6 K at the outlet,
-    2 K below the constant-cp estimate with c_p = 5500 J/(kg K); Weisman's
-    coefficient is about 40 % above Dittus-Boelter's."""
-    coolant = fuel.ForcedConvection(
-        inlet_temperature=565.0, pressure=15.5e6, mass_flux=3500.0, rod_pitch=12.6e-3
-    )
+    2 K below the constant-cp estimate with c_p = 5500 J/(kg K). Dittus and
+    Boelter's Eq. (15), with d in inches, the mass velocity in lb/(ft^2 s),
+    the viscosity in centipoise and n = 0.4, is Nu = 0.02413 Re^0.8 Pr^0.4 in
+    SI units. The module uses the coefficient 0.023, and Weisman's
+    coefficient is about 39 % above it."""
+    coolant = fuel.ForcedConvection(inlet_temperature=565.0, pressure=15.5e6, mass_flux=3500.0, rod_pitch=12.6e-3, correlation="dittus_boelter")
     radius = 4.75e-3
     outlet = coolant.bulk_temperature(17.9e3 * 3.66, radius)
     assert outlet == pytest.approx(601.6, abs=0.1)
-    constant = fuel.ForcedConvection(
-        inlet_temperature=565.0,
-        pressure=15.5e6,
-        mass_flux=3500.0,
-        rod_pitch=12.6e-3,
-        specific_heat=5500.0,
-        thermal_conductivity=0.55,
-        dynamic_viscosity=8.8e-5,
-    )
+    constant = fuel.ForcedConvection(inlet_temperature=565.0, pressure=15.5e6, mass_flux=3500.0, rod_pitch=12.6e-3, specific_heat=5500.0, thermal_conductivity=0.55, dynamic_viscosity=8.8e-5)
     assert constant.bulk_temperature(17.9e3 * 3.66, radius) - outlet == pytest.approx(2.1, abs=0.3)
-    weisman = fuel.ForcedConvection(
-        inlet_temperature=565.0,
-        pressure=15.5e6,
-        mass_flux=3500.0,
-        rod_pitch=12.6e-3,
-        correlation="weisman",
-    )
-    ratio = weisman.heat_transfer_coefficient_for(radius, 585.0) / (
-        coolant.heat_transfer_coefficient_for(radius, 585.0)
-    )
+    weisman = fuel.ForcedConvection(inlet_temperature=565.0, pressure=15.5e6, mass_flux=3500.0, rod_pitch=12.6e-3)
+    assert weisman.correlation == "weisman"
+    centipoise = 6.719689751e-4  # lb/(ft s)
+    assert 19.5 / 12 * (12 * centipoise) ** 0.8 * (1 / (3600 * centipoise)) ** 0.4 == pytest.approx(0.02413, abs=5e-6)
+    cp, k, mu = coolant.fluid_properties(585.0)
+    dh = coolant.hydraulic_diameter(radius)
+    assert coolant.heat_transfer_coefficient_for(radius, 585.0) == pytest.approx(0.023 * (3500.0 * dh / mu) ** 0.8 * (mu * cp / k) ** 0.4 * k / dh, rel=1e-12)
+    ratio = weisman.heat_transfer_coefficient_for(radius, 585.0) / (coolant.heat_transfer_coefficient_for(radius, 585.0))
     assert ratio == pytest.approx(1.39, abs=0.03)
     with pytest.raises(ValueError, match="saturation temperature"):
         coolant.bulk_temperature(60e3 * 3.66, radius)
@@ -102,23 +93,13 @@ def test_uo2_creep_matpro_transition_stress():
 
     def hand(s, T, F, G=10.0, D=95.0):
         st = 1.6547e7 / G**0.5714
-        return (
-            (0.3919 + 1.31e-19 * F) * min(s, st) * np.exp(-Q1 / (R * T)) / ((-87.7 + D) * G**2)
-            + 2.0391e-25 * s**4.5 * np.exp(-Q2 / (R * T)) / (-90.5 + D)
-            + 3.72264e-35 * F * s * np.exp(-2616.8 / T)
-        )
+        return (0.3919 + 1.31e-19 * F) * min(s, st) * np.exp(-Q1 / (R * T)) / ((-87.7 + D) * G**2) + 2.0391e-25 * s**4.5 * np.exp(-Q2 / (R * T)) / (-90.5 + D) + 3.72264e-35 * F * s * np.exp(-2616.8 / T)
 
     for s, T in ((20e6, 1500.0), (60e6, 1800.0), (2e6, 1500.0)):
-        assert props.uo2_creep_rate(s, T, 1e19, 0.95, 5e-6) == pytest.approx(
-            hand(s, T, 1e19), rel=1e-9
-        )
+        assert props.uo2_creep_rate(s, T, 1e19, 0.95, 5e-6) == pytest.approx(hand(s, T, 1e19), rel=1e-9)
     # The audit's check values: 2.10e-9 and 6.32e-7 1/s.
-    assert props.uo2_creep_rate(20e6, 1500.0, 1e19, 0.95, 5e-6) == pytest.approx(
-        2.1008e-9, rel=1e-3
-    )
-    assert props.uo2_creep_rate(60e6, 1800.0, 1e19, 0.95, 5e-6) == pytest.approx(
-        6.3216e-7, rel=1e-3
-    )
+    assert props.uo2_creep_rate(20e6, 1500.0, 1e19, 0.95, 5e-6) == pytest.approx(2.1008e-9, rel=1e-3)
+    assert props.uo2_creep_rate(60e6, 1800.0, 1e19, 0.95, 5e-6) == pytest.approx(6.3216e-7, rel=1e-3)
 
 
 def test_uo2_densification_matpro():
@@ -142,16 +123,10 @@ def test_xenon_diffusivity_is_turnbull_three_term():
     and 1e19 fissions per m^3 per second (9.7511e-21 with the 8e-40 of the
     secondary sources)."""
     model = fuel.BoothFissionGasRelease(1)
-    assert model.diffusivity(np.array([1000.0]), np.array([1e19]))[0] == pytest.approx(
-        3.7511e-21, rel=1e-4
-    )
-    assert model.diffusivity(np.array([1500.0]), np.array([1e19]))[0] == pytest.approx(
-        2.2704e-19, rel=1e-4
-    )
+    assert model.diffusivity(np.array([1000.0]), np.array([1e19]))[0] == pytest.approx(3.7511e-21, rel=1e-4)
+    assert model.diffusivity(np.array([1500.0]), np.array([1e19]))[0] == pytest.approx(2.2704e-19, rel=1e-4)
     secondary = fuel.BoothFissionGasRelease(1, athermal_coefficient=8e-40)
-    assert secondary.diffusivity(np.array([1000.0]), np.array([1e19]))[0] == pytest.approx(
-        9.7511e-21, rel=1e-4
-    )
+    assert secondary.diffusivity(np.array([1000.0]), np.array([1e19]))[0] == pytest.approx(9.7511e-21, rel=1e-4)
 
 
 def test_intragranular_trapping_and_grain_face_bubbles():
@@ -162,14 +137,14 @@ def test_intragranular_trapping_and_grain_face_bubbles():
     T = np.array([900.0, 1500.0])
     F = np.full(2, 1e19)
     model = fuel.BoothFissionGasRelease(2)
+    # The parameters of Pizzocri et al. (2018), Table 1.
+    assert (model.nucleation_factor, model.fragment_range, model.fragment_radius, model.gas_atom_radius, model.gas_atom_volume) == (25.0, 6e-6, 1e-9, 0.2e-9, 4.09e-29)
     for k in range(40):
         model.advance(30 * 86400.0, T, F, 5e6, np.full(2, 1e-3 * (k + 1)))
     D = model.diffusivity(T, F)
     effective, b = model._speight(D, F, model.intragranular())
     assert np.all(effective < D)
-    assert model.bubble_density == pytest.approx(
-        2 * 25.0 * 1e19 / b, rel=1e-2
-    )  # near equilibrium nu / b after many re-solution times
+    assert model.bubble_density == pytest.approx(2 * 25.0 * 1e19 / b, rel=1e-2)  # near equilibrium nu / b after many re-solution times
     fraction = model.released / model.produced
     assert fraction[0] == 0.0
     assert 0.3 < fraction[1] < 0.7
@@ -207,9 +182,7 @@ def test_un_creep_terms():
     assert thermal == pytest.approx(7.740e-8 + 5.582e-9, rel=2e-3)
     without_coble = props.un_creep_rate(30e6, 1400.0, 0.0, 0.95, 0.0)
     assert without_coble == pytest.approx(5.582e-9, rel=2e-3)
-    irradiation = props.un_creep_rate(30e6, 800.0, 1e19, 0.95, 0.0) - props.un_creep_rate(
-        30e6, 800.0, 0.0, 0.95, 0.0
-    )
+    irradiation = props.un_creep_rate(30e6, 800.0, 1e19, 0.95, 0.0) - props.un_creep_rate(30e6, 800.0, 0.0, 0.95, 0.0)
     assert irradiation == pytest.approx(2.9e-22 * 30 * 1e13 * np.exp(1.0) / 3600, rel=1e-9)
 
 
@@ -257,9 +230,7 @@ def test_micro_cracking_parameter_of_barani():
     assert m[-1] == pytest.approx(1 - 33.0 ** (-1 / 33) * np.exp(-527.0 / 330.0), rel=1e-6)
     cooling = faces.cracking_parameter(1773.0 - (T - 1773.0), bu, False)
     assert cooling == pytest.approx(m, abs=1e-12)
-    assert faces.cracking_parameter(np.array([2293.0]), 0.0, True)[0] == pytest.approx(
-        1.0 - 34.0 ** (-1.0 / 33.0), rel=1e-12
-    )
+    assert faces.cracking_parameter(np.array([2293.0]), 0.0, True)[0] == pytest.approx(1.0 - 34.0 ** (-1.0 / 33.0), rel=1e-12)
 
 
 def test_micro_cracking_releases_the_gas_of_cracked_faces_and_heals():
@@ -292,11 +263,7 @@ def test_gas_is_conserved_with_every_option():
     """Produced = in the grains + on the boundaries + released, element by
     element, with burst release and grain-boundary re-solution, over a
     history with shutdowns."""
-    for options in (
-        {},
-        dict(boundary_resolution=3e-32),
-        dict(intragranular_bubbles="white_tucker", venting_shrink=True),
-    ):
+    for options in ({}, dict(boundary_resolution=3e-32), dict(intragranular_bubbles="white_tucker", venting_shrink=True)):
         shrink = options.pop("venting_shrink", False)
         faces = dict(venting="shrink") if shrink else None
         model = fuel.BoothFissionGasRelease(3, grain_face_parameters=faces, **options)
@@ -304,9 +271,7 @@ def test_gas_is_conserved_with_every_option():
         F = np.full(3, 1e19)
         for k in range(120):
             on = k % 20 != 19
-            model.advance(
-                1e6, T if on else np.full(3, 500.0), F if on else 0 * F, 5e6, np.full(3, 1e-4 * k)
-            )
+            model.advance(1e6, T if on else np.full(3, 500.0), F if on else 0 * F, 5e6, np.full(3, 1e-4 * k))
         total = model.intragranular() + model.boundary + model.released
         assert total == pytest.approx(model.produced, rel=1e-9)
 
@@ -328,9 +293,7 @@ def test_grain_boundary_resolution_holds_the_surface_concentration():
     psi = kappa * F * N_f / (2 * Deff)
     # psi was set with the D_eff of the last step, which barely moves.
     assert with_res.boundary_concentration == pytest.approx(psi, rel=2e-2)
-    assert (with_res.boundary + with_res.released)[0] < 0.8 * (without.boundary + without.released)[
-        0
-    ]
+    assert (with_res.boundary + with_res.released)[0] < 0.8 * (without.boundary + without.released)[0]
 
 
 def test_white_tucker_bubbles_reproduce_their_table_1():
@@ -342,17 +305,11 @@ def test_white_tucker_bubbles_reproduce_their_table_1():
     celsius = np.arange(1000.0, 1801.0, 100.0)
     R = np.array([5.5, 6.0, 6.5, 7.0, 8.0, 8.75, 9.75, 11.0, 12.5]) * 1e-10
     N = np.array([8.7, 7.8, 7.0, 6.4, 5.7, 5.3, 4.8, 4.4, 3.8]) * 1e23
-    D = np.array(
-        [7.98e-21, 1.46e-20, 4.49e-20, 1.74e-19, 6.32e-19, 2.04e-18, 5.83e-18, 1.50e-17, 3.53e-17]
-    )
-    attenuated = np.array(
-        [7.70e-21, 1.37e-20, 3.82e-20, 1.06e-19, 2.02e-19, 2.78e-19, 3.32e-19, 3.76e-19, 4.22e-19]
-    )
+    D = np.array([7.98e-21, 1.46e-20, 4.49e-20, 1.74e-19, 6.32e-19, 2.04e-18, 5.83e-18, 1.50e-17, 3.53e-17])
+    attenuated = np.array([7.70e-21, 1.37e-20, 3.82e-20, 1.06e-19, 2.02e-19, 2.78e-19, 3.32e-19, 3.76e-19, 4.22e-19])
     T = celsius + 273.15
     F = np.full(len(T), 9.3e18)
-    model = fuel.BoothFissionGasRelease(
-        len(T), intragranular_bubbles="white_tucker", micro_cracking=False
-    )
+    model = fuel.BoothFissionGasRelease(len(T), intragranular_bubbles="white_tucker", micro_cracking=False)
     effective, _ = model._speight(D, F, np.zeros(len(T)), T)
     assert model.intragranular_bubble_radius == pytest.approx(R, rel=0.04)
     assert model.bubble_density == pytest.approx(N, rel=0.065)

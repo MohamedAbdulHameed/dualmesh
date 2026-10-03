@@ -18,14 +18,14 @@ A Python kernel follows four rules:
   both floats and AD numbers.
 * Names are resolved in ``setup(problem)``, for example
   ``problem.variable_index("temperature")`` for a coupled variable or
-  ``problem.property_id("stress")`` for a material property.
+  ``problem.property_id("stress")`` for a property.
 * Every keyword argument passed to the constructor becomes an attribute, so
   that a parameter is read as, e.g., ``self.axial_stiffness``.
 
-Boundary conditions and materials follow the same pattern with
+Boundary conditions and property objects follow the same pattern with
 :class:`dualmesh.PythonBoundaryCondition`,
 :class:`dualmesh.PythonNodalBoundaryCondition` and
-:class:`dualmesh.PythonMaterial`.  A nonlinear flux condition, for
+:class:`dualmesh.PythonProperty`.  A nonlinear flux condition, for
 instance :math:`n\cdot F = -u^2`, takes four lines:
 
 .. code-block:: python

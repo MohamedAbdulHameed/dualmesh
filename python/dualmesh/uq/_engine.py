@@ -15,7 +15,11 @@ from pathlib import Path
 
 import numpy as np
 
+from ..parameters import write_json_numbers
 from .distributions import Distribution
+
+#: Write the dict of a result to a JSON file.
+write_json = write_json_numbers
 
 METHODS = ("latin_hypercube", "sobol", "monte_carlo")
 
@@ -28,10 +32,7 @@ def check_inputs(inputs) -> dict:
         if not isinstance(name, str) or not name.isidentifier():
             raise ValueError(f"uq: input name {name!r} must be a valid keyword argument name.")
         if not isinstance(dist, Distribution):
-            raise TypeError(
-                f"uq: input '{name}' must be a distribution (uq.Normal, uq.LogNormal, "
-                f"uq.Uniform or uq.LogUniform), not {type(dist).__name__}."
-            )
+            raise TypeError(f"uq: input '{name}' must be a distribution (uq.Normal, uq.LogNormal, uq.Uniform or uq.LogUniform), not {type(dist).__name__}.")
     return dict(inputs)
 
 
@@ -132,10 +133,7 @@ class Store:
         with np.load(self.path, allow_pickle=False) as f:
             names = [str(s) for s in f["input_names"]]
             if names != self.names:
-                raise ValueError(
-                    f"uq: the store {self.path} holds the inputs {names}, not {self.names}. "
-                    "Use another file."
-                )
+                raise ValueError(f"uq: the store {self.path} holds the inputs {names}, not {self.names}. Use another file.")
             x = f["x"]
             ok = f["ok"]
             errors = [str(s) for s in f["errors"]]
@@ -173,15 +171,7 @@ class Store:
                 if out is not None:
                     a[i] = out[k]
             arrays["output:" + k] = a
-        payload = dict(
-            input_names=np.array(self.names),
-            x=np.array(self.x).reshape(len(self.x), len(self.names)),
-            ok=np.array([o is not None for o in self.outputs], dtype=bool),
-            errors=np.array([e or "" for e in self.errors]),
-            seconds=np.array(self.seconds),
-            output_names=np.array(list(shapes)),
-            **arrays,
-        )
+        payload = dict(input_names=np.array(self.names), x=np.array(self.x).reshape(len(self.x), len(self.names)), ok=np.array([o is not None for o in self.outputs], dtype=bool), errors=np.array([e or "" for e in self.errors]), seconds=np.array(self.seconds), output_names=np.array(list(shapes)), **arrays)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=self.path.parent, suffix=".npz")
         os.close(fd)
@@ -228,9 +218,7 @@ def evaluate(model, names, x, processes=1, store=None, progress=False):
             processes = int(processes)
             threads = max(1, (os.cpu_count() or 1) // processes)
             ctx = mp.get_context("spawn")
-            with cf.ProcessPoolExecutor(
-                processes, mp_context=ctx, initializer=_worker_init, initargs=(threads,)
-            ) as pool:
+            with cf.ProcessPoolExecutor(processes, mp_context=ctx, initializer=_worker_init, initargs=(threads,)) as pool:
                 futures = {pool.submit(_call, model, kw): i for i, kw in zip(unique, kwargs)}
                 for fut in cf.as_completed(futures):
                     record(futures[fut], fut.result())
@@ -252,9 +240,6 @@ def evaluate(model, names, x, processes=1, store=None, progress=False):
             continue
         for k in shapes:
             if k not in out or out[k].shape != shapes[k]:
-                raise ValueError(
-                    f"uq: the model returned output '{k}' with different shapes in different "
-                    "runs; every run must return the same names and shapes."
-                )
+                raise ValueError(f"uq: the model returned output '{k}' with different shapes in different runs; every run must return the same names and shapes.")
             outputs[k][i] = out[k]
     return outputs, failed

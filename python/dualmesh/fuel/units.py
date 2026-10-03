@@ -44,16 +44,7 @@ NATURAL_URANIUM_MOLAR_MASS = 0.238029
 
 #: Burnup units, as the factor that converts a value in the unit to MWd/kgHM.
 #: FIMA is handled separately because its factor depends on the fuel.
-ENERGY_UNITS = {
-    "MWd/kgHM": 1.0,
-    "MWd/kgU": 1.0,
-    "GWd/tHM": 1.0,
-    "GWd/tU": 1.0,
-    "MWd/tHM": 1.0e-3,
-    "MWd/tU": 1.0e-3,
-    "MWh/kgHM": 1.0 / 24.0,
-    "MWh/kgU": 1.0 / 24.0,
-}
+ENERGY_UNITS = {"MWd/kgHM": 1.0, "MWd/kgU": 1.0, "GWd/tHM": 1.0, "GWd/tU": 1.0, "MWd/tHM": 1.0e-3, "MWd/tU": 1.0e-3, "MWh/kgHM": 1.0 / 24.0, "MWh/kgU": 1.0 / 24.0}
 BURNUP_UNITS = ("FIMA",) + tuple(ENERGY_UNITS)
 
 
@@ -65,10 +56,7 @@ def check_burnup_unit(unit: str) -> str:
     return unit
 
 
-def mwd_per_kg_per_fima(
-    energy_per_fission: float = DEFAULT_ENERGY_PER_FISSION,
-    heavy_metal_molar_mass: float = NATURAL_URANIUM_MOLAR_MASS,
-) -> float:
+def mwd_per_kg_per_fima(energy_per_fission: float = DEFAULT_ENERGY_PER_FISSION, heavy_metal_molar_mass: float = NATURAL_URANIUM_MOLAR_MASS) -> float:
     """MWd/kgHM in one FIMA: :math:`E_f N_A / M_{HM}`."""
     return energy_per_fission * AVOGADRO / heavy_metal_molar_mass / JOULES_PER_MEGAWATT_DAY
 
@@ -78,16 +66,10 @@ class BurnupConverter:
     fuel, whose energy per fission and heavy-metal molar mass fix the FIMA
     conversion."""
 
-    def __init__(
-        self,
-        energy_per_fission: float = DEFAULT_ENERGY_PER_FISSION,
-        heavy_metal_molar_mass: float = NATURAL_URANIUM_MOLAR_MASS,
-    ):
+    def __init__(self, energy_per_fission: float = DEFAULT_ENERGY_PER_FISSION, heavy_metal_molar_mass: float = NATURAL_URANIUM_MOLAR_MASS):
         self.energy_per_fission = float(energy_per_fission)
         self.heavy_metal_molar_mass = float(heavy_metal_molar_mass)
-        self.mwd_per_kg_per_fima = mwd_per_kg_per_fima(
-            self.energy_per_fission, self.heavy_metal_molar_mass
-        )
+        self.mwd_per_kg_per_fima = mwd_per_kg_per_fima(self.energy_per_fission, self.heavy_metal_molar_mass)
 
     def to_fima(self, value, unit: str):
         """A burnup in ``unit``, in FIMA."""

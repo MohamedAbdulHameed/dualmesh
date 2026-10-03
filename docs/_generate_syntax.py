@@ -13,12 +13,7 @@ from __future__ import annotations
 import textwrap
 from pathlib import Path
 
-MODULE_TITLES = {
-    "framework": "Framework",
-    "heat_transfer": "Heat transfer",
-    "solid_mechanics": "Solid mechanics",
-    "fluids": "Viscous incompressible flow",
-}
+MODULE_TITLES = {"framework": "Framework", "heat_transfer": "Heat transfer", "solid_mechanics": "Solid mechanics", "fluids": "Viscous incompressible flow"}
 
 MODULE_INTROS = {
     "framework": """
@@ -33,7 +28,7 @@ throughout.
 The heat transfer module states Fourier conduction, internal generation,
 storage, and the three surface conditions of the subject: prescribed flux,
 convection, and radiation.  The conductivity may depend on position, on time,
-on a material property, and on the temperature itself, which is what makes the
+on a property, and on the temperature itself, which is what makes the
 nonlinear examples of Reddy's Chapter 6 reproducible.
 """,
     "solid_mechanics": """
@@ -44,10 +39,12 @@ problem may use both.
 """,
     "fluids": """
 The fluids module solves the steady and unsteady Navier-Stokes equations for an
-incompressible Newtonian fluid using the penalty formulation, in which the
-pressure is eliminated by the constitutive assumption :math:`P = -\\gamma
-\\nabla \\cdot v`.  This leaves a problem in the velocities alone, at the cost of
-requiring the penalty term to be under-integrated.
+incompressible Newtonian fluid in three formulations.  The penalty formulation
+eliminates the pressure by the constitutive assumption :math:`P = -\\gamma
+\\nabla \\cdot v` and requires the penalty term to be under-integrated.  The
+pressure formulation keeps the pressure as an unknown with equal-order
+interpolation and residual-based stabilisation, and the Taylor-Hood formulation
+keeps it with a quadratic velocity and a linear pressure.
 """,
 }
 
@@ -57,15 +54,10 @@ MODULE_GROUPS = {
     "solid_mechanics": [
         (
             "Continuum elasticity",
-            {
-                "linear_elastic_stress",
-                "stress_divergence",
-                "traction_boundary_condition",
-                "pressure_boundary_condition",
-            },
+            {"linear_elastic_stress", "stress_divergence", "traction_boundary_condition", "pressure_boundary_condition"},
             """
 Small-strain linear elasticity in plane stress, plane strain, axisymmetry and
-three dimensions.  The stress is computed by a material and consumed by one
+three dimensions.  The stress is computed by a property object and consumed by one
 equilibrium kernel per displacement component, which is the same separation
 MOOSE uses and which makes it straightforward to replace the constitutive model
 without touching the equilibrium equations.
@@ -73,14 +65,7 @@ without touching the equilibrium equations.
         ),
         (
             "Structural members: beams and plates",
-            {
-                "beam_Euler_Bernoulli_mixed",
-                "beam_Timoshenko_displacement",
-                "beam_Timoshenko_mixed",
-                "circular_plate_first_order",
-                "circular_plate_classical_mixed",
-                "plate_first_order",
-            },
+            {"beam_Euler_Bernoulli_mixed", "beam_Timoshenko_displacement", "beam_Timoshenko_mixed", "circular_plate_first_order", "circular_plate_classical_mixed", "plate_first_order"},
             """
 The reduced theories: a beam or a plate is an elastic body whose displacement
 is assumed to vary through the thickness in a prescribed way, and whose
@@ -94,7 +79,7 @@ unknown.  All of them accept functionally graded section stiffnesses and the
 von Karman moderate-rotation nonlinearity.
 """,
         ),
-    ],
+    ]
 }
 
 
@@ -104,34 +89,11 @@ def _category_title(category: str) -> str:
 
 
 CATEGORY_NOTES = {
-    "kernel": (
-        "A **kernel** states one term of the governing equation of one variable, "
-        "as a contribution to the flux :math:`\\mathbf{F}`, to the source "
-        ":math:`S`, or to both, in the canonical conservation form "
-        ":math:`-\\nabla\\cdot\\mathbf{F} + S = 0`.  Several kernels on the same "
-        "variable are added together."
-    ),
-    "boundary_condition": (
-        "An **integrated boundary condition** prescribes the secondary variable "
-        "of the duality pair, that is, the normal flux :math:`n\\cdot\\mathbf{F}` "
-        "on a side set.  It is integrated over the boundary, so it enters the "
-        "equations of the control domains that touch that boundary."
-    ),
-    "nodal_boundary_condition": (
-        "A **nodal boundary condition** prescribes the primary variable itself at "
-        "the nodes of a boundary.  The equation of the prescribed degree of "
-        "freedom is replaced, and its residual, evaluated at the converged "
-        "solution, is the reaction."
-    ),
-    "nodal_load": (
-        "A **nodal load** is a concentrated source applied at a single node."
-    ),
-    "material": (
-        "A **material** computes named properties at every integration point, "
-        "which kernels and boundary conditions then consume by name.  Properties "
-        "may depend on position, time, and the solution, and any dependence on "
-        "the solution is differentiated automatically."
-    ),
+    "kernel": ("A **kernel** states one term of the governing equation of one variable, as a contribution to the flux :math:`\\mathbf{F}`, to the source :math:`S`, or to both, in the canonical conservation form :math:`-\\nabla\\cdot\\mathbf{F} + S = 0`.  Several kernels on the same variable are added together."),
+    "boundary_condition": ("An **integrated boundary condition** prescribes the secondary variable of the duality pair, that is, the normal flux :math:`n\\cdot\\mathbf{F}` on a side set.  It is integrated over the boundary, so it enters the equations of the control domains that touch that boundary."),
+    "nodal_boundary_condition": ("A **nodal boundary condition** prescribes the primary variable itself at the nodes of a boundary.  The equation of the prescribed degree of freedom is replaced, and its residual, evaluated at the converged solution, is the reaction."),
+    "nodal_load": ("A **nodal load** is a concentrated source applied at a single node."),
+    "property": ("A **property** object computes named properties at every integration point, which kernels and boundary conditions then consume by name.  Properties may depend on position, time, and the solution, and any dependence on the solution is differentiated automatically."),
 }
 
 
@@ -150,36 +112,18 @@ def _escape_inline(text: str) -> str:
 
 
 def _wrap(text: str, width: int = 79) -> str:
-    return "\n".join(
-        textwrap.fill(paragraph, width=width) if paragraph.strip() else ""
-        for paragraph in text.strip().split("\n")
-    )
+    return "\n".join(textwrap.fill(paragraph, width=width) if paragraph.strip() else "" for paragraph in text.strip().split("\n"))
 
 
 def _parameter_table(rows: list[dict]) -> list[str]:
     if not rows:
         return ["None.", ""]
-    lines = [
-        ".. list-table::",
-        "   :header-rows: 1",
-        "   :widths: 20 14 12 54",
-        "   :class: parameter-table",
-        "",
-        "   * - Name",
-        "     - Type",
-        "     - Default",
-        "     - Description",
-    ]
+    lines = [".. list-table::", "   :header-rows: 1", "   :widths: 20 14 12 54", "   :class: parameter-table", "", "   * - Name", "     - Type", "     - Default", "     - Description"]
     for row in rows:
         default = row["default"]
         default = f"``{default}``" if default else "--"
         description = _escape_inline(row["description"].replace("\n", " ").strip())
-        lines += [
-            f"   * - ``{row['name']}``",
-            f"     - {row['type']}",
-            f"     - {default}",
-            f"     - {description}",
-        ]
+        lines += [f"   * - ``{row['name']}``", f"     - {row['type']}", f"     - {default}", f"     - {description}"]
     lines.append("")
     return lines
 
@@ -188,12 +132,7 @@ def write_syntax_reference(source_dir: Path, have_library: bool) -> None:
     out_dir = source_dir / "syntax"
     out_dir.mkdir(exist_ok=True)
     if not have_library:
-        (out_dir / "index.rst").write_text(
-            "Syntax reference\n================\n\n"
-            "The syntax reference is generated from the compiled library, which was not "
-            "available when this copy of the documentation was built. Run "
-            "``dualmesh list`` and ``dualmesh describe <type>`` locally instead.\n"
-        )
+        (out_dir / "index.rst").write_text("Syntax reference\n================\n\nThe syntax reference is generated from the compiled library, which was not available when this copy of the documentation was built. Run ``dualmesh list`` and ``dualmesh describe <type>`` locally instead.\n")
         return
 
     import dualmesh as dm
@@ -202,9 +141,7 @@ def write_syntax_reference(source_dir: Path, have_library: bool) -> None:
     by_module: dict[str, list[str]] = {}
     for name in dm.registered_types():
         by_module.setdefault(dm.object_module(name), []).append(name)
-    ordered_modules = sorted(
-        by_module, key=lambda m: list(MODULE_TITLES).index(m) if m in MODULE_TITLES else 99
-    )
+    ordered_modules = sorted(by_module, key=lambda m: list(MODULE_TITLES).index(m) if m in MODULE_TITLES else 99)
 
     missing_examples = []
     written = set()
@@ -216,20 +153,7 @@ def write_syntax_reference(source_dir: Path, have_library: bool) -> None:
             parameters = dm._core.object_parameters(name)
             required = [p for p in parameters if p["required"]]
             optional = [p for p in parameters if not p["required"]]
-            lines = [
-                f".. _syntax-{name}:",
-                "",
-                name,
-                "=" * len(name),
-                "",
-                f"*{_category_title(category)}* in the "
-                f"*{MODULE_TITLES.get(module, module)}* module.",
-                "",
-                _wrap(_escape_inline(dm._core.object_description(name))),
-                "",
-                _wrap(CATEGORY_NOTES.get(category, "")),
-                "",
-            ]
+            lines = [f".. _syntax-{name}:", "", name, "=" * len(name), "", f"*{_category_title(category)}* in the *{MODULE_TITLES.get(module, module)}* module.", "", _wrap(_escape_inline(dm._core.object_description(name))), "", _wrap(CATEGORY_NOTES.get(category, "")), ""]
             if required:
                 lines += ["Required parameters", "-------------------", ""]
                 lines += _parameter_table(required)
@@ -243,6 +167,39 @@ def write_syntax_reference(source_dir: Path, have_library: bool) -> None:
             (out_dir / f"{name}.rst").write_text("\n".join(lines) + "\n")
             written.add(f"{name}.rst")
 
+    # ---- one page per physics and coupling ---------------------------------
+    import dataclasses
+
+    from dualmesh import physics as physics_module
+    from dualmesh.parameters import _type_name
+
+    physics_names = physics_module.registered()
+    for name in physics_names:
+        cls = physics_module._REGISTRY[name]
+        required, optional = [], []
+        for f in sorted(dataclasses.fields(cls), key=lambda f: f.name):
+            if f.name.startswith("_"):
+                continue
+            missing = f.default is dataclasses.MISSING and f.default_factory is dataclasses.MISSING
+            default = "" if missing else repr(f.default if f.default is not dataclasses.MISSING else f.default_factory())
+            unit = f.metadata.get("unit", "")
+            row = dict(name=f.name, type=_type_name(f.type) + (f" ({unit})" if unit else ""), default=default, description=f.metadata.get("description", ""))
+            (required if missing else optional).append(row)
+        doc = " ".join((cls.__doc__ or "").split("\n\n")[0].split())
+        lines = [f".. _syntax-{name}:", "", name, "=" * len(name), "", f"*{cls.category.capitalize()}* in the *{MODULE_TITLES.get(cls.module, cls.module)}* module.", "", _wrap(_escape_inline(doc)), ""]
+        if required:
+            lines += ["Required parameters", "-------------------", ""]
+            lines += _parameter_table(required)
+        lines += ["Optional parameters", "-------------------", ""]
+        lines += _parameter_table(optional)
+        example = EXAMPLES.get(name)
+        if example:
+            lines += ["Usage", "-----", "", example, ""]
+        else:
+            missing_examples.append(name)
+        (out_dir / f"{name}.rst").write_text("\n".join(lines) + "\n")
+        written.add(f"{name}.rst")
+
     # ---- the index ----------------------------------------------------------
     index = [
         "Syntax reference",
@@ -252,23 +209,13 @@ def write_syntax_reference(source_dir: Path, have_library: bool) -> None:
             """
 Every piece of physics in dualmesh is a named object with a declared,
 validated, self-documenting set of parameters, in the same way as MOOSE.  An
-object is created by name and configured by keyword, either from Python or from
-an input file, and the two routes accept exactly the same names:
+object is created by name and configured by keyword arguments:
 """
         ),
         "",
         ".. code-block:: python",
         "",
-        '   problem.add_kernel("heat_conduction", "conduction",',
-        '                      variable="temperature", thermal_conductivity=20.0)',
-        "",
-        ".. code-block:: yaml",
-        "",
-        "   kernels:",
-        "     conduction:",
-        "       type: heat_conduction",
-        "       variable: temperature",
-        "       thermal_conductivity: 20.0",
+        '   problem.add_kernel("heat_conduction", "conduction", variable="temperature", thermal_conductivity=20.0)',
         "",
         _wrap(
             """
@@ -283,10 +230,31 @@ parameter is likewise an error, and names the object and the parameter.
 """
         ),
         "",
-        "Objects by module",
-        "-----------------",
+        "Physics and couplings",
+        "---------------------",
         "",
+        _wrap(
+            """
+A physics adds a set of equations named in physical terms, and a coupling
+joins two physics (see :doc:`/user_guide/problem_setup`).  Their boundary
+conditions and extra terms are the objects listed further below.
+"""
+        ),
+        "",
+        ".. list-table::",
+        "   :header-rows: 1",
+        "   :widths: 28 22 50",
+        "",
+        "   * - Type",
+        "     - Category",
+        "     - Summary",
     ]
+    for name in physics_names:
+        cls = physics_module._REGISTRY[name]
+        doc = " ".join((cls.__doc__ or "").split())
+        first = _escape_inline(doc.split(". ")[0].rstrip(".")) + "."
+        index += [f"   * - :doc:`{name} <{name}>`", f"     - {cls.category.capitalize()}", f"     - {first}"]
+    index += ["", "Objects by module", "-----------------", ""]
     for module in ordered_modules:
         title = MODULE_TITLES.get(module, module)
         index += [title, "^" * len(title), ""]
@@ -296,10 +264,7 @@ parameter is likewise an error, and names the object and the parameter.
         groups = MODULE_GROUPS.get(module, [])
         grouped = set().union(*(members for _, members, _ in groups)) if groups else set()
         ungrouped = [n for n in sorted(by_module[module]) if n not in grouped]
-        sections = ([(None, ungrouped, None)] if ungrouped else []) + [
-            (heading, sorted(n for n in by_module[module] if n in members), text)
-            for heading, members, text in groups
-        ]
+        sections = ([(None, ungrouped, None)] if ungrouped else []) + [(heading, sorted(n for n in by_module[module] if n in members), text) for heading, members, text in groups]
         for heading, names, text in sections:
             if not names:
                 continue
@@ -307,30 +272,15 @@ parameter is likewise an error, and names the object and the parameter.
                 index += [heading, '"' * len(heading), ""]
             if text:
                 index += [_wrap(text), ""]
-            index += [
-                ".. list-table::",
-                "   :header-rows: 1",
-                "   :widths: 28 22 50",
-                "",
-                "   * - Object",
-                "     - Category",
-                "     - Summary",
-            ]
+            index += [".. list-table::", "   :header-rows: 1", "   :widths: 28 22 50", "", "   * - Object", "     - Category", "     - Summary"]
             for name in names:
                 summary = _escape_inline(dm._core.object_description(name).replace("\n", " "))
                 first = summary.split(". ")[0].rstrip(".") + "."
-                index += [
-                    f"   * - :doc:`{name} <{name}>`",
-                    f"     - {_category_title(dm.object_category(name))}",
-                    f"     - {first}",
-                ]
+                index += [f"   * - :doc:`{name} <{name}>`", f"     - {_category_title(dm.object_category(name))}", f"     - {first}"]
             index += [""]
-    index += [
-        ".. toctree::",
-        "   :hidden:",
-        "   :maxdepth: 1",
-        "",
-    ]
+    index += [".. toctree::", "   :hidden:", "   :maxdepth: 1", ""]
+    for name in physics_names:
+        index += [f"   {name}"]
     for module in ordered_modules:
         for name in sorted(by_module[module]):
             index += [f"   {name}"]
@@ -343,8 +293,4 @@ parameter is likewise an error, and names the object and the parameter.
             page.unlink()
 
     if missing_examples:
-        print(
-            "dualmesh docs: no usage example for "
-            + ", ".join(missing_examples)
-            + " (add one to docs/_syntax_examples.py)"
-        )
+        print("dualmesh docs: no usage example for " + ", ".join(missing_examples) + " (add one to docs/_syntax_examples.py)")

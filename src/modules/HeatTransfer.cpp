@@ -29,11 +29,11 @@ public:
                   1.0,
                   "Thermal conductivity k in watts per metre per kelvin, as a constant or the "
                   "name of a function of (x, y, z, t). It must be positive, and it is ignored "
-                  "when 'thermal_conductivity_property' names a material property.");
+                  "when 'thermal_conductivity_property' names a property.");
     p.addOptional("thermal_conductivity_property",
                   ParameterKind::String,
                   std::string(""),
-                  "Name of a material property to use as the conductivity in place of "
+                  "Name of a property to use as the conductivity in place of "
                   "'thermal_conductivity'. It replaces only that base value: "
                   "'temperature_polynomial' still multiplies it. Leave it empty to use the "
                   "value.");
@@ -226,11 +226,11 @@ public:
     p.addOptional("density_property",
                   ParameterKind::String,
                   std::string(""),
-                  "Name of a material property to use as the density in place of 'density'.");
+                  "Name of a property to use as the density in place of 'density'.");
     p.addOptional("specific_heat_property",
                   ParameterKind::String,
                   std::string(""),
-                  "Name of a material property to use as the specific heat in place of "
+                  "Name of a property to use as the specific heat in place of "
                   "'specific_heat'. A temperature-dependent specific heat is evaluated at the "
                   "new temperature, so the term is rho c_p(T) (T - T_old) / dt.");
     return p;

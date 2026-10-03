@@ -7,8 +7,7 @@ a boundary value can be written as an expression::
     import dualmesh as dm
 
     top = dm.parsed_function("500*(1 - 10*x^2)")
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", variable="temperature", boundary="top", value=top)
+    problem.add_boundary_condition("Dirichlet_boundary_condition", variable="temperature", boundary="top", value=top)
 
 or, more briefly, passed as the text itself, which is compiled the same way::
 
@@ -32,7 +31,7 @@ accepted unchanged, so a manufactured source derived symbolically can be
 passed straight in.
 
 :class:`Expression` is the same language with any variable names.  It is the
-language of the parsed objects (``parsed_material``, ``parsed_eigenstrain``
+language of the parsed objects (``parsed_property``, ``parsed_eigenstrain``
 and the parsed creep of ``small_strain_stress``), and evaluating one in Python
 checks a correlation before it goes into a problem::
 

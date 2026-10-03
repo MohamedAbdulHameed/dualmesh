@@ -99,35 +99,17 @@ def run(fuel_material, bore_diameter=0.0):
     gap_volume = np.pi / 4 * (CLAD_ID**2 - PELLET_DIAMETER**2) * STACK
     gap_volume += np.pi / 4 * bore_diameter**2 * STACK
     rod = fuel.FuelRod(
-        geometry=fuel.RodGeometry(
-            pellet_outer_radius=0.5 * PELLET_DIAMETER,
-            clad_inner_radius=0.5 * CLAD_ID,
-            clad_outer_radius=0.5 * CLAD_OD,
-            fuel_stack_height=STACK,
-            pellet_inner_radius=0.5 * bore_diameter,
-        ),
+        geometry=fuel.RodGeometry(pellet_outer_radius=0.5 * PELLET_DIAMETER, clad_inner_radius=0.5 * CLAD_ID, clad_outer_radius=0.5 * CLAD_OD, fuel_stack_height=STACK, pellet_inner_radius=0.5 * bore_diameter),
         fuel=fuel_material,
         cladding=fuel.ZircaloyCladding(),
         fill_gas=fuel.FillGas(pressure=1.0e6, plenum_volume=FREE_VOLUME - gap_volume),
-        coolant=fuel.PrescribedCladdingTemperature(
-            temperature=halden_cladding_temperature, pressure=3.4e6
-        ),
-        power_history=fuel.PowerHistory(
-            linear_heat_rate=q, time=t, fast_neutron_flux_per_linear_heat_rate=1.6e12
-        ),
+        coolant=fuel.PrescribedCladdingTemperature(temperature=halden_cladding_temperature, pressure=3.4e6),
+        power_history=fuel.PowerHistory(linear_heat_rate=q, time=t, fast_neutron_flux_per_linear_heat_rate=1.6e12),
         numerics=fuel.RodNumerics(max_time_step=5 * DAY),
-        output=fuel.RodOutput(
-            print_input=False, print_steps=False, output_times=np.arange(0.0, t[-1], 2 * DAY)
-        ),
+        output=fuel.RodOutput(print_input=False, print_steps=False, output_times=np.arange(0.0, t[-1], 2 * DAY)),
     )
     r = rod.run()
-    return dict(
-        days=np.asarray(r.time) / DAY,
-        burnup=np.asarray(r.burnup_in("MWd/kgHM", rod_average=True)),
-        fgr=100.0 * np.asarray(r.fission_gas_release),
-        centre=np.asarray(r.max_fuel_centerline_temperature) - 273.15,
-        pressure=np.asarray(r.gas_pressure) / 1e6,
-    )
+    return dict(days=np.asarray(r.time) / DAY, burnup=np.asarray(r.burnup_in("MWd/kgHM", rod_average=True)), fgr=100.0 * np.asarray(r.fission_gas_release), centre=np.asarray(r.max_fuel_centerline_temperature) - 273.15, pressure=np.asarray(r.gas_pressure) / 1e6)
 
 
 def cooper2021():
@@ -168,26 +150,14 @@ def read_csv(name):
 
 
 # Legend labels of the three calculations (every fuel is the doped UO2).
-LEGEND = {
-    "doped, case A (best estimate)": "dualmesh, case A (best estimate)",
-    "doped, case B (upper limit)": "dualmesh, case B (upper limit)",
-    "doped, CASL Eq. 16 (as BISON)": "dualmesh, CASL Eq. 16 (as BISON)",
-}
+LEGEND = {"doped, case A (best estimate)": "dualmesh, case A (best estimate)", "doped, case B (upper limit)": "dualmesh, case B (upper limit)", "doped, CASL Eq. 16 (as BISON)": "dualmesh, CASL Eq. 16 (as BISON)"}
 
 
 def compute():
     """The three calculations with solid pellets and the drilled calculation
     of case A: {"results": {name: run(...)}, "tc_run": run(...)}."""
     common = dict(enrichment=0.049, theoretical_density_fraction=DENSITY / 10963.0)
-    cases = {
-        "doped, case A (best estimate)": fuel.DopedUO2Fuel(grain_radius=35e-6, **common),
-        "doped, case B (upper limit)": fuel.DopedUO2Fuel(
-            grain_radius=35e-6, diffusivity_case="upper_limit", **common
-        ),
-        "doped, CASL Eq. 16 (as BISON)": fuel.DopedUO2Fuel(
-            grain_radius=35e-6, diffusivity_case="casl_2019", **common
-        ),
-    }
+    cases = {"doped, case A (best estimate)": fuel.DopedUO2Fuel(grain_radius=35e-6, **common), "doped, case B (upper limit)": fuel.DopedUO2Fuel(grain_radius=35e-6, diffusivity_case="upper_limit", **common), "doped, CASL Eq. 16 (as BISON)": fuel.DopedUO2Fuel(grain_radius=35e-6, diffusivity_case="casl_2019", **common)}
     results = {name: run(material) for name, material in cases.items()}
     # The thermocouple sits in the drilled top section: an annular pellet.
     tc_run = run(fuel.DopedUO2Fuel(grain_radius=35e-6, **common), bore_diameter=1.8e-3)
@@ -209,11 +179,7 @@ def main():
     bison19_fgr = read_csv("ifa716_rod1_bison_fgr.csv")
     t, q = power_history()
     events = shutdown_days(HERE / "ifa716_shutdowns.csv")
-    away = np.all(
-        (measured_tc[:, 0][:, None] - events[None, :] > 1.5)
-        | (measured_tc[:, 0][:, None] < events[None, :] - 0.5),
-        axis=1,
-    )
+    away = np.all((measured_tc[:, 0][:, None] - events[None, :] > 1.5) | (measured_tc[:, 0][:, None] < events[None, :] - 0.5), axis=1)
     on = (np.interp(measured_tc[:, 0] * DAY, t, q) > 20e3) & (measured_tc[:, 0] > 5) & away
     days = measured_tc[on, 0]
     ours = np.interp(days, tc_run["days"], tc_run["centre"] + 273.15) - measured_tc[on, 1]
@@ -231,17 +197,13 @@ def main():
 
     lines = ["quantity,dualmesh,bison,measured"]
     lines.append(f"thermocouple bias K (median),{np.median(ours):.0f},{np.median(bison):.0f},0")
-    lines.append(
-        f"thermocouple rms K,{np.sqrt(np.mean(ours**2)):.0f},{np.sqrt(np.mean(bison**2)):.0f},0"
-    )
+    lines.append(f"thermocouple rms K,{np.sqrt(np.mean(ours**2)):.0f},{np.sqrt(np.mean(bison**2)):.0f},0")
     lines.append(f"thermocouple bias K (median; BISON 2021 case A),,{np.median(bison21):.0f},0")
     lines.append(f"thermocouple rms K (BISON 2021 case A),,{np.sqrt(np.mean(bison21**2)):.0f},0")
     # The release against burnup, compared with the whole measured curve.
     mb = measured_fgr[:, 0]
     bison19_end = float(np.interp(mb[-1], bison19_fgr[:, 0], bison19_fgr[:, 1]))
-    bison19_rms = np.sqrt(
-        np.mean((np.interp(mb, bison19_fgr[:, 0], bison19_fgr[:, 1]) - measured_fgr[:, 1]) ** 2)
-    )
+    bison19_rms = np.sqrt(np.mean((np.interp(mb, bison19_fgr[:, 0], bison19_fgr[:, 1]) - measured_fgr[:, 1]) ** 2))
     for name, r in results.items():
         at = np.interp(MEASURED_FGR[2], r["days"], r["fgr"])
         lines.append(f"FGR at 620 days % ({name}),{at:.2f},{bison19_end:.2f},{MEASURED_FGR[0]}")
@@ -263,18 +225,13 @@ def main():
         lines.append(f"FGR rms against the measured curve % ({name}),{rms:.2f},{b21},")
     for case in ("A", "B"):
         last = bison21_fgr[case][np.isfinite(bison21_fgr[case])][-1]
-        lines.append(
-            f"FGR at the last measured point % (BISON 2021 case {case}),,{last:.2f},"
-            f"{measured_fgr[-1, 1]:.2f}"
-        )
+        lines.append(f"FGR at the last measured point % (BISON 2021 case {case}),,{last:.2f},{measured_fgr[-1, 1]:.2f}")
     (HERE / "ifa716_results.csv").write_text("\n".join(lines) + "\n")
     print("\n".join(lines))
 
     fig, ax = plotstyle.new_figure()
     ax.plot(t / DAY, q / 1e3, color=MUTED, linewidth=1.0)
-    plotstyle.style(
-        ax, "Time (days)", "Linear heat rate (kW/m)", "IFA-716.1 rod 1: rod average power"
-    )
+    plotstyle.style(ax, "Time (days)", "Linear heat rate (kW/m)", "IFA-716.1 rod 1: rod average power")
     ax.set_xlim(0, 700)
     ax.set_ylim(0, 36)
     plotstyle.save(fig, out / "ifa716_rod1_power.png")
@@ -282,15 +239,8 @@ def main():
     fig, ax = plotstyle.new_figure()
     ax.plot(measured_tc[:, 0], measured_tc[:, 1], color=MEASURED, linewidth=1.0, label="Measured")
     ax.plot(bison_tc[:, 0], bison_tc[:, 1], color=INK, linewidth=0.8, label="BISON (CASL report)")
-    ax.plot(
-        tc_run["days"], tc_run["centre"] + 273.15, color=DUALMESH, linewidth=1.6, label="dualmesh"
-    )
-    plotstyle.style(
-        ax,
-        "Time (days)",
-        "Temperature (K)",
-        "IFA-716.1 rod 1: centre temperature at the thermocouple",
-    )
+    ax.plot(tc_run["days"], tc_run["centre"] + 273.15, color=DUALMESH, linewidth=1.6, label="dualmesh")
+    plotstyle.style(ax, "Time (days)", "Temperature (K)", "IFA-716.1 rod 1: centre temperature at the thermocouple")
     ax.set_xlim(0, 700)
     ax.set_ylim(700, 1600)
     plotstyle.legend_below(ax, ncol=3)
@@ -298,34 +248,15 @@ def main():
 
     fig, ax = plotstyle.new_figure()
     ax.plot(mb, measured_fgr[:, 1], color=MEASURED, linewidth=1.8, label="Measured (rod pressure)")
-    ax.plot(
-        bison19_fgr[:, 0],
-        bison19_fgr[:, 1],
-        "-.",
-        color=INK,
-        linewidth=0.9,
-        label="BISON 2019 (CASL Eq. 16)",
-    )
+    ax.plot(bison19_fgr[:, 0], bison19_fgr[:, 1], "-.", color=INK, linewidth=0.9, label="BISON 2019 (CASL Eq. 16)")
     for case, ls in (("A", "-"), ("B", ":")):
         curve = c21[("Fig. 10a", f"BISON case {case}")]
         order = np.argsort(curve[:, 0], kind="stable")
-        ax.plot(
-            curve[order, 0],
-            curve[order, 1],
-            ls,
-            color=INK,
-            linewidth=0.8,
-            label=f"BISON 2021, case {case}",
-        )
+        ax.plot(curve[order, 0], curve[order, 1], ls, color=INK, linewidth=0.8, label=f"BISON 2021, case {case}")
     styles = [(DUALMESH, "-"), (DUALMESH, ":"), (SECOND, "-"), (REFERENCE_GREY, "--")]
     for (name, r), (colour, ls) in zip(results.items(), styles):
         ax.plot(r["burnup"], r["fgr"], ls, color=colour, linewidth=2.0, label=LEGEND[name])
-    plotstyle.style(
-        ax,
-        "Rod average burnup (MWd/kgU)",
-        "Fission gas release (%)",
-        "IFA-716.1 rod 1: fission gas release",
-    )
+    plotstyle.style(ax, "Rod average burnup (MWd/kgU)", "Fission gas release (%)", "IFA-716.1 rod 1: fission gas release")
     ax.set_xlim(0, 31)
     plotstyle.legend_below(ax, ncol=2)
     plotstyle.save(fig, out / "ifa716_rod1_fgr.png")

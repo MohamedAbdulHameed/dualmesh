@@ -10,7 +10,7 @@ Layout
      core/                ADReal, InputParameters, Function, Types
      mesh/                Mesh (nodes, elements, side sets, generators)
      fe/                  ReferenceElement (dual mesh geometry), Assembly
-     base/                Object, Kernel, Material, Factory, Problem
+     base/                Object, Kernel, Property, Factory, Problem
      modules/             the physics modules' public headers
    src/                   the implementations, mirroring include/
    python/bindings/       the pybind11 module
@@ -18,8 +18,94 @@ Layout
    tests/cpp/             C++ unit tests (self-contained, no framework needed)
    tests/python/          verification against the book
    verification/openfoam/ cross-verification scripts
-   examples/              runnable examples and input files
+   examples/              runnable examples
    docs/                  this documentation
+
+One input design for every capability
+-------------------------------------
+
+Every capability of dualmesh is used from Python through one input design.  A
+user describes a model in the terms of its physics, and the code generates
+the equations.  A capability belongs to one of three levels, and each level
+generates the level below without changing its meaning.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 18 42 40
+
+   * - Level
+     - What the user adds
+     - Example
+   * - Application
+     - A complete model of a component, with its mesh, physics, property objects and
+       history, configured by groups of parameters and run with ``run()``.
+     - ``fuel.FuelRod(...).run()``,
+       ``fuel.triso.TrisoParticleModel(...).run()``
+   * - Physics
+     - A set of equations on any mesh, with its boundary conditions, and the
+       couplings between physics.
+     - ``problem.add_physics("solid_mechanics", "solid", ...)``,
+       ``problem.add_coupling("thermal_expansion", ...)``
+   * - Object
+     - One term (kernel), property object or condition.
+     - ``problem.add_kernel("heat_source", ...)``
+
+A study of one model is a method of the model (``problem.solve()``,
+``problem.solve_transient(...)``, ``rod.run()``).  A study of many models
+(uncertainty quantification, adaptive refinement, convergence studies) takes a
+function that builds and solves one model.
+
+Adding a capability
+~~~~~~~~~~~~~~~~~~~
+
+A new capability follows these rules, so that it fits the design without a
+special case.
+
+1. **Level.**  One term or condition is an object, a set of equations is a
+   physics, the interaction of two physics is a coupling, and a complete
+   component is an application.  A new physics generates objects, and a new
+   application uses the physics level.
+2. **Names.**  Type names, parameters and keywords are full words in lower
+   case joined by underscores.  Proper names and abbreviations keep their
+   capitals (``Dirichlet_boundary_condition``, ``beam_Timoshenko_mixed``,
+   ``UO2_thermal``), and the very common abbreviations ``num``, ``max``,
+   ``min`` and ``clad`` are used.  The same quantity has the same name in
+   every module (e.g., ``poissons_ratio``, ``time_step``, ``implicitness``,
+   ``standard_deviation``).  A Python class follows PEP 8 (``FuelRod``).
+3. **Declaration.**  Every parameter is declared once, with its type, its SI
+   unit, its default with the reason for the default, and a description of
+   its physical meaning.  C++ objects use ``InputParameters``, and Python
+   physics, couplings and input groups use
+   :func:`dualmesh.parameters.parameter`.  The same declaration validates the
+   input, answers ``dualmesh describe`` and generates the reference pages.
+   ``scripts/audit_names.py`` checks every public name and declaration
+   against rules 2 and 3 (forbidden abbreviations, capitals outside the
+   proper names, a missing description, a default without its reason, and a
+   semicolon, a dash or a Unicode symbol in a description), and the test
+   suite runs it.
+4. **One way to define each thing.**  Some pairs of inputs define the same
+   thing, for example ``traction`` and ``total_force``.  The code stops with
+   an error when the input gives the two inputs of such a pair.  The
+   documentation tells the user to give only one of them.
+5. **Validation.**  A misspelled name is answered with the closest valid name
+   and the list of the valid ones, a missing required parameter is named with
+   its description, and a value outside its physical range is refused with a
+   message that says what to do.
+6. **Physics.**  A physics declares its variables, fills in the variables,
+   components and thicknesses of its objects, and passes every other
+   parameter to them unchanged.  A property that is not given is read from
+   the property of the same name.  A new physics is a dataclass
+   subclass of :class:`dualmesh.physics.Physics` registered with
+   ``@register``, with the methods ``variables`` and ``_build``.
+7. **Results.**  A result provides ``summary()``, ``to_dict()``,
+   ``write_json(path)`` and ``write_csv(path)``.
+8. **Python style.**  One statement on one line, however long (ruff with a
+   line length of 320), and comments on their own line.
+9. **Accuracy and speed.**  A new capability comes with a test against the
+   equivalent object-level input where one exists, a verification case
+   against a published or analytical result, an example script, a tutorial
+   section and its reference page.  A change to assembly or to a solver is
+   timed before and after.
 
 Adding a kernel in C++
 ----------------------
@@ -61,8 +147,7 @@ Register it in the module's registration function, for example
      f.add<MyReaction>("my_reaction", ObjectCategory::Kernel, "heat_transfer");
    }
 
-and it becomes available by name from Python, from input files, and in
-``dualmesh list``.  Registration is made by an explicit call so that no object
+and it becomes available by name from Python and in ``dualmesh list``.  Registration is made by an explicit call so that no object
 is dropped when the library is linked statically, as can happen with
 registration by static initialization.
 
@@ -76,10 +161,10 @@ Writing kernels correctly
   under direct iteration, so that one kernel serves both schemes.
 * Never compare AD numbers to decide a branch that depends on the unknown
   unless the derivative of the branch is intended.
-* Material properties are requested by name with
+* Properties are requested by name with
   ``problem.propertyRegistry().id("stress")`` in ``initialSetup`` and read with
   ``ctx.property(id, component)``.  List them in ``requiredProperties()`` so
-  that a missing material is reported before the solve starts.
+  that a missing property is reported before the solve starts.
 
 Adding a kernel in Python
 -------------------------
@@ -91,6 +176,7 @@ derivatives:
 
    import dualmesh as dm
 
+
    class ArrheniusSource(dm.PythonKernel):
        def setup(self, problem):
            self.temperature = problem.variable_index(self.temperature_variable)
@@ -99,9 +185,8 @@ derivatives:
            T = ctx.value(self.temperature)
            return -self.pre_exponential * dm.exp(-self.activation_energy / T)
 
-   problem.add_kernel(ArrheniusSource(
-       variable="temperature", temperature_variable="temperature",
-       pre_exponential=1.0e6, activation_energy=5000.0))
+
+   problem.add_kernel(ArrheniusSource(variable="temperature", temperature_variable="temperature", pre_exponential=1.0e6, activation_energy=5000.0))
 
 Testing
 -------

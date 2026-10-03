@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 """The model factors of a fuel rod (fuel.ModelFactors) and the generic
-property scaling of materials: each factor changes its target by the
+property scaling of the property objects: each factor changes its target by the
 expected amount, and a factor that cannot act on a rod is refused."""
 
 from __future__ import annotations
@@ -17,9 +17,7 @@ from scipy.integrate import quad  # noqa: E402
 
 def _rod(factors=None, models=None, days=0.2, q=25e3, **numerics):
     geometry = fuel.RodGeometry.from_diameters(8.19e-3, 8.36e-3, 9.50e-3, 0.05)
-    coolant = fuel.ForcedConvection(
-        inlet_temperature=565.0, pressure=15.5e6, mass_flux=3800.0, rod_pitch=12.6e-3
-    )
+    coolant = fuel.ForcedConvection(inlet_temperature=565.0, pressure=15.5e6, mass_flux=3800.0, rod_pitch=12.6e-3)
     history = fuel.PowerHistory(linear_heat_rate=[1e3, q, q], time=[0, 3600, days * DAY])
     rod = fuel.FuelRod(
         geometry,
@@ -29,12 +27,7 @@ def _rod(factors=None, models=None, days=0.2, q=25e3, **numerics):
         coolant,
         history,
         models=models,
-        numerics=fuel.RodNumerics(
-            model="1.5d",
-            mesh=fuel.RodMesh(num_axial_elements=2, num_axial_slices=1),
-            max_time_step=10 * DAY,
-            **numerics,
-        ),
+        numerics=fuel.RodNumerics(model="1.5d", mesh=fuel.RodMesh(num_axial_elements=2, num_axial_slices=1), max_time_step=10 * DAY, **numerics),
         output=fuel.RodOutput(print_input=False, print_steps=False),
         factors=factors,
     )
@@ -52,16 +45,12 @@ def test_property_scaling_material_multiplies_a_property():
         mesh = dm.generate_line_mesh(0.0, 1.0, 8)
         p = dm.Problem(mesh, method="fem")
         p.add_variable("u")
-        p.add_material("generic_constant_material", "k", property_names=["k"], property_values=[k])
+        p.add_property("constant_property", "k", property_names=["k"], property_values=[k])
         if factor is not None:
-            p.add_material(
-                "property_scaling", "scale", scaled_properties=["k"], property_factors=[factor]
-            )
+            p.add_property("property_scaling", "scale", scaled_properties=["k"], property_factors=[factor])
         p.add_kernel("diffusion", variable="u", diffusivity_property="k")
         p.add_kernel("body_force", variable="u", value=1.0)
-        p.add_boundary_condition(
-            "Dirichlet_boundary_condition", variable="u", boundary="left", value=0.0
-        )
+        p.add_boundary_condition("Dirichlet_boundary_condition", variable="u", boundary="left", value=0.0)
         p.solve()
         return np.asarray(p.values("u"))
 
@@ -70,13 +59,7 @@ def test_property_scaling_material_multiplies_a_property():
     p = dm.Problem(mesh)
     p.add_variable("u")
     with pytest.raises(Exception, match="same length"):
-        p.add_material(
-            "generic_constant_material",
-            "k",
-            property_names=["k"],
-            property_values=[1.0],
-            scaled_properties=["k"],
-        )
+        p.add_property("constant_property", "k", property_names=["k"], property_values=[1.0], scaled_properties=["k"])
 
 
 def test_conductivity_factor_scales_the_conductivity_integral():
@@ -86,26 +69,17 @@ def test_conductivity_factor_scales_the_conductivity_integral():
     k = lambda T: float(fuel.properties.uo2_conductivity(T))  # noqa: E731
     nominal = _rod(models=THERMAL)
     scaled = _rod(fuel.ModelFactors(fuel_thermal_conductivity=1.1), models=THERMAL)
-    integral = [
-        quad(k, r.fuel_surface_temperature[-1][0], r.fuel_centerline_temperature[-1][0])[0]
-        for r in (nominal, scaled)
-    ]
+    integral = [quad(k, r.fuel_surface_temperature[-1][0], r.fuel_centerline_temperature[-1][0])[0] for r in (nominal, scaled)]
     assert integral[0] / integral[1] == pytest.approx(1.1, rel=5e-3)
     # The surface temperature is set by the gap and the coolant, not the fuel.
-    assert scaled.fuel_surface_temperature[-1][0] == pytest.approx(
-        nominal.fuel_surface_temperature[-1][0], abs=0.01
-    )
+    assert scaled.fuel_surface_temperature[-1][0] == pytest.approx(nominal.fuel_surface_temperature[-1][0], abs=0.01)
 
 
 def test_power_gap_and_coolant_factors():
     nominal = _rod(models=THERMAL)
     power = _rod(fuel.ModelFactors(linear_heat_rate=1.05), models=THERMAL)
-    assert power.rod_average_burnup[-1] == pytest.approx(
-        1.05 * nominal.rod_average_burnup[-1], rel=1e-9
-    )
-    assert power.rod_average_linear_heat_rate[-1] == pytest.approx(
-        1.05 * nominal.rod_average_linear_heat_rate[-1], rel=1e-9
-    )
+    assert power.rod_average_burnup[-1] == pytest.approx(1.05 * nominal.rod_average_burnup[-1], rel=1e-9)
+    assert power.rod_average_linear_heat_rate[-1] == pytest.approx(1.05 * nominal.rod_average_linear_heat_rate[-1], rel=1e-9)
     gap = _rod(fuel.ModelFactors(gap_gas_conductance=1.5), models=THERMAL)
     drop = lambda r: r.fuel_surface_temperature[-1][0] - r.clad_inner_temperature[-1][0]  # noqa: E731
     # Gas conduction carries most of an open gap's heat and radiation the

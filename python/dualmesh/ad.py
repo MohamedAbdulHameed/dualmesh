@@ -8,6 +8,7 @@ instead of :mod:`math` inside such kernels::
 
     import dualmesh as dm
 
+
     class ArrheniusReaction(dm.PythonKernel):
         def compute_source(self, ctx):
             temperature = ctx.value(self.temperature_index)

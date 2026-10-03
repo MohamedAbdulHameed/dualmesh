@@ -7,7 +7,7 @@
 
 #include "dualmesh/base/Factory.h"
 #include "dualmesh/base/Kernel.h"
-#include "dualmesh/base/Material.h"
+#include "dualmesh/base/Property.h"
 #include "dualmesh/fe/Assembly.h"
 #include "dualmesh/fv/CellMesh.h"
 #include "dualmesh/linalg/SaddlePointSolver.h"
@@ -83,7 +83,11 @@ struct SolverOptions
   /// with PETSc).
   std::string linear_solver = "automatic";
   /// For bicgstab and gmres: "ilu" (incomplete LU with no fill, ILU(0)),
-  /// "ilut" (incomplete LU with a threshold), "jacobi", or "none".
+  /// "ilut" (incomplete LU with a threshold), "jacobi", or "none".  For cg
+  /// and bicgstab: "amg", algebraic multigrid by smoothed aggregation
+  /// (Amg.h), whose near null space is built from the displacement variables
+  /// of the elastic property objects (the rigid body modes) and the constant of
+  /// every other variable.
   ///
   /// "pressure_mass_schur" is for pressure-velocity flow (the saddle point
   /// systems of the Taylor-Hood and the stabilised elements): the block
@@ -97,6 +101,8 @@ struct SolverOptions
   std::string preconditioner = "ilu";
   /// Relative tolerance of the Krylov solvers, ||b - A x|| <= tol ||b||.
   double linear_tolerance = 1e-12;
+  /// Strength threshold of the aggregation of the "amg" preconditioner.
+  double amg_strength_threshold = 0.03;
   int linear_max_iterations = 5000;
   /// Krylov vectors kept by gmres before it restarts.
   int gmres_restart = 60;
@@ -237,7 +243,7 @@ public:
   void addIntegratedBC(std::shared_ptr<IntegratedBC> bc);
   void addNodalBC(std::shared_ptr<NodalBC> bc);
   void addNodalLoad(std::shared_ptr<NodalLoad> load);
-  void addMaterial(std::shared_ptr<Material> m);
+  void addProperty(std::shared_ptr<Property> m);
 
   /// Resolve all objects (idempotent; called automatically by solve()).
   void initialize();
@@ -349,8 +355,8 @@ public:
   /// Fewer elements than this per thread and the assembly runs serially,
   /// because starting a team of threads would cost more than it saves.
   static constexpr Index kMinElementsPerThread = 400;
-  MaterialPropertyRegistry & propertyRegistry() { return _props; }
-  const MaterialPropertyRegistry & propertyRegistry() const { return _props; }
+  PropertyRegistry & propertyRegistry() { return _props; }
+  const PropertyRegistry & propertyRegistry() const { return _props; }
   std::shared_ptr<Object> object(const std::string & name) const;
   /// The concentrated loads of the problem, needed by the distributed solver
   /// to decide which process applies a load given by coordinates.
@@ -360,8 +366,8 @@ public:
   double time() const { return _time; }
   void setTime(double t) { _time = t; }
 
-  // ---- history of stateful materials ------------------------------------------------
-  /// Whether any material keeps a history at its integration points.
+  // ---- history of stateful property objects ------------------------------------------------
+  /// Whether any property object keeps a history at its integration points.
   bool hasState() const { return _state_record > 0; }
   /// Size of one point's history record.
   int stateRecordSize() const { return _state_record; }
@@ -392,10 +398,10 @@ public:
   // ---- element fields ----------------------------------------------------------------
   /// Named fields with one value per element, set from outside the solve (for
   /// instance a fuel swelling strain accumulated between time steps) and read
-  /// by materials at any integration point of the element.  A material asks
+  /// by property objects at any integration point of the element.  A property object asks
   /// for its field during setup with elementField(), which creates a field of
   /// zeros if none has been set, and keeps a reference: a later
-  /// setElementField() replaces the values in place, so the material sees
+  /// setElementField() replaces the values in place, so the property objects see
   /// them at the next assembly.
   void setElementField(const std::string & name, const std::vector<double> & values);
   const std::vector<double> & elementField(const std::string & name);
@@ -435,6 +441,12 @@ public:
   /// The degrees of freedom whose equations are replaced by a prescribed
   /// value: those of the nodal boundary conditions and the inactive ones.
   std::vector<char> constrainedDofs() const;
+  /// The near null space of the system for the algebraic multigrid
+  /// preconditioner: for every set of displacement variables named by a
+  /// property object, the rigid body translations and (in Cartesian coordinates)
+  /// rotations, and the constant vector of every other variable.  One row per
+  /// degree of freedom.
+  Eigen::MatrixXd nearNullspace() const;
   /// Degrees of freedom that no kernel of this problem touches, and whose
   /// equations are therefore replaced by the identity.
   const std::vector<char> & activeDofs() const { return _active_dof; }
@@ -517,12 +529,26 @@ public:
                         const Function & exact,
                         const std::array<const Function *, 3> & exact_gradient,
                         int quadrature_points = 0) const;
-  /// A material property evaluated at element centroids (rows: elements).
+  /// A property evaluated at element centroids (rows: elements).
   std::vector<std::vector<double>> propertyAtCentroids(const std::string & property) const;
   /// Flux of a kernel evaluated at element centroids.
   std::vector<Point> kernelFluxAtCentroids(const std::string & kernel) const;
   /// Integral of a variable over the domain (with the coordinate factor).
   double integrate(const std::string & var) const;
+  /// The integral of a variable over every element (over every cell of the
+  /// cell-centred method), with the coordinate factor.  An empty name gives
+  /// the volume of every element.
+  std::vector<double> elementIntegrals(const std::string & var) const;
+  /// Measure of the named side sets: their total length in two dimensions and
+  /// area in three, with the coordinate factor of axisymmetric and spherical
+  /// problems.  In a distributed run it is the measure on the whole mesh.
+  double boundaryMeasure(const std::vector<std::string> & boundaries) const;
+  /// Measures of side sets of the whole mesh, given by a distributed problem
+  /// to its rank-local problem, whose mesh holds only part of each side set.
+  void setGlobalBoundaryMeasures(std::map<std::string, double> measures)
+  {
+    _global_boundary_measures = std::move(measures);
+  }
   /// Integral of the normal flux of a kernel over a side set.
   double boundaryFluxIntegral(const std::string & kernel, const std::string & boundary) const;
   /// Write a VTK unstructured-grid file with nodal fields and cell data.
@@ -535,6 +561,9 @@ public:
   std::string summary() const;
 
 private:
+  /// Create a symmetry_boundary_condition on the displacement normal to its plane.
+  std::shared_ptr<Object> addSymmetryCondition(const std::string & name, InputParameters params);
+  std::map<std::string, double> _global_boundary_measures;
   /// Everything one thread needs to assemble one element or one face, so that
   /// nothing is shared between threads except the read-only problem
   /// definition, the solution vectors, and the global residual, which is
@@ -579,7 +608,7 @@ private:
                    const std::vector<double> * lag_local,
                    const std::vector<double> * old_local,
                    int num_derivatives) const;
-  void computeMaterials(QpContext & ctx) const;
+  void evaluateProperties(QpContext & ctx) const;
   /// One integration point of an interface condition, paired with the
   /// closest point on the other side of the gap.
   struct InterfacePoint
@@ -612,6 +641,28 @@ private:
                      const Vector & b,
                      const SolverOptions & o,
                      int * iterations = nullptr) const;
+  /// The direct solve, which reuses the factorisation of the previous call
+  /// when the matrix has not changed (a linear problem in its second Newton
+  /// iteration, or a transient with a constant matrix).
+  Vector cachedDirectSolve(const SparseMatrix & A, const Vector & b) const;
+  /// Conjugate gradients (symmetric matrix) or BiCGSTAB preconditioned by
+  /// algebraic multigrid, whose hierarchy is reused while the matrix is
+  /// unchanged.  False when the iteration did not converge.
+  bool amgSolve(const SparseMatrix & A,
+                const Vector & b,
+                const SolverOptions & o,
+                const std::string & method,
+                int max_iterations,
+                int * iterations,
+                Vector & x) const;
+  /// Throw an InputError when the Jacobian is singular because a part of the
+  /// mesh is not held: a group of coupled unknowns, cut off from every
+  /// prescribed value, on which a vector of the near null space (a constant,
+  /// a rigid body motion) is a solution of the homogeneous problem, e.g., a
+  /// body without supports or a region without any temperature condition.
+  void checkSingularity(const SparseMatrix & J) const;
+  struct LinearSolverCache;
+  mutable std::shared_ptr<LinearSolverCache> _solver_cache;
   SolveResult nonlinearSolve(const SolverOptions & options,
                              AssemblyOptions base,
                              const Vector * steady_old_residual);
@@ -644,13 +695,14 @@ private:
   std::vector<std::shared_ptr<IntegratedBC>> _ibcs;
   std::vector<std::shared_ptr<NodalBC>> _nbcs;
   std::vector<std::shared_ptr<NodalLoad>> _loads;
-  std::vector<std::shared_ptr<Material>> _materials;
+  std::vector<std::shared_ptr<Property>> _property_objects;
   std::map<std::string, std::shared_ptr<Object>> _by_name;
-  MaterialPropertyRegistry _props;
+  PropertyRegistry _props;
   std::vector<Group> _groups;
   std::map<const IntegratedBC *, std::vector<std::vector<InterfacePoint>>> _interface_pairs;
   std::vector<char> _active_dof;
   bool _initialized = false;
+  mutable bool _singularity_checked = false;
   Vector _U;
   Vector _last_residual;
   double _time = 0.0;

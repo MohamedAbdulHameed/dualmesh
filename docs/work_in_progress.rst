@@ -22,23 +22,11 @@ Fuel performance
 Uncertainty quantification and sensitivity analysis
 ---------------------------------------------------
 
-The package :mod:`dualmesh.uq` propagates the uncertainties of model
-parameters and inputs to the results of any dualmesh calculation, computes
-the Sobol' sensitivity indices of the parameters, builds Gaussian process
-surrogates, and calibrates parameters against measurements, from Python and
-from the ``uq`` block of YAML input files.  Its theory chapter and its
-application to the fuel benchmarks are being written.  The comparison of a
-calculation with a measurement is meaningful only when the uncertainty of the
-calculated result is known, and the benchmark results of this manual will
-therefore be given with their standard deviations.
-
-Input files
------------
-
-Every calculation in dualmesh will have two forms of input, a Python script
-and a YAML input file (:doc:`input_files`).  The fuel rod, the TRISO
-particle and adaptive refinement are run from Python at present.  Their YAML
-input files are being added.
+The package :mod:`dualmesh.uq` is described in :doc:`theory/uncertainty`.
+Its application to the fuel benchmarks is being written.  The comparison of
+a calculation with a measurement is meaningful only when the uncertainty of
+the calculated result is known, and the benchmark results of this manual
+will therefore be given with their standard deviations.
 
 Verification
 ------------

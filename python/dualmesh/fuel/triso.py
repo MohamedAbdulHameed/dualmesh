@@ -76,19 +76,9 @@ from typing import Union
 
 import numpy as np
 
-__all__ = [
-    "CRP6_SWELLING",
-    "CoatingLayer",
-    "ParticleHistory",
-    "ParticleResult",
-    "PyrocarbonSwelling",
-    "TrisoParticle",
-    "crp6_case",
-    "crp6_creep_coefficient",
-    "monte_carlo_failure_probability",
-    "solve_particle",
-    "weibull_failure_probability",
-]
+from ..parameters import parameter, write_json_numbers
+
+__all__ = ["CRP6_SWELLING", "CoatingLayer", "ParticleHistory", "ParticleNumerics", "ParticleResult", "PyrocarbonSwelling", "TrisoParticle", "TrisoParticleModel", "crp6_case", "crp6_creep_coefficient", "monte_carlo_failure_probability", "weibull_failure_probability"]
 
 # Internal units: micrometres, MPa and fluence in units of 1e25 n/m^2.
 _LENGTH = 1.0e6
@@ -112,11 +102,11 @@ class PyrocarbonSwelling:
     exact integral of the rate from zero fluence.
     """
 
-    radial: tuple[float, ...]
-    tangential: tuple[float, ...]
-    breakpoint: float | None = None
-    radial_after: float = 0.0
-    tangential_after: float = 0.0
+    radial: tuple[float, ...] = parameter(description="Coefficients A_0, A_1, ... of the radial swelling rate, per unit of the fluence in 1e25 n/m^2.")
+    tangential: tuple[float, ...] = parameter(description="Coefficients A_0, A_1, ... of the tangential swelling rate, per unit of the fluence in 1e25 n/m^2.")
+    breakpoint: float | None = parameter(None, unit="1e25 n/m^2", description="Fluence above which the rates are the constants radial_after and tangential_after. Default None: the polynomials hold at every fluence.")
+    radial_after: float = parameter(0.0, description="Constant radial swelling rate above the breakpoint, per unit of the fluence in 1e25 n/m^2. Default 0, used only with a breakpoint.")
+    tangential_after: float = parameter(0.0, description="Constant tangential swelling rate above the breakpoint, per unit of the fluence in 1e25 n/m^2. Default 0, used only with a breakpoint.")
 
     @staticmethod
     def _integral(coefficients: Sequence[float], x: np.ndarray) -> np.ndarray:
@@ -150,29 +140,11 @@ class PyrocarbonSwelling:
 
 
 CRP6_SWELLING: dict[str, PyrocarbonSwelling] = {
-    "a": PyrocarbonSwelling(
-        radial=(-2.22642e-2, 2.00861e-2, -7.77024e-3, 1.36334e-3),
-        tangential=(-1.91253e-2, 2.63307e-3, 1.69251e-3, -3.53804e-4),
-    ),
-    "b": PyrocarbonSwelling(
-        radial=(-2.12522e-2, 1.83715e-2, -5.05553e-3, 7.27026e-4),
-        tangential=(-1.79113e-2, -3.42182e-3, 5.03465e-3, -8.88086e-4),
-    ),
-    "c": PyrocarbonSwelling(
-        radial=(-1.80613e-2, 9.82884e-3, -2.25937e-3, 4.03266e-4),
-        tangential=(-1.78392e-2, 1.71315e-3, 2.32979e-3, -4.91648e-4),
-    ),
-    "e": PyrocarbonSwelling(
-        radial=(-1.43234e-1, 2.62692e-1, -1.74247e-1, 5.67549e-2, -8.36313e-3, 4.52013e-4),
-        tangential=(-3.24737e-2, 9.07826e-3, -2.10029e-3, 1.30457e-4),
-        breakpoint=6.08,
-        radial_after=0.0954,
-        tangential_after=-0.0249,
-    ),
-    "f": PyrocarbonSwelling(
-        radial=(-2.13483e-2, 1.64999e-2, -3.80252e-3, 4.73765e-4),
-        tangential=(-1.83549e-2, -3.29740e-3, 5.47396e-3, -1.03249e-3),
-    ),
+    "a": PyrocarbonSwelling(radial=(-2.22642e-2, 2.00861e-2, -7.77024e-3, 1.36334e-3), tangential=(-1.91253e-2, 2.63307e-3, 1.69251e-3, -3.53804e-4)),
+    "b": PyrocarbonSwelling(radial=(-2.12522e-2, 1.83715e-2, -5.05553e-3, 7.27026e-4), tangential=(-1.79113e-2, -3.42182e-3, 5.03465e-3, -8.88086e-4)),
+    "c": PyrocarbonSwelling(radial=(-1.80613e-2, 9.82884e-3, -2.25937e-3, 4.03266e-4), tangential=(-1.78392e-2, 1.71315e-3, 2.32979e-3, -4.91648e-4)),
+    "e": PyrocarbonSwelling(radial=(-1.43234e-1, 2.62692e-1, -1.74247e-1, 5.67549e-2, -8.36313e-3, 4.52013e-4), tangential=(-3.24737e-2, 9.07826e-3, -2.10029e-3, 1.30457e-4), breakpoint=6.08, radial_after=0.0954, tangential_after=-0.0249),
+    "f": PyrocarbonSwelling(radial=(-2.13483e-2, 1.64999e-2, -3.80252e-3, 4.73765e-4), tangential=(-1.83549e-2, -3.29740e-3, 5.47396e-3, -1.03249e-3)),
 }
 """Pyrocarbon swelling rate correlations (a), (b), (c), (e) and (f) of
 IAEA-TECDOC-1674 (2012), Table 9.8.  The report uses (a) for a bacon
@@ -203,37 +175,18 @@ SwellingSpec = Union[str, float, PyrocarbonSwelling, Callable, None]
 
 @dataclass(frozen=True)
 class CoatingLayer:
-    """One coating layer of the particle.
+    """One coating layer of the particle."""
 
-    Attributes:
-        name: A label used in the results, for example ``"IPyC"``.
-        thickness: Layer thickness (m).
-        youngs_modulus: Young's modulus (Pa).
-        poissons_ratio: Poisson's ratio.
-        thermal_expansion: Linear thermal expansion coefficient (1/K),
-            isotropic.  The default 0 is right for isothermal problems.
-        creep_coefficient: Irradiation creep coefficient :math:`K`
-            (1/(Pa n/m^2)), a number or a function of the temperature (K).
-            ``None`` (the default) makes the layer purely elastic, which is
-            the usual assumption for SiC.
-        creep_poissons_ratio: The creep Poisson's ratio :math:`\\nu_c`.  The
-            default 0.5 conserves volume and is the CRP-6 value for
-            pyrocarbon.
-        swelling: The irradiation induced dimensional change.  ``None`` (the
-            default) for none, a CRP-6 correlation name (``"a"``, ``"b"``,
-            ``"c"``, ``"e"`` or ``"f"``), a :class:`PyrocarbonSwelling`, a
-            number (an isotropic, constant rate per n/m^2) or a function of
-            the fluence that returns the radial and tangential strains.
-    """
-
-    name: str
-    thickness: float
-    youngs_modulus: float
-    poissons_ratio: float
-    thermal_expansion: float = 0.0
-    creep_coefficient: float | Callable | None = None
-    creep_poissons_ratio: float = 0.5
-    swelling: SwellingSpec = None
+    name: str = parameter(description="A label used in the results, for example IPyC.")
+    thickness: float = parameter(unit="m", description="Thickness of the layer.")
+    youngs_modulus: float = parameter(unit="Pa", description="Young's modulus of the layer.")
+    poissons_ratio: float = parameter(description="Poisson's ratio of the layer.")
+    thermal_expansion: float = parameter(0.0, unit="1/K", description="Isotropic linear thermal expansion coefficient. Default 0, which is right for an isothermal history.")
+    creep_coefficient: float | Callable | None = parameter(None, unit="1/(Pa n/m^2)", description="Irradiation creep coefficient K, a number or a function of the temperature in K. Default None: the layer is elastic, the usual assumption for SiC.")
+    creep_poissons_ratio: float = parameter(0.5, description="Poisson's ratio of the irradiation creep. Default 0.5, which conserves volume and is the CRP-6 value for pyrocarbon.")
+    swelling: SwellingSpec = parameter(
+        None, description="Irradiation-induced dimensional change: a CRP-6 correlation name (a, b, c, e or f), a PyrocarbonSwelling, a number (an isotropic constant rate per n/m^2) or a function of the fluence that returns the radial and tangential strains. Default None: no swelling, the usual assumption for SiC."
+    )
 
     def __post_init__(self):
         if self.thickness <= 0.0:
@@ -243,10 +196,7 @@ class CoatingLayer:
         if not -1.0 < self.poissons_ratio < 0.5:
             raise ValueError(f"layer {self.name}: Poisson's ratio must be in (-1, 0.5)")
         if isinstance(self.swelling, str) and self.swelling not in CRP6_SWELLING:
-            raise ValueError(
-                f"layer {self.name}: unknown swelling correlation {self.swelling!r}, "
-                f"expected one of {sorted(CRP6_SWELLING)}"
-            )
+            raise ValueError(f"layer {self.name}: unknown swelling correlation {self.swelling!r}, expected one of {sorted(CRP6_SWELLING)}")
 
     def swelling_strain(self, fluence: float) -> tuple[float, float]:
         """Radial and tangential swelling strains at ``fluence`` (n/m^2)."""
@@ -273,20 +223,11 @@ class CoatingLayer:
 
 @dataclass(frozen=True)
 class TrisoParticle:
-    """Geometry and coating layers of a particle.
+    """Geometry and coating layers of a particle."""
 
-    Attributes:
-        kernel_diameter: Diameter of the fuel kernel (m).
-        buffer_thickness: Thickness of the porous buffer (m).  The buffer
-            does not carry load in this model.  It only sets the inner
-            radius of the first stressed layer.
-        layers: The load bearing layers from the inside out, bonded to each
-            other.
-    """
-
-    kernel_diameter: float
-    buffer_thickness: float
-    layers: tuple[CoatingLayer, ...]
+    kernel_diameter: float = parameter(unit="m", description="Diameter of the fuel kernel.")
+    buffer_thickness: float = parameter(unit="m", description="Thickness of the porous buffer, which carries no load in this model and sets the inner radius of the first stressed layer.")
+    layers: tuple[CoatingLayer, ...] = parameter(description="The load-bearing layers from the inside out, bonded to each other.")
 
     def __post_init__(self):
         if not self.layers:
@@ -302,9 +243,7 @@ class TrisoParticle:
 
     def radii(self) -> np.ndarray:
         """Radii of the layer boundaries (m), from the inside out."""
-        return self.inner_radius + np.concatenate(
-            ([0.0], np.cumsum([layer.thickness for layer in self.layers]))
-        )
+        return self.inner_radius + np.concatenate(([0.0], np.cumsum([layer.thickness for layer in self.layers])))
 
 
 def _as_function(value) -> Callable[[float], float]:
@@ -320,28 +259,13 @@ def _as_function(value) -> Callable[[float], float]:
 
 @dataclass(frozen=True)
 class ParticleHistory:
-    """Irradiation conditions as functions of the fast fluence.
+    """Irradiation conditions as functions of the fast fluence."""
 
-    Attributes:
-        end_fluence: Final fast fluence (n/m^2, E > 0.18 MeV).  Zero gives a
-            single elastic solution.
-        internal_pressure: Gas pressure on the inner surface of the first
-            layer (Pa).  A number, a function of the fluence, or a pair of
-            sequences (fluence, pressure) that is interpolated linearly.
-        temperature: Particle temperature (K), in the same three forms.  The
-            particle is isothermal.
-        ambient_pressure: Pressure on the outer surface (Pa).  The default
-            0.1 MPa is the CRP-6 value.
-        stress_free_temperature: Temperature at which the thermal strain is
-            zero (K).  ``None`` (the default) uses the temperature at zero
-            fluence.
-    """
-
-    end_fluence: float
-    internal_pressure: float | Callable | tuple = 0.0
-    temperature: float | Callable | tuple = 1273.15
-    ambient_pressure: float = 0.1e6
-    stress_free_temperature: float | None = None
+    end_fluence: float = parameter(unit="n/m^2", description="Final fast fluence (E > 0.18 MeV). A value of zero gives a single elastic solution.")
+    internal_pressure: float | Callable | tuple = parameter(0.0, unit="Pa", description="Gas pressure on the inner surface of the first layer: a number, a function of the fluence, or a pair of sequences (fluence, pressure) that is interpolated linearly. Default 0, a particle without gas.")
+    temperature: float | Callable | tuple = parameter(1273.15, unit="K", description="Temperature of the isothermal particle, in the same three forms. Default 1273.15 K, the temperature of the isothermal CRP-6 cases.")
+    ambient_pressure: float = parameter(0.1e6, unit="Pa", description="Pressure on the outer surface. Default 0.1 MPa, the CRP-6 value.")
+    stress_free_temperature: float | None = parameter(None, unit="K", description="Temperature at which the thermal strain is zero. Default None: the temperature at zero fluence.")
 
     def pressure_at(self, fluence: float) -> float:
         return _as_function(self.internal_pressure)(fluence)
@@ -393,6 +317,46 @@ class ParticleResult:
         """Smallest (most compressive) inner surface tangential stress of ``layer``."""
         return float(np.min(self.inner_tangential_stress[layer]))
 
+    def to_dict(self) -> dict:
+        """The largest and the smallest inner surface tangential stress of
+        every layer over the history and at the end, and the final interface
+        radial stresses, in Pa."""
+        layers = {
+            name: dict(maximum_tangential_stress=self.maximum_tangential_stress(name), minimum_tangential_stress=self.minimum_tangential_stress(name), final_inner_tangential_stress=float(self.inner_tangential_stress[name][-1]), final_outer_tangential_stress=float(self.outer_tangential_stress[name][-1]))
+            for name in self.layers
+        }
+        interfaces = {name: float(values[-1]) for name, values in self.interface_radial_stress.items()}
+        return {"end_fluence": float(self.fluence[-1]), "layers": layers, "final_interface_radial_stress": interfaces}
+
+    def summary(self) -> str:
+        """The stresses of :meth:`to_dict`, as aligned text in MPa."""
+        from ..console import table
+
+        rows = []
+        for name, values in self.to_dict()["layers"].items():
+            rows.append([name, values["maximum_tangential_stress"] / 1e6, values["minimum_tangential_stress"] / 1e6, values["final_inner_tangential_stress"] / 1e6])
+        return f"Particle stresses at the end fluence {self.fluence[-1]:.4g} n/m^2\n" + table(rows, ["layer", "max tangential (MPa)", "min tangential (MPa)", "final tangential (MPa)"])
+
+    def write_json(self, path) -> None:
+        """Write :meth:`to_dict` to a JSON file."""
+        write_json_numbers(self.to_dict(), path)
+
+    @property
+    def tables(self) -> dict:
+        """``stresses``: the inner and outer tangential stress of every layer
+        at every step."""
+        from ..tables import Table
+
+        columns = ["fluence"] + [f"{layer}_{side}_tangential_stress" for layer in self.layers for side in ("inner", "outer")]
+        rows = [[float(f)] + [float(getattr(self, f"{side}_tangential_stress")[layer][i]) for layer in self.layers for side in ("inner", "outer")] for i, f in enumerate(self.fluence)]
+        return {"stresses": Table(columns, ["n/m^2"] + ["Pa"] * (len(columns) - 1), rows, title="Tangential stresses of the layers")}
+
+    def write_csv(self, path, table: str | None = None) -> None:
+        """Write the table ``stresses`` (one row per step) to a CSV file."""
+        from ..tables import ResultTables
+
+        ResultTables.write_csv(self, path, table)
+
 
 def _elastic_matrix(e: float, nu: float) -> np.ndarray:
     c = e / ((1.0 + nu) * (1.0 - 2.0 * nu))
@@ -413,14 +377,46 @@ def _shape(xi: np.ndarray):
     return n, dn
 
 
-def solve_particle(
-    particle: TrisoParticle,
-    history: ParticleHistory,
-    *,
-    steps: int = 600,
-    elements_per_layer: int = 32,
-    theta: float = 0.5,
-) -> ParticleResult:
+@dataclass
+class ParticleNumerics:
+    """The discretisation of a particle calculation."""
+
+    steps: int = parameter(600, description="Number of equal fluence steps. Default 600, with which the fluence integration error of the CRP-6 cases is below 0.01 MPa. A calculation with zero end fluence is a single elastic solution.")
+    elements_per_layer: int = parameter(32, description="Quadratic elements per layer. Default 32, which brings the CRP-6 cases within 0.03 MPa of the closed-form solutions. The surface stresses converge with the square of the element size.")
+    implicitness: float = parameter(0.5, description="The weight theta of the time integration of the creep law: 0.5 is the trapezoidal rule (second order) and 1 the backward Euler method. Default 0.5.")
+
+    def __post_init__(self):
+        if self.steps < 1 or self.elements_per_layer < 1:
+            raise ValueError("ParticleNumerics: steps and elements_per_layer must be positive.")
+        if not 0.0 <= self.implicitness <= 1.0:
+            raise ValueError("ParticleNumerics: implicitness must be between 0 and 1.")
+
+
+class TrisoParticleModel:
+    """The stresses of the coating layers of a TRISO particle over an
+    irradiation history; see the module documentation::
+
+        model = TrisoParticleModel(particle=particle, history=history)
+        result = model.run()
+    """
+
+    def __init__(self, particle: TrisoParticle, history: ParticleHistory, numerics: ParticleNumerics | None = None):
+        for name, value, cls in (("particle", particle, TrisoParticle), ("history", history, ParticleHistory)):
+            if not isinstance(value, cls):
+                raise TypeError(f"TrisoParticleModel: '{name}' must be a {cls.__name__}, not {type(value).__name__}.")
+        self.particle = particle
+        self.history = history
+        self.numerics = numerics if numerics is not None else ParticleNumerics()
+        if not isinstance(self.numerics, ParticleNumerics):
+            raise TypeError("TrisoParticleModel: 'numerics' must be a ParticleNumerics.")
+
+    def run(self) -> ParticleResult:
+        """Integrate the layer stresses over the history."""
+        n = self.numerics
+        return _solve_particle(self.particle, self.history, steps=n.steps, elements_per_layer=n.elements_per_layer, implicitness=n.implicitness)
+
+
+def _solve_particle(particle: TrisoParticle, history: ParticleHistory, *, steps: int = 600, elements_per_layer: int = 32, implicitness: float = 0.5) -> ParticleResult:
     """Integrate the layer stresses of ``particle`` over ``history``.
 
     Args:
@@ -436,16 +432,18 @@ def solve_particle(
             closed form solutions.  The error grows slowly with fluence,
             because the stress is the small difference between the total
             strain and a growing creep and swelling strain.
-        theta: Time integration parameter of the creep law, 0.5 for the
-            trapezoidal rule (default) and 1 for backward Euler.
+        implicitness: The weight :math:`\theta` of the time integration of
+            the creep law, 0.5 for the trapezoidal rule (default, second
+            order) and 1 for the backward Euler method.
 
     Returns:
         A :class:`ParticleResult`.
     """
     if steps < 1 or elements_per_layer < 1:
         raise ValueError("steps and elements_per_layer must be positive")
-    if not 0.0 <= theta <= 1.0:
-        raise ValueError("theta must be between 0 and 1")
+    if not 0.0 <= implicitness <= 1.0:
+        raise ValueError("implicitness must be between 0 and 1")
+    theta = implicitness
 
     radii = particle.radii() * _LENGTH
     nlayers = len(particle.layers)
@@ -453,10 +451,7 @@ def solve_particle(
     nodes = 2 * nel + 1
 
     # Element geometry.
-    ends = np.concatenate(
-        [np.linspace(radii[k], radii[k + 1], elements_per_layer + 1)[:-1] for k in range(nlayers)]
-        + [[radii[-1]]]
-    )
+    ends = np.concatenate([np.linspace(radii[k], radii[k + 1], elements_per_layer + 1)[:-1] for k in range(nlayers)] + [[radii[-1]]])
     element_layer = np.repeat(np.arange(nlayers), elements_per_layer)
 
     # Evaluation points: three Gauss points and the two element ends.
@@ -475,10 +470,7 @@ def solve_particle(
     weight[:, :3] = _GAUSS_WEIGHTS[None, :] * jac[:, None] * r_pts[:, :3] ** 2
     dofs = 2 * np.arange(nel)[:, None] + np.arange(3)[None, :]
 
-    elastic = [
-        _elastic_matrix(layer.youngs_modulus * _STRESS, layer.poissons_ratio)
-        for layer in particle.layers
-    ]
+    elastic = [_elastic_matrix(layer.youngs_modulus * _STRESS, layer.poissons_ratio) for layer in particle.layers]
     creep_mat = [_creep_matrix(layer.creep_poissons_ratio) for layer in particle.layers]
 
     t_ref = history.stress_free_temperature
@@ -510,11 +502,7 @@ def solve_particle(
             base[k] = eigen(k, f_new, t_new)
         ca = c_layers[element_layer]
         inc = inc_layers[element_layer]
-        eig = (
-            creep_strain
-            + (1.0 - theta) * np.einsum("eij,epj->epi", inc, stress)
-            + base[element_layer][:, None, :]
-        )
+        eig = creep_strain + (1.0 - theta) * np.einsum("eij,epj->epi", inc, stress) + base[element_layer][:, None, :]
 
         bq = bmat[:, :3]
         wq = weight[:, :3]
@@ -531,9 +519,7 @@ def solve_particle(
         strain = np.einsum("epij,ej->epi", bmat, u[dofs])
         new_stress = np.einsum("eij,epj->epi", ca, strain - eig)
         if not first:
-            creep_strain = creep_strain + np.einsum(
-                "eij,epj->epi", inc, (1.0 - theta) * stress + theta * new_stress
-            )
+            creep_strain = creep_strain + np.einsum("eij,epj->epi", inc, (1.0 - theta) * stress + theta * new_stress)
         stress = new_stress
 
     fluences = np.linspace(0.0, history.end_fluence, steps + 1 if history.end_fluence > 0 else 1)
@@ -579,12 +565,7 @@ def solve_particle(
     )
 
 
-def weibull_failure_probability(
-    radius: np.ndarray,
-    tangential_stress: np.ndarray,
-    characteristic_strength: float,
-    modulus: float,
-) -> float:
+def weibull_failure_probability(radius: np.ndarray, tangential_stress: np.ndarray, characteristic_strength: float, modulus: float) -> float:
     r"""Failure probability of a spherical shell from the Weibull weakest link model.
 
     .. math::
@@ -620,11 +601,11 @@ def monte_carlo_failure_probability(
     modulus: float,
     layer: str = "SiC",
     samples: int = 100,
-    kernel_diameter_sd: float = 0.0,
-    buffer_thickness_sd: float = 0.0,
-    thickness_sd: dict[str, float] | None = None,
+    kernel_diameter_standard_deviation: float = 0.0,
+    buffer_thickness_standard_deviation: float = 0.0,
+    thickness_standard_deviation: dict[str, float] | None = None,
     seed: int = 0,
-    **solver_options,
+    numerics: ParticleNumerics | None = None,
 ) -> tuple[float, float]:
     r"""Failure fraction of a particle population by Monte Carlo sampling.
 
@@ -653,15 +634,17 @@ def monte_carlo_failure_probability(
         modulus: Weibull modulus :math:`m`.
         layer: The layer that fails, ``"SiC"`` by default.
         samples: Number of sampled particles (default 100).
-        kernel_diameter_sd: Standard deviation of the kernel diameter (m),
-            0 by default.
-        buffer_thickness_sd: Standard deviation of the buffer thickness (m),
-            0 by default.
-        thickness_sd: Standard deviation of the thickness of each layer (m),
-            keyed by layer name.  Layers not named keep their thickness.
+        kernel_diameter_standard_deviation: Standard deviation of the kernel
+            diameter (m), 0 by default.
+        buffer_thickness_standard_deviation: Standard deviation of the
+            buffer thickness (m), 0 by default.
+        thickness_standard_deviation: Standard deviation of the thickness
+            of each layer (m), keyed by layer name.  Layers not named keep
+            their thickness.
         seed: Seed of the random number generator (default 0), so that a
             calculation is reproducible.
-        **solver_options: Passed to :func:`solve_particle`.
+        numerics: The discretisation of every sample
+            (:class:`ParticleNumerics`), the default one by default.
 
     Returns:
         The mean failure probability and its standard error.
@@ -669,10 +652,10 @@ def monte_carlo_failure_probability(
     names = [lay.name for lay in particle.layers]
     if layer not in names:
         raise ValueError(f"unknown layer {layer!r}, expected one of {names}")
-    thickness_sd = dict(thickness_sd or {})
+    thickness_sd = dict(thickness_standard_deviation or {})
     unknown = set(thickness_sd) - set(names)
     if unknown:
-        raise ValueError(f"thickness_sd names unknown layers {sorted(unknown)}")
+        raise ValueError(f"thickness_standard_deviation names unknown layers {sorted(unknown)}")
     rng = np.random.default_rng(seed)
 
     def draw(mean, sd):
@@ -681,16 +664,9 @@ def monte_carlo_failure_probability(
     index = names.index(layer)
     probabilities = np.empty(samples)
     for j in range(samples):
-        layers = tuple(
-            replace(lay, thickness=draw(lay.thickness, thickness_sd.get(lay.name, 0.0)))
-            for lay in particle.layers
-        )
-        sample = TrisoParticle(
-            draw(particle.kernel_diameter, kernel_diameter_sd),
-            draw(particle.buffer_thickness, buffer_thickness_sd),
-            layers,
-        )
-        result = solve_particle(sample, history, **solver_options)
+        layers = tuple(replace(lay, thickness=draw(lay.thickness, thickness_sd.get(lay.name, 0.0))) for lay in particle.layers)
+        sample = TrisoParticle(kernel_diameter=draw(particle.kernel_diameter, kernel_diameter_standard_deviation), buffer_thickness=draw(particle.buffer_thickness, buffer_thickness_standard_deviation), layers=layers)
+        result = TrisoParticleModel(particle=sample, history=history, numerics=numerics).run()
         inside = result.layer_of_point == index
         r = result.radius[inside]
         s = np.maximum(result.tangential_stress_history[:, inside], 0.0)
@@ -729,18 +705,7 @@ def _case8_temperature(fluence: float) -> float:
     return 1273.0 - 400.0 * (local - 0.29) / 0.01
 
 
-_CASE8_PRESSURE = (
-    np.array(
-        [0, 0.29, 0.30, 0.59, 0.60, 0.89, 0.90, 1.19, 1.20, 1.49, 1.50]
-        + [1.79, 1.80, 2.09, 2.10, 2.39, 2.40, 2.69, 2.70, 2.99, 3.00]
-    )
-    * 1e25,
-    np.array(
-        [0.0, 0.14, 0.02, 0.94, 0.04, 2.59, 0.07, 4.87, 0.10, 7.64, 0.14]
-        + [10.79, 0.20, 14.26, 0.26, 17.99, 0.33, 21.96, 0.41, 26.13, 0.50]
-    )
-    * 1e6,
-)
+_CASE8_PRESSURE = (np.array([0, 0.29, 0.30, 0.59, 0.60, 0.89, 0.90, 1.19, 1.20, 1.49, 1.50] + [1.79, 1.80, 2.09, 2.10, 2.39, 2.40, 2.69, 2.70, 2.99, 3.00]) * 1e25, np.array([0.0, 0.14, 0.02, 0.94, 0.04, 2.59, 0.07, 4.87, 0.10, 7.64, 0.14] + [10.79, 0.20, 14.26, 0.26, 17.99, 0.33, 21.96, 0.41, 26.13, 0.50]) * 1e6)
 
 
 def crp6_case(case: str) -> tuple[TrisoParticle, ParticleHistory]:
@@ -776,18 +741,9 @@ def crp6_case(case: str) -> tuple[TrisoParticle, ParticleHistory]:
         creep = crp6_creep_coefficient
 
     def pyc(name, thickness):
-        return CoatingLayer(
-            name,
-            thickness,
-            _PYC_E,
-            _PYC_NU,
-            thermal_expansion=alpha_pyc,
-            creep_coefficient=creep,
-            creep_poissons_ratio=0.5,
-            swelling=swelling,
-        )
+        return CoatingLayer(name=name, thickness=thickness, youngs_modulus=_PYC_E, poissons_ratio=_PYC_NU, thermal_expansion=alpha_pyc, creep_coefficient=creep, creep_poissons_ratio=0.5, swelling=swelling)
 
-    sic = CoatingLayer("SiC", 35e-6, _SIC_E, _SIC_NU, thermal_expansion=4.9e-6)
+    sic = CoatingLayer(name="SiC", thickness=35e-6, youngs_modulus=_SIC_E, poissons_ratio=_SIC_NU, thermal_expansion=4.9e-6)
     kernel = 350e-6 if case == "5" else 500e-6
     if case == "1":
         layers = (sic,)
@@ -797,7 +753,7 @@ def crp6_case(case: str) -> tuple[TrisoParticle, ParticleHistory]:
         layers = (pyc("IPyC", 40e-6), sic)
     else:
         layers = (pyc("IPyC", 40e-6), sic, pyc("OPyC", 40e-6))
-    particle = TrisoParticle(kernel, 100e-6, layers)
+    particle = TrisoParticle(kernel_diameter=kernel, buffer_thickness=100e-6, layers=layers)
 
     end = 0.0 if case in ("1", "2", "3") else _CRP6_FLUENCE
     temperature: float | Callable = 1273.0
@@ -809,11 +765,5 @@ def crp6_case(case: str) -> tuple[TrisoParticle, ParticleHistory]:
     elif case == "8":
         pressure = _CASE8_PRESSURE
         temperature = _case8_temperature
-    history = ParticleHistory(
-        end_fluence=end,
-        internal_pressure=pressure,
-        temperature=temperature,
-        ambient_pressure=0.1e6,
-        stress_free_temperature=873.0 if case == "8" else None,
-    )
+    history = ParticleHistory(end_fluence=end, internal_pressure=pressure, temperature=temperature, ambient_pressure=0.1e6, stress_free_temperature=873.0 if case == "8" else None)
     return particle, history

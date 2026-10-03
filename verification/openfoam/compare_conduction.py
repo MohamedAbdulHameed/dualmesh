@@ -28,29 +28,13 @@ BOOK_MIDDLE = np.array([485.54, 469.30, 450.01, 426.98, 400.01, 369.30, 335.54])
 
 
 def solve_with_dualmesh(nx: int, ny: int, method: str = "dmcdm"):
-    mesh = dm.generate_rectangle_mesh(
-        x_min=0.0, x_max=0.2, y_min=0.0, y_max=0.1, num_x_elements=nx, num_y_elements=ny
-    )
+    mesh = dm.generate_rectangle_mesh(x_min=0.0, x_max=0.2, y_min=0.0, y_max=0.1, num_x_elements=nx, num_y_elements=ny)
     problem = dm.Problem(mesh, method=method)
     problem.add_variable("temperature")
     problem.add_kernel("heat_conduction", variable="temperature", thermal_conductivity=0.2)
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", "left", variable="temperature", boundary="left", value=500.0
-    )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "right",
-        variable="temperature",
-        boundary="right",
-        value=300.0,
-    )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "top",
-        variable="temperature",
-        boundary="top",
-        value=lambda x, y, z, t: 500.0 * (1.0 - 10.0 * x * x),
-    )
+    problem.add_boundary_condition("Dirichlet_boundary_condition", "left", variable="temperature", boundary="left", value=500.0)
+    problem.add_boundary_condition("Dirichlet_boundary_condition", "right", variable="temperature", boundary="right", value=300.0)
+    problem.add_boundary_condition("Dirichlet_boundary_condition", "top", variable="temperature", boundary="top", value=lambda x, y, z, t: 500.0 * (1.0 - 10.0 * x * x))
     problem.solve()
     return problem
 

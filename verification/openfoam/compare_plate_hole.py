@@ -48,14 +48,7 @@ def read_openfoam_mesh(vtu_path: Path) -> dm.Mesh:
 
     # The extruded direction is not always the local z of the hexahedron, so
     # the face lying in the plane is found among the six faces of each cell.
-    hexahedron_faces = [
-        (0, 3, 2, 1),
-        (4, 5, 6, 7),
-        (0, 1, 5, 4),
-        (1, 2, 6, 5),
-        (2, 3, 7, 6),
-        (3, 0, 4, 7),
-    ]
+    hexahedron_faces = [(0, 3, 2, 1), (4, 5, 6, 7), (0, 1, 5, 4), (1, 2, 6, 5), (2, 3, 7, 6), (3, 0, 4, 7)]
     quads = []
     for block in foam.cells:
         if block.type != "hexahedron":
@@ -83,26 +76,10 @@ def read_openfoam_mesh(vtu_path: Path) -> dm.Mesh:
 
 def solve_with_dualmesh(mesh, method: str = "dmcdm"):
     problem = dm.Problem(mesh, method=method)
-    dm.physics.add_plane_elasticity(
-        problem,
-        displacements=["u", "v"],
-        youngs_modulus=YOUNGS_MODULUS,
-        poissons_ratio=POISSONS_RATIO,
-        formulation="plane_stress",
-    )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", "symmetry_x", variable="u", boundary="left", value=0.0
-    )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", "symmetry_y", variable="v", boundary="down", value=0.0
-    )
-    problem.add_boundary_condition(
-        "traction_boundary_condition",
-        "load",
-        variable="u",
-        boundary="right",
-        traction=APPLIED_STRESS,
-    )
+    problem.add_physics("solid_mechanics", "solid", displacements=["u", "v"], youngs_modulus=YOUNGS_MODULUS, poissons_ratio=POISSONS_RATIO, formulation="plane_stress")
+    problem.add_boundary_condition("Dirichlet_boundary_condition", "symmetry_x", variable="u", boundary="left", value=0.0)
+    problem.add_boundary_condition("Dirichlet_boundary_condition", "symmetry_y", variable="v", boundary="down", value=0.0)
+    problem.add_boundary_condition("traction_boundary_condition", "load", variable="u", boundary="right", traction=APPLIED_STRESS)
     problem.solve()
     return problem
 
@@ -135,9 +112,7 @@ def main() -> int:
         print("No OpenFOAM results found; run ./plate_hole_openfoam.sh first.")
         return 1
     mesh = read_openfoam_mesh(vtus[-1])
-    print(
-        f"mesh imported from OpenFOAM: {mesh.num_nodes} nodes, {mesh.num_elements} quadrilaterals"
-    )
+    print(f"mesh imported from OpenFOAM: {mesh.num_nodes} nodes, {mesh.num_elements} quadrilaterals")
 
     problem = solve_with_dualmesh(mesh)
     stress = nodal_stress(problem, component=0)

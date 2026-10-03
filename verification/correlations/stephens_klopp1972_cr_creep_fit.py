@@ -53,14 +53,8 @@ def wagih(T, s):
 if __name__ == "__main__":
     A, n, Q, rms = fit()
     T, s, rate = points()
-    print(
-        f"{len(T)} points: A = {A:.4g} MPa^-n/s, n = {n:.4f}, Q = {Q:.5g} J/mol, "
-        f"rms ln error {rms:.3f}"
-    )
+    print(f"{len(T)} points: A = {A:.4g} MPa^-n/s, n = {n:.4f}, Q = {Q:.5g} J/mol, rms ln error {rms:.3f}")
     model = A * s**n * np.exp(-Q / (R * T))
     for c in (816, 982, 1149, 1316):
         k = np.isclose(T, c + 273.15)
-        print(
-            f"{c} C: median fit/data {np.median(model[k] / rate[k]):.2f}, "
-            f"Wagih/data {np.median(wagih(T[k], s[k]) / rate[k]):.2f}"
-        )
+        print(f"{c} C: median fit/data {np.median(model[k] / rate[k]):.2f}, Wagih/data {np.median(wagih(T[k], s[k]) / rate[k]):.2f}")

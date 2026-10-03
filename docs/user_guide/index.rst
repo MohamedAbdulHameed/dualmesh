@@ -9,7 +9,7 @@ code.
 
 The other parts of the manual are the :doc:`/theory/index`, which describes what
 the code computes and why, and :doc:`/objects`, which has one page per kernel,
-boundary condition and material with the full list of its parameters.
+boundary condition and property object with the full list of its parameters.
 
 .. toctree::
    :maxdepth: 2

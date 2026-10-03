@@ -9,7 +9,7 @@ formulation, whose unknowns sit at the mesh nodes, and the *zero-thickness
 control volume* formulation, whose unknowns sit at the cell centroids.  They
 are available through the ``method`` argument of :class:`dualmesh.Problem` and
 they use exactly the same problem definition as the other two methods (the
-same kernels, the same materials, the same boundary conditions and the same
+same kernels, the same property objects, the same boundary conditions and the same
 solvers), which makes a comparison between them meaningful.
 
 This chapter states what each of the two computes.  It assumes the canonical

@@ -20,7 +20,7 @@ enum class ObjectCategory
   BoundaryCondition,
   NodalBC,
   NodalLoad,
-  Material
+  Property
 };
 
 std::string categoryName(ObjectCategory c);
@@ -75,5 +75,6 @@ void registerStructuralMemberObjects(Factory & f);
 void registerFluidObjects(Factory & f);
 void registerFuelObjects(Factory & f);
 void registerParsedObjects(Factory & f);
+void registerNeutronicsObjects(Factory & f);
 
 } // namespace dualmesh

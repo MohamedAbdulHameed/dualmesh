@@ -24,54 +24,16 @@ Mesh = _core.Mesh
 #: meshio cell names accepted by dualmesh, mapped to dualmesh element types.
 #: dualmesh numbers every element as VTK does, which is also meshio's
 #: convention, so no reordering is needed in either direction.
-_MESHIO_TO_DUALMESH = {
-    "line": "Edge2",
-    "triangle": "Tri3",
-    "quad": "Quad4",
-    "tetra": "Tet4",
-    "hexahedron": "Hex8",
-    "wedge": "Wedge6",
-    "pyramid": "Pyramid5",
-    "line3": "Edge3",
-    "triangle6": "Tri6",
-    "quad8": "Quad8",
-    "quad9": "Quad9",
-    "tetra10": "Tet10",
-    "hexahedron20": "Hex20",
-    "hexahedron27": "Hex27",
-}
+_MESHIO_TO_DUALMESH = {"line": "Edge2", "triangle": "Tri3", "quad": "Quad4", "tetra": "Tet4", "hexahedron": "Hex8", "wedge": "Wedge6", "pyramid": "Pyramid5", "line3": "Edge3", "triangle6": "Tri6", "quad8": "Quad8", "quad9": "Quad9", "tetra10": "Tet10", "hexahedron20": "Hex20", "hexahedron27": "Hex27"}
 _DUALMESH_TO_MESHIO = {v: k for k, v in _MESHIO_TO_DUALMESH.items()}
-_DIMENSION = {
-    "Edge2": 1,
-    "Edge3": 1,
-    "Tri3": 2,
-    "Quad4": 2,
-    "Tri6": 2,
-    "Quad8": 2,
-    "Quad9": 2,
-    "Tet4": 3,
-    "Hex8": 3,
-    "Wedge6": 3,
-    "Pyramid5": 3,
-    "Tet10": 3,
-    "Hex20": 3,
-    "Hex27": 3,
-}
+_DIMENSION = {"Edge2": 1, "Edge3": 1, "Tri3": 2, "Quad4": 2, "Tri6": 2, "Quad8": 2, "Quad9": 2, "Tet4": 3, "Hex8": 3, "Wedge6": 3, "Pyramid5": 3, "Tet10": 3, "Hex20": 3, "Hex27": 3}
 #: Element types whose nodes carry the quadratic interpolation.
 _QUADRATIC = {"Edge3", "Tri6", "Quad8", "Quad9", "Tet10", "Hex20", "Hex27"}
 #: The quadratic types reached by the serendipity promotion.
 _SERENDIPITY = {"Quad8", "Hex20"}
 #: The linear element with the same corners, for the generators, which build a
 #: linear mesh first and promote it afterwards.
-_CORNER_TYPE = {
-    "Edge3": "Edge2",
-    "Tri6": "Tri3",
-    "Quad8": "Quad4",
-    "Quad9": "Quad4",
-    "Tet10": "Tet4",
-    "Hex20": "Hex8",
-    "Hex27": "Hex8",
-}
+_CORNER_TYPE = {"Edge3": "Edge2", "Tri6": "Tri3", "Quad8": "Quad4", "Quad9": "Quad4", "Tet10": "Tet4", "Hex20": "Hex8", "Hex27": "Hex8"}
 
 
 def _corner_type(element_type: str) -> str:
@@ -94,12 +56,7 @@ def _meshio_permutation(element_type: str):
     return Mesh.vtk_node_order(element_type)
 
 
-def graded_coordinates(
-    start: float,
-    end: float,
-    num_elements: int,
-    bias: float = 1.0,
-) -> list[float]:
+def graded_coordinates(start: float, end: float, num_elements: int, bias: float = 1.0) -> list[float]:
     """Node coordinates from ``start`` to ``end`` with a geometric grading.
 
     ``bias`` is the ratio between the lengths of successive elements: 1.0 gives
@@ -122,31 +79,15 @@ def coordinates_from_spacings(start: float, spacings: Sequence[float]) -> list[f
     return [start] + list(start + np.cumsum(np.asarray(spacings, dtype=float)))
 
 
-def _axis_coordinates(
-    coordinates: Sequence[float] | None,
-    minimum: float | None,
-    maximum: float | None,
-    num_elements: int | None,
-    bias: float,
-    name: str,
-) -> list[float]:
+def _axis_coordinates(coordinates: Sequence[float] | None, minimum: float | None, maximum: float | None, num_elements: int | None, bias: float, name: str) -> list[float]:
     if coordinates is not None:
         return [float(c) for c in coordinates]
     if minimum is None or maximum is None or num_elements is None:
-        raise ValueError(
-            f"Give either {name}_coordinates or ({name}_min, {name}_max, num_{name}_elements)."
-        )
+        raise ValueError(f"Give either {name}_coordinates or ({name}_min, {name}_max, num_{name}_elements).")
     return graded_coordinates(minimum, maximum, num_elements, bias)
 
 
-def generate_line_mesh(
-    start: float | None = None,
-    end: float | None = None,
-    num_elements: int | None = None,
-    bias: float = 1.0,
-    coordinates: Sequence[float] | None = None,
-    element_type: str = "Edge2",
-) -> Mesh:
+def generate_line_mesh(start: float | None = None, end: float | None = None, num_elements: int | None = None, bias: float = 1.0, coordinates: Sequence[float] | None = None, element_type: str = "Edge2") -> Mesh:
     """One-dimensional mesh of ``Edge2`` or ``Edge3`` elements.
 
     Side sets and node sets ``"left"`` and ``"right"`` are created
@@ -223,24 +164,12 @@ def generate_box_mesh(
     return _promote(linear, element_type)
 
 
-def annulus_coordinates(
-    inner_radius: float, outer_radius: float, num_elements: int, bias: float = 1.0
-) -> list[float]:
+def annulus_coordinates(inner_radius: float, outer_radius: float, num_elements: int, bias: float = 1.0) -> list[float]:
     """Radial node coordinates for an annulus (a convenience alias)."""
     return graded_coordinates(inner_radius, outer_radius, num_elements, bias)
 
 
-def generate_annulus_mesh(
-    inner_radius: float,
-    outer_radius: float,
-    num_radial_elements: int,
-    num_angular_elements: int,
-    start_angle: float = 0.0,
-    end_angle: float = 90.0,
-    element_type: str = "Quad4",
-    radial_bias: float = 1.0,
-    radial_coordinates: Sequence[float] | None = None,
-) -> Mesh:
+def generate_annulus_mesh(inner_radius: float, outer_radius: float, num_radial_elements: int, num_angular_elements: int, start_angle: float = 0.0, end_angle: float = 90.0, element_type: str = "Quad4", radial_bias: float = 1.0, radial_coordinates: Sequence[float] | None = None) -> Mesh:
     """Mesh of an annular sector (angles in degrees, measured from the x axis).
 
     Side sets: ``"inner"`` (r = inner_radius), ``"outer"`` (r = outer_radius),
@@ -248,11 +177,7 @@ def generate_annulus_mesh(
     This is the mesh used for thick pressurized cylinders and for the classical
     plate-with-a-hole problem.
     """
-    radii = (
-        [float(r) for r in radial_coordinates]
-        if radial_coordinates is not None
-        else graded_coordinates(inner_radius, outer_radius, num_radial_elements, radial_bias)
-    )
+    radii = [float(r) for r in radial_coordinates] if radial_coordinates is not None else graded_coordinates(inner_radius, outer_radius, num_radial_elements, radial_bias)
     angle_start, angle_end = np.radians(start_angle), np.radians(end_angle)
     angles = np.linspace(angle_start, angle_end, num_angular_elements + 1)
     mesh = _core.generate_rectangle_mesh(radii, list(angles), _corner_type(element_type), "right")
@@ -267,23 +192,12 @@ def generate_annulus_mesh(
 
     # The rectangle generator produced the side sets in (r, theta) space;
     # give them their geometric names.
-    for source, name in (
-        ("left", "inner"),
-        ("right", "outer"),
-        ("bottom", "start"),
-        ("top", "end"),
-    ):
+    for source, name in (("left", "inner"), ("right", "outer"), ("bottom", "start"), ("top", "end")):
         mesh.alias_sideset(source, name)
     return mesh
 
 
-def mesh_from_arrays(
-    points,
-    cells,
-    element_type: str | None = None,
-    blocks=None,
-    dimension: int | None = None,
-) -> Mesh:
+def mesh_from_arrays(points, cells, element_type: str | None = None, blocks=None, dimension: int | None = None) -> Mesh:
     """Build a mesh from a node array and a connectivity array.
 
     ``points`` has shape ``(num_nodes, 1..3)``.  ``cells`` is either an array of
@@ -318,12 +232,7 @@ def mesh_from_arrays(
     return mesh
 
 
-def read_mesh(
-    filename: str,
-    file_format: str | None = None,
-    boundary_names: dict | None = None,
-    add_bounding_box_sidesets: bool = False,
-) -> Mesh:
+def read_mesh(filename: str, file_format: str | None = None, boundary_names: dict | None = None, add_bounding_box_sidesets: bool = False) -> Mesh:
     """Read a mesh file through meshio and convert it to a dualmesh mesh.
 
     Physical groups (Gmsh) or element blocks (Exodus) become subdomain ids, and
@@ -339,10 +248,7 @@ def read_mesh(
         if block.type in _MESHIO_TO_DUALMESH:
             volume_types[block.type] = _DIMENSION[_MESHIO_TO_DUALMESH[block.type]]
     if not volume_types:
-        raise ValueError(
-            f"{filename}: no supported cells found. dualmesh supports "
-            + ", ".join(sorted(_MESHIO_TO_DUALMESH))
-        )
+        raise ValueError(f"{filename}: no supported cells found. dualmesh supports " + ", ".join(sorted(_MESHIO_TO_DUALMESH)))
     dim = max(volume_types.values())
 
     mesh = Mesh(dim)
@@ -399,17 +305,93 @@ def write_mesh(mesh: Mesh, filename: str, file_format: str | None = None, **poin
     cells: dict[str, list[list[int]]] = {}
     for element_type, connectivity, _ in mesh.cells():
         permutation = _meshio_permutation(element_type)
-        cells.setdefault(_DUALMESH_TO_MESHIO[element_type], []).append(
-            [int(connectivity[k]) for k in permutation]
-        )
+        cells.setdefault(_DUALMESH_TO_MESHIO[element_type], []).append([int(connectivity[k]) for k in permutation])
     blocks: list[int] = [block for _, _, block in mesh.cells()]
-    meshio_mesh = meshio.Mesh(
-        points=np.asarray(mesh.points()),
-        cells=[(t, np.asarray(c, dtype=np.int64)) for t, c in cells.items()],
-        point_data={k: np.asarray(v) for k, v in point_data.items()},
-        cell_data={"block": [np.asarray(blocks, dtype=np.int32)]},
-    )
+    meshio_mesh = meshio.Mesh(points=np.asarray(mesh.points()), cells=[(t, np.asarray(c, dtype=np.int64)) for t, c in cells.items()], point_data={k: np.asarray(v) for k, v in point_data.items()}, cell_data={"block": [np.asarray(blocks, dtype=np.int32)]})
     meshio.write(filename, meshio_mesh, file_format=file_format)
+
+
+def sideset_summary(mesh: Mesh) -> str:
+    """A table of the side sets of a mesh: for each one the number of faces, the
+    number of nodes, the measure (length in two dimensions, area in three, in the
+    units of the coordinates) and the range of the coordinates of its nodes.
+    Printing it is the first check of the boundaries of an imported mesh."""
+    points = np.asarray(mesh.points())
+    unit = {1: "", 2: "length", 3: "area"}[mesh.dimension]
+    rows = []
+    for name in mesh.sideset_names():
+        sides = mesh.sideset(name)
+        nodes = sorted({n for face in mesh.side_nodes(sides) for n in face})
+        lo, hi = points[nodes].min(axis=0), points[nodes].max(axis=0)
+        extent = "  ".join(f"{'xyz'[k]} {lo[k]:.4g} to {hi[k]:.4g}" for k in range(max(mesh.dimension, 1)))
+        measure = mesh.sideset_measure([name]) if mesh.dimension > 1 else float("nan")
+        rows.append((name, len(sides), len(nodes), measure, extent))
+    if not rows:
+        return "The mesh has no side sets."
+    width = max(len("side set"), *(len(r[0]) for r in rows))
+    header = f"{'side set':<{width}}  {'faces':>7}  {'nodes':>7}  {unit:>11}  coordinates of the nodes"
+    lines = [header, "-" * len(header)]
+    for name, faces, nodes, measure, extent in rows:
+        lines.append(f"{name:<{width}}  {faces:>7d}  {nodes:>7d}  {measure:>11.5g}  {extent}")
+    return "\n".join(lines)
+
+
+#: VTK cell types of the linear boundary faces, by number of corners.
+_VTK_FACE_TYPES = {1: 1, 2: 3, 3: 5, 4: 9}
+
+
+def write_sidesets(mesh: Mesh, filename: str) -> None:
+    """Write the exterior boundary of a mesh as a VTK surface file (``.vtu``)
+    for viewing the side sets, e.g., in ParaView.
+
+    Every exterior face is written with its corner nodes.  The cell field
+    ``side_set`` holds, for each face, the position of its side set in
+    :meth:`~dualmesh.Mesh.sideset_names` plus one (0 for a face that belongs to
+    no side set, and the last match for a face in several).  Each side set
+    also has a field of its own name, equal to 1 on its faces and 0 elsewhere,
+    so that overlapping side sets can be shown one at a time."""
+    from xml.sax.saxutils import quoteattr
+
+    names = list(mesh.sideset_names())
+    exterior = [tuple(side) for side in mesh.exterior_sides()]
+    index = {side: k for k, side in enumerate(exterior)}
+    corners = {1: 1, 2: 2, 3: 3}[mesh.dimension]
+    faces = []
+    for nodes in mesh.side_nodes(exterior):
+        if mesh.dimension == 3:
+            corners = 3 if len(nodes) in (3, 6) else 4
+        faces.append(nodes[:corners])
+    membership = np.zeros((len(names), len(exterior)), dtype=np.int8)
+    side_set = np.zeros(len(exterior), dtype=np.int32)
+    for k, name in enumerate(names):
+        for side in mesh.sideset(name):
+            row = index.get(tuple(side))
+            if row is not None:
+                membership[k, row] = 1
+                side_set[row] = k + 1
+    used = sorted({n for face in faces for n in face})
+    renumber = {n: i for i, n in enumerate(used)}
+    points = np.asarray(mesh.points())[used]
+    connectivity = [renumber[n] for face in faces for n in face]
+    offsets = np.cumsum([len(face) for face in faces])
+    types = [_VTK_FACE_TYPES[len(face)] for face in faces]
+
+    def array(values, fmt):
+        return " ".join(fmt % v for v in np.ravel(values))
+
+    fields = [("side_set", "Int32", side_set)] + [(name, "Int8", membership[k]) for k, name in enumerate(names)]
+    with open(filename, "w") as out:
+        out.write('<?xml version="1.0"?>\n<VTKFile type="UnstructuredGrid" version="0.1" byte_order="LittleEndian">\n<UnstructuredGrid>\n')
+        out.write(f'<Piece NumberOfPoints="{len(points)}" NumberOfCells="{len(faces)}">\n')
+        out.write(f'<Points><DataArray type="Float64" NumberOfComponents="3" format="ascii">{array(points, "%.10g")}</DataArray></Points>\n')
+        out.write("<Cells>\n")
+        out.write(f'<DataArray type="Int64" Name="connectivity" format="ascii">{array(connectivity, "%d")}</DataArray>\n')
+        out.write(f'<DataArray type="Int64" Name="offsets" format="ascii">{array(offsets, "%d")}</DataArray>\n')
+        out.write(f'<DataArray type="UInt8" Name="types" format="ascii">{array(types, "%d")}</DataArray>\n')
+        out.write('</Cells>\n<CellData Scalars="side_set">\n')
+        for name, kind, values in fields:
+            out.write(f'<DataArray type="{kind}" Name={quoteattr(name)} format="ascii">{array(values, "%d")}</DataArray>\n')
+        out.write("</CellData>\n</Piece>\n</UnstructuredGrid>\n</VTKFile>\n")
 
 
 def mesh_summary(mesh: Mesh) -> str:

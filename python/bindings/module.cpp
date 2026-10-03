@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 //
 // pybind11 bindings: the whole framework is usable from Python, including
-// user-defined kernels, boundary conditions, and materials written in Python.
+// user-defined kernels, boundary conditions, and property objects written in Python.
 #include <pybind11/functional.h>
 #include <pybind11/numpy.h>
 #include <pybind11/operators.h>
@@ -198,27 +198,27 @@ public:
   }
 };
 
-class PyMaterial : public Material
+class PyProperty : public Property
 {
 public:
   // Evaluating this object calls back into the interpreter, which needs
   // the global interpreter lock, so the problem must assemble serially.
   bool threadSafe() const override { return false; }
 
-  using Material::Material;
+  using Property::Property;
   void initialSetup(Problem & problem) override
   {
-    PYBIND11_OVERRIDE_NAME(void, Material, "initial_setup", initialSetup, std::ref(problem));
+    PYBIND11_OVERRIDE_NAME(void, Property, "initial_setup", initialSetup, std::ref(problem));
   }
-  void declareProperties(MaterialPropertyRegistry & r) override
+  void declareProperties(PropertyRegistry & r) override
   {
     PYBIND11_OVERRIDE_PURE_NAME(
-        void, Material, "declare_properties", declareProperties, std::ref(r));
+        void, Property, "declare_properties", declareProperties, std::ref(r));
   }
   void computeProperties(QpContext & ctx) const override
   {
     py::gil_scoped_acquire gil;
-    py::function f = py::get_override(static_cast<const Material *>(this), "compute_properties");
+    py::function f = py::get_override(static_cast<const Property *>(this), "compute_properties");
     if (f)
       f(py::cast(&ctx, py::return_value_policy::reference));
   }
@@ -353,7 +353,7 @@ PYBIND11_MODULE(_core, m)
       "Expression",
       "An expression of named variables, compiled once to C++ and evaluated with plain "
       "numbers or arrays. It is the expression language of the parsed objects "
-      "(parsed_material, parsed_eigenstrain and the parsed creep of small_strain_stress), "
+      "(parsed_property, parsed_eigenstrain and the parsed creep of small_strain_stress), "
       "so a correlation can be checked in Python before it is used in a problem.")
       .def(py::init<std::string, std::vector<std::string>>(),
            py::arg("expression"),
@@ -521,7 +521,7 @@ PYBIND11_MODULE(_core, m)
                                                           fuel::kMolarMassUO2,
                                                       density_fraction);
                  throw InputError("unknown thermal_conductivity_model '" + model +
-                                  "'; use fink, fink_lucuta, nfi or halden");
+                                  "'. Use fink, fink_lucuta, nfi or halden.");
                }),
            py::arg("temperature"),
            py::arg("burnup") = 0.0,
@@ -597,6 +597,17 @@ PYBIND11_MODULE(_core, m)
            "reached and a burnup in FIMA (converted with 938.3 MWd/kgHM per FIMA); "
            "total_densification is the resintering density change as a fraction of the "
            "theoretical density.");
+    fm.def(
+        "uo2_densification_escore",
+        py::vectorize([](double T, double burnup, double total, double complete_burnup)
+                      { return fuel::uo2DensificationESCORE(T, burnup, total, complete_burnup); }),
+        py::arg("temperature"),
+        py::arg("burnup"),
+        py::arg("total_densification") = 0.01,
+        py::arg("complete_burnup") = 5.0,
+        "Volumetric densification strain of UO2 by the ESCORE model of FALCON MOD01 "
+        "(Eqs. 5-22 and 5-24) at the temperature, K, and the pellet-average burnup; burnup and "
+        "complete_burnup in the same unit.");
     fm.def("uo2_gaseous_swelling_increment",
            py::vectorize(
                [](double T, double fima, double dfima, double density_fraction)
@@ -779,6 +790,18 @@ PYBIND11_MODULE(_core, m)
         py::arg("temperature"),
         py::arg("pressure"),
         "Sum of the temperature jump distances of a gas mixture at a wall, m.");
+    fm.def("solid_contact_conductance",
+           py::vectorize(
+               [](double km, double pressure, double hardness, double r1, double r2, double c)
+               { return fuel::solidContactConductance(km, pressure, hardness, r1, r2, c); }),
+           py::arg("mean_conductivity"),
+           py::arg("contact_pressure"),
+           py::arg("meyer_hardness"),
+           py::arg("primary_roughness"),
+           py::arg("secondary_roughness"),
+           py::arg("coefficient") = 20.0,
+           "Conductance of the solid contact between two rough surfaces, W/(m^2 K), Eq. (A.9) of "
+           "Ross and Stoute (1962).");
     fm.def("zircaloy_irradiation_growth",
            py::vectorize(&fuel::zryIrradiationGrowth),
            py::arg("fast_neutron_fluence"),
@@ -868,6 +891,7 @@ PYBIND11_MODULE(_core, m)
            py::arg("name"),
            "Give an element block a name, by which objects can then be restricted to it.")
       .def("block_ids", &Mesh::blockIds, "The ids of the element blocks present.")
+      .def("block_names", &Mesh::blockNames, "The names of the named element blocks, by block id.")
       .def("add_sideset_from_faces",
            &Mesh::addSidesetFromFaces,
            py::arg("name"),
@@ -979,6 +1003,37 @@ PYBIND11_MODULE(_core, m)
           },
           py::arg("name"),
           "The sides of a side set, as (element, local side) pairs.")
+      .def(
+          "exterior_sides",
+          [](const Mesh & mesh)
+          {
+            std::vector<std::pair<Index, int>> out;
+            for (const Side & side : mesh.exteriorSides())
+              out.emplace_back(side.first, side.second);
+            return out;
+          },
+          "All the sides on the exterior boundary of the domain, as (element, local side) pairs.")
+      .def(
+          "side_nodes",
+          [](const Mesh & mesh, const std::vector<std::pair<Index, int>> & sides)
+          {
+            std::vector<std::vector<Index>> out;
+            out.reserve(sides.size());
+            for (const auto & side : sides)
+              out.push_back(mesh.sideNodes({side.first, side.second}));
+            return out;
+          },
+          py::arg("sides"),
+          "The node indices of each side in a list of (element, local side) pairs. The corner "
+          "nodes come first, in the order of the side's own element type.")
+      .def(
+          "sideset_measure",
+          [](const Mesh & mesh, const std::vector<std::string> & names)
+          { return sidesetMeasure(mesh, names); },
+          py::arg("names"),
+          "The total length (in two dimensions) or area (in three) of the named side sets, "
+          "integrated with the isoparametric map of the elements. A side in several of the sets "
+          "is counted once.")
       .def(
           "sideset_names",
           [](const Mesh & mesh)
@@ -1102,10 +1157,9 @@ PYBIND11_MODULE(_core, m)
       .def_property_readonly(
           "is_picard", [](const QpContext & c) { return c.mode == LinearizationMode::Picard; });
 
-  py::class_<MaterialPropertyRegistry>(m, "MaterialPropertyRegistry")
-      .def(
-          "declare", &MaterialPropertyRegistry::declare, py::arg("name"), py::arg("components") = 1)
-      .def("id", &MaterialPropertyRegistry::id);
+  py::class_<PropertyRegistry>(m, "PropertyRegistry")
+      .def("declare", &PropertyRegistry::declare, py::arg("name"), py::arg("components") = 1)
+      .def("id", &PropertyRegistry::id);
 
   py::class_<Object, std::shared_ptr<Object>>(m, "Object")
       .def_property_readonly("name", &Object::name)
@@ -1155,9 +1209,9 @@ PYBIND11_MODULE(_core, m)
   py::class_<NodalLoad, ResidualObject, std::shared_ptr<NodalLoad>>(m, "NodalLoad")
       .def_static("valid_params", &NodalLoad::validParams);
 
-  py::class_<Material, Object, std::shared_ptr<Material>, PyMaterial>(m, "Material")
+  py::class_<Property, Object, std::shared_ptr<Property>, PyProperty>(m, "Property")
       .def(py::init<const InputParameters &>())
-      .def_static("valid_params", &Material::validParams);
+      .def_static("valid_params", &Property::validParams);
 
   // ---- factory introspection ---------------------------------------------
   m.def("registered_types", [] { return Factory::instance().registeredTypes(); });
@@ -1184,6 +1238,7 @@ PYBIND11_MODULE(_core, m)
       .def_readwrite("preconditioner", &SolverOptions::preconditioner)
       .def_readwrite("gmres_restart", &SolverOptions::gmres_restart)
       .def_readwrite("linear_tolerance", &SolverOptions::linear_tolerance)
+      .def_readwrite("amg_strength_threshold", &SolverOptions::amg_strength_threshold)
       .def_readwrite("linear_max_iterations", &SolverOptions::linear_max_iterations)
       .def_readwrite("verbose", &SolverOptions::verbose)
       .def_readwrite("error_on_divergence", &SolverOptions::error_on_divergence);
@@ -1357,6 +1412,7 @@ PYBIND11_MODULE(_core, m)
       .def("num_global_dofs", &DistributedProblem::numGlobalDofs)
       .def("global_node", &DistributedProblem::globalNode, py::arg("local_node"))
       .def("owns_node", &DistributedProblem::ownsNode, py::arg("local_node"))
+      .def("set_linear_solver", &DistributedProblem::setLinearSolver, py::arg("options"))
       .def("solve_steady", &DistributedProblem::solveSteady, py::arg("options") = SolverOptions{})
       .def("solve_transient",
            &DistributedProblem::solveTransient,
@@ -1469,16 +1525,16 @@ PYBIND11_MODULE(_core, m)
            &Problem::setElementField,
            py::arg("name"),
            py::arg("values"),
-           "Set a named field with one value per element, read by materials.")
+           "Set a named field with one value per element, read by the property objects.")
       .def(
           "element_field",
           [](Problem & p, const std::string & name) { return p.elementField(name); },
           py::arg("name"))
       .def("element_field_names", &Problem::elementFieldNames)
-      .def("has_state", &Problem::hasState, "Whether a material keeps a history.")
+      .def("has_state", &Problem::hasState, "Whether a property object keeps a history.")
       .def("save_state",
            &Problem::snapshotState,
-           "A copy of the committed history of the stateful materials.")
+           "A copy of the committed history of the stateful property objects.")
       .def("restore_state",
            &Problem::restoreState,
            py::arg("snapshot"),
@@ -1502,8 +1558,29 @@ PYBIND11_MODULE(_core, m)
       .def("add_integrated_bc", &Problem::addIntegratedBC)
       .def("add_nodal_bc", &Problem::addNodalBC)
       .def("add_nodal_load", &Problem::addNodalLoad)
-      .def("add_material", &Problem::addMaterial)
+      .def("add_property", &Problem::addProperty)
       .def("initialize", &Problem::initialize)
+      .def(
+          "near_nullspace",
+          [](Problem & p)
+          {
+            p.initialize();
+            const Eigen::MatrixXd B = p.nearNullspace();
+            std::vector<std::vector<double>> rows(
+                static_cast<std::size_t>(B.rows()),
+                std::vector<double>(static_cast<std::size_t>(B.cols())));
+            for (Eigen::Index i = 0; i < B.rows(); ++i)
+              for (Eigen::Index j = 0; j < B.cols(); ++j)
+                rows[i][j] = B(i, j);
+            return rows;
+          },
+          "The near null space of the algebraic multigrid preconditioner, one row per degree of "
+          "freedom.")
+      .def("boundary_measure",
+           &Problem::boundaryMeasure,
+           py::arg("boundaries"),
+           "The measure of the named side sets, with the coordinate factor of axisymmetric and "
+           "spherical problems.")
       .def(
           "num_active_dofs",
           [](Problem & p)
@@ -1523,7 +1600,7 @@ PYBIND11_MODULE(_core, m)
       .def("variable_name", [](const Problem & p, int i) { return p.variable(i).name; })
       .def(
           "property_registry",
-          [](Problem & p) -> MaterialPropertyRegistry & { return p.propertyRegistry(); },
+          [](Problem & p) -> PropertyRegistry & { return p.propertyRegistry(); },
           py::return_value_policy::reference_internal)
       .def("property_id",
            [](Problem & p, const std::string & n) { return p.propertyRegistry().id(n); })
@@ -1567,6 +1644,7 @@ PYBIND11_MODULE(_core, m)
       .def("property_at_centroids", &Problem::propertyAtCentroids)
       .def("kernel_flux_at_centroids", &Problem::kernelFluxAtCentroids)
       .def("integrate", &Problem::integrate)
+      .def("element_integrals", &Problem::elementIntegrals)
       .def(
           "error_norms",
           [](const Problem & p,

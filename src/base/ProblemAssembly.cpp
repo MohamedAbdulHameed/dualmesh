@@ -4,6 +4,7 @@
 #include "dualmesh/base/Console.h"
 #include "dualmesh/base/Problem.h"
 
+#include "dualmesh/linalg/Amg.h"
 #include "dualmesh/linalg/IncompleteLU.h"
 #include "dualmesh/linalg/PetscSolver.h"
 #include "dualmesh/linalg/SaddlePointSolver.h"
@@ -17,10 +18,12 @@
 #endif
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <set>
 #include <sstream>
 
 namespace dualmesh
@@ -298,7 +301,7 @@ Problem::assemble(const Vector & U, const AssemblyOptions & opts, Vector & R, Sp
         ctx.state_domain = 0;
         ctx.state_owner = e;
         ctx.state_key = stateKey(point_set, group_index, 0, static_cast<unsigned>(q));
-        computeMaterials(ctx);
+        evaluateProperties(ctx);
         return coordFactor(geo.x);
       };
 
@@ -488,7 +491,7 @@ Problem::assemble(const Vector & U, const AssemblyOptions & opts, Vector & R, Sp
                                      static_cast<unsigned>(&bc - _ibcs.data()),
                                      static_cast<unsigned>(side.second),
                                      static_cast<unsigned>(&ip - pts.data()));
-            computeMaterials(ctx);
+            evaluateProperties(ctx);
             const double w = ip.weight * coordFactor(geo.x) * wfac;
             const ADReal q = bc->computeBoundaryFlux(ctx) * w;
             if (ip.owner >= 0)
@@ -649,7 +652,7 @@ Problem::assembleInterface(const InterfaceBC & bc,
         ctx.state_owner = side.first;
         ctx.state_key =
             stateKey(3, bc_index, static_cast<unsigned>(side.second), static_cast<unsigned>(q));
-        computeMaterials(ctx);
+        evaluateProperties(ctx);
         const double w = ip.weight * coordFactor(geo.x) * wfac;
         const ADReal flux = bc.computeInterfaceFlux(ctx) * w;
 
@@ -929,7 +932,7 @@ preconditionedKrylov(const std::string & method,
     return krylovWith<Eigen::IdentityPreconditioner>(
         method, A, b, o, max_iterations, iterations, x);
   throw InputError("Unknown preconditioner '" + o.preconditioner +
-                   "' (use ilu, ilut, jacobi, or none).");
+                   "' (use amg, ilu, ilut, jacobi, or none).");
 }
 
 Vector
@@ -953,7 +956,7 @@ directSolve(const SparseMatrix & A, const Vector & b)
     if (!finite)
       throw std::runtime_error(
           "dualmesh: the Jacobian contains NaN or infinite entries, so it cannot be factorized. "
-          "A material property or its derivative is not finite at the current solution "
+          "A property or its derivative is not finite at the current solution "
           "(for example log(0), 1/0, or x^p with p < 1 at x = 0).");
     throw std::runtime_error(
         "dualmesh: sparse LU factorization failed (singular system?): " + lu.lastErrorMessage() +
@@ -1128,6 +1131,328 @@ Problem::preferDirectSolver(Index n) const
   return n <= 4000;
 }
 
+/// What the linear solvers keep between calls: the last matrix, and the
+/// factorisation or the multigrid hierarchy built from it.
+struct Problem::LinearSolverCache
+{
+  SparseMatrix matrix;
+  bool symmetric = false;
+  std::shared_ptr<Eigen::SparseLU<SparseMatrix, Eigen::COLAMDOrdering<int>>> lu;
+  std::shared_ptr<SmoothedAggregationAmg> amg;
+  double amg_threshold = -1.0;
+
+  /// Whether @p A equals the stored matrix, entry by entry.
+  bool holds(const SparseMatrix & A) const
+  {
+    if (matrix.rows() != A.rows() || matrix.cols() != A.cols() ||
+        matrix.nonZeros() != A.nonZeros() || !matrix.isCompressed() || !A.isCompressed())
+      return false;
+    const auto nnz = static_cast<std::size_t>(A.nonZeros());
+    const auto outer = static_cast<std::size_t>(A.outerSize() + 1);
+    return std::equal(A.outerIndexPtr(), A.outerIndexPtr() + outer, matrix.outerIndexPtr()) &&
+           std::equal(A.innerIndexPtr(), A.innerIndexPtr() + nnz, matrix.innerIndexPtr()) &&
+           std::equal(A.valuePtr(), A.valuePtr() + nnz, matrix.valuePtr());
+  }
+  void store(const SparseMatrix & A)
+  {
+    matrix = A;
+    lu.reset();
+    amg.reset();
+    const SparseMatrix difference = SparseMatrix(A.transpose()) - A;
+    symmetric = difference.norm() <= 1e-10 * A.norm();
+  }
+};
+
+Eigen::MatrixXd
+Problem::nearNullspace() const
+{
+  const int nv = numVariables();
+  const Index entities = numEntities();
+  const int dim = _mesh->dimension();
+  // The displacement variables of the elastic property objects, in component order.
+  std::vector<std::vector<int>> groups;
+  std::vector<char> grouped(nv, 0);
+  for (const auto & material : _property_objects)
+  {
+    const auto & p = material->parameters();
+    if (!p.has("displacements") || !p.isSet("displacements"))
+      continue;
+    std::vector<int> group;
+    for (const auto & name : p.getStringList("displacements"))
+      for (int v = 0; v < nv; ++v)
+        if (_vars[v].name == name)
+          group.push_back(v);
+    if (group.empty() || std::any_of(group.begin(), group.end(), [&](int v) { return grouped[v]; }))
+      continue;
+    for (int v : group)
+      grouped[v] = 1;
+    groups.push_back(group);
+  }
+  const bool cartesian = _coord == CoordinateSystem::Cartesian;
+  int columns = 0;
+  for (const auto & group : groups)
+  {
+    const int d = static_cast<int>(group.size());
+    columns += d + (cartesian && d == 2 && dim >= 2 ? 1 : 0) + (cartesian && d == 3 ? 3 : 0);
+  }
+  for (int v = 0; v < nv; ++v)
+    if (!grouped[v])
+      ++columns;
+  Eigen::MatrixXd B = Eigen::MatrixXd::Zero(numDofs(), columns);
+  // Rotations about the centroid of the entities, for a well-conditioned basis.
+  Point centre{0.0, 0.0, 0.0};
+  for (Index e = 0; e < entities; ++e)
+    centre = centre + entityPoint(e);
+  centre = (1.0 / std::max<Index>(entities, 1)) * centre;
+  int column = 0;
+  for (const auto & group : groups)
+  {
+    const int d = static_cast<int>(group.size());
+    for (int c = 0; c < d; ++c, ++column)
+      for (Index e = 0; e < entities; ++e)
+        B(dof(e, group[c]), column) = 1.0;
+    if (!cartesian)
+      continue;
+    if (d == 2 && dim >= 2)
+    {
+      for (Index e = 0; e < entities; ++e)
+      {
+        const Point x = entityPoint(e) - centre;
+        B(dof(e, group[0]), column) = -x[1];
+        B(dof(e, group[1]), column) = x[0];
+      }
+      ++column;
+    }
+    if (d == 3)
+    {
+      for (Index e = 0; e < entities; ++e)
+      {
+        const Point x = entityPoint(e) - centre;
+        B(dof(e, group[0]), column) = -x[1]; // about z
+        B(dof(e, group[1]), column) = x[0];
+        B(dof(e, group[1]), column + 1) = -x[2]; // about x
+        B(dof(e, group[2]), column + 1) = x[1];
+        B(dof(e, group[2]), column + 2) = -x[0]; // about y
+        B(dof(e, group[0]), column + 2) = x[2];
+      }
+      column += 3;
+    }
+  }
+  for (int v = 0; v < nv; ++v)
+    if (!grouped[v])
+    {
+      for (Index e = 0; e < entities; ++e)
+        B(dof(e, v), column) = 1.0;
+      ++column;
+    }
+  return B;
+}
+
+Vector
+Problem::cachedDirectSolve(const SparseMatrix & A, const Vector & b) const
+{
+  if (!_solver_cache)
+    _solver_cache = std::make_shared<LinearSolverCache>();
+  auto & cache = *_solver_cache;
+  if (!cache.holds(A))
+    cache.store(A);
+  if (!cache.lu)
+  {
+    // Factorise through directSolve once for its diagnostics, then keep the
+    // factors of a successful factorisation.
+    auto lu = std::make_shared<Eigen::SparseLU<SparseMatrix, Eigen::COLAMDOrdering<int>>>();
+    lu->analyzePattern(A);
+    lu->factorize(A);
+    if (lu->info() != Eigen::Success)
+      return directSolve(A, b); // throws with the reason
+    cache.lu = lu;
+  }
+  Vector x = cache.lu->solve(b);
+  if (cache.lu->info() != Eigen::Success || !x.allFinite())
+    throw std::runtime_error("dualmesh: sparse LU solve failed.");
+  return x;
+}
+
+bool
+Problem::amgSolve(const SparseMatrix & A,
+                  const Vector & b,
+                  const SolverOptions & o,
+                  const std::string & method,
+                  int max_iterations,
+                  int * iterations,
+                  Vector & x) const
+{
+  if (!_solver_cache)
+    _solver_cache = std::make_shared<LinearSolverCache>();
+  auto & cache = *_solver_cache;
+  if (!cache.holds(A))
+    cache.store(A);
+  if (method == "cg" && !cache.symmetric)
+    throw InputError("linear_solver='cg' needs a symmetric matrix, which the Galerkin finite "
+                     "element method gives but the dual mesh and finite volume methods do not. Use "
+                     "linear_solver='bicgstab' with preconditioner='amg' for those.");
+  const auto start = std::chrono::steady_clock::now();
+  const auto seconds = [&start]
+  { return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count(); };
+  if (!cache.amg || cache.amg_threshold != o.amg_strength_threshold)
+  {
+    auto amg = std::make_shared<SmoothedAggregationAmg>();
+    AmgOptions options;
+    options.block_size = numVariables();
+    options.strength_threshold = o.amg_strength_threshold;
+    options.symmetric = cache.symmetric;
+    amg->setup(A, nearNullspace(), options);
+    cache.amg = amg;
+    cache.amg_threshold = o.amg_strength_threshold;
+    if (o.verbose)
+      std::cout << "  algebraic multigrid (smoothed aggregation), " << amg->numLevels()
+                << " levels, set up in " << std::setprecision(3) << seconds() << " s\n"
+                << amg->summary();
+  }
+  const bool symmetric = method == "cg" || (method == "automatic" && cache.symmetric);
+  x = Vector::Zero(b.size());
+  const IterativeResult result =
+      symmetric
+          ? preconditionedConjugateGradient(
+                cache.amg->fineOperator(), b, *cache.amg, o.linear_tolerance, max_iterations, x)
+          : preconditionedBiCGSTAB(
+                cache.amg->fineOperator(), b, *cache.amg, o.linear_tolerance, max_iterations, x);
+  if (iterations)
+    *iterations += result.iterations;
+  // A stiff system (e.g., steel, with E of order 1e11 Pa) cannot be solved to a
+  // relative residual of 1e-12, because the residual itself carries round-off
+  // of order 1e-9 relative to its first value: the direct solver stops there as
+  // well.  An iteration that stagnates after a reduction of the residual by
+  // six orders of magnitude has therefore reached the round-off level, and
+  // its result is accepted.  Newton's method corrects what remains.
+  const bool round_off = result.stagnated && result.relative_residual <= 1e-6;
+  if (o.verbose)
+    std::cout << "  multigrid-preconditioned iteration: " << result.iterations << " iterations, "
+              << std::setprecision(3) << seconds() << " s including the setup\n";
+  if (o.verbose && !result.converged)
+    std::cout << "  " << (symmetric ? "conjugate gradients" : "BiCGSTAB")
+              << " with algebraic multigrid stopped after " << result.iterations
+              << " iterations at relative residual " << result.relative_residual
+              << (round_off ? " (the round-off level of the system; accepted)" : "") << "\n";
+  return (result.converged || round_off) && x.allFinite();
+}
+
+void
+Problem::checkSingularity(const SparseMatrix & J) const
+{
+  const Index n = J.rows();
+  const int nv = numVariables();
+  const std::vector<char> fixed = constrainedDofs();
+  // The groups of coupled unknowns: the connected components of the graph of
+  // the Jacobian without the prescribed unknowns (union-find with path halving).
+  std::vector<Index> parent(n);
+  for (Index i = 0; i < n; ++i)
+    parent[i] = i;
+  const auto root = [&parent](Index i)
+  {
+    while (parent[i] != i)
+    {
+      parent[i] = parent[parent[i]];
+      i = parent[i];
+    }
+    return i;
+  };
+  for (Index col = 0; col < J.outerSize(); ++col)
+  {
+    if (fixed[col])
+      continue;
+    for (SparseMatrix::InnerIterator it(J, col); it; ++it)
+      if (!fixed[it.row()] && it.row() != col && it.value() != 0.0)
+      {
+        const Index a = root(it.row()), b = root(col);
+        if (a != b)
+          parent[a] = b;
+      }
+  }
+  Eigen::MatrixXd B = nearNullspace();
+  for (Index i = 0; i < n; ++i)
+    if (fixed[i])
+      B.row(i).setZero();
+  const Eigen::MatrixXd JB = J * B;
+  // For every component and every near null space vector: the norms of the
+  // vector and of its image on the component, and the largest diagonal entry.
+  std::vector<Index> component(n, -1);
+  std::vector<Index> roots;
+  for (Index i = 0; i < n; ++i)
+    if (!fixed[i])
+    {
+      const Index r = root(i);
+      if (component[r] < 0)
+      {
+        component[r] = static_cast<Index>(roots.size());
+        roots.push_back(r);
+      }
+      component[i] = component[r];
+    }
+  const Index nc = static_cast<Index>(roots.size());
+  const Eigen::Index k = B.cols();
+  // For every component and every near null space vector b: the norms of J b
+  // and of D b, D being the diagonal of J, so that the comparison is made row
+  // by row in the units of each equation (a temperature equation and an
+  // equilibrium equation differ by many orders of magnitude).
+  Eigen::MatrixXd scaled_norm = Eigen::MatrixXd::Zero(nc, k),
+                  image_norm = Eigen::MatrixXd::Zero(nc, k);
+  const Vector diagonal = J.diagonal();
+  for (Index i = 0; i < n; ++i)
+  {
+    if (fixed[i])
+      continue;
+    const Index c = component[i];
+    for (Eigen::Index j = 0; j < k; ++j)
+    {
+      const double db = diagonal[i] * B(i, j);
+      scaled_norm(c, j) += db * db;
+      image_norm(c, j) += JB(i, j) * JB(i, j);
+    }
+  }
+  for (Index c = 0; c < nc; ++c)
+    for (Eigen::Index j = 0; j < k; ++j)
+    {
+      const double reference = std::sqrt(scaled_norm(c, j));
+      if (!(reference > 0.0) || std::sqrt(image_norm(c, j)) > 1e-9 * reference)
+        continue;
+      // Describe the part of the mesh and the variables involved.
+      Point lo{1e300, 1e300, 1e300}, hi{-1e300, -1e300, -1e300};
+      std::set<int> variables;
+      std::set<Index> entities;
+      for (Index i = 0; i < n; ++i)
+        if (!fixed[i] && component[i] == c && B(i, j) != 0.0)
+        {
+          variables.insert(static_cast<int>(i % nv));
+          entities.insert(i / nv);
+          const Point & x = entityPoint(i / nv);
+          for (int d = 0; d < 3; ++d)
+          {
+            lo[d] = std::min(lo[d], x[d]);
+            hi[d] = std::max(hi[d], x[d]);
+          }
+        }
+      std::ostringstream os;
+      os << "The system is singular: ";
+      std::string names;
+      for (int v : variables)
+        names += (names.empty() ? "'" : ", '") + _vars[v].name + "'";
+      os << (variables.size() > 1 ? "the variables " : "the variable ") << names
+         << " on a part of the mesh with " << entities.size()
+         << (entities.size() == 1 ? " node" : " nodes") << " (";
+      const char * axes = "xyz";
+      for (int d = 0; d < _mesh->dimension(); ++d)
+        os << (d ? ", " : "") << axes[d] << " from " << lo[d] << " to " << hi[d];
+      os << ") " << (variables.size() > 1 ? "are" : "is")
+         << " not held by any boundary condition. A "
+         << (variables.size() > 1 ? "rigid body motion" : "constant")
+         << " can be added there without changing the equations, so the solution is not unique. "
+            "Give this part a Dirichlet condition (or fixed_constraint), or connect it to the rest "
+            "of the mesh, e.g., by checking that the parts of an imported mesh share their nodes.";
+      throw InputError(os.str());
+    }
+}
+
 Vector
 Problem::linearSolve(const SparseMatrix & A_in,
                      const Vector & b,
@@ -1179,7 +1504,21 @@ Problem::linearSolve(const SparseMatrix & A_in,
     return x;
   }
   if (method == "lu")
-    return directSolve(A, b);
+    return cachedDirectSolve(A, b);
+  if (o.preconditioner == "amg" && method != "automatic")
+  {
+    if (method != "cg" && method != "bicgstab")
+      throw InputError("The preconditioner 'amg' works with linear_solver 'cg', 'bicgstab' or "
+                       "'automatic'; it was given with '" +
+                       method + "'.");
+    Vector x;
+    if (!amgSolve(A, b, o, method, o.linear_max_iterations, iterations, x))
+      throw std::runtime_error("dualmesh: " + method +
+                               " with the algebraic multigrid preconditioner did not converge in " +
+                               std::to_string(o.linear_max_iterations) +
+                               " iterations. Try linear_solver='lu'.");
+    return x;
+  }
   if (method == "automatic")
   {
     // A mixed-order (Taylor-Hood) flow problem is a saddle point problem whose
@@ -1187,7 +1526,7 @@ Problem::linearSolve(const SparseMatrix & A_in,
     // zero pivot at once; factorise it directly.  Large ones are better
     // served by PETSc with a Schur complement field split.
     if (preferDirectSolver(A.rows()))
-      return directSolve(A, b);
+      return cachedDirectSolve(A, b);
     if (_mixed_order)
     {
       // A large Taylor-Hood system: flexible GMRES with the pressure mass
@@ -1209,12 +1548,24 @@ Problem::linearSolve(const SparseMatrix & A_in,
     // on which ILU(0) is a poor preconditioner (a saddle point problem, for
     // instance) costs a failed attempt, not a failed solve.
     Vector x;
+    // Algebraic multigrid first: conjugate gradients for a symmetric matrix,
+    // BiCGSTAB otherwise.  ILU(0) and then the direct solver are the
+    // fallbacks, so that "automatic" is never less robust than "lu".
+    if (o.preconditioner == "ilu" || o.preconditioner == "amg")
+    {
+      if (amgSolve(A, b, o, "automatic", std::min(o.linear_max_iterations, 500), iterations, x))
+        return x;
+      if (o.verbose)
+        std::cout << "  the multigrid iteration did not converge; trying BiCGSTAB with ILU(0)\n";
+    }
+    SolverOptions ilu = o;
+    ilu.preconditioner = o.preconditioner == "amg" ? "ilu" : o.preconditioner;
     const int budget = std::min(o.linear_max_iterations, 1000);
-    if (preconditionedKrylov("bicgstab", A, b, o, budget, iterations, x))
+    if (preconditionedKrylov("bicgstab", A, b, ilu, budget, iterations, x))
       return x;
     if (o.verbose)
       std::cout << "  the preconditioned iteration did not converge; using the direct solver\n";
-    return directSolve(A, b);
+    return cachedDirectSolve(A, b);
   }
   if (method == "bicgstab" || method == "gmres")
   {
@@ -1302,6 +1653,11 @@ Problem::nonlinearSolve(const SolverOptions & o, AssemblyOptions base, const Vec
         R += *steady_old;
       _last_residual = R;
       dirichletRows(_U, lf, R, &J);
+      if (!_singularity_checked)
+      {
+        checkSingularity(J);
+        _singularity_checked = true;
+      }
       const double rn = R.norm();
       have_residual_at_U = true;
       if (r0 < 0)
@@ -1352,7 +1708,7 @@ Problem::nonlinearSolve(const SolverOptions & o, AssemblyOptions base, const Vec
           }
           catch (const std::exception &)
           {
-            // A trial state where a material cannot be evaluated is rejected.
+            // A trial state where a property cannot be evaluated is rejected.
           }
           if (std::isfinite(rt) && rt < best)
           {
@@ -1420,7 +1776,7 @@ Problem::solveSteady(const SolverOptions & options)
   base.include_time_kernels = false;
   base.theta = 1.0;
   SolveResult result = nonlinearSolve(options, base, nullptr);
-  // A converged steady state is a state the history of stateful materials
+  // A converged steady state is a state the history of stateful property objects
   // has reached: commit it, so that a following solve or time step starts
   // from it.  Without this, a transient run after a steady solve would
   // restart the history from the undeformed state and take the whole
@@ -1669,7 +2025,7 @@ Problem::solveTransient(const TransientOptions & tr, const SolverOptions & optio
     }
   };
   write(0);
-  // The history of stateful materials follows the solution: a step starts
+  // The history of stateful property objects follows the solution: a step starts
   // from the committed history when it starts from the last accepted
   // solution, and from the state its predecessor reached when it continues
   // that predecessor (the second half of a doubled step).

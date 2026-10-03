@@ -58,16 +58,12 @@ def test_iron_cross_section_and_spectrum_averages():
     one = dpa.Spectrum(np.array([1.0e6, 1.1e6]), np.array([1.0]))
     assert dpa.spectrum_averaged(iron, one) == pytest.approx(iron.on(one)[0])
     # dose per fluence above a threshold below the spectrum = the average.
-    assert dpa.dpa_per_fluence(iron, one, 1e5) == pytest.approx(
-        dpa.spectrum_averaged(iron, one) * 1e-28
-    )
+    assert dpa.dpa_per_fluence(iron, one, 1e5) == pytest.approx(dpa.spectrum_averaged(iron, one) * 1e-28)
     # Splitting a group in proportion to lethargy.
     flat = dpa.Spectrum(np.array([1e5, 1e7]), np.array([2.0]))
     assert flat.fluence_above(1e6) == pytest.approx(1.0)
     # Conversions both ways.
-    factor = dpa.dpa_per_fluence(
-        iron, dpa.Spectrum.from_function(dpa.watt_spectrum(), np.geomspace(1e3, 2e7, 200))
-    )
+    factor = dpa.dpa_per_fluence(iron, dpa.Spectrum.from_function(dpa.watt_spectrum(), np.geomspace(1e3, 2e7, 200)))
     assert dpa.fluence_from_dose(dpa.dose_from_fluence(1e25, factor), factor) == pytest.approx(1e25)
 
 
@@ -94,19 +90,8 @@ def test_compound_and_fecral_dose_per_fluence():
     bounds = np.geomspace(1e-5, 2e7, 616)
     spectrum = dpa.Spectrum.from_function(dpa.watt_spectrum(), bounds)
     iron = dpa.nrt_cross_section("Fe")
-    apmt = dpa.compound_cross_section(
-        {
-            "Fe": (0.70, iron),
-            "Cr": (0.21, dpa.nrt_cross_section("Cr", 40.0)),
-            "Al": (0.09, dpa.nrt_cross_section("Al", 27.0)),
-        }
-    )
-    sic = dpa.compound_cross_section(
-        {
-            "Si": (0.5, dpa.nrt_cross_section("Si", 35.0)),
-            "C": (0.5, dpa.nrt_cross_section("C", 20.0)),
-        }
-    )
+    apmt = dpa.compound_cross_section({"Fe": (0.70, iron), "Cr": (0.21, dpa.nrt_cross_section("Cr", 40.0)), "Al": (0.09, dpa.nrt_cross_section("Al", 27.0))})
+    sic = dpa.compound_cross_section({"Si": (0.5, dpa.nrt_cross_section("Si", 35.0)), "C": (0.5, dpa.nrt_cross_section("C", 20.0))})
     assert 1e25 * dpa.dpa_per_fluence(apmt, spectrum, 1e5) == pytest.approx(0.96, abs=0.1)
     assert 1e25 * dpa.dpa_per_fluence(sic, spectrum, 1e5) == pytest.approx(1.13, abs=0.1)
     assert 1e25 * dpa.dpa_per_fluence(apmt, spectrum) == pytest.approx(1.36, abs=0.05)

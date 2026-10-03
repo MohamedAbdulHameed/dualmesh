@@ -8,8 +8,117 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
-- **Uncertainty quantification and sensitivity analysis** (`dualmesh.uq`, and
-  the `uq` block of input files). Input distributions `Normal`, `LogNormal`,
+- `RodOutput.output_interval` records the rod state at a fixed interval from
+  the start of the power history and at its end. The points of the power
+  history remain the default output times.
+
+- **Physics level**: `Problem.add_physics(type, name, ...)` adds a set of
+  equations named in physical terms: `heat_transfer`, `solid_mechanics`,
+  `incompressible_flow`, `beam`, `plate` and `circular_plate`. A physics
+  creates its variables and generates its kernels and materials. Its boundary
+  conditions and extra terms (`physics.add_boundary_condition`,
+  `physics.add_kernel`) take the type names and parameters of the objects,
+  with the variables, the components and the thickness filled in, and a
+  vector value (a traction, a total force, a prescribed displacement or
+  velocity) given as a list with one entry per component. A property that is
+  not given is read from the materials.
+  `Problem.add_coupling(type, name, ...)` couples two physics:
+  `thermal_expansion` and `nonisothermal_flow` (heat carried by a flow, and
+  the Boussinesq buoyancy). `dualmesh list --category physics` and
+  `dualmesh describe <physics>` document them, and the syntax reference has a
+  page for each.
+- **Neutronics.** The physics `neutron_diffusion` solves the multigroup
+  neutron diffusion equations with any number of groups, scattering between
+  all groups, a transverse buckling, and the boundary conditions
+  `vacuum_boundary_condition` (no incoming current, with the extrapolation
+  distance as a ratio of the diffusion coefficient) and
+  `albedo_boundary_condition`. The property object `multigroup_cross_sections`
+  gives the cross sections of a region. `Problem.solve_eigenvalue()` computes
+  the effective multiplication factor and the fundamental mode by the Arnoldi
+  method or the power iteration, and reports the volume, the average fluxes
+  and the fission neutron production of each region. Verified against the
+  analytical one- and two-group solutions of bare slabs, cylinders and
+  spheres, and against the 2D IAEA PWR benchmark (ANL-7416 Suppl. 2, problem
+  11-A2): with 32 x 32 elements per assembly, k_eff is within 1.3 pcm and
+  the assembly powers are within 0.34 % of the reference, with all four
+  methods.
+- `Problem.element_integrals(variable)` and `Problem.element_volumes()`, and
+  `Mesh.block_names()`.
+- **Tables.** `dm.Table` is the one form of every tabular result: it prints
+  in aligned columns, writes a CSV file with one header line whose column
+  names carry their units (for example `temperature (K)`), and gives its
+  columns as arrays and as a pandas DataFrame. Every result has `tables`
+  (for example `rod.tables["axial"]`) and `write_csv(path, table=None)`.
+- A finite-difference check of the Jacobian (`tests/python/test_jacobian.py`)
+  and, in the continuous integration, builds with AddressSanitizer and
+  UndefinedBehaviorSanitizer, coverage reports, clang-tidy, CodeQL, a weekly
+  mutation test, Dependabot, actions pinned to commit hashes, read-only job
+  permissions and a software bill of materials of each release. The release
+  script refuses a workflow with an action that is not pinned to a commit.
+- **`coefficient_form_PDE`**: a physics for a scalar equation written by its
+  coefficients, d_t du/dt + div(-c grad u - alpha u) + beta . grad u + a u = f,
+  with a diffusion coefficient that is a constant, an expression of position
+  and time or of the variable, a constant tensor, or the property
+  `diffusion_coefficient`, and an absorption coefficient that may depend on
+  the variable.
+- `dualmesh list` and `dualmesh describe` cover the applications (`FuelRod`,
+  `TrisoParticleModel`) and their input groups (`dualmesh describe
+  RodNumerics`), and an unknown name is answered with the closest one.
+- `scripts/audit_names.py` checks every public name and parameter
+  declaration against the naming rules, and the tests run it. The input
+  groups of the TRISO model declare their parameters with units and
+  descriptions, and the surface properties of `ChromiumCoating`, which never
+  enter a calculation, are no longer inputs.
+- Every result provides `summary()`, `to_dict()`, `write_json(path)` and
+  `write_csv(path)`: the `SolveResult` of a solve, the new `AdaptivityResult`
+  of `solve_with_adaptive_refinement` (which returned the tuple
+  `(problem, mesh)`), the `ConvergenceResult` of a manufactured solution, and
+  the `Runs`, `SobolIndices` and `Posterior` of the uncertainty studies.
+- The `reaction` kernel takes its coefficient from a property
+  (`coefficient_property`).
+- `uq.sobol` takes the runs of `uq.propagate` to train its Gaussian process
+  surrogate (`training`), as `uq.calibrate` does, so that one set of runs
+  serves the propagation, the indices and the calibration. With the nested
+  scrambled Sobol' design of `propagate(method="sobol")`, a larger study
+  reuses the runs of a smaller one from its store.
+- **`symmetry_boundary_condition`**: a plane of symmetry, on which the
+  displacement (or velocity) normal to the plane is zero.
+- **Distributed problems in `Problem`**: a `Problem` run under `mpirun` on
+  several processes splits itself among them (`distributed`, `partitioner`
+  and `overlap` of the constructor), and its `solve` and `solve_transient`
+  take the distributed linear solver options. `rank`, `num_ranks`,
+  `num_owned_dofs`, `num_global_dofs` and `gathered_values` describe a
+  distributed problem.
+- **Keyword checks**: a misspelled parameter of a physics, a coupling or an
+  input group is answered with the closest name and the list of accepted
+  parameters.
+
+- **Algebraic multigrid preconditioner** (`preconditioner="amg"`): smoothed
+  aggregation with the rigid body modes of the elastic materials and the
+  constants of the other variables as near null space, Chebyshev smoothing
+  and a factorised coarsest level, for the conjugate gradient method and
+  BiCGSTAB. `linear_solver="automatic"` uses it for the systems it does not
+  factorise (three-dimensional systems above a few thousand unknowns), with
+  BiCGSTAB and ILU(0) and then the direct solver as fallbacks. The solve of
+  the wrench tutorial takes 1.8 s on 56 787 unknowns, and a solve of
+  340 000 unknowns about 30 s, in two threads. An iteration that reaches the
+  round-off level of a stiff system is accepted. The option
+  `amg_strength_threshold` sets the aggregation.
+- **Reuse of factorisations**: the direct solver and the multigrid
+  hierarchy are kept while the matrix does not change, so the second Newton
+  iteration of a linear problem costs one back substitution.
+- **One boundary condition on several variables**: every boundary condition
+  accepts a `variables` list and is created once per variable.
+  `fixed_constraint` clamps the displacements it lists.
+- **`total_force`** of `traction_boundary_condition`: a load given as the
+  total force on a side set, spread uniformly over its area, in Cartesian,
+  plane and axisymmetric problems.
+- **Side set tools**: `sideset_summary` (faces, nodes, area and extent of
+  every side set), `write_sidesets` (the boundary with one field per side
+  set, for ParaView), `Mesh.sideset_measure`, `Problem.boundary_measure`, the
+  command `dualmesh mesh <mesh file> --sidesets <file.vtu>`.
+- **Uncertainty quantification and sensitivity analysis** (`dualmesh.uq`).
+  Input distributions `Normal`, `LogNormal`,
   `Uniform` and `LogUniform`, with optional truncation. `propagate` samples a
   model by Latin hypercube, scrambled Sobol' or Monte Carlo designs and
   returns the statistics, bootstrap intervals, Wilks tolerance limits and the
@@ -24,8 +133,8 @@ All notable changes to this project are documented here. The format follows
   in the likelihood, and an affine-invariant ensemble sampler or adaptive
   Metropolis, and reports the split R-hat, the effective sample size and the
   contraction of every parameter. Runs are executed in parallel processes
-  and stored, so that an interrupted study resumes. The same studies run
-  from YAML input files with `dualmesh run`.
+  and stored, so that an interrupted study resumes. The results write their
+  statistics to JSON files (`write_json`).
 - **Model factors for fuel rods** (`fuel.ModelFactors`): multipliers on the
   linear heat rate, the thermal conductivities, the gap conductances, the
   coolant heat transfer, the thermal expansion, relocation, densification,
@@ -33,20 +142,124 @@ All notable changes to this project are documented here. The format follows
   uncertainty studies.
 - **Wrench example** (`examples/wrench`, tutorial "Boundary conditions on an
   imported mesh"): a three-dimensional steel wrench on a Gmsh mesh, with the
-  boundaries named by physical groups or by geometric predicates, in Python
-  and YAML, verified against the statics of the wrench and beam theory.
-- **`property_scaling` material** and the `scaled_properties` and
-  `property_factors` parameters of every material, which multiply named
-  material properties by constant factors.
+  boundaries named by physical groups or by geometric predicates, verified against the statics of the wrench and beam theory.
+- **`property_scaling` property object** and the `scaled_properties` and
+  `property_factors` parameters of every property object, which multiply
+  named properties by constant factors.
 
 ### Changed
 
+- The author of the software is Mohamed AbdulHameed, with his ORCID iD, in
+  `CITATION.cff`, `pyproject.toml` and the documentation.
+- The citation is the software alone (`CITATION.cff`, the README and the
+  documentation). Its abstract covers neutron diffusion, nuclear fuel
+  performance and uncertainty quantification.
 - A boundary condition given no `boundary` acts on the side set or node set
   whose name equals the name of the condition, so that
-  `add_boundary_condition("Dirichlet_boundary_condition", "left", ...)` and
-  a YAML entry named `left` need no separate `boundary: [left]`.
+  `add_boundary_condition("Dirichlet_boundary_condition", "left", ...)` needs
+  no separate `boundary="left"`.
+- The time steps of a fuel rod are limited by the increase of the rod
+  average burnup (`RodNumerics.max_burnup_step`, default 0.2 MWd/kgHM) and
+  the change of its linear heat rate (`max_power_step`, default 2 kW/m), in
+  addition to the step length (`max_time_step`, default 30 days). The fission
+  gas release of a rod at constant power then lies within 2 % of its limit
+  at zero step size. The benchmarks IFA-677.1, IFA-716.1, IFA-534.14 and
+  FUMEX-II case 27 were recomputed with these steps.
+- Names written out in full: `solve_transient` takes `time_step`,
+  `implicitness`, `min_time_step` and `max_time_step` (were `dt`, `theta`,
+  `dt_min` and `dt_max`), `solve_particle` takes `implicitness`, the
+  uncertainty quantification uses `standard_deviation` (`uq.Normal`, the
+  `standard_deviation` methods of the results, `return_standard_deviation`
+  of `GaussianProcess.predict`), and `fgm.beam_stiffness` takes
+  `poissons_ratio`.
+- The Taylor-Hood formulation of `incompressible_flow` is named
+  `Taylor_Hood`.
 - The fuel performance chapters form a part of their own in the
   documentation.
+- `linear_solver="automatic"` iterates with algebraic multigrid where it
+  used BiCGSTAB with ILU(0).
+- The Python code keeps every statement on one line (ruff line length 320,
+  no magic trailing comma).
+- Three defaults of the fuel module were chosen by running the fuel
+  benchmarks (IFA-534.14, IFA-716.1, FUMEX-II case 27 and IFA-677.1) with
+  every option of every model, one option at a time, and keeping the option
+  that agrees best with the measurements: the ESCORE densification
+  (`UO2Fuel.densification_model="escore"`, was `matpro`), the solid contact
+  conductance of Ross and Stoute with their roughness
+  ((R_1^2 + R_2^2)/2)^(1/2) and C_s = 20 m^(-1/2) (was 0.8 (R_1 + R_2) and
+  10), and the coolant correlation of
+  Weisman (`ForcedConvection(correlation="weisman")`, was `dittus_boelter`).
+
+- `RodResult.write_csv(path, table=...)` writes one table, and its CSV
+  files carry the units in the header line (was a second line `# units:`,
+  which spreadsheets and pandas read as data). The files of
+  `RodOutput.directory` are unchanged in name.
+- **Property objects.** The objects that compute named properties at the
+  integration points (conductivities, stresses, eigenstrains, cross
+  sections) are property objects: they are added with
+  `problem.add_property(type, name, ...)` (was `add_material`), their
+  category is `property` (`dualmesh list --category property`), and the
+  word material is kept for physical substances. Renamed with them:
+  `constant_property` (was `generic_constant_material`), `function_property`
+  (was `generic_function_material`), `parsed_property` (was
+  `parsed_material`, whose `material_property_names` is now
+  `coupled_properties`), `PythonProperty` (was `PythonMaterial`) and the
+  C++ base class `Property` (was `Material`).
+
+### Removed
+
+- The classes `mms.Term`, `mms.Diffusion`, `mms.Advection`, `mms.Reaction`,
+  `mms.TimeDerivative`, `mms.LinearElasticity` and `mms.IncompressibleFlow`.
+  `mms.ManufacturedSolution` takes the physics of the physics level
+  (`study.add_physics(...)`, as for a problem), and the boundaries that get
+  the exact flux in place of the exact solution are its `flux_boundaries`.
+- The helpers `dualmesh.physics.add_plane_elasticity`,
+  `add_incompressible_flow`, `add_boussinesq_buoyancy`, `add_beam`,
+  `add_plate` and `add_circular_plate`, replaced by the physics level.
+- The class `DistributedProblem`, replaced by `Problem`, which splits itself
+  under `mpirun` (or with `distributed=True`).
+- YAML input files and the command `dualmesh run`. A problem, a fuel rod, a
+  TRISO particle and an uncertainty study are described in a Python script,
+  which runs with `python script.py`, or with `mpirun -n 4 python script.py`
+  for a distributed problem. The example `examples/bus_bar.yaml` is replaced
+  by `examples/bus_bar.py`, the optional dependency `input` (PyYAML) is
+  removed, and `dualmesh mesh` reads a mesh file.
+
+### Fixed
+
+- The cell-centred finite volume method (`zfvm`) took the coefficient of
+  only one side at a face between two blocks, which made it first order
+  wherever a coefficient (a conductivity, a diffusion coefficient) jumps
+  between materials. It now uses the harmonic mean of the two sides, and
+  converges at second order (`tests/python/test_finite_volume.py`).
+
+- A singular system (a part of the mesh that no boundary condition holds,
+  e.g., a floating body or a region without any temperature condition) is
+  reported with the variables and the extent of that part. It was solved
+  without an error and returned zero there.
+- The Halden UO2 conductivity limits the temperature of its phonon term to
+  1650 degrees Celsius, as Wiesenack defines it. Results change above
+  1923 K only.
+- The theoretical density of UN follows Eq. (3) of Hayes et al. (part I),
+  whose linear coefficient is 2.997e-4. The value 2.779e-4 of the abstract
+  is a misprint. The density at 298 K is 14326 kg/m^3.
+- The thermal strain of a chromium coating uses the coefficient of
+  Holzwarth and Stamm as the mean coefficient from 20 degrees Celsius,
+  which is how they define it.
+- The ESCORE densification uses the pellet-average burnup, as FALCON MOD01
+  defines it.
+- The radius of a gas atom in the intragranular fission gas model is 0.2 nm,
+  the value of Pizzocri et al. (2018), Table 1.
+- The temperature jump distance uses the constant of Lanning and Hann,
+  0.013748 in SI units.
+- `uq.calibrate` with `discrepancy="gaussian_process"` integrates the
+  discrepancy out of the likelihood as Kennedy and O'Hagan do, with its
+  hyperparameters at the joint posterior mode. The discrepancy was fitted
+  at the prior mean and subtracted from the data, which held the posterior
+  at the prior mean.
+- The convergence diagnostic of `uq.calibrate` is the rank-normalized and
+  folded split R-hat of Vehtari et al. (2021), which detects chains of
+  different scales.
 
 ## [0.2.0] - 2026-09-27
 
@@ -98,8 +311,7 @@ All notable changes to this project are documented here. The format follows
   database. New functions `have_petsc()` and `petsc_version()`. A CI job
   builds with MPI and PETSc and runs the tests on 1 to 4 processes.
 - **Nuclear fuel performance module** (`dualmesh.fuel`, C++ module
-  `fuel_performance`), written from the published literature without the
-  source code of any other fuel performance code, with the architecture of
+  `fuel_performance`), with the architecture of
   BISON (one fully coupled Newton system with exact Jacobians), the 1.5D rod
   of TRANSURANUS and the finite volume option of OFFBEAT, and with all four methods available.
   `FuelRod` runs a rod through a power history in 1.5D (generalized plane

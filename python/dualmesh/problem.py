@@ -15,6 +15,48 @@ from . import _core
 SolveResult = _core.SolveResult
 
 
+def _solve_result_tables(self) -> dict:
+    """``newton``: one row per Newton iteration."""
+    from .tables import Table
+
+    return {"newton": Table(["load_step", "load_factor", "iteration", "residual_norm", "step_norm"], None, [[r.load_step, r.load_factor, r.iteration, r.residual_norm, r.step_norm] for r in self.history], title="Newton iterations")}
+
+
+def _solve_result_to_dict(self) -> dict:
+    """Whether the solve converged, its iteration counts and the history of
+    its Newton iterations."""
+    history = [dict(load_step=r.load_step, load_factor=r.load_factor, iteration=r.iteration, residual_norm=r.residual_norm, step_norm=r.step_norm) for r in self.history]
+    return {"study": "solve", "converged": bool(self.converged), "total_iterations": int(self.total_iterations), "linear_iterations": int(self.linear_iterations), "time_steps": int(self.time_steps), "rejected_steps": int(self.rejected_steps), "history": history}
+
+
+def _solve_result_summary(self) -> str:
+    """The outcome of the solve, as a table."""
+    from .console import solve_report
+
+    return solve_report(self)
+
+
+def _solve_result_write_json(self, path) -> None:
+    """Write :meth:`to_dict` to a JSON file."""
+    from .parameters import write_json_numbers
+
+    write_json_numbers(self.to_dict(), path)
+
+
+def _solve_result_write_csv(self, path, table: str | None = None) -> None:
+    """Write the Newton iterations (the table ``newton``) to a CSV file."""
+    from .tables import ResultTables
+
+    ResultTables.write_csv(self, path, table)
+
+
+SolveResult.tables = property(_solve_result_tables)
+SolveResult.to_dict = _solve_result_to_dict
+SolveResult.summary = _solve_result_summary
+SolveResult.write_json = _solve_result_write_json
+SolveResult.write_csv = _solve_result_write_csv
+
+
 def _as_function(value):
     """A number, an expression string, a compiled function or a callable, as
     something the extension accepts where it expects a function."""
@@ -61,6 +103,7 @@ def _solver_options(**kwargs) -> _core.SolverOptions:
         "preconditioner",
         "gmres_restart",
         "linear_tolerance",
+        "amg_strength_threshold",
         "linear_max_iterations",
         "petsc_options",
         "verbose",
@@ -70,13 +113,31 @@ def _solver_options(**kwargs) -> _core.SolverOptions:
         if key not in known:
             close = difflib.get_close_matches(key, known, n=1)
             hint = f" Did you mean '{close[0]}'?" if close else ""
-            raise TypeError(
-                f"Unknown solver option '{key}'.{hint} Known options: {', '.join(sorted(known))}."
-            )
+            raise TypeError(f"Unknown solver option '{key}'.{hint} Known options: {', '.join(sorted(known))}.")
         if key == "petsc_options":
             value = petsc_option_string(value)
         setattr(options, key, value)
     return options
+
+
+#: The options of the linear solver of a distributed problem.
+_DISTRIBUTED_LINEAR = ("linear_solver", "preconditioner", "subdomain_solver", "linear_tolerance", "linear_max_iterations", "petsc_options")
+
+
+def _distributed_options(options: dict):
+    """Split the solver options of a distributed problem into its linear
+    solver settings and the options of the nonlinear solver."""
+    linear = _core.DistributedOptions()
+    rest = dict(options)
+    solver = rest.pop("linear_solver", "automatic")
+    linear.linear_solver = "bicgstab" if solver == "automatic" else solver
+    linear.preconditioner = rest.pop("preconditioner", "two_level_schwarz")
+    linear.subdomain_solver = rest.pop("subdomain_solver", "ilu")
+    linear.linear_tolerance = float(rest.pop("linear_tolerance", 1e-10))
+    linear.linear_max_iterations = int(rest.pop("linear_max_iterations", 5000))
+    linear.petsc_options = petsc_option_string(rest.pop("petsc_options", None))
+    linear.verbose = bool(rest.get("verbose", False))
+    return linear, rest
 
 
 class Problem:
@@ -88,11 +149,11 @@ class Problem:
         The primal mesh of finite elements.
     method:
         The discretization.  ``"dmcdm"`` is the dual mesh control domain method
-        (the default); ``"fem"`` is the Galerkin finite element method;
+        (the default), and ``"fem"`` is the Galerkin finite element method.
         ``"hfvm"`` is the vertex-centred finite volume method, which uses the
-        same control domains as the dual mesh method but two-point gradients at
+        same control domains as the dual mesh method and two-point gradients at
         their interfaces (the half-control volume formulation of Reddy,
-        Chapter 3); ``"zfvm"`` is the cell-centred finite volume method, with
+        Chapter 3).  ``"zfvm"`` is the cell-centred finite volume method, with
         one unknown per element and one per boundary face (the zero-thickness
         control volume formulation, and the layout used by OpenFOAM).  The rest
         of the problem definition is identical for all four, which makes them
@@ -106,20 +167,48 @@ class Problem:
         ``"cartesian"``, ``"axisymmetric"`` (the integrals carry the factor
         :math:`2 \\pi r`, with :math:`r` the first coordinate), or
         ``"spherical"`` (factor :math:`4 \\pi r^2`, one-dimensional meshes).
+    distributed:
+        Whether the problem is split among the MPI processes.  The default,
+        ``None``, splits it when the script runs on more than one process
+        (``mpirun -n 4 python script.py``), so that one script runs serially
+        and in parallel.  ``True`` takes the distributed path on one process
+        as well, which gives the serial answer.  In a distributed problem
+        every process defines the same physics and objects, each assembles
+        the elements of its own part of the mesh, and :meth:`solve` takes the
+        distributed linear solvers (see :meth:`solve`).
+    partitioner:
+        How a distributed problem splits the mesh: ``"graph"`` (the default,
+        parts grown through the face connectivity), ``"metis"`` (METIS, when
+        the extension has it) or ``"recursive_coordinate_bisection"``.  See
+        :func:`dualmesh.partition_mesh`.
+    overlap:
+        Layers of elements by which each Schwarz subdomain of a distributed
+        problem reaches into its neighbours.  Default 1, which halves the
+        iteration count of the non-overlapping subdomains on the Poisson
+        problem.  More overlap lowers the iteration count and raises the cost
+        of each subdomain solve.
     """
 
-    def __init__(
-        self,
-        mesh,
-        method: str = "dmcdm",
-        coordinates: str = "cartesian",
-        boundary_gradient: str = "first_order",
-    ):
-        self._problem = _core.Problem(mesh, method, coordinates)
+    def __init__(self, mesh, method: str = "dmcdm", coordinates: str = "cartesian", boundary_gradient: str = "first_order", distributed: bool | None = None, partitioner: str = "graph", overlap: int = 1):
+        if distributed is None:
+            distributed = _core.mpi_size() > 1
+        self._distributed = None
+        if distributed:
+            options = _core.DistributedOptions()
+            options.partitioner = partitioner
+            options.overlap = overlap
+            self._distributed = _core.DistributedProblem(mesh, method, coordinates, options)
+            self._problem = self._distributed.local()
+            self._global_mesh = mesh
+            mesh = self._problem.mesh
+        else:
+            self._problem = _core.Problem(mesh, method, coordinates)
         self._problem.set_boundary_gradient(boundary_gradient)
         self._mesh = mesh
         self._objects: list = []  # keeps Python-defined objects alive
         self._init_postprocessing()
+        self._physics: dict = {}
+        self._couplings: dict = {}
         self.method = method
         self.coordinates = coordinates
         self.boundary_gradient = boundary_gradient
@@ -147,20 +236,6 @@ class Problem:
         """False when some object of the problem is defined in Python, which
         forces the assembly onto one thread."""
         return self._problem.thread_safe()
-
-    @classmethod
-    def _wrap(cls, core_problem, mesh, method: str, coordinates: str) -> Problem:
-        """Wrap an existing extension-level problem (used by the distributed
-        solver, which creates the rank-local problem itself)."""
-        self = cls.__new__(cls)
-        self._problem = core_problem
-        self._mesh = mesh
-        self._objects = []
-        self._init_postprocessing()
-        self.method = method
-        self.coordinates = coordinates
-        self.boundary_gradient = "first_order"
-        return self
 
     def _init_postprocessing(self) -> None:
         from .postprocessors import PostprocessorHistory
@@ -191,19 +266,13 @@ class Problem:
         return list(self._problem.boundary_entities(boundary))
 
     # ---- definition ------------------------------------------------------
-    def add_variable(
-        self,
-        name: str,
-        block: Sequence[str] = (),
-        initial_condition=None,
-        order: str = "mesh",
-    ) -> int:
+    def add_variable(self, name: str, block: Sequence[str] = (), initial_condition=None, order: str = "mesh") -> int:
         """Add a nodal unknown and return its index.
 
         ``order`` is the polynomial order the variable is interpolated with:
 
         * ``"mesh"`` (the default): the order of the elements, linear on a
-          linear mesh and quadratic on a quadratic one;
+          linear mesh and quadratic on a quadratic one.
         * ``"first"``: linear on every element.  On a quadratic mesh only the
           corner nodes carry the variable, and the values reported at the other
           nodes are those of the linear field.  This is the pressure of the
@@ -230,6 +299,8 @@ class Problem:
 
     def _add(self, adder, object_or_type, name, kwargs):
         if isinstance(object_or_type, str):
+            # A matrix (a list of rows of numbers) is passed row by row.
+            kwargs = {k: [float(x) for row in v for x in row] if isinstance(v, (list, tuple)) and v and all(isinstance(r, (list, tuple, np.ndarray)) for r in v) else v for k, v in kwargs.items()}
             return self._problem.add_object(object_or_type, name or "", **kwargs)
         if kwargs:
             raise TypeError("Extra parameters are not accepted when adding an object instance.")
@@ -248,8 +319,7 @@ class Problem:
         its boundary, so that a condition named after a side set acts on that
         side set::
 
-            problem.add_boundary_condition(
-                "Dirichlet_boundary_condition", "left", variable="u", value=0.0)
+            problem.add_boundary_condition("Dirichlet_boundary_condition", "left", variable="u", value=0.0)
 
         Several conditions on one boundary need different names and an
         explicit ``boundary``."""
@@ -259,13 +329,8 @@ class Problem:
                 known = set(mesh.sideset_names()) | set(mesh.nodeset_names())
                 if name in known:
                     parameters["boundary"] = [name]
-                elif re.search(
-                    r"^\s+boundary \([^)]*required", _core.describe_object(condition), re.M
-                ):
-                    raise ValueError(
-                        f"Boundary condition '{name}': give 'boundary', or name the condition "
-                        f"after a boundary of the mesh ({', '.join(sorted(known)) or 'none'})."
-                    )
+                elif re.search(r"^\s+boundary \([^)]*required", _core.describe_object(condition), re.M):
+                    raise ValueError(f"Boundary condition '{name}': give 'boundary', or name the condition after a boundary of the mesh ({', '.join(sorted(known)) or 'none'}).")
             category = _core.object_category(condition)
             if category == "nodal_boundary_condition":
                 return self._problem.add_object(condition, name or "", **parameters)
@@ -276,16 +341,82 @@ class Problem:
             return self._add(self._problem.add_nodal_bc, condition, name, parameters)
         return self._add(self._problem.add_integrated_bc, condition, name, parameters)
 
-    def add_material(self, material, name: str | None = None, **parameters):
-        """Add a material (a provider of named properties)."""
-        return self._add(self._problem.add_material, material, name, parameters)
+    def add_property(self, property_type, name: str | None = None, **parameters):
+        """Add a property object: an object that computes named properties at
+        the integration points of its blocks (e.g., a thermal conductivity,
+        a stress or the cross sections of a region), which the physics and
+        the kernels read by name::
+
+            problem.add_property("constant_property", "copper", block=["bar"], property_names=["thermal_conductivity"], property_values=[400.0])
+        """
+        return self._add(self._problem.add_property, property_type, name, parameters)
 
     def add_point_source(self, source="point_source", name: str | None = None, **parameters):
         """Add a concentrated nodal source (point force or point heat source)."""
         return self._add(self._problem.add_nodal_load, source, name, parameters)
 
+    def add_physics(self, physics: str, name: str | None = None, **parameters):
+        """Add a set of equations named in physical terms (see
+        :mod:`dualmesh.physics` and ``dualmesh list --category physics``).
+
+        The physics creates its variables now and generates its kernels and
+        materials when the problem is initialised.  It returns the physics,
+        whose :meth:`~dualmesh.physics.Physics.add_boundary_condition` and
+        :meth:`~dualmesh.physics.Physics.add_kernel` add conditions and terms
+        to its equations::
+
+            heat = problem.add_physics("heat_transfer", "heat", thermal_conductivity=20.0, heat_source=1.0e6)
+            heat.add_boundary_condition("Dirichlet_boundary_condition", "left", value=40.0)
+        """
+        from . import physics as _physics
+
+        name = name or physics
+        if name in self._physics or name in self._couplings:
+            raise _physics.InputError(f"The problem already has a physics or coupling named '{name}'.")
+        instance = _physics.create(physics, name, parameters)
+        if not isinstance(instance, _physics.Physics):
+            raise _physics.InputError(f"'{physics}' is a coupling. Add it with add_coupling.")
+        instance._attach(self)
+        self._physics[name] = instance
+        return instance
+
+    def add_coupling(self, coupling: str, name: str | None = None, **parameters):
+        """Couple two physics of the problem, e.g., ``thermal_expansion``,
+        ``Boussinesq_buoyancy`` or ``heat_convection`` (``dualmesh list
+        --category coupling``)::
+
+            problem.add_coupling("thermal_expansion", "expansion", heat_transfer="heat", solid_mechanics="solid", thermal_expansion_coefficient=1.2e-5, stress_free_temperature=293.15)
+        """
+        from . import physics as _physics
+
+        name = name or coupling
+        if name in self._physics or name in self._couplings:
+            raise _physics.InputError(f"The problem already has a physics or coupling named '{name}'.")
+        instance = _physics.create(coupling, name, parameters)
+        if not isinstance(instance, _physics.Coupling):
+            raise _physics.InputError(f"'{coupling}' is a physics. Add it with add_physics.")
+        if any(p._built for p in self._physics.values()):
+            raise _physics.InputError(f"Coupling '{name}': add the couplings before the problem is solved or initialised.")
+        instance._apply(self)
+        self._couplings[name] = instance
+        return instance
+
+    def _build_physics(self) -> None:
+        """Generate the objects of the physics and couplings not built yet."""
+        new = [p for p in getattr(self, "_physics", {}).values() if not p._built]
+        if not new:
+            return
+        for physics in new:
+            physics._build(self)
+            physics._built = True
+        for coupling in self._couplings.values():
+            if not getattr(coupling, "_built", False):
+                coupling._build(self)
+                coupling._built = True
+
     def initialize(self) -> None:
         """Resolve all objects (called automatically by :meth:`solve`)."""
+        self._build_physics()
         self._problem.initialize()
 
     # ---- solving ---------------------------------------------------------
@@ -301,13 +432,13 @@ class Problem:
         (default 10), ``load_factors`` (load
         stepping), ``linear_solver`` (``"automatic"``, the default, ``"lu"``,
         ``"bicgstab"``, ``"gmres"``, ``"cg"`` or ``"petsc"``),
-        ``preconditioner`` (``"ilu"``, the default, ``"ilut"``, ``"jacobi"``,
-        ``"none"``, or ``"pressure_mass_schur"`` for pressure-velocity flow),
+        ``preconditioner`` (``"ilu"``, the default, ``"ilut"``, ``"amg"``,
+        ``"jacobi"``, ``"none"``, or ``"pressure_mass_schur"`` for
+        pressure-velocity flow), ``amg_strength_threshold``,
         ``linear_tolerance``, ``linear_max_iterations``, ``gmres_restart``,
         ``petsc_options`` (PETSc's options, as a string or a dictionary, for
         ``linear_solver="petsc"``), ``verbose``, and ``error_on_divergence``.
-        A page listing every default with its reason is in preparation
-        (:doc:`/work_in_progress`).
+        :doc:`/user_guide/solving` explains every option and its default.
 
         With ``verbose=True`` the solve prints the build and the problem (every
         object with every parameter, defaults marked), the Newton iterations as
@@ -315,13 +446,27 @@ class Problem:
 
         ``"automatic"`` factorises the system directly where that is cheap,
         which is always in one dimension, up to :math:`10^5` unknowns in two
-        and up to a few thousand in three, and otherwise uses BiCGSTAB
-        preconditioned by an incomplete LU factorisation, falling back to the
-        direct solver if the iteration does not converge.  On a
-        three-dimensional mesh the iteration is typically ten to fifty times
-        faster than the direct solver, because the direct factors of a 3D
-        problem fill in far more.
+        and up to a few thousand in three.  Larger systems are solved by the
+        conjugate gradient method or BiCGSTAB preconditioned by algebraic
+        multigrid, then by BiCGSTAB with an incomplete LU factorisation, and
+        then by the direct solver, each one taken when the previous one does
+        not converge.  The factorisation and the multigrid hierarchy are kept
+        while the matrix does not change.
+
+        In a distributed problem (see the parameter ``distributed`` of the
+        class) the linear systems are solved by distributed Krylov methods:
+        ``linear_solver`` is ``"bicgstab"`` (the default for any matrix),
+        ``"cg"`` (symmetric positive definite matrices) or ``"petsc"`` (PETSc's
+        solvers, with ``petsc_options``), and ``preconditioner`` is
+        ``"two_level_schwarz"`` (the default: restricted additive Schwarz on
+        overlapping subdomains with a coarse level of one unknown per
+        subdomain and variable, whose iteration count does not grow with the
+        number of processes), ``"additive_schwarz"`` (without the coarse
+        level) or ``"jacobi"``.  ``subdomain_solver`` is ``"ilu"`` (the
+        default) or ``"lu"`` for the subdomain problems.  :doc:`/theory/parallel`
+        gives the method and the iteration counts.
         """
+        self._build_physics()
         verbose = bool(options.get("verbose", False))
         if verbose:
             from .console import header
@@ -329,7 +474,12 @@ class Problem:
             print(header("steady solve"))
             print(self.summary())
         start = time.perf_counter()
-        result = self._problem.solve_steady(_solver_options(**options))
+        if self._distributed is not None:
+            linear, options = _distributed_options(options)
+            self._distributed.set_linear_solver(linear)
+            result = self._distributed.solve_steady(_solver_options(**options))
+        else:
+            result = self._problem.solve_steady(_solver_options(**options))
         if self._postprocessors.postprocessors:
             self._postprocessors.evaluate(self, self.time)
         if verbose:
@@ -343,14 +493,14 @@ class Problem:
     def solve_transient(
         self,
         end_time: float,
-        dt: float,
+        time_step: float,
         start_time: float = 0.0,
-        theta: float = 1.0,
+        implicitness: float = 1.0,
         output_interval: int = 0,
         output_file_base: str = "",
         time_stepper: str = "fixed",
-        dt_min: float = 0.0,
-        dt_max: float = 0.0,
+        min_time_step: float = 0.0,
+        max_time_step: float = 0.0,
         growth_factor: float = 2.0,
         cutback_factor: float = 0.5,
         error_tolerance: float = 1.0e-3,
@@ -370,19 +520,22 @@ class Problem:
             + \theta R_{\text{steady}}(U^{n+1})
             + (1 - \theta) R_{\text{steady}}(U^{n}) = 0,
 
-        so ``theta=1`` is backward Euler, which is unconditionally stable and
-        first-order accurate; ``theta=0.5`` is the Crank-Nicolson, or midpoint,
-        rule, which is unconditionally stable and second-order accurate but can
-        ring on a sharp transient; and ``theta=0`` is forward Euler, which is
-        explicit in the steady terms and is stable only below a critical step.
+        where :math:`\theta` is the ``implicitness``.  ``implicitness=1`` is
+        the backward Euler method, which is unconditionally stable and
+        first-order accurate.  ``implicitness=0.5`` is the Crank-Nicolson, or
+        midpoint, rule, which is unconditionally stable and second-order
+        accurate, and which can oscillate after a sharp transient.
+        ``implicitness=0`` is the forward Euler method, which is explicit in
+        the steady terms and is stable only below a critical step.
 
         Parameters
         ----------
-        end_time, dt, start_time:
+        end_time, time_step, start_time:
             The interval to cover and the step to take.  With an adaptive
-            stepper ``dt`` is the first step rather than every step.
-        theta:
-            The weight above.
+            stepper ``time_step`` is the first step.
+        implicitness:
+            The weight :math:`\theta` above.  Default 1, the backward Euler
+            method, which is stable for every step.
         output_interval, output_file_base:
             Write a ``.vtu`` file every so many accepted steps.
         time_stepper:
@@ -394,8 +547,8 @@ class Problem:
             step and once with two half steps, and the difference between the
             two answers estimates the error of the coarse one by Richardson
             extrapolation.  A step whose relative error exceeds
-            ``error_tolerance`` is discarded and retried with a smaller step;
-            an accepted step is followed by the largest step the estimate
+            ``error_tolerance`` is discarded and retried with a smaller step,
+            and an accepted step is followed by the largest step the estimate
             allows.  The answer that is kept is the accurate one, from the two
             half steps.  The estimate costs three nonlinear solves per accepted
             step, so use this when accuracy in time is what matters.
@@ -406,13 +559,12 @@ class Problem:
             a larger one, a step that needed more than
             ``optimal_iterations + iteration_window`` by a smaller one, and a
             step that failed to converge is discarded and retried.  It costs
-            nothing beyond the solve and is the right choice when the
-            difficulty is the nonlinearity rather than the accuracy.
-        dt_min, dt_max:
-            Bounds on the step.  A run that has to go below ``dt_min`` is
-            reported as a failure rather than grinding to a halt.  Zero means
-            ``dt`` divided by one million, and the whole interval,
-            respectively.
+            nothing beyond the solve and suits a problem whose difficulty lies
+            in the nonlinearity.
+        min_time_step, max_time_step:
+            Bounds on the step.  A run that has to go below ``min_time_step``
+            is reported as a failure.  Zero means ``time_step`` divided by one
+            million, and the whole interval, respectively.
         growth_factor, cutback_factor:
             The most the step may grow between accepted steps, and the factor
             applied after a rejected one.
@@ -426,7 +578,7 @@ class Problem:
             How many times in a row a step may be rejected before the run is
             declared a failure.
         **options:
-            Passed to the nonlinear solver of every step; see :meth:`solve`.
+            Passed to the nonlinear solver of every step (see :meth:`solve`).
 
         Returns
         -------
@@ -438,19 +590,20 @@ class Problem:
         transient = _core.TransientOptions()
         transient.start_time = start_time
         transient.end_time = end_time
-        transient.dt = dt
-        transient.theta = theta
+        transient.dt = time_step
+        transient.theta = implicitness
         transient.output_interval = output_interval
         transient.output_file_base = output_file_base
         transient.time_stepper = time_stepper
-        transient.dt_min = dt_min
-        transient.dt_max = dt_max
+        transient.dt_min = min_time_step
+        transient.dt_max = max_time_step
         transient.growth_factor = growth_factor
         transient.cutback_factor = cutback_factor
         transient.error_tolerance = error_tolerance
         transient.optimal_iterations = optimal_iterations
         transient.iteration_window = iteration_window
         transient.max_rejected_steps = max_rejected_steps
+        self._build_physics()
         verbose = bool(options.get("verbose", False))
         if verbose:
             from .console import header
@@ -461,7 +614,12 @@ class Problem:
         if self._postprocessors.postprocessors:
             self.time = start_time
             self._postprocessors.evaluate(self, start_time)
-        result = self._problem.solve_transient(transient, _solver_options(**options))
+        if self._distributed is not None:
+            linear, options = _distributed_options(options)
+            self._distributed.set_linear_solver(linear)
+            result = self._distributed.solve_transient(transient, _solver_options(**options))
+        else:
+            result = self._problem.solve_transient(transient, _solver_options(**options))
         if verbose:
             from .console import solve_report
 
@@ -469,6 +627,23 @@ class Problem:
             if self._postprocessors.postprocessors:
                 print("Post-processors\n" + self.postprocessor_table())
         return result
+
+    def solve_eigenvalue(self, method: str = "krylov", tolerance: float = 1.0e-10, max_iterations: int = 2000, normalization: float = 1.0):
+        """Compute the effective multiplication factor and the fundamental
+        mode of the neutron_diffusion physics of the problem (see
+        :mod:`dualmesh.eigenvalue`).
+
+        ``method`` is ``"krylov"`` (the Arnoldi method, the default, which
+        converges in far fewer operator applications than the power
+        iteration when the dominance ratio is close to one) or ``"power"``
+        (the power iteration).  ``tolerance`` is the relative tolerance on
+        the eigenvalue.  The fluxes are scaled so that the total production
+        of fission neutrons, the integral of the sum over the groups of
+        :math:`\\nu\\Sigma_{f,g} \\phi_g`, equals ``normalization``.  Returns
+        an :class:`~dualmesh.eigenvalue.EigenvalueResult`."""
+        from .eigenvalue import solve_eigenvalue
+
+        return solve_eigenvalue(self, method=method, tolerance=tolerance, max_iterations=max_iterations, normalization=normalization)
 
     def set_time_step_callback(self, callback) -> None:
         """Call ``callback(time, problem)`` after every converged time step
@@ -499,6 +674,8 @@ class Problem:
         :mod:`dualmesh.postprocessors`)."""
         from .postprocessors import create
 
+        if self._distributed is not None:
+            raise ValueError("Post-processors are not available in a distributed problem yet. Compute the quantity from gathered_values, or run the problem on one process.")
         pp = create(postprocessor_type, name, **parameters)
         self._postprocessors.add(pp)
         self._install_step_callback()
@@ -546,8 +723,8 @@ class Problem:
     def values(self, variable: str) -> np.ndarray:
         """Values of a variable, one per degree of freedom entity.
 
-        For every method but ``"zfvm"`` these are nodal values indexed by node;
-        for ``"zfvm"`` they are cell values followed by boundary face values.
+        For every method except ``"zfvm"`` these are nodal values indexed by
+        node.  For ``"zfvm"`` they are cell values followed by boundary face values.
         Use :meth:`entity_points` for the matching coordinates.
         """
         return self._problem.values(variable)
@@ -556,16 +733,13 @@ class Problem:
         self._problem.set_values(variable, list(np.asarray(values, dtype=float).ravel()))
 
     def set_element_field(self, name: str, values) -> None:
-        """Set a named field with one value per element, which materials read
+        """Set a named field with one value per element, which the property objects read
         by name (for instance the accumulated gaseous swelling of
         ``UO2_volumetric_swelling_eigenstrain``).  Setting it again replaces
-        the values; the materials see the new values at the next solve."""
+        the values, and the property objects see the new values at the next solve."""
         values = np.asarray(values, dtype=float).ravel()
         if len(values) != self._mesh.num_elements:
-            raise ValueError(
-                f"Element field '{name}': {len(values)} values for {self._mesh.num_elements} "
-                "elements."
-            )
+            raise ValueError(f"Element field '{name}': {len(values)} values for {self._mesh.num_elements} elements.")
         self._problem.set_element_field(name, list(values))
 
     def element_field(self, name: str) -> np.ndarray:
@@ -621,10 +795,7 @@ class Problem:
         distances = np.linalg.norm(points - point, axis=1)
         index = int(np.argmin(distances))
         if distances[index] > tolerance:
-            raise ValueError(
-                f"No node within {tolerance} of {point.tolist()}; nearest is at "
-                f"{points[index].tolist()} (distance {distances[index]:.3e})."
-            )
+            raise ValueError(f"No node within {tolerance} of {point.tolist()}; nearest is at {points[index].tolist()} (distance {distances[index]:.3e}).")
         return index
 
     def gradient_at_centroids(self, variable: str) -> np.ndarray:
@@ -646,7 +817,7 @@ class Problem:
         element.  The indicator of an element is the square root of the
         integral over it of the squared difference between the two gradients.
         The recovered gradient is the more accurate of the two, so their
-        difference measures the error in the computed one; this is the
+        difference measures the error in the computed one.  This is the
         estimator of Zienkiewicz and Zhu (1987).
 
         It is an indicator, not a bound.  It says which elements carry most of
@@ -655,9 +826,7 @@ class Problem:
         """
         return np.asarray(self._problem.error_indicator(variable))
 
-    def error_norms(
-        self, variable: str, exact, exact_gradient=None, quadrature_points: int = 0
-    ) -> tuple[float, float]:
+    def error_norms(self, variable: str, exact, exact_gradient=None, quadrature_points: int = 0) -> tuple[float, float]:
         r"""The error of the computed field against a known exact solution.
 
         Returns ``(l2, h1_seminorm)``: the :math:`L^2` norm of
@@ -669,7 +838,7 @@ class Problem:
         ``exact`` is anything a parameter accepts: a number, an expression
         string, a :class:`~dualmesh.ParsedFunction` or a Python callable of
         ``(x, y, z, t)``.  ``exact_gradient`` is a sequence of up to three of
-        the same, one per component; missing components are taken as zero, and
+        the same, one per component.  Missing components are taken as zero, and
         without it the seminorm is returned as ``nan``.
 
         :math:`u_h` is the field the method actually represents: the element
@@ -682,12 +851,7 @@ class Problem:
         the error) and include the coordinate factor.  The sum runs on several
         threads unless one of the functions is a Python callable.
         """
-        l2, h1 = self._problem.error_norms(
-            variable,
-            _as_function(exact),
-            None if exact_gradient is None else [_as_function(g) for g in exact_gradient],
-            quadrature_points,
-        )
+        l2, h1 = self._problem.error_norms(variable, _as_function(exact), None if exact_gradient is None else [_as_function(g) for g in exact_gradient], quadrature_points)
         return float(l2), float(h1)
 
     def linear_system(self):
@@ -709,21 +873,95 @@ class Problem:
             import scipy.sparse as sparse
         except ImportError as error:  # pragma: no cover - depends on the environment
             raise ImportError("Problem.linear_system needs SciPy: pip install scipy") from error
+        self._build_physics()
         residual, values, indices, indptr = self._problem._linear_system()
         n = residual.shape[0]
         jacobian = sparse.csc_matrix((values, indices, indptr), shape=(n, n))
         return residual, jacobian
 
+    def boundary_measure(self, boundary) -> float:
+        r"""The measure of one side set, or of a list of side sets: the length of
+        the boundary in two dimensions and its area in three.  In axisymmetric and
+        spherical coordinates the measure includes the coordinate factor, i.e., it
+        is the area :math:`\int 2 \pi r \, \mathrm{d}s` of the surface of
+        revolution.  It is the area :math:`A` over which the ``total_force`` of a
+        ``traction_boundary_condition`` is spread."""
+        names = [boundary] if isinstance(boundary, str) else list(boundary)
+        return self._problem.boundary_measure(names)
+
     def integrate(self, variable: str) -> float:
+        """The integral of a variable over the domain, with the coordinate
+        factor of the problem."""
         return self._problem.integrate(variable)
+
+    def element_integrals(self, variable: str) -> np.ndarray:
+        """The integral of a variable over every element (one value per
+        element, with the coordinate factor of the problem), e.g., for the
+        average of a flux over a fuel assembly."""
+        return np.asarray(self._problem.element_integrals(variable), dtype=float)
+
+    def element_volumes(self) -> np.ndarray:
+        """The volume of every element, with the coordinate factor of the
+        problem (e.g., :math:`2 \\pi r` in axisymmetric coordinates)."""
+        return np.asarray(self._problem.element_integrals(""), dtype=float)
 
     def boundary_flux_integral(self, kernel_name: str, boundary: str) -> float:
         return self._problem.boundary_flux_integral(kernel_name, boundary)
 
     # ---- output ----------------------------------------------------------
     def write_vtu(self, filename: str, cell_properties: Sequence[str] = ()) -> None:
-        """Write a VTK unstructured grid (readable by ParaView and VisIt)."""
+        """Write a VTK unstructured grid (readable by ParaView and VisIt).
+
+        A distributed problem writes one ``.vtu`` file per process and a
+        ``.pvtu`` index, which ParaView and VisIt open as one data set."""
+        if self._distributed is not None:
+            base = filename[:-4] if filename.endswith((".vtu", ".pvtu")) else filename
+            base = base[:-1] if base.endswith(".") else base
+            self._distributed.write_vtu(base, list(cell_properties))
+            return
         self._problem.write_vtu(filename, list(cell_properties))
+
+    # ---- distributed problems ----------------------------------------------
+    @property
+    def is_distributed(self) -> bool:
+        """Whether the problem is split among MPI processes."""
+        return self._distributed is not None
+
+    @property
+    def rank(self) -> int:
+        """This process's rank (0 for a serial problem)."""
+        return self._distributed.rank() if self._distributed is not None else 0
+
+    @property
+    def num_ranks(self) -> int:
+        """The number of processes the problem is split among (1 for a serial
+        problem)."""
+        return self._distributed.num_ranks() if self._distributed is not None else 1
+
+    @property
+    def num_owned_dofs(self) -> int:
+        """Degrees of freedom this process owns (all of them in a serial
+        problem)."""
+        return self._distributed.num_owned_dofs() if self._distributed is not None else self.num_active_dofs()
+
+    @property
+    def num_global_dofs(self) -> int:
+        """Degrees of freedom of the whole problem."""
+        return self._distributed.num_global_dofs() if self._distributed is not None else self.num_active_dofs()
+
+    def gathered_values(self, variable: str) -> np.ndarray:
+        """Values of a variable at every node of the whole mesh, on every
+        process.  A distributed problem allocates one vector of the global
+        size per process, so this suits tests and small problems, and a large
+        run writes its result with :meth:`write_vtu`.  For a serial problem it
+        equals :meth:`values`."""
+        if self._distributed is not None:
+            return np.asarray(self._distributed.gathered_values(variable))
+        return self.values(variable)
+
+    def partition_summary(self) -> str:
+        """One line describing the partition of a distributed problem."""
+        return self._distributed.summary() if self._distributed is not None else "serial problem (one process)"
 
     def write_mesh_file(self, filename: str, file_format: str | None = None) -> None:
         """Write the mesh and all nodal fields through meshio (Exodus, VTU, ...)."""
@@ -737,9 +975,7 @@ class Problem:
 
     def write_csv(self, filename: str, variables: Sequence[str] = ()) -> None:
         """Write nodal coordinates and values as comma-separated values."""
-        names = list(variables) or [
-            self._problem.variable_name(i) for i in range(self._problem.num_variables)
-        ]
+        names = list(variables) or [self._problem.variable_name(i) for i in range(self._problem.num_variables)]
         points = np.asarray(self._mesh.points())
         columns = [points[:, i] for i in range(self._mesh.dimension)]
         columns += [self.values(name) for name in names]
@@ -752,6 +988,7 @@ class Problem:
         when it was not set.  See :mod:`dualmesh.console`."""
         from .console import problem_report
 
+        self._build_physics()
         return problem_report(self, parameters=parameters)
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid

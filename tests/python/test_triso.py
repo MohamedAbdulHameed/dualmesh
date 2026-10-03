@@ -13,9 +13,7 @@ from dualmesh.fuel import triso
 
 def lame_tangential(r, ri, ro, pi, po):
     """Tangential stress in a thick sphere under inner and outer pressure."""
-    return (pi * ri**3 * (2 * r**3 + ro**3) - po * ro**3 * (2 * r**3 + ri**3)) / (
-        2 * r**3 * (ro**3 - ri**3)
-    )
+    return (pi * ri**3 * (2 * r**3 + ro**3) - po * ro**3 * (2 * r**3 + ri**3)) / (2 * r**3 * (ro**3 - ri**3))
 
 
 def lame_displacement(r, ri, ro, pi, po, e, nu):
@@ -46,19 +44,17 @@ def mpa(values):
 
 def test_case1_and_case2_match_lame():
     p, h = triso.crp6_case("1")
-    r = triso.solve_particle(p, h)
-    assert mpa(r.inner_tangential_stress["SiC"][0]) == pytest.approx(
-        lame_tangential(350, 350, 385, 25, 0.1), abs=0.01
-    )
+    r = triso.TrisoParticleModel(particle=p, history=h).run()
+    assert mpa(r.inner_tangential_stress["SiC"][0]) == pytest.approx(lame_tangential(350, 350, 385, 25, 0.1), abs=0.01)
     assert lame_tangential(350, 350, 385, 25, 0.1) == pytest.approx(125.19, abs=0.005)
     p, h = triso.crp6_case("2")
-    r = triso.solve_particle(p, h)
+    r = triso.TrisoParticleModel(particle=p, history=h).run()
     assert mpa(r.inner_tangential_stress["IPyC"][0]) == pytest.approx(50.20, abs=0.01)
 
 
 def test_case3_bonded_shells():
     p, h = triso.crp6_case("3")
-    r = triso.solve_particle(p, h)
+    r = triso.TrisoParticleModel(particle=p, history=h).run()
     radial, ipyc, sic = bonded_shells(0.0)
     assert (radial, ipyc, sic) == pytest.approx((-18.76, 8.78, 104.38), abs=0.01)
     assert mpa(r.interface_radial_stress["IPyC/SiC"][0]) == pytest.approx(radial, abs=0.01)
@@ -68,7 +64,7 @@ def test_case3_bonded_shells():
 
 def test_case4a_constant_shrinkage_without_creep():
     p, h = triso.crp6_case("4a")
-    r = triso.solve_particle(p, h, steps=10)
+    r = triso.TrisoParticleModel(particle=p, history=h, numerics=triso.ParticleNumerics(steps=10)).run()
     radial, ipyc, sic = bonded_shells(-0.015)
     assert mpa(r.inner_tangential_stress["IPyC"][-1]) == pytest.approx(ipyc, abs=0.1)
     assert mpa(r.inner_tangential_stress["SiC"][-1]) == pytest.approx(sic, abs=0.1)
@@ -80,17 +76,15 @@ def test_case4a_constant_shrinkage_without_creep():
 
 def test_case4b_creep_relaxes_ipyc_to_hydrostatic_pressure():
     p, h = triso.crp6_case("4b")
-    r = triso.solve_particle(p, h, steps=200)
+    r = triso.TrisoParticleModel(particle=p, history=h, numerics=triso.ParticleNumerics(steps=200)).run()
     assert mpa(r.inner_tangential_stress["IPyC"][-1]) == pytest.approx(-25.0, abs=0.02)
     assert mpa(r.interface_radial_stress["IPyC/SiC"][-1]) == pytest.approx(-25.0, abs=0.02)
-    assert mpa(r.inner_tangential_stress["SiC"][-1]) == pytest.approx(
-        lame_tangential(390, 390, 425, 25, 0.1), abs=0.02
-    )
+    assert mpa(r.inner_tangential_stress["SiC"][-1]) == pytest.approx(lame_tangential(390, 390, 425, 25, 0.1), abs=0.02)
 
 
 def test_case4c_steady_state_of_creep_and_shrinkage():
     p, h = triso.crp6_case("4c")
-    r = triso.solve_particle(p, h, steps=200)
+    r = triso.TrisoParticleModel(particle=p, history=h, numerics=triso.ParticleNumerics(steps=200)).run()
     m = (390 / 350) ** 3
     gdot, k = -0.005, 2.71e-4
     ipyc = -2 * m * gdot / k - 25.0  # Eq. 9.28 with rigid SiC
@@ -104,7 +98,7 @@ def test_case4c_steady_state_of_creep_and_shrinkage():
 def test_case4d_quasi_equilibrium():
     """Eq. 9.30 and 9.31 of the report, with the relaxation dose C = 0.17e25."""
     p, h = triso.crp6_case("4d")
-    r = triso.solve_particle(p, h, steps=300)
+    r = triso.TrisoParticleModel(particle=p, history=h, numerics=triso.ParticleNumerics(steps=300)).run()
     s = triso.CRP6_SWELLING["a"]
     m, k, c = (390 / 350) ** 3, 2.71e-4, 0.17
 
@@ -121,14 +115,11 @@ def test_case4d_quasi_equilibrium():
     assert mpa(r.minimum_tangential_stress("SiC")) == pytest.approx(-41.8, abs=0.5)
 
 
-@pytest.mark.parametrize(
-    "case, ipyc_max, sic_min, sic_end",
-    [("5", 182.3, -307.9, -45.3), ("6", 167.8, -288.5, 32.1), ("7", 174.0, -299.6, 9.4)],
-)
+@pytest.mark.parametrize("case, ipyc_max, sic_min, sic_end", [("5", 182.3, -307.9, -45.3), ("6", 167.8, -288.5, 32.1), ("7", 174.0, -299.6, 9.4)])
 def test_cases_5_to_7_regression(case, ipyc_max, sic_min, sic_end):
     """Regression values, inside the spread of the eight CRP-6 codes."""
     p, h = triso.crp6_case(case)
-    r = triso.solve_particle(p, h, steps=300)
+    r = triso.TrisoParticleModel(particle=p, history=h, numerics=triso.ParticleNumerics(steps=300)).run()
     assert mpa(r.maximum_tangential_stress("IPyC")) == pytest.approx(ipyc_max, abs=0.3)
     assert mpa(r.minimum_tangential_stress("SiC")) == pytest.approx(sic_min, abs=0.3)
     assert mpa(r.inner_tangential_stress["SiC"][-1]) == pytest.approx(sic_end, abs=0.3)
@@ -140,7 +131,7 @@ def test_case8_temperature_cycles():
     assert h.temperature_at(0.29e25) == pytest.approx(1273.0)
     assert h.temperature_at(0.30e25) == pytest.approx(873.0)
     assert h.pressure_at(2.99e25) == pytest.approx(26.13e6)
-    r = triso.solve_particle(p, h, steps=600)
+    r = triso.TrisoParticleModel(particle=p, history=h, numerics=triso.ParticleNumerics(steps=600)).run()
     assert mpa(r.maximum_tangential_stress("IPyC")) == pytest.approx(229.7, abs=1.0)
     assert mpa(r.minimum_tangential_stress("SiC")) == pytest.approx(-417.7, abs=1.0)
 
@@ -156,22 +147,15 @@ def test_creep_correlation_and_swelling_integral():
         radial_m, tangential_m = s.strain(f - h)
         radial_rate, tangential_rate = s.rate(f)
         assert (radial_p - radial_m) / (2 * h) == pytest.approx(radial_rate, rel=1e-5), name
-        assert (tangential_p - tangential_m) / (2 * h) == pytest.approx(
-            tangential_rate, rel=1e-5
-        ), name
+        assert (tangential_p - tangential_m) / (2 * h) == pytest.approx(tangential_rate, rel=1e-5), name
 
 
 def test_mesh_and_step_convergence():
     p, h = triso.crp6_case("4d")
-    fine = triso.solve_particle(p, h, steps=600, elements_per_layer=32)
-    coarse = triso.solve_particle(p, h, steps=150, elements_per_layer=16)
+    fine = triso.TrisoParticleModel(particle=p, history=h, numerics=triso.ParticleNumerics(steps=600, elements_per_layer=32)).run()
+    coarse = triso.TrisoParticleModel(particle=p, history=h, numerics=triso.ParticleNumerics(steps=150, elements_per_layer=16)).run()
     assert np.max(np.abs(mpa(fine.inner_tangential_stress["IPyC"]))) > 100
-    diff = np.max(
-        np.abs(
-            mpa(fine.inner_tangential_stress["IPyC"][::4])
-            - mpa(coarse.inner_tangential_stress["IPyC"])
-        )
-    )
+    diff = np.max(np.abs(mpa(fine.inner_tangential_stress["IPyC"][::4]) - mpa(coarse.inner_tangential_stress["IPyC"])))
     assert diff < 0.3
 
 
@@ -187,12 +171,12 @@ def test_weibull_uniform_stress():
 
 def test_input_validation():
     with pytest.raises(ValueError, match="swelling"):
-        triso.CoatingLayer("IPyC", 40e-6, 3.96e10, 0.33, swelling="z")
+        triso.CoatingLayer(name="IPyC", thickness=40e-6, youngs_modulus=3.96e10, poissons_ratio=0.33, swelling="z")
     with pytest.raises(ValueError, match="thickness"):
-        triso.CoatingLayer("IPyC", 0.0, 3.96e10, 0.33)
-    layer = triso.CoatingLayer("IPyC", 40e-6, 3.96e10, 0.33)
+        triso.CoatingLayer(name="IPyC", thickness=0.0, youngs_modulus=3.96e10, poissons_ratio=0.33)
+    layer = triso.CoatingLayer(name="IPyC", thickness=40e-6, youngs_modulus=3.96e10, poissons_ratio=0.33)
     with pytest.raises(ValueError, match="unique"):
-        triso.TrisoParticle(500e-6, 100e-6, (layer, dataclasses.replace(layer)))
+        triso.TrisoParticle(kernel_diameter=500e-6, buffer_thickness=100e-6, layers=(layer, dataclasses.replace(layer)))
     with pytest.raises(ValueError, match="case"):
         triso.crp6_case("9")
 
@@ -201,22 +185,16 @@ def test_monte_carlo_reduces_to_deterministic_particle():
     p, h = triso.crp6_case("1")
     h = dataclasses.replace(h, internal_pressure=200e6)
     s0, m = 4.0e8, 8.0
-    mean, error = triso.monte_carlo_failure_probability(
-        p, h, characteristic_strength=s0, modulus=m, samples=3
-    )
-    r = triso.solve_particle(p, h)
+    mean, error = triso.monte_carlo_failure_probability(p, h, characteristic_strength=s0, modulus=m, samples=3)
+    r = triso.TrisoParticleModel(particle=p, history=h).run()
     sic = r.layer_of_point == 0
     single = triso.weibull_failure_probability(r.radius[sic], r.tangential_stress[sic], s0, m)
     assert 0.0 < single < 1.0
     assert mean == pytest.approx(single, rel=1e-12)
     assert error == 0.0
-    spread, _ = triso.monte_carlo_failure_probability(
-        p, h, characteristic_strength=s0, modulus=m, samples=40, thickness_sd={"SiC": 4e-6}
-    )
+    spread, _ = triso.monte_carlo_failure_probability(p, h, characteristic_strength=s0, modulus=m, samples=40, thickness_standard_deviation={"SiC": 4e-6})
     # Thinner shells carry more stress, and the failure probability is convex
     # in the thickness, so scatter raises the mean failure fraction.
     assert spread > single
     with pytest.raises(ValueError, match="unknown layers"):
-        triso.monte_carlo_failure_probability(
-            p, h, characteristic_strength=s0, modulus=m, thickness_sd={"OPyC": 1e-6}
-        )
+        triso.monte_carlo_failure_probability(p, h, characteristic_strength=s0, modulus=m, thickness_standard_deviation={"OPyC": 1e-6})

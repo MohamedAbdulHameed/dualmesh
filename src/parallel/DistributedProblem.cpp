@@ -48,6 +48,13 @@ DistributedProblem::DistributedProblem(const Mesh & global_mesh,
   const auto elements = _partition.elementsOf(_comm.rank());
   _mesh = std::make_shared<Mesh>(subMesh(global_mesh, elements, _local_to_global));
   _local = std::make_unique<Problem>(_mesh, method, coord);
+  // The local mesh holds only part of each side set, so a quantity defined by
+  // the measure of a whole side set (the total_force of a traction) takes it
+  // from the global mesh, which every rank has.
+  std::map<std::string, double> measures;
+  for (const auto & [name, sides] : global_mesh.sidesets())
+    measures[name] = sidesetMeasure(global_mesh, {name}, coord);
+  _local->setGlobalBoundaryMeasures(std::move(measures));
 
   _owned_node.assign(_local_to_global.size(), 0);
   std::vector<std::vector<Index>> shared(_comm.size());
@@ -72,6 +79,18 @@ DistributedProblem::DistributedProblem(const Mesh & global_mesh,
     throw InputError("The overlap of the Schwarz subdomains must be zero or positive.");
   if (_options.preconditioner != "jacobi" && _comm.size() > 1)
     buildOverlap(global_mesh, elements);
+}
+
+void
+DistributedProblem::setLinearSolver(const DistributedOptions & options)
+{
+  _options.linear_solver = options.linear_solver;
+  _options.preconditioner = options.preconditioner;
+  _options.subdomain_solver = options.subdomain_solver;
+  _options.linear_tolerance = options.linear_tolerance;
+  _options.linear_max_iterations = options.linear_max_iterations;
+  _options.petsc_options = options.petsc_options;
+  _options.verbose = options.verbose;
 }
 
 void

@@ -26,37 +26,34 @@ A worked example::
 
     import dualmesh as dm
 
+
     def build(mesh):
         problem = dm.Problem(mesh)
         problem.add_variable("u")
         problem.add_kernel("diffusion", "diffusion", variable="u")
         problem.add_kernel("body_force", "source", variable="u", value=1.0)
-        problem.add_boundary_condition(
-            "Dirichlet_boundary_condition", "walls", variable="u",
-            boundary=mesh.sideset_names(), value=0.0)
+        problem.add_boundary_condition("Dirichlet_boundary_condition", "walls", variable="u", boundary=mesh.sideset_names(), value=0.0)
         return problem
 
-    problem, mesh = dm.solve_with_adaptive_refinement(
-        build, initial_mesh, variable="u", num_cycles=4)
+
+    result = dm.solve_with_adaptive_refinement(build, initial_mesh, variable="u", num_cycles=4)
+    print(result.summary())
+    problem = result.problem  # the problem on the finest mesh
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass, field
 from typing import Callable
 
 import numpy as np
 
 from . import _core
 from .problem import Problem
+from .tables import ResultTables
 
-__all__ = [
-    "mark_by_fraction",
-    "mark_by_error_fraction",
-    "mark_by_threshold",
-    "refine_marked",
-    "solve_with_adaptive_refinement",
-]
+__all__ = ["AdaptivityResult", "mark_by_fraction", "mark_by_error_fraction", "mark_by_threshold", "refine_marked", "solve_with_adaptive_refinement"]
 
 
 def refine_marked(mesh, marked: Sequence[bool]):
@@ -121,15 +118,40 @@ def mark_by_threshold(indicators, threshold: float) -> np.ndarray:
     return np.asarray(indicators, dtype=float).ravel() > float(threshold)
 
 
-def solve_with_adaptive_refinement(
-    build_problem: Callable[[object], Problem],
-    mesh,
-    variable: str,
-    num_cycles: int = 3,
-    marker: Callable[[np.ndarray], np.ndarray] = mark_by_error_fraction,
-    max_elements: int | None = None,
-    callback: Callable[[int, Problem, np.ndarray], None] | None = None,
-):
+@dataclass
+class AdaptivityResult(ResultTables):
+    """The outcome of :func:`solve_with_adaptive_refinement`: the problem
+    solved on the finest mesh, that mesh, and one record per cycle (the
+    number of elements and unknowns, and the estimated error, the square
+    root of the sum of the squared indicators)."""
+
+    problem: Problem
+    mesh: object
+    num_elements: list = field(default_factory=list)
+    num_dofs: list = field(default_factory=list)
+    estimated_error: list = field(default_factory=list)
+
+    @property
+    def tables(self) -> dict:
+        """``cycles``: one row per cycle of refinement."""
+        from .tables import Table
+
+        return {"cycles": Table(["cycle", "num_elements", "num_dofs", "estimated_error"], None, [[i, e, d, eta] for i, (e, d, eta) in enumerate(zip(self.num_elements, self.num_dofs, self.estimated_error))], title=f"Adaptive refinement, {len(self.num_elements)} cycles")}
+
+    def summary(self) -> str:
+        return self.tables["cycles"].format()
+
+    def to_dict(self) -> dict:
+        return {"study": "adaptive_refinement", "num_elements": list(self.num_elements), "num_dofs": list(self.num_dofs), "estimated_error": list(self.estimated_error)}
+
+    def write_json(self, path) -> None:
+        """Write :meth:`to_dict` to a JSON file."""
+        from .parameters import write_json_numbers
+
+        write_json_numbers(self.to_dict(), path)
+
+
+def solve_with_adaptive_refinement(build_problem: Callable[[object], Problem], mesh, variable: str, num_cycles: int = 3, marker: Callable[[np.ndarray], np.ndarray] = mark_by_error_fraction, max_elements: int | None = None, callback: Callable[[int, Problem, np.ndarray], None] | None = None):
     """Solve, estimate, mark and refine, ``num_cycles`` times.
 
     ``build_problem`` is called with a mesh and must return a solved-ready
@@ -142,15 +164,20 @@ def solve_with_adaptive_refinement(
     every solve, which is where a calculation writes output or records a
     convergence history.
 
-    Returns ``(problem, mesh)`` for the last, finest mesh.
+    Returns an :class:`AdaptivityResult` with the problem on the last,
+    finest mesh, that mesh and the history of the cycles.
     """
     if num_cycles < 1:
         raise ValueError("num_cycles must be at least one.")
-    problem = None
+    result = AdaptivityResult(problem=None, mesh=mesh)
     for cycle in range(num_cycles):
         problem = build_problem(mesh)
         problem.solve()
         indicators = np.asarray(problem.error_indicator(variable))
+        result.problem, result.mesh = problem, mesh
+        result.num_elements.append(int(mesh.num_elements))
+        result.num_dofs.append(int(problem.num_active_dofs()))
+        result.estimated_error.append(float(np.sqrt(np.sum(indicators**2))))
         if callback is not None:
             callback(cycle, problem, indicators)
         if cycle == num_cycles - 1:
@@ -161,4 +188,4 @@ def solve_with_adaptive_refinement(
         if not marked.any():
             break
         mesh, _ = refine_marked(mesh, marked)
-    return problem, mesh
+    return result

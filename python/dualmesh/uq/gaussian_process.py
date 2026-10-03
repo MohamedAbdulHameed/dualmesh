@@ -4,7 +4,7 @@ r"""Gaussian process (kriging) surrogate of a model.
 The output is modelled as :math:`y(x) = f(x)^T \beta + z(x)`, with a trend
 :math:`f` (a constant or a linear function) and a stationary Gaussian process
 :math:`z` of variance :math:`\sigma^2` and correlation :math:`R(x, x')`
-(Sacks et al. 1989; Santner, Williams and Notz 2003).  With the correlation
+(Sacks et al. 1989, Eqs. (7) and (8)).  With the correlation
 matrix :math:`\mathbf R` of the training points (plus a nugget
 :math:`\tau \mathbf I` for numerical noise), the generalised least-squares
 trend :math:`\hat\beta = (F^T R^{-1} F)^{-1} F^T R^{-1} y` and the
@@ -23,7 +23,7 @@ with its exact gradient from several starting points.
 
 A vector output (a time series) is standardised column by column and reduced
 to its principal components, which keep the fraction ``variance_kept`` of the
-variance of the training outputs; each component score has its own process.
+variance of the training outputs.  Each component score has its own process.
 The variance of the discarded components is added to the predictive variance,
 so that no part of the output is predicted with false confidence.
 """
@@ -134,14 +134,7 @@ class _Process:
             starts.append(s)
         best = None
         for s in starts:
-            res = optimize.minimize(
-                self._nll,
-                s,
-                jac=True,
-                method="L-BFGS-B",
-                bounds=bounds,
-                options={"maxiter": 500},
-            )
+            res = optimize.minimize(self._nll, s, jac=True, method="L-BFGS-B", bounds=bounds, options={"maxiter": 500})
             if best is None or res.fun < best.fun:
                 best = res
         theta = best.x
@@ -202,11 +195,11 @@ class _Process:
 
 
 class GaussianProcess:
-    """A Gaussian process (kriging) surrogate; see the module documentation.
+    """A Gaussian process (kriging) surrogate.  See the module documentation.
 
     ``kernel``
-        ``matern52`` (default; twice differentiable, the usual choice for
-        computer models, Wu et al. 2018 and Che et al. 2021),
+        ``matern52`` (default, twice differentiable, one of the Matern kernels
+        that Wu et al. 2018, Table 1, list as widely used),
         ``matern32`` or ``squared_exponential``.
     ``trend``
         ``constant`` (ordinary kriging, default) or ``linear``.
@@ -221,15 +214,7 @@ class GaussianProcess:
         Starting points of the likelihood maximisation.  Default 5.
     """
 
-    def __init__(
-        self,
-        kernel="matern52",
-        trend="constant",
-        nugget="fit",
-        variance_kept=0.999,
-        restarts=5,
-        seed=0,
-    ):
+    def __init__(self, kernel="matern52", trend="constant", nugget="fit", variance_kept=0.999, restarts=5, seed=0):
         if kernel not in KERNELS:
             raise ValueError(f"GaussianProcess: kernel must be one of {', '.join(KERNELS)}.")
         if trend not in ("constant", "linear"):
@@ -285,7 +270,7 @@ class GaussianProcess:
         """Fit to training data.
 
         ``fit(runs)`` uses the runs of :func:`propagate` (all the outputs, or
-        those named by ``output``, a name or a list of names); inputs with a
+        those named by ``output``, a name or a list of names).  Inputs with a
         log-normal or log-uniform distribution enter by their logarithm, in
         which such models are usually smooth.  In both forms the inputs are
         scaled to the unit cube by the range of the training points.  ``fit(x, y)`` takes an
@@ -307,19 +292,13 @@ class GaussianProcess:
             from .distributions import LogNormal, LogUniform
 
             self.input_names = runs.names
-            self._log = np.array(
-                [isinstance(d, (LogNormal, LogUniform)) for d in runs.distributions.values()]
-            )
+            self._log = np.array([isinstance(d, (LogNormal, LogUniform)) for d in runs.distributions.values()])
             z = self._transform(runs.x[ok])
             self._lo = z.min(axis=0)
             self._span = np.where(z.max(axis=0) > self._lo, z.max(axis=0) - self._lo, 1.0)
             u = (z - self._lo) / self._span
             # One output predicts as an array, several as a dict.
-            flat = (
-                self._pack(next(iter(outs.values()))[ok])
-                if len(outs) == 1
-                else self._pack({k: v[ok] for k, v in outs.items()})
-            )
+            flat = self._pack(next(iter(outs.values()))[ok]) if len(outs) == 1 else self._pack({k: v[ok] for k, v in outs.items()})
             self.output_names = list(outs)
         else:
             if y is None:
@@ -356,10 +335,7 @@ class GaussianProcess:
             resid = z - scores @ self._V.T
             self._discarded = np.mean(resid * resid, axis=0)
         rng = np.random.default_rng(self.seed)
-        self._processes = [
-            _Process(self.kernel, self.trend, self.nugget, self.restarts, rng).fit(u, scores[:, c])
-            for c in range(scores.shape[1])
-        ]
+        self._processes = [_Process(self.kernel, self.trend, self.nugget, self.restarts, rng).fit(u, scores[:, c]) for c in range(scores.shape[1])]
         self._u_train = u
         self._flat_train = flat
         self._fitted = True
@@ -389,17 +365,17 @@ class GaussianProcess:
         mean = self._mu + (t @ self._V.T) * self._sd
         return mean, (np.column_stack(variances) if var else None)
 
-    def predict(self, x, return_std=False, return_cov=False):
+    def predict(self, x, return_standard_deviation=False, return_cov=False):
         """Predict at the inputs ``x`` (n, k), the input values themselves
         (also for a fit to runs).  Returns
-        the mean, and with ``return_std`` the standard deviation, or with
+        the mean, and with ``return_standard_deviation`` the standard deviation, or with
         ``return_cov`` the covariance between the output components at each
-        point (n, m, m); both include the variance of the discarded
+        point (n, m, m).  Both include the variance of the discarded
         principal components."""
         self._check()
         u = self._to_unit(x)
-        mean, pv = self._predict_flat(u, return_std or return_cov)
-        if not (return_std or return_cov):
+        mean, pv = self._predict_flat(u, return_standard_deviation or return_cov)
+        if not (return_standard_deviation or return_cov):
             return self._unpack(mean)
         sd2 = self._sd * self._sd
         if return_cov:
@@ -429,20 +405,18 @@ class GaussianProcess:
         flat = self._mu + z * self._sd
         if self._layout is None and self._yshape == ():
             return flat[..., 0]
-        return (
-            np.stack([self._unpack(f) for f in flat])
-            if self._layout is None
-            else {k: np.stack([self._unpack(f)[k] for f in flat]) for k, _ in self._layout}
-        )
+        return np.stack([self._unpack(f) for f in flat]) if self._layout is None else {k: np.stack([self._unpack(f)[k] for f in flat]) for k, _ in self._layout}
 
     # ---- diagnostics ---------------------------------------------------------------
     def leave_one_out(self) -> dict:
         """Leave-one-out cross-validation in closed form (no refits).
 
-        Returns a dict with ``prediction`` and ``std`` at each training point
+        Returns a dict with ``prediction`` and ``standard_deviation`` at each training point
         (flattened outputs, (n, m)), ``q2`` (the predictivity coefficient
         :math:`Q^2 = 1 - \\sum (y_i - \\hat y_{-i})^2 / \\sum (y_i - \\bar
-        y)^2` per output component; above about 0.9 is a good surrogate) and
+        y)^2` per output component, the predictivity coefficient of Marrel et
+        al. (2009) on the left-out points.  They regard a surrogate with
+        :math:`Q^2` below 0.7 as a poor approximation) and
         ``standardized_residuals`` (should lie within :math:`\\pm 3`)."""
         self._check()
         if self._loo is None:
@@ -460,7 +434,7 @@ class GaussianProcess:
             with np.errstate(invalid="ignore", divide="ignore"):
                 q2 = np.where(sst > 0, 1.0 - sse / sst, np.nan)
                 zres = (y - pred) / np.sqrt(var)
-            self._loo = dict(prediction=pred, std=np.sqrt(var), q2=q2, standardized_residuals=zres)
+            self._loo = dict(prediction=pred, standard_deviation=np.sqrt(var), q2=q2, standardized_residuals=zres)
         return self._loo
 
     @property
@@ -477,7 +451,4 @@ class GaussianProcess:
     def __repr__(self):
         if not self._fitted:
             return f"GaussianProcess(kernel={self.kernel!r}, not fitted)"
-        return (
-            f"GaussianProcess(kernel={self.kernel!r}, {len(self._u_train)} points, "
-            f"{self.components} component(s))"
-        )
+        return f"GaussianProcess(kernel={self.kernel!r}, {len(self._u_train)} points, {self.components} component(s))"

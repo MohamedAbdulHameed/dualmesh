@@ -1,7 +1,7 @@
 Solving
 =======
 
-Once the variables, kernels, boundary conditions and materials are in place, the
+Once the variables, kernels, boundary conditions and property objects are in place, the
 problem is solved either once, for a steady state, or repeatedly in time.  This
 chapter explains both, and every option each takes.
 
@@ -131,8 +131,11 @@ comparison.
 
 ``"automatic"``
    The default.  It factorises the system directly where the factorisation is
-   inexpensive and iterates otherwise.  If the iteration fails, it reverts to
-   the direct solver, so that it is at least as robust as ``"lu"``.
+   inexpensive and iterates otherwise.  The iteration is the conjugate
+   gradient method for a symmetric matrix and BiCGSTAB otherwise, both
+   preconditioned by algebraic multigrid (``"amg"`` below).  If the
+   iteration fails, BiCGSTAB with ILU(0) is tried, and then the direct solver,
+   so that ``"automatic"`` is at least as robust as ``"lu"``.
 
    The threshold between the two follows from the fill-in of a sparse
    factorisation.
@@ -144,7 +147,10 @@ comparison.
    costs a few matrix-vector products, each :math:`O(n)`, per iteration.
    ``"automatic"`` therefore factorises every one-dimensional system, two-dimensional
    systems up to :math:`10^5` unknowns, and three-dimensional systems up to a
-   few thousand, and otherwise runs BiCGSTAB with an ILU(0) preconditioner.
+   few thousand, and otherwise iterates with the multigrid preconditioner.
+   A factorisation, and a multigrid hierarchy, is kept and reused for as long
+   as the matrix does not change, e.g., in the second Newton iteration of a
+   linear problem.
 
    The difference is large in three dimensions.  For the three-dimensional
    elasticity problem of the verification suite on a :math:`12^3`-cell
@@ -178,15 +184,77 @@ comparison.
    the coupling from node :math:`I` to node :math:`J` need not match the
    coupling from :math:`J` to :math:`I`.  Selecting ``"cg"`` with one of those
    methods produces a failure to converge, and the error message states this
-   cause explicitly.
+   cause explicitly.  With the ``"amg"`` preconditioner the symmetry of the
+   matrix is checked before the iteration starts.
 
 The Krylov methods take ``linear_tolerance`` (default :math:`10^{-12}`, relative
 to the right-hand side), ``linear_max_iterations`` (default 5000) and
 ``preconditioner``:
 
+``"amg"``
+   Algebraic multigrid by smoothed aggregation [VanekMandelBrezina1996]_, for
+   ``"cg"``, ``"bicgstab"`` and ``"automatic"``.  The method builds a sequence
+   of coarser problems from the matrix alone.  The nodes are grouped into
+   aggregates of strongly connected neighbours, and on each aggregate the
+   *near null space* of the operator is represented exactly by the coarse
+   basis.  The near null space consists of the vectors on which the operator
+   nearly vanishes: the constant for a diffusion equation, and the three
+   translations and three rotations of a rigid body (two and one in two
+   dimensions) for elasticity.  dualmesh builds it from the displacement
+   variables of the stress property objects of the problem and the constant of
+   every other variable.  The tentative basis is smoothed by one damped Jacobi
+   step, the coarse operator is the Galerkin product :math:`P^T A P`, the
+   smoother of every level is a Chebyshev polynomial of degree 2
+   [AdamsBrezinaHuTuminaro2003]_, and the coarsest problem is factorised.  The
+   number of iterations then grows only slowly with the number of unknowns,
+   while that of ILU(0) grows roughly in proportion to the number of nodes
+   along an edge of the mesh.  ``amg_strength_threshold`` (default 0.03) sets
+   which connections join nodes into aggregates: a larger value gives smaller
+   aggregates, fewer iterations and a more expensive hierarchy.
+
+   A stiff system cannot be solved to the default relative residual of
+   :math:`10^{-12}`.  For a steel structure (:math:`E = 200\ \mathrm{GPa}`)
+   the round-off of the residual itself is of order :math:`10^{-9}` to
+   :math:`10^{-8}` of its first value, and the direct solver stops at the same
+   level.  The multigrid iteration detects when its true residual stops
+   decreasing, and its result is accepted when the residual has fallen by six
+   orders of magnitude.  Newton's method corrects the remainder.
+
+   :numref:`fig-wrench-solver-time` shows the solve of the wrench of
+   :doc:`../tutorials/wrench` on five meshes, from 23 340 to 339 867
+   unknowns.  On the mesh of the tutorial (56 787 unknowns) the two solvers
+   give the same largest deflection to ten significant digits, and the
+   multigrid solve takes 2.2 s and the direct one 3.0 s.  Between 123 498 and 214 134 unknowns the time of the direct
+   solve grows from 31.9 s to 119 s, i.e., as :math:`n^{2.4}`, and that of the
+   multigrid solve from 5.4 s to 14.5 s.  The conjugate gradient method needs
+   45 iterations on four of the meshes and 55 on the fifth
+   (:numref:`fig-wrench-solver-iterations`), independently of the size.  The time
+   includes the assembly of the Jacobian, which takes about half of the
+   multigrid solve on the finest mesh.  The script is
+   ``verification/benchmarks/solvers/run_wrench_scaling.py``.
+
+   .. _fig-wrench-solver-time:
+
+   .. figure:: ../_static/figures/solvers/wrench_solver_time.png
+      :width: 85%
+      :alt: Time of the solve of the wrench against the number of unknowns.
+
+      Wall time of the solve of the wrench (one assembly of the Jacobian, the
+      linear solve and one evaluation of the residual) against the number of
+      unknowns, with quadratic tetrahedra, in two threads.
+
+   .. _fig-wrench-solver-iterations:
+
+   .. figure:: ../_static/figures/solvers/wrench_solver_iterations.png
+      :width: 85%
+      :alt: Conjugate gradient iterations against the number of unknowns.
+
+      Conjugate gradient iterations of the multigrid-preconditioned solve of
+      the wrench against the number of unknowns.
+
 ``"ilu"``
-   The default: the incomplete LU factorisation without fill, ILU(0)
-   [Saad2003]_.  Its factors have exactly the sparsity pattern of the matrix, so
+   The default of ``"bicgstab"`` and ``"gmres"``: the incomplete LU
+   factorisation without fill, ILU(0) [Saad2003]_.  Its factors have exactly the sparsity pattern of the matrix, so
    it costs about as much as a few matrix-vector products to build and no more
    memory than the matrix.
 
@@ -213,8 +281,7 @@ to the right-hand side), ``linear_max_iterations`` (default 5000) and
 
    .. code-block:: python
 
-      problem.solve(linear_solver="petsc",
-                    petsc_options={"ksp_type": "cg", "pc_type": "gamg"})
+      problem.solve(linear_solver="petsc", petsc_options={"ksp_type": "cg", "pc_type": "gamg"})
 
    Without options the default is GMRES preconditioned by a sparse LU
    factorisation, which converges in one iteration and so behaves like
@@ -238,12 +305,9 @@ to the right-hand side), ``linear_max_iterations`` (default 5000) and
 
    .. code-block:: python
 
-      options = ("-ksp_type fgmres -pc_type fieldsplit "
-                 "-pc_fieldsplit_0_fields 0,1 -pc_fieldsplit_1_fields 2 "
-                 "-pc_fieldsplit_type schur -pc_fieldsplit_schur_fact_type upper "
-                 "-pc_fieldsplit_schur_precondition selfp "
-                 "-fieldsplit_0_ksp_type preonly -fieldsplit_0_pc_type hypre "
-                 "-fieldsplit_1_ksp_type preonly -fieldsplit_1_pc_type hypre")
+      split = "-pc_type fieldsplit -pc_fieldsplit_0_fields 0,1 -pc_fieldsplit_1_fields 2 -pc_fieldsplit_type schur -pc_fieldsplit_schur_fact_type upper -pc_fieldsplit_schur_precondition selfp"
+      blocks = "-fieldsplit_0_ksp_type preonly -fieldsplit_0_pc_type hypre -fieldsplit_1_ksp_type preonly -fieldsplit_1_pc_type hypre"
+      options = f"-ksp_type fgmres {split} {blocks}"
 
    On the cavity at :math:`Re = 100` on a :math:`64 \times 64` mesh it takes
    about 58 iterations per Newton step, on one process and on four.  The same
@@ -354,7 +418,7 @@ The transient solve
 
 .. code-block:: python
 
-   result = problem.solve_transient(end_time=100.0, dt=1.0, theta=0.5)
+   result = problem.solve_transient(end_time=100.0, time_step=1.0, implicitness=0.5)
 
 Time is discretised with the :math:`\theta` method.  Writing :math:`M` for the
 storage term and :math:`R_{\text{steady}}` for everything else, one step solves
@@ -365,7 +429,8 @@ storage term and :math:`R_{\text{steady}}` for everything else, one step solves
    + \theta R_{\text{steady}}(U^{n+1}, t^{n+1})
    + (1 - \theta) R_{\text{steady}}(U^{n}, t^{n}) = 0 .
 
-``theta`` selects the member of the family.
+where :math:`\theta` is the parameter ``implicitness``, which selects the
+member of the family.
 
 :math:`\theta = 1`
    Backward Euler, the default.  First-order accurate in time and
@@ -395,7 +460,7 @@ Choosing the time step
 ``time_stepper`` selects how :math:`\Delta t` is chosen after the first step.
 
 ``"fixed"``
-   The default.  The step stays at ``dt``, except that the last step is
+   The default.  The step stays at ``time_step``, except that the last step is
    shortened so that the run ends exactly at ``end_time``.
 
 ``"error"``
@@ -425,8 +490,8 @@ Choosing the time step
    the concern.
 
 ``growth_factor`` (default 2.0) limits the growth of the step in one update,
-and ``dt_min`` and ``dt_max`` set its lower and upper bounds.  ``dt_max`` at
-its default of zero means no upper bound.
+and ``min_time_step`` and ``max_time_step`` set its lower and upper bounds.
+``max_time_step`` at its default of zero means no upper bound.
 
 Rejecting and retrying a step
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -437,11 +502,11 @@ is discarded entirely (the state is restored to the beginning of the step) and
 retried with the step multiplied by ``cutback_factor`` (default 0.5).
 
 ``max_rejected_steps`` (default 10) limits how many consecutive rejections are
-allowed before the run stops, and ``dt_min`` sets the other limit: a step that
+allowed before the run stops, and ``min_time_step`` sets the other limit: a step that
 has been cut back below it cannot be cut back again.  In either case the run
 ends with an error stating that the transient solve failed, so that the step is
 never reduced indefinitely.  ``result.rejected_steps`` counts the rejections,
-and ``result.step_history`` lists every accepted ``(time, dt)`` pair, whose plot
+and ``result.step_history`` lists every accepted ``(time, time_step)`` pair, whose plot
 shows the behaviour of the step controller.
 
 A worked example
@@ -463,19 +528,12 @@ step itself.
    problem.add_variable("temperature")
    problem.set_values("temperature", np.full(mesh.num_nodes, 300.0))
 
-   problem.add_kernel("heat_conduction", "conduction",
-                      variable="temperature", thermal_conductivity=20.0)
-   problem.add_kernel("heat_conduction_time_derivative", "storage",
-                      variable="temperature", density=7800.0, specific_heat=460.0)
-   problem.add_boundary_condition("Dirichlet_boundary_condition", "hot", variable="temperature",
-                                  boundary="left", value=3000.0)
-   problem.add_boundary_condition("radiative_heat_flux_boundary_condition", "radiation",
-                                  variable="temperature", boundary="right",
-                                  emissivity=0.9, ambient_temperature=300.0)
+   problem.add_kernel("heat_conduction", "conduction", variable="temperature", thermal_conductivity=20.0)
+   problem.add_kernel("heat_conduction_time_derivative", "storage", variable="temperature", density=7800.0, specific_heat=460.0)
+   problem.add_boundary_condition("Dirichlet_boundary_condition", "hot", variable="temperature", boundary="left", value=3000.0)
+   problem.add_boundary_condition("radiative_heat_flux_boundary_condition", "radiation", variable="temperature", boundary="right", emissivity=0.9, ambient_temperature=300.0)
 
-   result = problem.solve_transient(
-       end_time=400.0, dt=400.0, theta=1.0,
-       time_stepper="iteration", max_iterations=2, cutback_factor=0.25)
+   result = problem.solve_transient(end_time=400.0, time_step=400.0, implicitness=1.0, time_stepper="iteration", max_iterations=2, cutback_factor=0.25)
 
    print(result.converged, result.rejected_steps, len(result.step_history))
 
@@ -498,11 +556,24 @@ corrects it.  The most common messages are the following.
    ``linear_solver="cg"`` was used with a method that does not produce one.  Use
    the default, ``"automatic"``, or ``"bicgstab"``, ``"gmres"`` or ``"lu"``.
 
+*"The system is singular: the variable ... on a part of the mesh ... is not held by any boundary condition"*
+   A group of coupled unknowns has no condition that fixes its level, so
+   that a constant (a temperature, a pressure) or a rigid body motion can be
+   added to it without changing the equations, and the solution is not
+   unique.  Typical causes are a body without supports, a region that has no
+   temperature condition and exchanges no heat with the rest of the problem,
+   and an imported mesh whose parts do not share their nodes.  The message
+   gives the number of nodes and the extent of the part.  Before the first
+   linear solve, the code splits the Jacobian into its groups of coupled
+   unknowns and applies it to the near null space vectors of each group (see
+   ``"amg"`` above), so that a Robin condition, a reaction term or a time
+   derivative, which make the system nonsingular, never trigger the message.
+
 *"transient solve failed"*
-   The step was cut back to ``dt_min`` or rejected ``max_rejected_steps`` times
+   The step was cut back to ``min_time_step`` or rejected ``max_rejected_steps`` times
    in a row and still did not converge.  Some problems have no bounded solution,
    in which case no step size leads to convergence, so check the physics before
-   lowering ``dt_min`` any further.
+   lowering ``min_time_step`` any further.
 
 *"degenerate element (zero Jacobian determinant)"*
    An element has zero or inverted volume.  Call ``mesh.fix_orientation()``,
@@ -519,6 +590,6 @@ Running in parallel
 Both solves thread their assembly loops automatically.
 :meth:`~dualmesh.Problem.set_num_threads` sets the count and
 :meth:`~dualmesh.Problem.effective_threads` reports what will actually be used,
-which is one whenever any part of the problem is defined in Python.  Distributed
-runs use :class:`~dualmesh.DistributedProblem`, and both forms of parallelism
-are described in :doc:`/theory/parallel`.
+which is one whenever any part of the problem is defined in Python.  A script
+run with ``mpirun`` on several processes splits the problem among them, and
+both forms of parallelism are described in :doc:`/theory/parallel`.

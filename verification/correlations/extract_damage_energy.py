@@ -33,20 +33,12 @@ def _float(field: str) -> float:
 
 
 def read_mf3(path: Path, mt: int):
-    lines = [
-        line
-        for line in path.read_text().splitlines()
-        if len(line) >= 75 and line[70:72].strip() == "3" and line[72:75].strip() == str(mt)
-    ]
+    lines = [line for line in path.read_text().splitlines() if len(line) >= 75 and line[70:72].strip() == "3" and line[72:75].strip() == str(mt)]
     control = lines[1]
     nr, npoints = int(control[44:55]), int(control[55:66])
     values = []
     for line in lines[2 + (2 * nr + 5) // 6 :]:
-        values += [
-            _float(line[11 * k : 11 * k + 11])
-            for k in range(6)
-            if line[11 * k : 11 * k + 11].strip()
-        ]
+        values += [_float(line[11 * k : 11 * k + 11]) for k in range(6) if line[11 * k : 11 * k + 11].strip()]
     values = np.array(values[: 2 * npoints])
     return values[0::2], values[1::2]
 
