@@ -48,7 +48,7 @@ jobs:
           CIBW_TEST_COMMAND: >-
             pytest {project}/tests/python -q -x
             --ignore={project}/tests/python/test_mms.py
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: wheels-${{ matrix.os }}
           path: wheelhouse/*.whl
@@ -74,7 +74,7 @@ jobs:
           if any(f"v{v}" != tag for v in versions.values()):
               sys.exit(f"tag {tag} does not match the package version {versions}")
       - run: pipx run build --sdist
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sdist
           path: dist/*.tar.gz
