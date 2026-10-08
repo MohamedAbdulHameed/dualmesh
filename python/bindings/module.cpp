@@ -19,6 +19,8 @@
 #include "dualmesh/parallel/DistributedProblem.h"
 
 #include <array>
+#include <cstdio>
+#include <iostream>
 #include <map>
 #include <sstream>
 #include <type_traits>
@@ -1249,8 +1251,9 @@ PYBIND11_MODULE(_core, m)
       .def_readwrite("end_time", &TransientOptions::end_time)
       .def_readwrite("dt", &TransientOptions::dt)
       .def_readwrite("theta", &TransientOptions::theta)
-      .def_readwrite("output_interval", &TransientOptions::output_interval)
+      .def_readwrite("output_times", &TransientOptions::output_times)
       .def_readwrite("output_file_base", &TransientOptions::output_file_base)
+      .def_readwrite("output_fields", &TransientOptions::output_fields)
       .def_readwrite("time_stepper", &TransientOptions::time_stepper)
       .def_readwrite("dt_min", &TransientOptions::dt_min)
       .def_readwrite("dt_max", &TransientOptions::dt_max)
@@ -1276,6 +1279,16 @@ PYBIND11_MODULE(_core, m)
       .def_readonly("rejected_steps", &SolveResult::rejected_steps)
       .def_readonly("step_history", &SolveResult::step_history)
       .def_readonly("history", &SolveResult::history);
+
+  m.def(
+      "flush_output",
+      []()
+      {
+        std::fflush(stdout);
+        std::cout.flush();
+      },
+      "Write the progress lines that the library holds in its buffers, so that "
+      "they come before the next lines of Python.");
 
   // ---- structured registry introspection (used to generate the docs) -----
   m.def(
@@ -1422,7 +1435,8 @@ PYBIND11_MODULE(_core, m)
       .def("write_vtu",
            &DistributedProblem::writeVTU,
            py::arg("base"),
-           py::arg("cell_properties") = std::vector<std::string>{})
+           py::arg("cell_properties") = std::vector<std::string>{},
+           py::arg("fields") = std::vector<std::string>{})
       .def("summary", &DistributedProblem::summary);
 
   // ---- problem -----------------------------------------------------------
@@ -1516,6 +1530,12 @@ PYBIND11_MODULE(_core, m)
                        ? std::string("first")
                        : std::string("mesh");
           },
+          py::arg("name"))
+      .def("set_variable_unit", &Problem::setVariableUnit, py::arg("name"), py::arg("unit"))
+      .def(
+          "variable_unit",
+          [](const Problem & p, const std::string & name)
+          { return p.variable(p.variableIndex(name)).unit; },
           py::arg("name"))
       .def("has_mixed_order", &Problem::hasMixedOrder)
       .def("add_function",
@@ -1633,6 +1653,21 @@ PYBIND11_MODULE(_core, m)
                    f(t, py::cast(&pb, py::return_value_policy::reference));
                  });
            })
+      .def("set_output_callback",
+           [](Problem & p, const py::object & f)
+           {
+             if (f.is_none())
+             {
+               p.setOutputCallback(nullptr);
+               return;
+             }
+             p.setOutputCallback(
+                 [f](int index)
+                 {
+                   py::gil_scoped_acquire gil;
+                   f(index);
+                 });
+           })
       .def("reactions", &Problem::reactions)
       .def("total_reaction", &Problem::totalReaction)
       .def("sample", &Problem::sample)
@@ -1684,7 +1719,8 @@ PYBIND11_MODULE(_core, m)
       .def("write_vtu",
            &Problem::writeVTU,
            py::arg("filename"),
-           py::arg("cell_properties") = std::vector<std::string>{})
+           py::arg("cell_properties") = std::vector<std::string>{},
+           py::arg("fields") = std::vector<std::string>{})
       .def("summary", &Problem::summary)
       .def("object_names", &Problem::objectNames)
       .def("object", &Problem::object, py::arg("name"))

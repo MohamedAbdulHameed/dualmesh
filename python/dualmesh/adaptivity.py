@@ -50,6 +50,7 @@ from typing import Callable
 import numpy as np
 
 from . import _core
+from .console import header, inner_study, report_level
 from .problem import Problem
 from .tables import ResultTables
 
@@ -151,7 +152,7 @@ class AdaptivityResult(ResultTables):
         write_json_numbers(self.to_dict(), path)
 
 
-def solve_with_adaptive_refinement(build_problem: Callable[[object], Problem], mesh, variable: str, num_cycles: int = 3, marker: Callable[[np.ndarray], np.ndarray] = mark_by_error_fraction, max_elements: int | None = None, callback: Callable[[int, Problem, np.ndarray], None] | None = None):
+def solve_with_adaptive_refinement(build_problem: Callable[[object], Problem], mesh, variable: str, num_cycles: int = 3, marker: Callable[[np.ndarray], np.ndarray] = mark_by_error_fraction, max_elements: int | None = None, callback: Callable[[int, Problem, np.ndarray], None] | None = None, report: str = "full"):
     """Solve, estimate, mark and refine, ``num_cycles`` times.
 
     ``build_problem`` is called with a mesh and must return a solved-ready
@@ -164,20 +165,33 @@ def solve_with_adaptive_refinement(build_problem: Callable[[object], Problem], m
     every solve, which is where a calculation writes output or records a
     convergence history.
 
+    ``report`` sets what the study prints: ``"full"`` (the default: a line
+    for each cycle and the summary), ``"summary"`` (one line that names the
+    study, then the summary) or ``"none"``.  The solves inside the study
+    print nothing.
+
     Returns an :class:`AdaptivityResult` with the problem on the last,
     finest mesh, that mesh and the history of the cycles.
     """
     if num_cycles < 1:
         raise ValueError("num_cycles must be at least one.")
+    level = report_level(report, "solve_with_adaptive_refinement")
+    if level == "full":
+        print(header("adaptive refinement"))
+    if level != "none":
+        print(f"dualmesh adaptive refinement of {variable}: at most {num_cycles} cycles", flush=True)
     result = AdaptivityResult(problem=None, mesh=mesh)
     for cycle in range(num_cycles):
-        problem = build_problem(mesh)
-        problem.solve()
+        with inner_study():
+            problem = build_problem(mesh)
+            problem.solve()
         indicators = np.asarray(problem.error_indicator(variable))
         result.problem, result.mesh = problem, mesh
         result.num_elements.append(int(mesh.num_elements))
         result.num_dofs.append(int(problem.num_active_dofs()))
         result.estimated_error.append(float(np.sqrt(np.sum(indicators**2))))
+        if level == "full":
+            print(f"  cycle {cycle}: {mesh.num_elements} elements, {problem.num_active_dofs()} unknowns, estimated error {result.estimated_error[-1]:.6g}", flush=True)
         if callback is not None:
             callback(cycle, problem, indicators)
         if cycle == num_cycles - 1:
@@ -188,4 +202,6 @@ def solve_with_adaptive_refinement(build_problem: Callable[[object], Problem], m
         if not marked.any():
             break
         mesh, _ = refine_marked(mesh, marked)
+    if level != "none":
+        print(result.summary())
     return result

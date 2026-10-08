@@ -21,17 +21,17 @@ def _rod(factors=None, models=None, days=0.2, q=25e3, **numerics):
     history = fuel.PowerHistory(linear_heat_rate=[1e3, q, q], time=[0, 3600, days * DAY])
     rod = fuel.FuelRod(
         geometry,
-        fuel.UO2Fuel(),
+        fuel.UO2Fuel(grain_radius=5.0e-6),
         fuel.ZircaloyCladding(),
         fuel.FillGas(pressure=2.0e6, plenum_volume=0.15e-6),
         coolant,
         history,
         models=models,
         numerics=fuel.RodNumerics(model="1.5d", mesh=fuel.RodMesh(num_axial_elements=2, num_axial_slices=1), max_time_step=10 * DAY, **numerics),
-        output=fuel.RodOutput(print_input=False, print_steps=False),
+        output=fuel.RodOutput(),
         factors=factors,
     )
-    return rod.run()
+    return rod.run(report="none")
 
 
 THERMAL = fuel.RodModels(mechanics=False, fission_gas_release="none")

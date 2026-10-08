@@ -324,6 +324,85 @@ BISON with the upper-limit diffusivity (case B) and with the CASL
 diffusivity that BISON used.  The rod pressure at power is 0.22 to 0.27 MPa
 (7 to 9 %) above the measurement, about as much as BISON's 0.20 MPa.
 
+Uncertainty of IFA-677.1 rod 1
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The script ``verification/benchmarks/doped_uo2/run_ifa677_uq.py`` propagates
+the nine uncertain inputs of Che et al. [Che2018]_, Table 2, through rod 1:
+the linear heat rate, the densification, the gas and contact terms of the
+gap conductance, the fuel conductivity, the grain radius, and three
+parameters of the fission gas model (the intragranular diffusivity, the
+re-solution and the grain-boundary diffusivity). These are the inputs that
+the BISON study of the same rod varies. The study runs the rod 64 times on a
+scrambled Sobol' design. The outputs are the release at 29.85 MWd/kgU and the
+median difference between the calculated centerline temperature and the
+middle of the measured band of the upper thermocouple.
+
+.. list-table:: IFA-677.1 rod 1, uncertainty of the results (64 runs)
+   :header-rows: 1
+   :widths: 40 15 15 30
+
+   * - Quantity
+     - Mean
+     - Standard deviation
+     - 95% of the runs
+   * - Release at 29.85 MWd/kgU (%)
+     - 9.2
+     - 7.8
+     - 1.7 to 29.6
+   * - Upper thermocouple, median difference (K)
+     - :math:`-48.6`
+     - 58.2
+     - :math:`-158.8` to 57.0
+
+The measured release, 22.1%, lies inside the band of the runs, and so does a
+thermocouple difference of zero. The nominal calculation (8.0% and
+:math:`-53` K) is near the mean of each band. The release band is skewed: the
+release changes by factors with the fission gas parameters, so a few runs
+release much more gas than the mean.
+
+The Sobol' indices come from a Gaussian process of the 64 runs. The process
+models the logarithm of the release, which it predicts with a leave-one-out
+:math:`Q^2` of 0.99, and the temperature difference with 0.996. The table
+gives the first-order and total indices with their 95% intervals. The inputs
+not listed have total indices below 0.01 for both outputs.
+
+.. list-table:: IFA-677.1 rod 1, Sobol' indices (first order, total)
+   :header-rows: 1
+   :widths: 40 30 30
+
+   * - Input
+     - Release
+     - Thermocouple difference
+   * - Intragranular diffusivity
+     - 0.28, 0.46
+     - 0.00, 0.00
+   * - Grain radius
+     - 0.27, 0.37
+     - 0.00, 0.00
+   * - Re-solution
+     - 0.21, 0.36
+     - 0.01, 0.01
+   * - Fuel thermal conductivity
+     - 0.02, 0.05
+     - 0.67, 0.67
+   * - Linear heat rate
+     - 0.00, 0.01
+     - 0.19, 0.19
+   * - Gas term of the gap conductance
+     - 0.01, 0.01
+     - 0.13, 0.13
+
+Three parameters of the fission gas model decide the uncertainty of the
+release, and their total indices are larger than their first-order indices:
+they act together. The release depends mainly on the diffusivity divided by
+the square of the grain radius, so the data of one rod cannot separate the
+two. Between 32 and 64 runs, the share of the diffusivity fell from 0.34 to
+0.28 and that of the grain radius rose from 0.19 to 0.27, while their sum
+stayed at 0.53 to 0.55. The fuel conductivity, the power and the gas gap
+conductance decide the uncertainty of the temperature, and they act
+independently (first-order and total indices are equal).
+
 Work in progress
 ----------------
 
@@ -347,10 +426,9 @@ The following parts of the fuel benchmarks are not finished.
   grain-face bubbles by the hydrostatic stress of the fuel (Pastore et al.
   2013, Eq. 11) delays the onset at low power.  It will use the stress of
   the mechanics solution, which the fission gas model does not yet receive.
-* **Uncertainty of the results.** Each result above is one calculation with
-  nominal inputs.  The uncertainty and sensitivity module, which will give
-  every benchmark result a standard deviation from the uncertainties of the
-  model parameters and the inputs, is in development.
+* **Uncertainty of the results.** IFA-677.1 rod 1 has its uncertainty
+  band (above). The other results are one calculation each with nominal
+  inputs.
 * **Other fuel and cladding types.** The benchmarks of U3Si2 and UN fuels,
   and of FeCrAl, SiC and Cr-coated cladding, are not done yet.  The cases
   found in the public literature are the ACTOF benchmark of

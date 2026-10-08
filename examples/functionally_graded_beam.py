@@ -27,7 +27,7 @@ def solve(model, power_law_index, num_elements=16):
     else:
         problem.add_boundary_condition("Dirichlet_boundary_condition", "symmetry_rotation", variable=third, boundary="right", value=0.0)
     problem.add_boundary_condition("Dirichlet_boundary_condition", "symmetry_axial", variable="axial_displacement", boundary="right", value=0.0)
-    problem.solve()
+    problem.solve(report="none")
     return problem, stiffness
 
 

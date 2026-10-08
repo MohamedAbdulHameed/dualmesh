@@ -7,7 +7,7 @@ from __future__ import annotations
 import numpy as np
 from scipy import stats
 
-from ._engine import check_inputs, evaluate, to_inputs, unit_design, write_json
+from ._engine import check_inputs, evaluate, study_header, to_inputs, unit_design, write_json
 
 __all__ = ["Runs", "propagate", "wilks_samples"]
 
@@ -267,7 +267,7 @@ class Runs:
         np.savez(path, input_names=np.array(self.names), x=self.x, u=self.u, method=np.array(self.method), failed=np.array(sorted(self.failed), dtype=int), output_names=np.array(list(self.outputs)), **{"output:" + k: v for k, v in self.outputs.items()})
 
 
-def propagate(model, inputs, samples, method="latin_hypercube", seed=0, processes=1, store=None, progress=False) -> Runs:
+def propagate(model, inputs, samples, method="latin_hypercube", seed=0, processes=1, store=None, report="full") -> Runs:
     r"""Run ``model`` at ``samples`` points drawn from the ``inputs`` and
     return the :class:`Runs`.
 
@@ -290,10 +290,26 @@ def propagate(model, inputs, samples, method="latin_hypercube", seed=0, processe
         A ``.npz`` file that keeps every run as it finishes.  A study that
         is interrupted resumes where it stopped, and runs with the same
         input values are reused by later studies.
-    ``progress``
-        Print a line per finished run.
+    ``report``
+        What the study prints: ``"full"`` (the default: the uncertain
+        inputs, a line for each finished run and the summary),
+        ``"summary"`` (one line that names the study, then the summary) or
+        ``"none"``.  The studies inside a run of the model (a solve, a fuel
+        rod) print nothing.
     """
+    from ..console import report_level
+
+    level = report_level(report, "uq.propagate")
     dists = check_inputs(inputs)
+    study_header(level, "uncertainty propagation", dists, int(samples))
+    runs = _propagate(model, dists, samples, method, seed, processes, store, level == "full")
+    if level != "none":
+        print(runs.summary())
+    return runs
+
+
+def _propagate(model, dists, samples, method, seed, processes, store, progress) -> Runs:
+    """The runs of :func:`propagate`, without the report."""
     u = unit_design(int(samples), len(dists), method, seed)
     x = to_inputs(u, dists)
     outputs, failed = evaluate(model, list(dists), x, processes, store, progress)

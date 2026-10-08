@@ -84,7 +84,7 @@ if __name__ == "__main__":
         # The power and the flow are ramped up together in load steps: from
         # the uniform inlet temperature and a fluid at rest the full load
         # would overshoot in the first Newton steps.
-        result = p.solve(load_factors=[0.1, 0.3, 0.6, 1.0], **options)
+        result = p.solve(load_factors=[0.1, 0.3, 0.6, 1.0], report="none", **options)
         heat, mixed = energy_balance(p, info)
         centre = p.sample("temperature", [[0.0, 0.5 * info["top"], 0.0]])[0]
         inlet_heat = -p.total_reaction("temperature", "coolant_inlet")

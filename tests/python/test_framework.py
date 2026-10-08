@@ -493,7 +493,7 @@ def test_outputs(tmp_path):
 
     csv = tmp_path / "out.csv"
     problem.write_csv(str(csv))
-    assert csv.read_text().splitlines()[0].startswith("x,y,displacement_x")
+    assert csv.read_text().splitlines()[0].startswith("x (m),y (m),displacement_x (m)")
 
 
 # ---------------------------------------------------------------------------

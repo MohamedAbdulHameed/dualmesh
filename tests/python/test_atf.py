@@ -127,10 +127,10 @@ def test_chromium_correlations_follow_holzwarth_and_stamm_and_wagih_et_al():
 
 
 def test_u3si2_and_doped_uo2_data():
-    u3si2 = fuel.U3Si2Fuel(enrichment=0.0072)
+    u3si2 = fuel.U3Si2Fuel(grain_radius=26.0e-6, enrichment=0.0072)
     # Three uranium atoms per formula unit: 17 % more heavy metal per volume
     # than UO2, the ratio of the uranium densities 11.3 and 9.66 g/cm^3.
-    uo2 = fuel.UO2Fuel(enrichment=0.0072)
+    uo2 = fuel.UO2Fuel(grain_radius=5.0e-6, enrichment=0.0072)
     ratio = u3si2.heavy_metal_atom_density() / uo2.heavy_metal_atom_density()
     assert ratio == pytest.approx(11.3 / (10.963 * 0.8815), rel=0.01)
     # The handbook values of CASL-U-2019-1870: k = 4.996 + 0.0118 T (8.536 at
@@ -140,7 +140,7 @@ def test_u3si2_and_doped_uo2_data():
     assert _evaluate(u3si2, "poissons_ratio") == pytest.approx(0.1820, abs=1e-4)
     assert _evaluate(u3si2, "volumetric_swelling", burnup=0.05) == pytest.approx(0.34392 * 0.05)
     # Doped UO2: the undoped terms at T1 = 1773 K, where the doping factors are one.
-    doped = fuel.DopedUO2Fuel()
+    doped = fuel.DopedUO2Fuel(grain_radius=25.0e-6)
     kT = 1.380649e-23 * 1773.0
     undoped = 7.6e-10 * np.exp(-4.86e-19 / kT) + 5.64e-25 * np.sqrt(1e19) * np.exp(-1.91e-19 / kT) + 8e-40 * 1e19
     assert doped.diffusion_coefficient(1773.0, 1e19) == pytest.approx(undoped, rel=1e-12)
@@ -148,7 +148,7 @@ def test_u3si2_and_doped_uo2_data():
     kT = 1.380649e-23 * 2000.0
     undoped = 7.6e-10 * np.exp(-4.86e-19 / kT) + 5.64e-25 * np.sqrt(1e19) * np.exp(-1.91e-19 / kT) + 8e-40 * 1e19
     assert doped.diffusion_coefficient(2000.0, 1e19) == pytest.approx(undoped, rel=1e-12)
-    assert fuel.DopedUO2Fuel(diffusivity_case="upper_limit").diffusion_coefficient(1200.0, 1e19) > doped.diffusion_coefficient(1200.0, 1e19)
+    assert fuel.DopedUO2Fuel(grain_radius=25.0e-6, diffusivity_case="upper_limit").diffusion_coefficient(1200.0, 1e19) > doped.diffusion_coefficient(1200.0, 1e19)
 
 
 # ---------------------------------------------------------------------------
@@ -158,24 +158,24 @@ def _run(fuel_material=None, cladding=None, geometry=None, history=None, models=
     geometry = geometry or fuel.RodGeometry.from_diameters(8.19e-3, 8.36e-3, 9.50e-3, 0.05)
     rod = fuel.FuelRod(
         geometry,
-        fuel_material or fuel.UO2Fuel(),
+        fuel_material or fuel.UO2Fuel(grain_radius=5.0e-6),
         cladding or fuel.ZircaloyCladding(),
         fuel.FillGas(pressure=2.0e6, plenum_volume=0.15e-6),
         fuel.ForcedConvection(inlet_temperature=565.0, pressure=15.5e6, mass_flux=3800.0, rod_pitch=12.6e-3),
         history or fuel.PowerHistory(linear_heat_rate=[1e3, 30e3, 30e3], time=[0, 3600, 200 * DAY]),
         models=models,
         numerics=fuel.RodNumerics(mesh=fuel.RodMesh(num_axial_elements=2), max_time_step=step),
-        output=fuel.RodOutput(print_input=False, print_steps=False),
+        output=fuel.RodOutput(),
     )
-    return rod.run()
+    return rod.run(report="none")
 
 
 def test_u3si2_runs_far_colder_than_uo2():
     """Its conductivity is several times that of UO2 (15 to 30 against 2 to 5
     W/(m K)), so at 30 kW/m the rise from surface to centre is several times
     smaller."""
-    uo2 = _run(fuel.UO2Fuel())
-    u3si2 = _run(fuel.U3Si2Fuel())
+    uo2 = _run(fuel.UO2Fuel(grain_radius=5.0e-6))
+    u3si2 = _run(fuel.U3Si2Fuel(grain_radius=26.0e-6))
     rise = lambda out: out.fuel_centerline_temperature[1, 0] - out.fuel_surface_temperature[1, 0]  # noqa: E731
     assert rise(u3si2) < 0.25 * rise(uo2)
     assert np.all(np.isfinite(u3si2.gas_pressure))
@@ -214,8 +214,8 @@ def test_sic_cladding_swells_outward_and_runs_hot():
 def test_doped_uo2_releases_less_gas():
     """Five times larger grains outweigh the faster diffusion."""
     history = fuel.PowerHistory(linear_heat_rate=[1e3, 40e3, 40e3], time=[0, 3600, 300 * DAY])
-    uo2 = _run(fuel.UO2Fuel(), history=history, step=30 * DAY)
-    doped = _run(fuel.DopedUO2Fuel(), history=history, step=30 * DAY)
+    uo2 = _run(fuel.UO2Fuel(grain_radius=5.0e-6), history=history, step=30 * DAY)
+    doped = _run(fuel.DopedUO2Fuel(grain_radius=25.0e-6), history=history, step=30 * DAY)
     assert uo2.fission_gas_release[-1] > 0
     assert doped.fission_gas_release[-1] < uo2.fission_gas_release[-1]
 

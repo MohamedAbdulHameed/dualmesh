@@ -8,9 +8,36 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
-- `RodOutput.output_interval` records the rod state at a fixed interval from
-  the start of the power history and at its end. The points of the power
-  history remain the default output times.
+- `uq.sobol` and `uq.calibrate` take `output_transform={"name": "log"}`:
+  the Gaussian process models the logarithm of a positive output, which
+  suits an output that changes by factors (a fission gas release). The Sobol'
+  indices are those of the output itself, and the calibration of that output
+  is on the logarithmic scale (its noise is the standard deviation of the
+  logarithm, about the relative error).
+- `uq.calibrate` calibrates several experiments together: `model` is a dict
+  of experiment name -> function, the experiments share the inputs their
+  functions have in common, and the log-likelihoods add up. Verified against
+  the normal posterior of two linear experiments.
+- `uq.sobol` on a Gaussian process also gives the indices of the global
+  process (Marrel et al. 2009, Eq. 12), with their intervals:
+  `first_order_global_process`, `total_global_process` and the columns of the
+  same names in the table `indices`.
+- **Output design.** Every study takes `report="full"` (the default: the
+  inputs with the defaults marked, the progress and the result),
+  `report="summary"` or `report="none"`: `Problem.solve`,
+  `Problem.solve_transient`, `Problem.solve_eigenvalue`, `FuelRod.run`,
+  `TrisoParticleModel.run`, `uq.propagate`, `uq.sobol`, `uq.calibrate`,
+  `ManufacturedSolution.convergence_study` and
+  `solve_with_adaptive_refinement`. A study inside another study prints
+  nothing. The `dm.Output` group (directory, file base, output times or
+  interval, fields, formats `vtu` and `csv`) writes the fields of a solve, a
+  transient solve or an eigenvalue study. The time steps land on the output
+  times, and a transient study writes a ParaView collection (`.pvd`). Each
+  physics gives the SI units of its variables, which the CSV headers and the
+  VTU data arrays carry. `RodOutput` takes the names of `dm.Output`: `times`,
+  `interval`, `directory`, `file_base` and `formats` (`csv`, `json`).
+  `RodOutput.interval` records the rod state at a fixed interval from the
+  start of the power history and at its end.
 
 - **Physics level**: `Problem.add_physics(type, name, ...)` adds a set of
   equations named in physical terms: `heat_transfer`, `solid_mechanics`,
@@ -149,6 +176,9 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- The grain radius of every fuel (`UO2Fuel`, `DopedUO2Fuel`, `UNFuel`,
+  `U3Si2Fuel`, `CustomFuel`) is a required input, from the fabrication data
+  of the fuel. The defaults (5, 25 and 26 um) are removed.
 - The author of the software is Mohamed AbdulHameed, with his ORCID iD, in
   `CITATION.cff`, `pyproject.toml` and the documentation.
 - The citation is the software alone (`CITATION.cff`, the README and the
@@ -208,6 +238,12 @@ All notable changes to this project are documented here. The format follows
 
 ### Removed
 
+- The solver option `verbose`, the `progress` parameter of the uncertainty
+  studies, the `print_input` and `print_steps` parameters of `RodOutput`
+  (all replaced by `report`), the `output_interval` and `output_file_base`
+  parameters of `Problem.solve_transient` (replaced by `output=dm.Output(...)`),
+  and `RodOutput.output_times` and `RodOutput.output_interval` (renamed
+  `times` and `interval`).
 - The classes `mms.Term`, `mms.Diffusion`, `mms.Advection`, `mms.Reaction`,
   `mms.TimeDerivative`, `mms.LinearElasticity` and `mms.IncompressibleFlow`.
   `mms.ManufacturedSolution` takes the physics of the physics level
@@ -227,6 +263,20 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- The interval of a Sobol' index on a Gaussian process came from the random
+  functions of the process alone, so it could exclude the estimate (a total
+  index of 0.031 with the interval 0.049 to 0.142). The interval now holds
+  the bootstrap error of the estimate and the spread of the random functions
+  around their mean, and it is centred on the estimate.
+- `Problem.write_csv` wrote the node coordinates beside the values, which for
+  the cell-centred method (`zfvm`) are at the element and boundary face
+  centroids. It now writes the positions of the unknowns.
+- A store of the uncertainty studies matched a run only when its input values
+  were equal to the last bit, so a store written with other versions of
+  NumPy and SciPy ran its runs again. It now matches the input values to a
+  relative tolerance of 1e-12.
+- `describe` of an input group failed on a list of groups (the coating layers
+  of a TRISO particle) and on a nested list of numbers.
 - The cell-centred finite volume method (`zfvm`) took the coefficient of
   only one side at a face between two blocks, which made it first order
   wherever a coefficient (a conductivity, a diffusion coefficient) jumps

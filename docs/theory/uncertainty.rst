@@ -31,9 +31,7 @@ A short example::
 
     inputs = {"conductivity": uq.Normal(20.0, 1.0), "heat_source": uq.LogNormal(median=1.0e6, factor=1.2)}
     runs = uq.propagate(bus_bar, inputs, samples=200)
-    print(runs.summary())
     indices = uq.sobol(bus_bar, inputs, samples=512)
-    print(indices.summary())
 
 The complete example is ``examples/bus_bar_uq.py``.
 
@@ -182,9 +180,51 @@ process.  Only one of ``training_samples`` and ``training`` is given.  The
 scrambled Sobol' design of :func:`propagate` (``method="sobol"``) is nested:
 the first :math:`m` points of a design of :math:`2m` points are the design of
 :math:`m` points, so that with a ``store`` a training set is enlarged by
-running only the new points.  The intervals then include the uncertainty of the surrogate
-itself: the indices are recomputed on random realisations of the process
-(Marrel et al. [Marrel2009]_).
+running only the new points.
+
+On a surrogate, the indices are those of the mean of the process (Marrel et
+al. [Marrel2009]_, Eq. (10)). Their intervals hold two errors:
+
+* The Monte Carlo error of the estimate, from a bootstrap of the :math:`n`
+  rows of the sample matrices.
+* The error of the surrogate, from the spread of the indices of
+  ``realizations`` random functions of the process around their mean (Marrel
+  et al., Sect. 3.3), on the first 256 rows.
+
+Each random function adds its deviation to one bootstrap estimate, so the
+interval is centred on the estimate.
+
+The result also gives the indices of the global process (Marrel et al., Eq.
+(12)) in ``first_order_global_process`` and ``total_global_process``, with
+their intervals (the distribution of their Eq. (11)):
+
+.. math::
+
+    \mu_{\tilde S_i} = \frac{E_\omega\left[V_{X_i}\left(E\left[Y(X, \omega) \mid X_i\right]\right)\right]}{E_\omega\left[V\left(Y(X, \omega)\right)\right]},
+
+where :math:`Y(X, \omega)` is the process conditioned on the runs and
+:math:`E_\omega` is the expectation over its random functions. Each variance
+is a quadratic form of the values, so its expectation is its value for the
+mean of the process plus its expectation for the deviation from the mean. The
+mean part takes the :math:`n` rows, and the deviation part the random
+functions on 256 rows. These indices add the error of the surrogate to the
+variance of every effect, which raises a small or total index.
+
+On the Ishigami function and on the g-function of Sobol' with :math:`d = 5`
+and :math:`a_k = k` (Marrel et al., Sect. 4.2), with 8 training designs of
+each size, the indices of the mean were more accurate overall. The squared
+error of Marrel et al., Eq. (13), was 0.0345 and 0.0211 (first order, 35 and
+55 runs of the g-function) against 0.0341 and 0.0178 for the global process,
+and 0.0669 and 0.0288 (total) against 0.0833 and 0.0327. On Ishigami, the
+error of the first-order and total indices together was 0.185 and 0.093 (60
+and 120 runs) against 0.238 and 0.109.
+
+``output_transform={"release": "log"}`` makes the process model the logarithm
+of a positive output, which suits an output that changes by factors (a
+fission gas release). The mean of the output is then the mean of a
+log-normal variable, :math:`\exp(\hat y + s^2/2)`, and the random functions
+are the exponentials of those of the process. The indices are those of the
+output itself.
 
 Gaussian process surrogate
 --------------------------
@@ -272,6 +312,30 @@ covariance.  In the principal components this covariance has the form
 likelihood is evaluated by the Woodbury identity at a cost proportional to
 the number of components.  With ``surrogate=None`` the model runs at every
 proposal, which suits fast models only.
+
+``output_transform={"release": "log"}`` calibrates an output on the
+logarithmic scale. The surrogate models the logarithm of the output, the
+likelihood compares the logarithms of the model and of the measurements, and
+the noise of that output is the standard deviation of the logarithm of the
+measurement, which is about its relative error (0.05 for 5%).
+:meth:`~dualmesh.uq.Posterior.predict` gives its predictions on the scale of
+the measurements.
+
+Several experiments with common parameters, for example two fuel rods that
+share the parameters of the fission gas model and each have their own power,
+are calibrated together. ``model`` is then a dict of experiment name ->
+function, and ``observed``, ``noise``, ``training``, ``locations`` and
+``output_transform`` are dicts of experiment name -> the value for that
+experiment. Each experiment has its own surrogate on its own inputs. Its
+inputs are those of its training runs, or else the parameter names of its
+function. The measurements of different experiments are independent, so the
+log-likelihoods add up:
+
+.. math::
+
+    \ln p(\theta \mid y) = \ln p(\theta) + \sum_e \ln p(y_e \mid \theta_e) + \text{constant},
+
+where :math:`\theta_e` holds the inputs of experiment :math:`e`.
 
 Without a discrepancy, :math:`\Sigma_\delta = 0`.  With
 ``discrepancy="gaussian_process"`` the discrepancy of each output is a
@@ -435,7 +499,12 @@ form.
        (0.5576), :math:`S_{T2} = 0.4379` (0.4424), :math:`S_{T3} = 0.2445`
        (0.2437), :math:`S_{13} = 0.238` (0.2437).  Every exact value lies in
        its bootstrap interval.  On a Gaussian process of 200 runs the indices
-       are within 0.04 of the exact values.
+       are within 0.04 of the exact values, and those of the global process
+       within 0.08.  On a design of 60 runs every estimate lies in its
+       interval.  For :math:`Y = \exp(0.8 x_1 + 0.5 x_2 + 0.3 x_3)` with
+       standard normal inputs, whose indices are known in closed form, a
+       process of :math:`\ln Y` from 40 runs gives the indices of the model
+       to 0.002, and with 8192 rows they are within 0.03 of the exact values.
    * - Gaussian process
      - Interpolation of the training points, :math:`Q^2 > 0.99` on 400 test
        points of the Branin function from 60 runs, more than 95 % of the
@@ -452,7 +521,15 @@ form.
        inform shows a contraction near 0, and data beyond the prior push a
        parameter to the at-bound flag.  For a fitted slope with a missing
        :math:`0.3t^2` term, the discrepancy widens the posterior more than
-       fivefold and makes it independent of the prior mean.
+       fivefold and makes it independent of the prior mean.  For
+       :math:`y = 3 e^\theta` measured with a relative error of 5% and
+       calibrated on the logarithmic scale, the posterior of :math:`\theta`
+       is normal in closed form: the mean is within 0.01 on the model and on
+       a Gaussian process.  Two linear experiments with a common parameter,
+       :math:`y_1 = a + b_1` and :math:`y_2 = 2a - b_2`, calibrated together:
+       the means are within a tenth of a posterior standard deviation and
+       the standard deviations within 10% of the normal posterior, on the
+       models and on their Gaussian processes.
    * - :math:`\hat R`
      - Chains with the same location and different scales: the classic split
        :math:`\hat R` is 1.00, the rank normalised and folded one 1.15.

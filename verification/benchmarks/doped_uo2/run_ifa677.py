@@ -71,6 +71,11 @@ HOLE = 1.8e-3
 ROD = {1: dict(stack=0.3986, drilled=0.2189, free_volume=5.34e-6, density=10690.0, enrichment=0.0494, grain_radius=28e-6, bison=17.0, measured=22.0), 5: dict(stack=0.4035, drilled=0.2221, free_volume=5.26e-6, density=10700.0, enrichment=0.0491, grain_radius=22.5e-6, bison=13.0, measured=16.0)}
 
 
+#: The shutdown that starts cycle 4 (days): the power of Fig. 8(a) steps from
+#: about 33 to 41 kW/m after it, when the rods return to high power.
+CYCLE_4_START = 276.85
+
+
 def power_history(rod, shutdowns=True):
     """Times (s) and linear heat rates (W/m) of the rod, with the shutdowns
     of ``ifa677_shutdowns.csv`` inserted (``SHUTDOWN``)."""
@@ -87,14 +92,18 @@ def halden_cladding_temperature(linear_heat_rate, time):
     return 273.15 + 240.0 + 0.4162 * (max(linear_heat_rate, 0.0) / 1e3) ** 0.75
 
 
-def run(rod, fuel_material, bore, factors=None):
+def run(rod, fuel_material, bore, factors=None, power_factors=None):
     """One calculation of the rod with solid (``bore`` False) or drilled
     pellets over the whole stack.  Both keep the rod's fill gas: the plenum
     is the free volume of Table 4 less the as-fabricated gap and the bore of
     the modelled pellets.  ``factors`` (:class:`dualmesh.fuel.ModelFactors`)
-    multiply the models, for the uncertainty study."""
+    multiply the models, for the uncertainty study.  ``power_factors``
+    (factor of cycles 1 to 3, factor of cycles 4 to 6) multiply the power
+    before and after ``CYCLE_4_START``, for the calibration."""
     spec = ROD[rod]
     t, q = power_history(rod)
+    if power_factors is not None:
+        q = np.where(t < CYCLE_4_START * DAY, power_factors[0], power_factors[1]) * q
     stack = spec["stack"]
     gap_volume = np.pi / 4 * (CLAD_ID**2 - PELLET_DIAMETER**2) * stack
     if bore:
@@ -108,8 +117,8 @@ def run(rod, fuel_material, bore, factors=None):
         power_history=fuel.PowerHistory(linear_heat_rate=q, time=t, fast_neutron_flux_per_linear_heat_rate=1.6e12),
         numerics=fuel.RodNumerics(max_time_step=5 * DAY),
         factors=factors,
-        output=fuel.RodOutput(print_input=False, print_steps=False, output_times=np.arange(0.0, t[-1], 2 * DAY)),
-    ).run()
+        output=fuel.RodOutput(times=np.arange(0.0, t[-1], 2 * DAY)),
+    ).run(report="none")
     return dict(days=np.asarray(result.time) / DAY, burnup=np.asarray(result.burnup_in("MWd/kgHM", rod_average=True)), fgr=100.0 * np.asarray(result.fission_gas_release), centre=np.asarray(result.max_fuel_centerline_temperature), pressure=np.asarray(result.gas_pressure) / 1e6)
 
 

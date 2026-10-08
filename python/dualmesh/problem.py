@@ -11,6 +11,9 @@ from collections.abc import Iterable, Sequence
 import numpy as np
 
 from . import _core
+from ._core import InputError
+from .console import report_level
+from .output import Output
 
 SolveResult = _core.SolveResult
 
@@ -106,10 +109,14 @@ def _solver_options(**kwargs) -> _core.SolverOptions:
         "amg_strength_threshold",
         "linear_max_iterations",
         "petsc_options",
-        "verbose",
         "error_on_divergence",
     }
     for key, value in kwargs.items():
+        if key == "verbose":
+            raise TypeError("Unknown solver option 'verbose'. The parameter report sets what a solve prints: report='full' (the default), 'summary' or 'none'.")
+        if key == "_progress":
+            options.verbose = bool(value)
+            continue
         if key not in known:
             close = difflib.get_close_matches(key, known, n=1)
             hint = f" Did you mean '{close[0]}'?" if close else ""
@@ -136,7 +143,7 @@ def _distributed_options(options: dict):
     linear.linear_tolerance = float(rest.pop("linear_tolerance", 1e-10))
     linear.linear_max_iterations = int(rest.pop("linear_max_iterations", 5000))
     linear.petsc_options = petsc_option_string(rest.pop("petsc_options", None))
-    linear.verbose = bool(rest.get("verbose", False))
+    linear.verbose = bool(rest.get("_progress", False))
     return linear, rest
 
 
@@ -266,8 +273,12 @@ class Problem:
         return list(self._problem.boundary_entities(boundary))
 
     # ---- definition ------------------------------------------------------
-    def add_variable(self, name: str, block: Sequence[str] = (), initial_condition=None, order: str = "mesh") -> int:
+    def add_variable(self, name: str, block: Sequence[str] = (), initial_condition=None, order: str = "mesh", unit: str = "") -> int:
         """Add a nodal unknown and return its index.
+
+        ``unit`` is the SI unit of the variable, which the CSV and VTU files
+        write with its values.  Default none.  A physics gives the units of
+        the variables that it makes.
 
         ``order`` is the polynomial order the variable is interpolated with:
 
@@ -280,7 +291,14 @@ class Problem:
           stable for incompressible flow without stabilisation.  It needs the
           finite element method (``method="fem"``).
         """
-        return self._problem.add_variable(name, list(block), initial_condition, order)
+        index = self._problem.add_variable(name, list(block), initial_condition, order)
+        if unit:
+            self._problem.set_variable_unit(name, unit)
+        return index
+
+    def variable_unit(self, name: str) -> str:
+        """The SI unit of a variable (an empty text when none was given)."""
+        return self._problem.variable_unit(name)
 
     def num_active_dofs(self) -> int:
         """The number of unknowns that carry an equation.  It is smaller than
@@ -420,8 +438,15 @@ class Problem:
         self._problem.initialize()
 
     # ---- solving ---------------------------------------------------------
-    def solve(self, **options) -> SolveResult:
+    def solve(self, report: str = "full", output=None, **options) -> SolveResult:
         r"""Solve the steady problem.
+
+        ``report`` sets what the solve prints: ``"full"`` (the default: the
+        problem with every parameter, the defaults marked, the Newton
+        iterations and the result), ``"summary"`` (one line that names the
+        solve, then the result) or ``"none"``.  ``output`` is an
+        :class:`~dualmesh.Output` group: the solve writes the fields once, at
+        the end.  Default None: the solve writes no file.
 
         Keyword arguments are solver options: ``nonlinear_solver`` (``"newton"``,
         ``"picard"``, or ``"linear"``), ``max_iterations``, ``relative_tolerance``,
@@ -437,12 +462,8 @@ class Problem:
         pressure-velocity flow), ``amg_strength_threshold``,
         ``linear_tolerance``, ``linear_max_iterations``, ``gmres_restart``,
         ``petsc_options`` (PETSc's options, as a string or a dictionary, for
-        ``linear_solver="petsc"``), ``verbose``, and ``error_on_divergence``.
+        ``linear_solver="petsc"``) and ``error_on_divergence``.
         :doc:`/user_guide/solving` explains every option and its default.
-
-        With ``verbose=True`` the solve prints the build and the problem (every
-        object with every parameter, defaults marked), the Newton iterations as
-        a table, and a summary of the outcome.
 
         ``"automatic"`` factorises the system directly where that is cheap,
         which is always in one dimension, up to :math:`10^5` unknowns in two
@@ -466,14 +487,12 @@ class Problem:
         default) or ``"lu"`` for the subdomain problems.  :doc:`/theory/parallel`
         gives the method and the iteration counts.
         """
+        level = report_level(report, "Problem.solve")
+        output = self._check_output(output, steady=True)
         self._build_physics()
-        verbose = bool(options.get("verbose", False))
-        if verbose:
-            from .console import header
-
-            print(header("steady solve"))
-            print(self.summary())
+        self._report_start(level, "steady solve")
         start = time.perf_counter()
+        options["_progress"] = level == "full"
         if self._distributed is not None:
             linear, options = _distributed_options(options)
             self._distributed.set_linear_solver(linear)
@@ -482,13 +501,71 @@ class Problem:
             result = self._problem.solve_steady(_solver_options(**options))
         if self._postprocessors.postprocessors:
             self._postprocessors.evaluate(self, self.time)
-        if verbose:
-            from .console import solve_report
-
-            print(solve_report(result, time.perf_counter() - start))
-            if self._postprocessors.postprocessors:
-                print("Post-processors\n" + self.postprocessor_table())
+        files = self._write_fields(output) if output is not None else []
+        self._report_end(level, result, time.perf_counter() - start, files)
         return result
+
+    # ---- reports and files of the solves ------------------------------------
+    def _report_start(self, level: str, study: str) -> None:
+        if level == "full":
+            from .console import header
+
+            print(header(study))
+            print(self.summary(), flush=True)
+        elif level == "summary":
+            print(f"dualmesh {study}: {self.num_active_dofs()} unknowns, method {self.method}", flush=True)
+
+    def _report_end(self, level: str, result, wall_time: float, files: Sequence[str] = ()) -> None:
+        if level == "none":
+            return
+        from .console import solve_report
+
+        # The progress lines of the library come before the result.
+        _core.flush_output()
+
+        print(solve_report(result, wall_time))
+        if self._postprocessors.postprocessors:
+            print("Post-processors\n" + self.postprocessor_table())
+        if level == "full":
+            for path in files:
+                print(f"  wrote {path}")
+
+    def _check_output(self, output, steady: bool):
+        """Check an Output group of a solve."""
+        if output is None:
+            return None
+        from .output import Output
+
+        if not isinstance(output, Output):
+            raise InputError(f"The output of a solve is a dualmesh.Output group, not {type(output).__name__}.")
+        if steady and (output.times is not None or output.interval is not None):
+            raise InputError("Output: a steady solve writes the fields once, at the end. Remove times and interval.")
+        if output.fields is not None:
+            names = [self._problem.variable_name(i) for i in range(self._problem.num_variables)]
+            for name in output.fields:
+                if name not in names:
+                    close = difflib.get_close_matches(name, names, n=1)
+                    hint = f" Did you mean '{close[0]}'?" if close else ""
+                    raise InputError(f"Output: the field '{name}' is not a variable.{hint} The variables are: {', '.join(names)}.")
+        if self._distributed is not None and "csv" in output.formats:
+            raise InputError("Output: a distributed problem writes the vtu format only. Remove csv from formats.")
+        return output
+
+    def _write_fields(self, output, index: int | None = None) -> list[str]:
+        """Write the fields of the Output group in its formats.  ``index`` is
+        the number of the output time of a transient study."""
+        suffix = "" if index is None else f"_{index:05d}"
+        fields = list(output.fields or ())
+        files = []
+        if "vtu" in output.formats:
+            path = output.path(suffix + ".vtu")
+            self.write_vtu(path, fields=fields)
+            files.append(path[:-4] + ".pvtu" if self._distributed is not None and self.num_ranks > 1 else path)
+        if "csv" in output.formats:
+            path = output.path(suffix + ".csv")
+            self.write_csv(path, variables=fields)
+            files.append(path)
+        return files
 
     def solve_transient(
         self,
@@ -496,8 +573,8 @@ class Problem:
         time_step: float,
         start_time: float = 0.0,
         implicitness: float = 1.0,
-        output_interval: int = 0,
-        output_file_base: str = "",
+        output=None,
+        report: str = "full",
         time_stepper: str = "fixed",
         min_time_step: float = 0.0,
         max_time_step: float = 0.0,
@@ -536,8 +613,17 @@ class Problem:
         implicitness:
             The weight :math:`\theta` above.  Default 1, the backward Euler
             method, which is stable for every step.
-        output_interval, output_file_base:
-            Write a ``.vtu`` file every so many accepted steps.
+        output:
+            An :class:`~dualmesh.Output` group: the files, the output times,
+            the fields and the formats.  The time steps land on the output
+            times.  A transient study also writes a ParaView collection
+            (``.pvd``) of its ``.vtu`` files, which ParaView opens as one time
+            series.  Default None: the study writes no file.
+        report:
+            What the study prints: ``"full"`` (the default: the problem with
+            every parameter, the defaults marked, a line for each time step
+            and the result), ``"summary"`` (one line that names the study,
+            then the result) or ``"none"``.
         time_stepper:
             ``"fixed"`` keeps the step, shortening only the last one so that
             the run lands exactly on ``end_time``.
@@ -592,8 +678,6 @@ class Problem:
         transient.end_time = end_time
         transient.dt = time_step
         transient.theta = implicitness
-        transient.output_interval = output_interval
-        transient.output_file_base = output_file_base
         transient.time_stepper = time_stepper
         transient.dt_min = min_time_step
         transient.dt_max = max_time_step
@@ -603,32 +687,44 @@ class Problem:
         transient.optimal_iterations = optimal_iterations
         transient.iteration_window = iteration_window
         transient.max_rejected_steps = max_rejected_steps
+        level = report_level(report, "Problem.solve_transient")
         self._build_physics()
-        verbose = bool(options.get("verbose", False))
-        if verbose:
-            from .console import header
-
-            print(header("transient solve"))
-            print(self.summary())
+        output = self._check_output(output, steady=False)
+        files: list[str] = []
+        csv_output = None
+        if output is not None:
+            transient.output_times = [float(t) for t in output.output_times(start_time, end_time)]
+            if "vtu" in output.formats:
+                transient.output_file_base = output.path("")
+                transient.output_fields = list(output.fields or ())
+            if "csv" in output.formats:
+                # The library calls this writer at each output time, after
+                # the boundary values of the start are applied.
+                csv_output = Output(directory=output.directory, file_base=output.file_base, fields=output.fields, formats=("csv",))
+                self._problem.set_output_callback(lambda index: files.extend(self._write_fields(csv_output, index)))
+        self._report_start(level, "transient solve")
         start = time.perf_counter()
         if self._postprocessors.postprocessors:
             self.time = start_time
             self._postprocessors.evaluate(self, start_time)
-        if self._distributed is not None:
-            linear, options = _distributed_options(options)
-            self._distributed.set_linear_solver(linear)
-            result = self._distributed.solve_transient(transient, _solver_options(**options))
-        else:
-            result = self._problem.solve_transient(transient, _solver_options(**options))
-        if verbose:
-            from .console import solve_report
-
-            print(solve_report(result, time.perf_counter() - start))
-            if self._postprocessors.postprocessors:
-                print("Post-processors\n" + self.postprocessor_table())
+        options["_progress"] = level == "full"
+        try:
+            if self._distributed is not None:
+                linear, options = _distributed_options(options)
+                self._distributed.set_linear_solver(linear)
+                result = self._distributed.solve_transient(transient, _solver_options(**options))
+            else:
+                result = self._problem.solve_transient(transient, _solver_options(**options))
+        finally:
+            if csv_output is not None:
+                self._problem.set_output_callback(None)
+        if output is not None and "vtu" in output.formats:
+            extension = "pvtu" if self._distributed is not None and self.num_ranks > 1 else "vtu"
+            files.append(output.write_collection(transient.output_times, extension))
+        self._report_end(level, result, time.perf_counter() - start, files)
         return result
 
-    def solve_eigenvalue(self, method: str = "krylov", tolerance: float = 1.0e-10, max_iterations: int = 2000, normalization: float = 1.0):
+    def solve_eigenvalue(self, method: str = "krylov", tolerance: float = 1.0e-10, max_iterations: int = 2000, normalization: float = 1.0, report: str = "full", output=None):
         """Compute the effective multiplication factor and the fundamental
         mode of the neutron_diffusion physics of the problem (see
         :mod:`dualmesh.eigenvalue`).
@@ -640,10 +736,33 @@ class Problem:
         the eigenvalue.  The fluxes are scaled so that the total production
         of fission neutrons, the integral of the sum over the groups of
         :math:`\\nu\\Sigma_{f,g} \\phi_g`, equals ``normalization``.  Returns
-        an :class:`~dualmesh.eigenvalue.EigenvalueResult`."""
+        an :class:`~dualmesh.eigenvalue.EigenvalueResult`.
+
+        ``report`` sets what the study prints: ``"full"`` (the default: the
+        problem with every parameter, the defaults marked, and the result),
+        ``"summary"`` (one line that names the study, then the result) or
+        ``"none"``.  ``output`` is an :class:`~dualmesh.Output` group: the
+        study writes the fluxes once, at the end.  Default None: no file."""
         from .eigenvalue import solve_eigenvalue
 
-        return solve_eigenvalue(self, method=method, tolerance=tolerance, max_iterations=max_iterations, normalization=normalization)
+        level = report_level(report, "Problem.solve_eigenvalue")
+        output = self._check_output(output, steady=True)
+        self._build_physics()
+        if level == "full":
+            from .console import header
+
+            print(header("eigenvalue study"))
+            print(self.summary())
+        elif level == "summary":
+            print(f"dualmesh eigenvalue study: {self.num_active_dofs()} unknowns, method {self.method}, eigenvalue solver {method}")
+        result = solve_eigenvalue(self, method=method, tolerance=tolerance, max_iterations=max_iterations, normalization=normalization)
+        files = self._write_fields(output) if output is not None else []
+        if level != "none":
+            print(result.summary())
+        if level == "full":
+            for path in files:
+                print(f"  wrote {path}")
+        return result
 
     def set_time_step_callback(self, callback) -> None:
         """Call ``callback(time, problem)`` after every converged time step
@@ -909,17 +1028,21 @@ class Problem:
         return self._problem.boundary_flux_integral(kernel_name, boundary)
 
     # ---- output ----------------------------------------------------------
-    def write_vtu(self, filename: str, cell_properties: Sequence[str] = ()) -> None:
+    def write_vtu(self, filename: str, cell_properties: Sequence[str] = (), fields: Sequence[str] = ()) -> None:
         """Write a VTK unstructured grid (readable by ParaView and VisIt).
 
-        A distributed problem writes one ``.vtu`` file per process and a
-        ``.pvtu`` index, which ParaView and VisIt open as one data set."""
+        ``fields`` are the variables that the file contains (default: all of
+        them), and ``cell_properties`` are the properties that it contains as
+        cell data.  Each data array of a variable carries its unit in the
+        attribute ``units``.  A distributed problem writes one ``.vtu`` file
+        per process and a ``.pvtu`` index, which ParaView and VisIt open as one
+        data set."""
         if self._distributed is not None:
             base = filename[:-4] if filename.endswith((".vtu", ".pvtu")) else filename
             base = base[:-1] if base.endswith(".") else base
-            self._distributed.write_vtu(base, list(cell_properties))
+            self._distributed.write_vtu(base, list(cell_properties), list(fields))
             return
-        self._problem.write_vtu(filename, list(cell_properties))
+        self._problem.write_vtu(filename, list(cell_properties), list(fields))
 
     # ---- distributed problems ----------------------------------------------
     @property
@@ -974,12 +1097,19 @@ class Problem:
         write_mesh(self._mesh, filename, file_format=file_format, **fields)
 
     def write_csv(self, filename: str, variables: Sequence[str] = ()) -> None:
-        """Write nodal coordinates and values as comma-separated values."""
+        """Write the values of the variables as comma-separated values: one
+        row for each degree of freedom (a node, or a cell and a boundary face
+        of the cell-centred method), with its coordinates.  The header names
+        every column with its unit, for example ``temperature (K)``.
+        ``variables`` selects the variables (default: all of them)."""
+        from .tables import column_header
+
         names = list(variables) or [self._problem.variable_name(i) for i in range(self._problem.num_variables)]
-        points = np.asarray(self._mesh.points())
-        columns = [points[:, i] for i in range(self._mesh.dimension)]
+        points = np.asarray(self.entity_points())
+        dimension = self._mesh.dimension
+        columns = [points[:, i] for i in range(dimension)]
         columns += [self.values(name) for name in names]
-        header = ",".join(["x", "y", "z"][: self._mesh.dimension] + names)
+        header = ",".join([column_header(axis, "m") for axis in ("x", "y", "z")[:dimension]] + [column_header(name, self.variable_unit(name)) for name in names])
         np.savetxt(filename, np.column_stack(columns), delimiter=",", header=header, comments="")
 
     def summary(self, parameters: bool = True) -> str:

@@ -150,15 +150,15 @@ def test_in_a_fuel_rod_the_deformed_body_runs_slightly_colder(model):
         geometry = fuel.RodGeometry.from_diameters(8.19e-3, 8.36e-3, 9.50e-3, 0.05)
         rod = fuel.FuelRod(
             geometry,
-            fuel.UO2Fuel(),
+            fuel.UO2Fuel(grain_radius=5.0e-6),
             fuel.ZircaloyCladding(),
             fuel.FillGas(pressure=2.0e6, plenum_volume=0.15e-6),
             fuel.ForcedConvection(inlet_temperature=565.0, pressure=15.5e6, mass_flux=3800.0, rod_pitch=12.6e-3),
             fuel.PowerHistory(linear_heat_rate=[1e3, 30e3], time=[0, 3600]),
             numerics=fuel.RodNumerics(model=model, heat_conduction_configuration=configuration, mesh=fuel.RodMesh(num_axial_elements=2)),
-            output=fuel.RodOutput(print_input=False, print_steps=False),
+            output=fuel.RodOutput(),
         )
-        return rod.run()
+        return rod.run(report="none")
 
     deformed, undeformed = run("deformed"), run("undeformed")
     rise = undeformed.fuel_centerline_temperature[-1] - undeformed.fuel_surface_temperature[-1]

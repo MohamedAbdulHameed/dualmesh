@@ -11,27 +11,150 @@ program can read.
    :depth: 2
    :class: this-will-duplicate-information-and-it-is-still-useful-here
 
-The results of the studies
---------------------------
+Output design
+-------------
 
-Every study returns a result with the same four methods: ``summary()``
-returns a text report, ``to_dict()`` the numbers as a dictionary,
-``write_json(path)`` writes that dictionary to a JSON file and
-``write_csv(path)`` writes the table of the result to a CSV file.  The
-results are the :class:`~dualmesh.SolveResult` of
-:meth:`~dualmesh.Problem.solve` and
-:meth:`~dualmesh.Problem.solve_transient` (one row per Newton iteration), the
-:class:`~dualmesh.AdaptivityResult` of adaptive refinement (one row per
-cycle), the :class:`~dualmesh.mms.ConvergenceResult` of a convergence study
-(one row per mesh), the results of the uncertainty studies (one row per
-run, per index or per parameter), and the results of the fuel rod and the
-TRISO particle.
+Every module of dualmesh gives its output in the same four ways, so that you
+learn them once:
+
+* The ``report`` parameter of a study sets what the study prints.
+* Every table is a :class:`~dualmesh.Table`, whose CSV file names each column
+  with its unit.
+* Every result has the same methods: ``summary()``, ``tables``,
+  ``write_csv()``, ``write_json()`` and ``to_dict()``.
+* Every study that calculates fields writes its files through one
+  :class:`~dualmesh.Output` group.
+
+The sections that follow describe each of these.
+
+What a study prints
+~~~~~~~~~~~~~~~~~~~
+
+Every study takes a ``report`` parameter with three levels:
+
+``"full"``
+   The default. The study prints its inputs, with the defaults marked, then
+   its progress (the Newton iterations, a line for each time step, run or
+   mesh), then the result.
+
+``"summary"``
+   The study prints one line that names it, then the result.
+
+``"none"``
+   The study prints nothing.
+
+The studies are :meth:`~dualmesh.Problem.solve`,
+:meth:`~dualmesh.Problem.solve_transient`,
+:meth:`~dualmesh.Problem.solve_eigenvalue`,
+:meth:`~dualmesh.fuel.FuelRod.run`,
+:meth:`~dualmesh.fuel.TrisoParticleModel.run`, the uncertainty studies
+(:func:`~dualmesh.uq.propagate`, :func:`~dualmesh.uq.sobol` and
+:func:`~dualmesh.uq.calibrate`), the convergence study
+(:meth:`~dualmesh.mms.ManufacturedSolution.convergence_study`) and
+:func:`~dualmesh.solve_with_adaptive_refinement`.
+
+A study that runs other studies prints only its own report. For example, an
+uncertainty study of a fuel rod prints a line for each run and its summary,
+and the 64 rods that it runs print nothing. When your script runs a study in
+a loop and prints its own table, give ``report="none"`` to the study in the
+loop.
 
 .. code-block:: python
 
-   result = problem.solve()
+   for method in ("fem", "dmcdm"):
+       problem = build(method)
+       problem.solve(report="none")
+       print(method, problem.sample("temperature", [[0.05, 0.0]])[0])
+
+Tables and results
+~~~~~~~~~~~~~~~~~~
+
+Every study returns a result with the same methods:
+
+``summary()``
+   The report of the result as text: a title, the answer first, then the
+   tables.
+
+``tables``
+   A dictionary of the named tables of the result, each a
+   :class:`~dualmesh.Table`.
+
+``write_csv(path, table=None)``
+   Writes one table to a CSV file: the main table, or the table that
+   ``table`` names.
+
+``write_json(path)`` and ``to_dict()``
+   Give all the numbers of the result, for a program.
+
+A CSV file has one header line, in which each column has its unit, for
+example ``temperature (K)``. A spreadsheet, pandas and gnuplot read the file
+without changes.
+
+.. code-block:: python
+
+   result = problem.solve(report="none")
    print(result.summary())
    result.write_csv("newton_history.csv")
+
+The results are the :class:`~dualmesh.SolveResult` of the solves (one row for
+each Newton iteration), the :class:`~dualmesh.AdaptivityResult` of adaptive
+refinement (one row for each cycle), the
+:class:`~dualmesh.mms.ConvergenceResult` of a convergence study (one row for
+each mesh), the results of the uncertainty studies (one row for each run,
+index or parameter), and the results of the fuel rod and the TRISO particle.
+
+The files of the fields
+~~~~~~~~~~~~~~~~~~~~~~~
+
+A study writes field files only when you give it an :class:`~dualmesh.Output`
+group in its ``output`` parameter. The group sets where, when, what and in
+which format:
+
+.. code-block:: python
+
+   output = dm.Output(directory="results", file_base="slab", interval=10.0, fields=["temperature"], formats=["vtu", "csv"])
+   problem.solve_transient(end_time=100.0, time_step=1.0, output=output)
+
+``directory`` and ``file_base``
+   The directory, which the study makes when it doesn't exist, and the start
+   of each file name.
+
+``times`` or ``interval``
+   The output times of a transient study: a list of times, or an interval
+   from the start time. Give only one of the two. The time steps land on the
+   output times. Without either, a transient study writes the fields at its
+   start and end times. A steady solve and an eigenvalue study write the
+   fields once, at the end.
+
+``fields``
+   The variables that the files contain. The default is all the variables.
+
+``formats``
+   ``vtu`` (a VTK unstructured grid for ParaView and VisIt, the default) or
+   ``csv`` (one row for each node, or for each cell and boundary face of the
+   cell-centred method), or both.
+
+A transient study numbers its files ``slab_00000.vtu``, ``slab_00001.vtu``
+and so on, and writes the ParaView collection ``slab.pvd``, which lists the
+time of each file. ParaView opens the collection as one time series.
+
+The fuel rod has the same parameters in :class:`~dualmesh.fuel.RodOutput`,
+with the unit of burnup. Its files are the tables of the rod, in the formats
+``csv`` and ``json``.
+
+Units
+~~~~~
+
+Each physics gives the SI unit of each variable that it makes: ``K`` for a
+temperature, ``m`` for a displacement, ``rad`` for a rotation, ``m/s`` for a
+velocity, ``Pa`` for a pressure and ``1/(m^2 s)`` for a neutron flux. The CSV
+files name each column with its unit, and the VTU files give the unit in the
+``units`` attribute of each data array. A variable that you add with
+:meth:`~dualmesh.Problem.add_variable` has a unit only when you give one:
+
+.. code-block:: python
+
+   problem.add_variable("temperature", unit="K")
 
 Location of the unknowns
 ------------------------
@@ -207,10 +330,11 @@ elements are written as the corresponding quadratic VTK cell types (e.g.,
 that VTK's triquadratic hexahedron needs, so that a ``Hex27`` mesh is rendered
 with its curved faces.
 
-A transient run writes a file per output interval when ``output_file_base`` is
-given to :meth:`~dualmesh.Problem.solve_transient`, numbered so that ParaView
-groups them into a single time series.  A distributed run writes one ``.vtu``
-per rank plus a ``.pvtu`` index, which ParaView opens as one dataset.
+A transient study writes its files at the output times of its
+:class:`~dualmesh.Output` group (see `The files of the fields`_). A
+distributed run writes one ``.vtu`` file for each process and a ``.pvtu``
+index, which ParaView opens as one data set. A distributed run writes the
+``vtu`` format only.
 
 :func:`dualmesh.write_mesh` writes the mesh alone, with optional point data,
 through meshio [meshio]_, so that every one of the several dozen formats that

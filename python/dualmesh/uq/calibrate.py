@@ -44,12 +44,13 @@ effective sample size.
 
 from __future__ import annotations
 
+import inspect
 import math
 
 import numpy as np
 from scipy import linalg, optimize
 
-from ._engine import check_inputs, evaluate, to_inputs, unit_design, write_json
+from ._engine import check_inputs, check_output_transform, evaluate, study_header, to_inputs, transformed_runs, unit_design, write_json
 from .gaussian_process import _kernel
 
 __all__ = ["Posterior", "calibrate"]
@@ -319,9 +320,15 @@ class Posterior:
         self.acceptance = acceptance
         self.level = level
         self._ctx = context
-        self.surrogate = context.get("gp")
-        self.discrepancy = context.get("discrepancy")
-        self.mode = context.get("mode")
+        if "experiments" in context:
+            experiments = context["experiments"]
+            self.surrogate = {name: ctx.get("gp") for name, ctx in experiments.items()}
+            self.discrepancy = {name: ctx.get("discrepancy") for name, ctx in experiments.items()} if any(ctx.get("discrepancy") for ctx in experiments.values()) else None
+            self.mode = {name: ctx.get("mode") for name, ctx in experiments.items()} if any(ctx.get("mode") for ctx in experiments.values()) else None
+        else:
+            self.surrogate = context.get("gp")
+            self.discrepancy = context.get("discrepancy")
+            self.mode = context.get("mode")
         steps, C, W, k = chain.shape
         seqs = chain.reshape(steps, C * W, k)
         self.r_hat = {n: _split_rhat(chain[..., j]) for j, n in enumerate(self.names)}
@@ -379,9 +386,13 @@ class Posterior:
             lines.append(f"{n:<28}{d.mean:11.4g}{d.standard_deviation:10.3g}{self.mean(n):11.4g}{self.standard_deviation(n):10.3g}{mp[n]:10.4g}  [{lo:9.4g}, {hi:9.4g}] {self.contraction[n]:7.2f}{self.r_hat[n]:7.3f}{self.effective_sample_size[n]:7.0f}  {'; '.join(note)}")
         lines.append("")
         lines.append(f"{len(self.x)} samples, acceptance {self.acceptance:.2f}")
-        if self.surrogate is not None:
-            q2 = np.atleast_1d(self.surrogate.q2)
-            lines.append(f"surrogate: {len(self.surrogate._u_train)} runs, {self.surrogate.components} component(s), leave-one-out Q2 {np.nanmin(q2):.3f} (lowest) to {np.nanmax(q2):.3f}")
+        surrogates = self.surrogate if isinstance(self.surrogate, dict) else {None: self.surrogate}
+        for experiment, gp in surrogates.items():
+            if gp is None:
+                continue
+            q2 = np.atleast_1d(gp.q2)
+            label = "surrogate" if experiment is None else f"surrogate of {experiment}"
+            lines.append(f"{label}: {len(gp._u_train)} runs, {gp.components} component(s), leave-one-out Q2 {np.nanmin(q2):.3f} (lowest) to {np.nanmax(q2):.3f}")
         return "\n".join(lines)
 
     def __repr__(self):
@@ -394,34 +405,14 @@ class Posterior:
         (the central interval of the predictive distribution, which includes
         the measurement noise), ``model_low``, ``model_high`` (the interval
         of the model alone) and ``coverage`` (the fraction of the
-        measurements inside ``[low, high]``)."""
-        ctx = self._ctx
+        measurements inside ``[low, high]``).  With several experiments,
+        it returns a dict experiment name -> that dict."""
         rng = np.random.default_rng(seed)
         idx = rng.choice(len(self.x), size=min(samples, len(self.x)), replace=False)
         theta = self.x[idx]
-        mean, v = ctx["predict"](theta)
-        if ctx.get("Sdelta") is not None:
-            mean = mean + (ctx["Sdelta"] @ np.linalg.solve(ctx["D0"], (ctx["y"][None, :] - mean).T)).T
-        else:
-            mean = mean + ctx["delta"]
-        D0 = ctx["D0"]
-        L0 = np.linalg.cholesky(D0)
-        draws = mean + rng.standard_normal(mean.shape) @ L0.T
-        A = ctx.get("A")
-        if A is not None and v is not None:
-            draws += (rng.standard_normal(v.shape) * np.sqrt(np.maximum(v, 0))) @ A.T
-        a = 50.0 * (1.0 - level)
-        out, j = {}, 0
-        y = ctx["y"]
-        for name, shape in zip(ctx["names"], ctx["shapes"]):
-            m = int(np.prod(shape)) if shape else 1
-            sl = slice(j, j + m)
-            lo = np.percentile(draws[:, sl], a, axis=0)
-            hi = np.percentile(draws[:, sl], 100 - a, axis=0)
-            inside = (y[sl] >= lo) & (y[sl] <= hi)
-            out[name] = dict(mean=mean[:, sl].mean(axis=0).reshape(shape), low=lo.reshape(shape), high=hi.reshape(shape), model_low=np.percentile(mean[:, sl], a, axis=0).reshape(shape), model_high=np.percentile(mean[:, sl], 100 - a, axis=0).reshape(shape), coverage=float(np.mean(inside)))
-            j += m
-        return out
+        if "experiments" in self._ctx:
+            return {name: _predict(ctx, theta[:, ctx["input_index"]], rng, level) for name, ctx in self._ctx["experiments"].items()}
+        return _predict(self._ctx, theta, rng, level)
 
     def to_dict(self) -> dict:
         """The posterior mean, standard deviation, highest density interval
@@ -465,58 +456,75 @@ class Posterior:
 # ---------------------------------------------------------------------------
 # driver
 # ---------------------------------------------------------------------------
-def calibrate(model, inputs, observed, noise, surrogate="gaussian_process", training_samples=None, training=None, discrepancy=None, locations=None, sampler="ensemble", samples=20000, walkers=None, chains=4, level=0.95, seed=0, processes=1, store=None, progress=False) -> Posterior:
-    r"""Sample the posterior distribution of the ``inputs`` of ``model``
-    given measurements.  See the module documentation.
+def _predict(ctx, theta, rng, level):
+    """The posterior predictive of one experiment at the parameters ``theta``."""
+    mean, v = ctx["predict"](theta)
+    if ctx.get("Sdelta") is not None:
+        mean = mean + (ctx["Sdelta"] @ np.linalg.solve(ctx["D0"], (ctx["y"][None, :] - mean).T)).T
+    else:
+        mean = mean + ctx["delta"]
+    D0 = ctx["D0"]
+    L0 = np.linalg.cholesky(D0)
+    draws = mean + rng.standard_normal(mean.shape) @ L0.T
+    A = ctx.get("A")
+    if A is not None and v is not None:
+        draws += (rng.standard_normal(v.shape) * np.sqrt(np.maximum(v, 0))) @ A.T
+    a = 50.0 * (1.0 - level)
+    out, j = {}, 0
+    y = ctx["y"]
+    log_rows = ctx.get("log_rows")
+    if log_rows is not None and np.any(log_rows):
+        # Quantiles keep their order under exp, so the intervals and the
+        # coverage are those of the measurements.
+        draws = np.where(log_rows, np.exp(draws), draws)
+        mean = np.where(log_rows, np.exp(mean), mean)
+        y = ctx["measured"]
+    for name, shape in zip(ctx["names"], ctx["shapes"]):
+        m = int(np.prod(shape)) if shape else 1
+        sl = slice(j, j + m)
+        lo = np.percentile(draws[:, sl], a, axis=0)
+        hi = np.percentile(draws[:, sl], 100 - a, axis=0)
+        inside = (y[sl] >= lo) & (y[sl] <= hi)
+        out[name] = dict(mean=mean[:, sl].mean(axis=0).reshape(shape), low=lo.reshape(shape), high=hi.reshape(shape), model_low=np.percentile(mean[:, sl], a, axis=0).reshape(shape), model_high=np.percentile(mean[:, sl], 100 - a, axis=0).reshape(shape), coverage=float(np.mean(inside)))
+        j += m
+    return out
 
-    ``inputs``
-        Parameter name -> prior distribution.
-    ``observed``
-        Output name -> measured values (a number or an array), for outputs
-        that ``model`` returns with the same shapes.  Several outputs (for
-        example the release and the temperature of two rods) are
-        calibrated jointly.
-    ``noise``
-        Output name -> standard deviation of the measurement error (a number
-        or an array of the shape of the measurement) or its covariance
-        matrix.
-    ``surrogate``
-        ``"gaussian_process"`` (default): fit a :class:`GaussianProcess` to
-        ``training_samples`` Latin hypercube runs over the priors (default
-        :math:`10k`, at least 30), or the given ``training`` runs of
-        :func:`propagate`, and sample on it.  None: run the model at every
-        proposal (only for fast models).
-    ``discrepancy``
-        None or ``"gaussian_process"`` (a discrepancy function of
-        ``locations``: output name -> coordinates of the measurements,
-        default their index).
-    ``sampler``
-        ``"ensemble"`` (the default, which needs no tuning) or
-        ``"metropolis"``.
-    ``samples``, ``walkers``, ``chains``
-        Samples kept after the burn-in (an equal number of steps is
-        discarded, and on a surrogate the ensembles are extended until the
-        split :math:`\hat R` of every parameter is below 1.01), walkers per
-        ensemble (default :math:`\max(2k+2, 16)`)
-        and independent ensembles or chains (default 4).
-    """
-    dists = check_inputs(inputs)
+
+def _experiment(model, dists, observed, noise, surrogate, training_samples, training, discrepancy, locations, output_transform, seed, processes, store, progress) -> dict:
+    """The likelihood of one experiment: its data, its surrogate (or its
+    model) and its discrepancy, as a context with ``predict`` and ``like``."""
     names = list(dists)
     k = len(names)
     onames, shapes, y, Sn = _layout(observed, noise)
-    rng = np.random.default_rng(seed)
-    context = dict(names=onames, shapes=shapes, y=y)
+    transform = dict(output_transform or {})
+    log_rows = np.zeros(len(y), dtype=bool)
+    j = 0
+    for name, shape in zip(onames, shapes):
+        m = int(np.prod(shape)) if shape else 1
+        if name in transform:
+            if transform[name] != "log":
+                raise ValueError(f"calibrate: unknown output transform '{transform[name]}' of '{name}'. The transforms are: log.")
+            if np.any(y[j : j + m] <= 0.0):
+                raise ValueError(f"calibrate: the log transform needs positive measurements, and '{name}' has the value {float(np.min(y[j : j + m])):.6g}.")
+            log_rows[j : j + m] = True
+        j += m
+    unknown = [name for name in transform if name not in onames]
+    if unknown:
+        raise ValueError(f"calibrate: output_transform names the outputs {unknown}, which are not observed. Observed: {', '.join(onames)}.")
+    measured = y.copy()
+    y = np.where(log_rows, np.log(np.where(log_rows, y, 1.0)), y)
+    context = dict(names=onames, shapes=shapes, y=y, measured=measured, log_rows=log_rows)
 
     gp = None
     if surrogate == "gaussian_process":
         from .gaussian_process import GaussianProcess
-        from .propagate import propagate
+        from .propagate import _propagate
 
         if training is not None and training_samples is not None:
             raise ValueError("calibrate: give training_samples or training, not both.")
         if training is None:
             m = int(training_samples) if training_samples else max(10 * k, 30)
-            training = propagate(model, dists, m, "latin_hypercube", seed, processes, store, progress)
+            training = _propagate(model, dists, m, "latin_hypercube", seed, processes, store, progress)
         if list(training.distributions) != names:
             raise ValueError("calibrate: the training runs must have the same inputs, in order.")
         missing = [n for n in onames if n not in training.outputs]
@@ -524,7 +532,8 @@ def calibrate(model, inputs, observed, noise, surrogate="gaussian_process", trai
             raise KeyError(f"calibrate: the training runs lack the outputs {missing}.")
         # Check the shapes of the training outputs against the measurements.
         _flatten({n: training.outputs[n][:1] for n in onames}, onames, shapes, 1)
-        gp = GaussianProcess(seed=seed).fit(training, output=onames)
+        check_output_transform(transform, training, "calibrate")
+        gp = GaussianProcess(seed=seed).fit(transformed_runs(training, transform), output=onames)
         A = gp._V * gp._sd[:, None]
         Sd = np.diag(gp._discarded * gp._sd**2)
 
@@ -540,6 +549,9 @@ def calibrate(model, inputs, observed, noise, surrogate="gaussian_process", trai
         def predict(theta):
             outs, _ = evaluate(model, names, theta, processes, store, False)
             mean = _flatten(outs, onames, shapes, len(theta))
+            if np.any(log_rows):
+                with np.errstate(invalid="ignore", divide="ignore"):
+                    mean = np.where(log_rows, np.log(np.where(mean > 0.0, mean, np.nan)), mean)
             return mean, None
     else:
         raise ValueError("calibrate: surrogate must be 'gaussian_process' or None.")
@@ -611,6 +623,116 @@ def calibrate(model, inputs, observed, noise, surrogate="gaussian_process", trai
     context["D0"] = D0
     context["Sdelta"] = Sdelta if discrepancy == "gaussian_process" else None
     like = _Likelihood(y - delta, D0, A)
+    context["like"] = like
+    return context
+
+
+def _experiments(model, dists, observed, noise, surrogate, training_samples, training, discrepancy, locations, output_transform, seed, processes, store, progress) -> dict:
+    """The contexts of the experiments: one for a single model, or one per
+    experiment for a dict of models, each with the indices of its inputs."""
+    names = list(dists)
+    if not isinstance(model, dict):
+        context = _experiment(model, dists, observed, noise, surrogate, training_samples, training, discrepancy, locations, output_transform, seed, processes, store, progress)
+        context["input_index"] = list(range(len(names)))
+        return {None: context}
+
+    def per(value, label, name):
+        if value is None:
+            return None
+        if not isinstance(value, dict) or name not in value:
+            raise ValueError(f"calibrate: with several experiments, {label} is a dict of experiment name -> the {label} of that experiment, and it has no entry '{name}'.")
+        return value[name]
+
+    contexts, used = {}, set()
+    for name, function in model.items():
+        runs = per(training, "training", name)
+        if runs is not None:
+            parameters = list(runs.distributions)
+        else:
+            signature = inspect.signature(function).parameters.values()
+            if any(p.kind in (p.VAR_KEYWORD, p.VAR_POSITIONAL) for p in signature):
+                raise ValueError(f"calibrate: the model of experiment '{name}' takes **keywords, so its inputs are not known. Give its training runs, or name its inputs as parameters.")
+            parameters = [p.name for p in signature]
+        missing = [n for n in parameters if n not in dists]
+        if missing:
+            raise ValueError(f"calibrate: the experiment '{name}' has the inputs {missing}, which have no prior. Inputs: {', '.join(names)}.")
+        context = _experiment(function, {n: dists[n] for n in parameters}, per(observed, "observed", name), per(noise, "noise", name), surrogate, training_samples, runs, discrepancy, per(locations, "locations", name) if locations else None, (output_transform or {}).get(name), seed, processes, store, progress)
+        context["input_index"] = [names.index(n) for n in parameters]
+        contexts[name] = context
+        used.update(parameters)
+    unused = [n for n in names if n not in used]
+    if unused:
+        raise ValueError(f"calibrate: the inputs {unused} enter no experiment. Remove them, or give them to a model.")
+    return contexts
+
+
+def calibrate(model, inputs, observed, noise, surrogate="gaussian_process", training_samples=None, training=None, discrepancy=None, locations=None, sampler="ensemble", samples=20000, walkers=None, chains=4, level=0.95, seed=0, processes=1, store=None, output_transform=None, report="full") -> Posterior:
+    r"""Sample the posterior distribution of the ``inputs`` of ``model``
+    given measurements.  See the module documentation.
+
+    ``model``
+        A function of the inputs, or a dict of experiment name -> function
+        for several experiments (for example two fuel rods).  The
+        experiments share the inputs that their functions have in common,
+        and each takes its other inputs alone.  The inputs of an experiment
+        are those of its ``training`` runs, or else the parameter names of
+        its function.  With several experiments, ``observed``, ``noise``,
+        ``training``, ``locations`` and ``output_transform`` are dicts of
+        experiment name -> the value for that experiment, and the
+        log-likelihoods of the experiments add up.
+    ``inputs``
+        Parameter name -> prior distribution.
+    ``observed``
+        Output name -> measured values (a number or an array), for outputs
+        that ``model`` returns with the same shapes.  Several outputs (for
+        example the release and the temperature of two rods) are
+        calibrated jointly.
+    ``noise``
+        Output name -> standard deviation of the measurement error (a number
+        or an array of the shape of the measurement) or its covariance
+        matrix.
+    ``surrogate``
+        ``"gaussian_process"`` (default): fit a :class:`GaussianProcess` to
+        ``training_samples`` Latin hypercube runs over the priors (default
+        :math:`10k`, at least 30), or the given ``training`` runs of
+        :func:`propagate`, and sample on it.  None: run the model at every
+        proposal (only for fast models).
+    ``discrepancy``
+        None or ``"gaussian_process"`` (a discrepancy function of
+        ``locations``: output name -> coordinates of the measurements,
+        default their index).
+    ``sampler``
+        ``"ensemble"`` (the default, which needs no tuning) or
+        ``"metropolis"``.
+    ``samples``, ``walkers``, ``chains``
+        Samples kept after the burn-in (an equal number of steps is
+        discarded, and on a surrogate the ensembles are extended until the
+        split :math:`\hat R` of every parameter is below 1.01), walkers per
+        ensemble (default :math:`\max(2k+2, 16)`)
+        and independent ensembles or chains (default 4).
+    ``output_transform``
+        Output name -> ``"log"``.  The calibration of that output is on the
+        logarithmic scale: the surrogate models the logarithm of the output,
+        and the likelihood compares the logarithms of the model and of the
+        measurements.  Its ``noise`` is then the standard deviation of the
+        logarithm of the measurement, which is about its relative error (0.1
+        for 10%).  This suits a positive output that changes by factors (a
+        fission gas release).  The predictions of :meth:`Posterior.predict`
+        are on the scale of the measurements.  Default None: every output is
+        calibrated as it is.
+    ``processes``, ``store``, ``report``
+        As for :func:`propagate`.
+    """
+    from ..console import report_level
+
+    report = report_level(report, "uq.calibrate")
+    progress = report == "full"
+    dists = check_inputs(inputs)
+    study_header(report, "Bayesian calibration", dists)
+    names = list(dists)
+    k = len(names)
+    contexts = _experiments(model, dists, observed, noise, surrogate, training_samples, training, discrepancy, locations, output_transform, seed, processes, store, progress)
+    rng = np.random.default_rng(seed)
 
     def logpost(theta):
         lp = np.zeros(len(theta))
@@ -618,8 +740,9 @@ def calibrate(model, inputs, observed, noise, surrogate="gaussian_process", trai
             lp += dists[n].logpdf(theta[:, j])
         ok = np.isfinite(lp)
         if np.any(ok):
-            mean, v = predict(theta[ok])
-            lp[ok] += like(mean, v)
+            for ctx in contexts.values():
+                mean, v = ctx["predict"](theta[ok][:, ctx["input_index"]])
+                lp[ok] += ctx["like"](mean, v)
         lp[~np.isfinite(lp)] = -np.inf
         return lp
 
@@ -658,4 +781,8 @@ def calibrate(model, inputs, observed, noise, surrogate="gaussian_process", trai
         raise ValueError("calibrate: sampler must be ensemble or metropolis.")
     chain, lps = chain[keep:], lps[keep:]
     flat = chain.reshape(-1, k)
-    return Posterior(dists, flat, lps.reshape(-1), chain, acc, level, context)
+    context = contexts.get(None, {"experiments": contexts})
+    posterior = Posterior(dists, flat, lps.reshape(-1), chain, acc, level, context)
+    if report != "none":
+        print(posterior.summary())
+    return posterior

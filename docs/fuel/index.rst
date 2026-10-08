@@ -67,9 +67,8 @@ constant linear heat rate of 20 kW/m up to 30 MWd/kgHM:
    geometry = fuel.RodGeometry.from_diameters(pellet_outer_diameter=8.19e-3, clad_inner_diameter=8.36e-3, clad_outer_diameter=9.50e-3, fuel_stack_height=0.1)
    coolant = fuel.ForcedConvection(inlet_temperature=565.0, pressure=15.5e6, mass_flux=3800.0, rod_pitch=12.6e-3)
    history = fuel.PowerHistory(linear_heat_rate=[20e3, 20e3], burnup=[0.0, 30.0], burnup_unit="MWd/kgHM")
-   rod = fuel.FuelRod(geometry=geometry, fuel=fuel.UO2Fuel(enrichment=0.045), cladding=fuel.ZircaloyCladding(), fill_gas=fuel.FillGas(pressure=2.0e6, plenum_volume=0.3e-6), coolant=coolant, power_history=history)
+   rod = fuel.FuelRod(geometry=geometry, fuel=fuel.UO2Fuel(grain_radius=5.0e-6, enrichment=0.045), cladding=fuel.ZircaloyCladding(), fill_gas=fuel.FillGas(pressure=2.0e6, plenum_volume=0.3e-6), coolant=coolant, power_history=history)
    result = rod.run()
-   print(result.summary())
 
 The input groups are:
 
@@ -109,9 +108,10 @@ The input groups are:
      - The rod model (axisymmetric, 1.5-dimensional or three-dimensional),
        the discretisation, the mesh and the time steps.
    * - :class:`~dualmesh.fuel.RodOutput`
-     - The output times and files. The rod state is recorded at the points of
-       the power history by default, every ``output_interval`` when that is
-       given, or at the listed ``output_times``.
+     - The output times, the burnup unit and the files. The rod records its
+       state at the points of the power history by default, every
+       ``interval`` when you give it, or at the listed ``times``. The
+       parameters have the names of :class:`~dualmesh.Output`.
    * - :class:`~dualmesh.fuel.ModelFactors`
      - Multipliers on the models (all equal to one by default), for
        sensitivity and uncertainty studies.
@@ -119,11 +119,13 @@ The input groups are:
 ``dualmesh describe FuelRod`` lists the input groups of a rod, and
 ``dualmesh describe RodNumerics`` (or the name of any other group) lists the
 parameters of a group with their units, their defaults and the reasons for
-the defaults.  Before a calculation, the rod prints every input value with
-its unit, and marks the values that were left at their defaults.  The result holds the
-history of the rod (e.g., the gas pressure, the fission gas release and the
-centre temperature) and the axial profiles at every output time, and it can be
-written to CSV files.
+the defaults. With the default report (``rod.run(report="full")``), the rod
+prints every input value with its unit and marks the values left at their
+defaults, then a row at each output time and the summary. For the other report
+levels, see :doc:`/user_guide/output`. The result holds the history of the rod
+(for example, the gas pressure, the fission gas release and the centerline
+temperature) and the axial profiles at each output time, and it writes them to
+CSV files.
 
 The script ``examples/custom_fuel.py`` defines a fuel by expressions, and
 ``examples/fuel_rod_conjugate.py`` couples a rod to a coolant channel solved

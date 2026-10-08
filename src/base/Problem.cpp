@@ -92,6 +92,18 @@ Problem::boundaryEntities(const std::string & name) const
   return _mesh->boundaryNodes(name);
 }
 
+void
+Problem::setVariableUnit(const std::string & name, const std::string & unit)
+{
+  for (auto & v : _vars)
+    if (v.name == name)
+    {
+      v.unit = unit;
+      return;
+    }
+  throw InputError("Variable '" + name + "' does not exist.");
+}
+
 int
 Problem::addVariable(const std::string & name,
                      const std::vector<std::string> & blocks,

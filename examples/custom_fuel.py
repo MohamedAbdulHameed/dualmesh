@@ -49,7 +49,7 @@ class UNWithPowerLawCreep(fuel.UNFuel):
 # 2. A fuel described entirely by expressions
 # ---------------------------------------------------------------------------
 def un_written_out() -> fuel.CustomFuel:
-    un = fuel.UNFuel()
+    un = fuel.UNFuel(grain_radius=5.0e-6)
     conductivity = "1.864*exp(-2.14*porosity)*temperature^0.361"
     specific_heat = "(51.14*(365.7/temperature)^2*exp(365.7/temperature)/(exp(365.7/temperature) - 1)^2 + 9.491e-3*temperature + 2.642e11/temperature^2*exp(-18081/temperature))/0.25204"
     youngs_modulus = "1e6*0.258*(100*theoretical_density_fraction)^3.002*(1 - 2.375e-5*temperature)"
@@ -57,25 +57,24 @@ def un_written_out() -> fuel.CustomFuel:
     thermal_strain = "(7.096e-6 + 1.409e-9*temperature)*(temperature - 298)"
     creep_rate = "2.054e-3*(von_mises_stress/1e6)^4.5*exp(-39369.5/temperature) + 582610.427*(von_mises_stress/1e6)/(temperature*(2e6*grain_radius)^3)*exp(-2.28/(8.617333262e-5*temperature)) + 2.9e-22*(von_mises_stress/1e6)*(fission_rate*1e-6)*exp(20*porosity)/3600"
     laws = dict(thermal_conductivity=conductivity, specific_heat=specific_heat, youngs_modulus=youngs_modulus, poissons_ratio=poissons_ratio, thermal_strain=thermal_strain, creep_rate=creep_rate)
-    return fuel.CustomFuel(name="UN (expressions)", theoretical_density=14326.0, compound_molar_mass=un.compound_molar_mass, heavy_metal_molar_mass=un.heavy_metal_molar_mass, **laws)
+    return fuel.CustomFuel(grain_radius=5.0e-6, name="UN (expressions)", theoretical_density=14326.0, compound_molar_mass=un.compound_molar_mass, heavy_metal_molar_mass=un.heavy_metal_molar_mass, **laws)
 
 
-def run(material, verbose=False):
+def run(material, report="none"):
     geometry = fuel.RodGeometry.from_diameters(pellet_outer_diameter=8.19e-3, clad_inner_diameter=8.36e-3, clad_outer_diameter=9.50e-3, fuel_stack_height=0.05)
     coolant = fuel.ForcedConvection(inlet_temperature=565.0, pressure=15.5e6, mass_flux=3800.0, rod_pitch=12.6e-3)
     history = fuel.PowerHistory(linear_heat_rate=[1e3, 40e3, 40e3], time=[0.0, 3600.0, 100 * DAY])
     # The built-in UN swelling and gas release are tabulated correlations the
     # expression version leaves out, so both rods run without them.
     models = fuel.RodModels(solid_swelling=False, fission_gas_release="none")
-    output = fuel.RodOutput(print_input=verbose, print_steps=verbose)
-    rod = fuel.FuelRod(geometry=geometry, fuel=material, cladding=fuel.ZircaloyCladding(), fill_gas=fuel.FillGas(pressure=2.0e6, plenum_volume=0.15e-6), coolant=coolant, power_history=history, models=models, numerics=fuel.RodNumerics(max_time_step=20 * DAY), output=output)
-    return rod.run()
+    rod = fuel.FuelRod(geometry=geometry, fuel=material, cladding=fuel.ZircaloyCladding(), fill_gas=fuel.FillGas(pressure=2.0e6, plenum_volume=0.15e-6), coolant=coolant, power_history=history, models=models, numerics=fuel.RodNumerics(max_time_step=20 * DAY))
+    return rod.run(report=report)
 
 
 if __name__ == "__main__":
-    built_in = run(fuel.UNFuel())
-    written_out = run(un_written_out(), verbose=True)
-    power_law = run(UNWithPowerLawCreep())
+    built_in = run(fuel.UNFuel(grain_radius=5.0e-6))
+    written_out = run(un_written_out(), report="full")
+    power_law = run(UNWithPowerLawCreep(grain_radius=5.0e-6))
     print()
     print("peak centerline temperature, K")
     print(f"  UNFuel                  {built_in.fuel_centerline_temperature.max():.6f}")

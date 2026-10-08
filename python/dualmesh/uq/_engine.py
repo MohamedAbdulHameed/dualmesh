@@ -94,9 +94,14 @@ def normalise_output(value) -> dict:
 
 
 def _call(model, kwargs):
+    from ..console import inner_study
+
     t0 = time.perf_counter()
     try:
-        out = normalise_output(model(**kwargs))
+        # A study of the model (a solve, a fuel rod) inside the run prints
+        # nothing.
+        with inner_study():
+            out = normalise_output(model(**kwargs))
         return out, None, time.perf_counter() - t0
     except Exception:  # noqa: BLE001 - a failed run is recorded, not fatal
         return None, traceback.format_exc(limit=3), time.perf_counter() - t0
@@ -112,11 +117,19 @@ def _key(row) -> tuple:
     return tuple(float(v).hex() for v in row)
 
 
+#: Relative tolerance with which a store matches the input values of a run.
+#: Other versions of NumPy and SciPy can calculate the inverse distribution
+#: functions with a different last digit, and the store must find the runs
+#: of these versions.
+STORE_TOLERANCE = 1e-12
+
+
 class Store:
     """The runs of a model kept in a ``.npz`` file: the input names, the
     input values, every output and the failures.  Rows are matched by their
-    exact input values, so a study that is interrupted resumes, and runs
-    are shared between studies with the same inputs."""
+    input values to the relative tolerance ``STORE_TOLERANCE``, so a study
+    that is interrupted resumes, and runs are shared between studies with
+    the same inputs."""
 
     def __init__(self, path, names):
         self.path = None if path is None else Path(path)
@@ -152,7 +165,16 @@ class Store:
         self.seconds.append(seconds)
 
     def find(self, row):
-        return self.rows.get(_key(row))
+        index = self.rows.get(_key(row))
+        if index is not None or not self.x:
+            return index
+        row = np.asarray(row, dtype=float)
+        stored = np.asarray(self.x)
+        if stored.shape[1] != row.size:
+            return None
+        close = np.all(np.abs(stored - row) <= STORE_TOLERANCE * np.maximum(np.abs(stored), np.abs(row)), axis=1)
+        matches = np.flatnonzero(close)
+        return int(matches[0]) if matches.size else None
 
     def output_shapes(self) -> dict:
         for out in self.outputs:
@@ -177,6 +199,74 @@ class Store:
         os.close(fd)
         np.savez(tmp, **payload)
         os.replace(tmp, self.path)
+
+
+#: The transforms of an output that a surrogate models.
+OUTPUT_TRANSFORMS = ("log",)
+
+
+def check_output_transform(transform, runs, where: str) -> dict:
+    """The output transform of a surrogate study, checked against the
+    training runs: output name -> "log"."""
+    if not transform:
+        return {}
+    if not isinstance(transform, dict):
+        raise ValueError(f"{where}: output_transform is a dict of output name -> 'log'.")
+    for name, kind in transform.items():
+        if name not in runs.outputs:
+            raise ValueError(f"{where}: output_transform names the output '{name}', which the runs do not have. Outputs: {', '.join(runs.outputs)}.")
+        if kind not in OUTPUT_TRANSFORMS:
+            raise ValueError(f"{where}: unknown output transform '{kind}' of '{name}'. The transforms are: {', '.join(OUTPUT_TRANSFORMS)}.")
+        values = np.asarray(runs.outputs[name], dtype=float)
+        values = values[np.isfinite(values)]
+        if values.size and values.min() <= 0.0:
+            raise ValueError(f"{where}: the log transform needs a positive output, and '{name}' has the value {values.min():.6g}.")
+    return dict(transform)
+
+
+def transformed_runs(runs, transform: dict):
+    """The runs with the transformed outputs, for the fit of a surrogate."""
+    if not transform:
+        return runs
+    from .propagate import Runs
+
+    outputs = {name: (np.log(values) if transform.get(name) == "log" else values) for name, values in runs.outputs.items()}
+    return Runs(runs.distributions, runs.x, runs.u, outputs, runs.failed, runs.method)
+
+
+def _as_dict(gp, value) -> dict:
+    return value if isinstance(value, dict) else {gp.output_names[0]: value}
+
+
+def surrogate_mean(gp, x, transform: dict) -> dict:
+    """The mean of the surrogate process at the inputs ``x``, for each output
+    on its own scale.  For a log transform the mean of the output is the
+    mean of the log-normal variable, exp(mu + sigma^2 / 2)."""
+    if not transform:
+        return _as_dict(gp, gp.predict(x))
+    mean, sd = gp.predict(x, return_standard_deviation=True)
+    mean, sd = _as_dict(gp, mean), _as_dict(gp, sd)
+    return {name: (np.exp(mean[name] + 0.5 * sd[name] ** 2) if transform.get(name) == "log" else mean[name]) for name in mean}
+
+
+def surrogate_sample(gp, x, size: int, seed, transform: dict) -> dict:
+    """Random functions of the surrogate process at the inputs ``x``, for
+    each output on its own scale: (size, n) or (size, n, m) arrays."""
+    sample = _as_dict(gp, gp.sample(x, size, seed))
+    return {name: (np.exp(values) if transform.get(name) == "log" else values) for name, values in sample.items()}
+
+
+def study_header(level: str, study: str, inputs: dict, runs: int | None = None) -> None:
+    """Print the start of the report of a study of many runs."""
+    from ..console import header, table
+
+    if level == "full":
+        print(header(study))
+        print("Uncertain inputs")
+        print(table([[name, repr(dist)] for name, dist in inputs.items()], ["input", "distribution"]))
+    if level in ("full", "summary"):
+        count = "" if runs is None else f", {runs} runs of the model"
+        print(f"dualmesh {study}: {len(inputs)} uncertain inputs{count}", flush=True)
 
 
 def evaluate(model, names, x, processes=1, store=None, progress=False):

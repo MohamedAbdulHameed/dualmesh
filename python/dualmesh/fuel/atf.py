@@ -66,7 +66,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from .gas import ATHERMAL_COEFFICIENT
-from .materials import CladdingMaterial, CustomCladding, CustomFuel, FuelMaterial, RodContext, UO2Fuel, uranium_molar_mass
+from .materials import CladdingMaterial, CustomCladding, CustomFuel, FuelMaterial, RodContext, UO2Fuel, _check_grain_radius, uranium_molar_mass
 from .specification import parameter
 
 BOLTZMANN_EV = 8.617333262e-5  # eV/K
@@ -527,11 +527,14 @@ class U3Si2Fuel(_Delegating, FuelMaterial):
 
     enrichment: float = parameter(0.05, description="U-235 weight fraction. Default 0.05.")
     theoretical_density_fraction: float = parameter(0.95, description="Fabricated density as a fraction of 12190 kg/m^3. Default 0.95.")
-    grain_radius: float = parameter(26.0e-6, unit="m", description="Mean grain radius. Default 26 um, the fresh fuel of the AI-7-1 experiment (Table 4.1 of the 2016 report).")
+    grain_radius: float | None = parameter(None, unit="m", description="Mean grain radius. Required, from the fabrication data of the fuel (the fresh fuel of the AI-7-1 experiment had 26 um, Table 4.1 of the 2016 report).")
     surface_roughness: float = parameter(2.0e-6, unit="m", description="Pellet surface roughness. Default 2 um, as for UO2.")
     emissivity: float = parameter(0.8, description="Pellet surface emissivity. Default 0.8, the UO2 value.")
     energy_per_fission: float = parameter(200.0 * 1.602176634e-13, unit="J", description="Default 200 MeV.")
     gaseous_swelling: bool = parameter(False, description="Add the empirical gaseous swelling of Finlay et al. (see the class). Default False.")
+
+    def __post_init__(self):
+        _check_grain_radius(self)
 
     material_name = "U3Si2"
     optional_models = {}
@@ -617,8 +620,10 @@ class DopedUO2Fuel(UO2Fuel):
     diffusion of fission gas in them.  Everything is that of
     :class:`UO2Fuel` except:
 
-    * the grain radius, default 25 um (the doped rods of the Halden test
-      IFA-677.1 had 22.5 and 28 um, Table 2.2 of INL/EXT-20-59969);
+    * the grain radius, four to five times that of standard UO2 (Che et al.
+      2018), which the user gives from the fabrication data (the doped rods
+      of the Halden test IFA-677.1 had 22.5 and 28 um, Table 2.2 of
+      INL/EXT-20-59969);
     * the intragranular diffusion coefficient of fission gas (Eqs. 2.1 to
       2.4 of INL/EXT-20-59969, Table 2.1):
       :math:`D = e^{-\Delta H_1/k_B (1/T - 1/T_1)} D_1 + e^{-\Delta H_2/k_B
@@ -650,7 +655,7 @@ class DopedUO2Fuel(UO2Fuel):
     and is 1 by default.
     """
 
-    grain_radius: float = parameter(25.0e-6, unit="m", description="Mean grain radius. Default 25 um (see the class).")
+    grain_radius: float | None = parameter(None, unit="m", description="Mean grain radius. Required, from the fabrication data of the fuel (doped UO2 has grains four to five times those of standard UO2, Che et al. 2018).")
     total_densification: float = parameter(
         0.001,
         description="Density change in a resintering test as a fraction of the theoretical "

@@ -1069,16 +1069,14 @@ DistributedProblem::solveTransient(const TransientOptions & tr, const SolverOpti
   _local->applyDirichlet(U, 1.0);
   copyFromOwners(U);
   double time = tr.start_time;
-  const auto write = [&](int step)
+  const auto write = [&](int index)
   {
-    if (tr.output_interval > 0 && step % tr.output_interval == 0 && !tr.output_file_base.empty())
-    {
-      std::ostringstream os;
-      os << tr.output_file_base << "_" << std::setw(5) << std::setfill('0') << step;
-      writeVTU(os.str());
-    }
+    if (tr.output_file_base.empty())
+      return;
+    std::ostringstream os;
+    os << tr.output_file_base << "_" << std::setw(5) << std::setfill('0') << index;
+    writeVTU(os.str(), {}, tr.output_fields);
   };
-  write(0);
   // Every rank runs the same controller on the same numbers, so they all take
   // the same steps and accept or reject together: the residual norms that the
   // decision rests on are global reductions, and the error estimate is formed
@@ -1112,7 +1110,8 @@ DistributedProblem::solveTransient(const TransientOptions & tr, const SolverOpti
         base.include_steady_terms = tr.theta > 0;
         return nonlinearSolve(attempt, base, tr.theta < 1.0 ? &old_residual : nullptr);
       },
-      [&](int step, double) { write(step); },
+      [](int, double) {},
+      write,
       _comm.isRoot());
 }
 
@@ -1130,16 +1129,17 @@ DistributedProblem::gatheredValues(const std::string & variable) const
 
 void
 DistributedProblem::writeVTU(const std::string & base,
-                             const std::vector<std::string> & cell_properties) const
+                             const std::vector<std::string> & cell_properties,
+                             const std::vector<std::string> & fields) const
 {
   if (_comm.size() == 1)
   {
-    _local->writeVTU(base + ".vtu", cell_properties);
+    _local->writeVTU(base + ".vtu", cell_properties, fields);
     return;
   }
   std::ostringstream piece;
   piece << base << "_" << std::setw(4) << std::setfill('0') << _comm.rank() << ".vtu";
-  _local->writeVTU(piece.str(), cell_properties);
+  _local->writeVTU(piece.str(), cell_properties, fields);
   _comm.barrier();
   if (!_comm.isRoot())
     return;
@@ -1153,7 +1153,9 @@ DistributedProblem::writeVTU(const std::string & base,
   f << "<PPoints><PDataArray type=\"Float64\" NumberOfComponents=\"3\"/></PPoints>\n";
   f << "<PPointData>\n";
   for (int v = 0; v < _local->numVariables(); ++v)
-    f << "<PDataArray type=\"Float64\" Name=\"" << _local->variable(v).name << "\"/>\n";
+    if (fields.empty() ||
+        std::find(fields.begin(), fields.end(), _local->variable(v).name) != fields.end())
+      f << "<PDataArray type=\"Float64\" Name=\"" << _local->variable(v).name << "\"/>\n";
   f << "</PPointData>\n<PCellData>\n<PDataArray type=\"Int32\" Name=\"block\"/>\n";
   for (const auto & p : cell_properties)
     f << "<PDataArray type=\"Float64\" Name=\"" << p << "\"/>\n";

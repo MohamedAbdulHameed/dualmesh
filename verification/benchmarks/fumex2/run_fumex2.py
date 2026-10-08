@@ -84,13 +84,13 @@ def make_rod(history: fuel.PowerHistory, output_times) -> fuel.FuelRod:
         coolant=fuel.PrescribedCladdingTemperature(temperature=halden_cladding_temperature, pressure=3.4e6),
         power_history=history,
         numerics=fuel.RodNumerics(max_time_step=20 * DAY),
-        output=fuel.RodOutput(print_input=False, print_steps=False, output_times=output_times),
+        output=fuel.RodOutput(times=output_times),
     )
 
 
 def run(history, end_days):
     rod = make_rod(history, np.linspace(0.0, end_days * DAY, 201))
-    result = rod.run()
+    result = rod.run(report="none")
     burnup = result.burnup_in("MWd/kgU", rod_average=True)
     return (burnup, 100.0 * np.asarray(result.fission_gas_release), np.asarray(result.max_fuel_centerline_temperature) - 273.15)
 

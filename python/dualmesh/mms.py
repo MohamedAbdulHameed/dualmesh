@@ -63,6 +63,7 @@ from typing import Callable
 import numpy as np
 
 from . import _core
+from .console import header, inner_study, report_level
 from .problem import Problem
 
 __all__ = ["ConvergenceResult", "ManufacturedSolution"]
@@ -350,7 +351,7 @@ class ManufacturedSolution:
             out[(variable, "h1")] = h1
         return out
 
-    def convergence_study(self, mesh_factory: Callable[[int], object], levels: Sequence[int], method: str = "dmcdm", transient: dict | None = None, solve_options: dict | None = None, **problem_options) -> ConvergenceResult:
+    def convergence_study(self, mesh_factory: Callable[[int], object], levels: Sequence[int], method: str = "dmcdm", transient: dict | None = None, solve_options: dict | None = None, report: str = "full", **problem_options) -> ConvergenceResult:
         """Solve on ``mesh_factory(n)`` for every ``n`` in ``levels`` and
         record the errors.
 
@@ -359,7 +360,17 @@ class ManufacturedSolution:
         of the element size :math:`h`, so that the time step is refined
         together with the mesh, which is what a study of the combined
         space-time order needs.
+
+        ``report`` sets what the study prints: ``"full"`` (the default: a
+        line for each mesh and the summary), ``"summary"`` (one line that
+        names the study, then the summary) or ``"none"``.  The solves inside
+        the study print nothing.
         """
+        level = report_level(report, "ManufacturedSolution.convergence_study")
+        if level == "full":
+            print(header("convergence study"))
+        if level != "none":
+            print(f"dualmesh convergence study: method {method}, {len(levels)} meshes", flush=True)
         result = ConvergenceResult(method=method)
         solve_options = dict(solve_options or {})
         for n in levels:
@@ -367,17 +378,22 @@ class ManufacturedSolution:
             start = float(transient.get("start_time", 0.0)) if transient else 0.0
             problem = self.build(mesh, method=method, start_time=start, **problem_options)
             h = _element_size(problem, mesh)
-            if transient:
-                options = dict(transient)
-                if callable(options.get("time_step")):
-                    options["time_step"] = float(options["time_step"](h))
-                problem.solve_transient(**options, **solve_options)
-            else:
-                problem.solve(**solve_options)
+            with inner_study():
+                if transient:
+                    options = dict(transient)
+                    if callable(options.get("time_step")):
+                        options["time_step"] = float(options["time_step"](h))
+                    problem.solve_transient(**options, **solve_options)
+                else:
+                    problem.solve(**solve_options)
             result.sizes.append(h)
             result.num_dofs.append(problem.num_active_dofs())
             for key, value in self.errors(problem).items():
                 result.errors.setdefault(key, []).append(value)
+            if level == "full":
+                print(f"  mesh {n}: element size {h:.6g}, {problem.num_active_dofs()} unknowns", flush=True)
+        if level != "none":
+            print(result.summary())
         return result
 
 

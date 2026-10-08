@@ -106,9 +106,9 @@ def run(fuel_material, bore_diameter=0.0):
         coolant=fuel.PrescribedCladdingTemperature(temperature=halden_cladding_temperature, pressure=3.4e6),
         power_history=fuel.PowerHistory(linear_heat_rate=q, time=t, fast_neutron_flux_per_linear_heat_rate=1.6e12),
         numerics=fuel.RodNumerics(max_time_step=5 * DAY),
-        output=fuel.RodOutput(print_input=False, print_steps=False, output_times=np.arange(0.0, t[-1], 2 * DAY)),
+        output=fuel.RodOutput(times=np.arange(0.0, t[-1], 2 * DAY)),
     )
-    r = rod.run()
+    r = rod.run(report="none")
     return dict(days=np.asarray(r.time) / DAY, burnup=np.asarray(r.burnup_in("MWd/kgHM", rod_average=True)), fgr=100.0 * np.asarray(r.fission_gas_release), centre=np.asarray(r.max_fuel_centerline_temperature) - 273.15, pressure=np.asarray(r.gas_pressure) / 1e6)
 
 

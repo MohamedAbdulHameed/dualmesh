@@ -18,6 +18,7 @@ Points to note:
   ``heat_conduction_time_derivative`` lumps the capacity term,
   which in the dual mesh method means the measure of the control domain times
   the nodal rate of change.
-* ``output_interval`` and ``output_file_base`` write a VTK file every few
-  steps.  ``set_time_step_callback`` runs arbitrary Python code after each
+* An :class:`~dualmesh.Output` group in the ``output`` parameter writes the
+  fields at the output times, for example every 0.1 s with
+  ``dm.Output(interval=0.1)``.  ``set_time_step_callback`` runs arbitrary Python code after each
   converged step, which is convenient for recording a time history.

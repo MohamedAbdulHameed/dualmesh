@@ -36,6 +36,12 @@ Results and expressions
 .. autoclass:: dualmesh.SolveResult
    :members:
 
+.. autoclass:: dualmesh.Table
+   :members:
+
+.. autoclass:: dualmesh.Output
+   :members: output_times
+
 .. autoclass:: dualmesh.ParsedFunction
    :members:
 

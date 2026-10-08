@@ -18,7 +18,7 @@ def solve(num_elements, method="dmcdm"):
     problem.add_kernel("reaction", variable="temperature", coefficient=400.0)
     problem.add_boundary_condition("Dirichlet_boundary_condition", variable="temperature", boundary="left", value=300.0)
     problem.add_boundary_condition("Robin_boundary_condition", variable="temperature", boundary="right", transfer_coefficient=2.0)
-    problem.solve()
+    problem.solve(report="none")
     return problem
 
 

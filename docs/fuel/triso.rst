@@ -690,8 +690,8 @@ Usage
 
    particle, history = triso.crp6_case("6")
    result = triso.TrisoParticleModel(particle=particle, history=history).run()
-   print(result.summary())
-   print(result.maximum_tangential_stress("IPyC") / 1e6)  # MPa
+   # The maximum tangential stress of the IPyC layer, in MPa
+   print(result.maximum_tangential_stress("IPyC") / 1e6)
    result.write_csv("particle.csv")
 
 A particle of one's own is built from layers:

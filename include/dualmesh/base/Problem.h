@@ -50,6 +50,8 @@ struct Variable
   FunctionPtr initial_condition;
   double scaling = 1.0;
   VariableOrder order = VariableOrder::Mesh;
+  /// The SI unit of the variable, written with its values (empty: none given).
+  std::string unit;
 };
 
 struct SolverOptions
@@ -126,9 +128,13 @@ struct TransientOptions
   double dt = 0.1;
   /// 0 = forward (explicit) Euler, 0.5 = Crank-Nicolson, 1 = backward Euler.
   double theta = 1.0;
-  /// Write the solution every `output_interval` steps (0: never).
-  int output_interval = 0;
+  /// The times at which the solution is written, in increasing order.  The
+  /// steps land on these times.  Empty: the run writes no file.
+  std::vector<double> output_times;
+  /// The path and the start of the name of the files.  Empty: no file.
   std::string output_file_base;
+  /// The variables that the files contain.  Empty: all the variables.
+  std::vector<std::string> output_fields;
 
   // ---- adaptive time stepping --------------------------------------------
   /// How the step size is chosen.
@@ -211,7 +217,11 @@ struct SolveResult
 ///        nonlinear solve converged and how many iterations it took.  It must
 ///        not throw on non-convergence.
 /// @param on_accept is called after every accepted step with the step number
-///        and the step size, for output and for user callbacks.
+///        and the step size, for user callbacks.
+/// @param write_output is called with the index of an output time (of
+///        TransientOptions::output_times) when the solution is at that time:
+///        at the start, and after the accepted step that lands on it.  The
+///        steps land on the output times.  It can be empty.
 /// @param verbose_root suppresses the progress messages on every process but
 ///        one in a distributed run.
 SolveResult runTransient(const TransientOptions & transient,
@@ -220,6 +230,7 @@ SolveResult runTransient(const TransientOptions & transient,
                          double & current_time,
                          const std::function<SolveResult(const Vector &, double)> & take_step,
                          const std::function<void(int, double)> & on_accept,
+                         const std::function<void(int)> & write_output,
                          bool verbose_root = true);
 
 class Problem
@@ -470,6 +481,11 @@ public:
   {
     _step_callback = std::move(cb);
   }
+  /// Called with the index of an output time of a transient run
+  /// (TransientOptions::output_times) when the solution is at that time,
+  /// after the VTU file of that time is written.  An empty function removes
+  /// it.
+  void setOutputCallback(std::function<void(int)> cb) { _output_callback = std::move(cb); }
 
   // ---- post-processing --------------------------------------------------------------------
   /// Secondary variables (reactions) at the nodes of a boundary: for every
@@ -552,8 +568,12 @@ public:
   /// Integral of the normal flux of a kernel over a side set.
   double boundaryFluxIntegral(const std::string & kernel, const std::string & boundary) const;
   /// Write a VTK unstructured-grid file with nodal fields and cell data.
+  /// @p fields selects the variables (empty: all the variables).
   void writeVTU(const std::string & filename,
-                const std::vector<std::string> & cell_properties = {}) const;
+                const std::vector<std::string> & cell_properties = {},
+                const std::vector<std::string> & fields = {}) const;
+  /// Set the SI unit of a variable.
+  void setVariableUnit(const std::string & name, const std::string & unit);
 
   /// Nodal residual of the last converged solution (before Dirichlet rows).
   const Vector & lastResidual() const { return _last_residual; }
@@ -707,6 +727,7 @@ private:
   Vector _last_residual;
   double _time = 0.0;
   std::function<void(double, Problem &)> _step_callback;
+  std::function<void(int)> _output_callback;
   std::map<std::string, std::vector<double>> _element_fields;
 
   /// The history of one owner (an element, or a cell-centred face): the keys

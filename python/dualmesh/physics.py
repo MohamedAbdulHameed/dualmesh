@@ -114,13 +114,17 @@ class Physics:
             try:
                 problem.variable_index(variable)
             except ValueError:
-                problem.add_variable(variable, block=list(getattr(self, "block", ())), initial_condition=self._initial_condition(variable), order=order.get(variable, "mesh"))
+                problem.add_variable(variable, block=list(getattr(self, "block", ())), initial_condition=self._initial_condition(variable), order=order.get(variable, "mesh"), unit=self._variable_units().get(variable, ""))
                 continue
             existing = problem.variable_order(variable)
             if existing != order.get(variable, "mesh"):
                 raise InputError(f"{self.type_name} '{self.name}': the variable '{variable}' exists with order '{existing}', and this physics needs order '{order.get(variable, 'mesh')}'. Declare it with order='{order.get(variable, 'mesh')}', or let the physics create it.")
 
     def _variable_order(self) -> dict:
+        return {}
+
+    def _variable_units(self) -> dict:
+        """The SI unit of each variable of the physics."""
         return {}
 
     def _initial_condition(self, variable: str):
@@ -291,6 +295,9 @@ class HeatTransfer(Physics):
     def variables(self) -> list[str]:
         return [self.temperature]
 
+    def _variable_units(self) -> dict:
+        return {self.temperature: "K"}
+
     def _initial_condition(self, variable: str):
         return self.initial_condition
 
@@ -345,6 +352,7 @@ class CoefficientFormPDE(Physics):
     module: ClassVar[str] = "framework"
 
     variable: str = parameter("u", description="Name of the dependent variable u. Default u.")
+    unit: str = parameter("", description="The SI unit of u, which the output files write with its values. Default none, for a dimensionless u.")
     diffusion_coefficient: float | str | Sequence[float] | None = parameter(
         None,
         description="Diffusion coefficient c: a constant, an expression of (x, y, z, t), an expression of the variable (e.g., '1 + 0.5*u'), or a constant tensor given as one value per dimension (its diagonal) or as dimension squared values row by row. Default: the property diffusion_coefficient of the property objects of the problem. Give 0 for an equation without diffusion.",
@@ -368,6 +376,9 @@ class CoefficientFormPDE(Physics):
 
     def variables(self) -> list[str]:
         return [self.variable]
+
+    def _variable_units(self) -> dict:
+        return {self.variable: self.unit}
 
     def _initial_condition(self, variable: str):
         return self.initial_condition
@@ -473,6 +484,9 @@ class NeutronDiffusion(Physics):
         if self.fluxes is not None:
             return list(self.fluxes)
         return [f"neutron_flux_{g}" for g in range(1, self.groups + 1)]
+
+    def _variable_units(self) -> dict:
+        return dict.fromkeys(self.variables(), "1/(m^2 s)")
 
     def _dimension(self) -> int:
         return self.groups
@@ -604,6 +618,9 @@ class SolidMechanics(Physics):
             return ["displacement_r", "displacement_z"]
         return ["displacement_x", "displacement_y", "displacement_z"][: 3 if self.formulation == "three_dimensional" else 2]
 
+    def _variable_units(self) -> dict:
+        return dict.fromkeys(self.variables(), "m")
+
     def _build(self, problem) -> None:
         names, restrict = self.variables(), self._restriction()
         expansion = self._coupled.get("thermal_expansion")
@@ -727,6 +744,9 @@ class IncompressibleFlow(Physics):
 
     def variables(self) -> list[str]:
         return list(self.velocities) + ([self.pressure] if self._pressure_formulation else [])
+
+    def _variable_units(self) -> dict:
+        return {**dict.fromkeys(self.velocities, "m/s"), self.pressure: "Pa"}
 
     def _dimension(self) -> int:
         return len(self.velocities)
@@ -874,6 +894,9 @@ class Beam(Physics):
         third = self.rotation if self.model == "beam_Timoshenko_displacement" else self.bending_moment
         return [self.axial_displacement, self.transverse_displacement, third]
 
+    def _variable_units(self) -> dict:
+        return {self.axial_displacement: "m", self.transverse_displacement: "m", self.rotation: "rad", self.bending_moment: "N m"}
+
     def _build(self, problem) -> None:
         displacement_model = self.model == "beam_Timoshenko_displacement"
         variables = self.variables()
@@ -915,6 +938,9 @@ class Plate(Physics):
 
     def variables(self) -> list[str]:
         return list(self.in_plane_displacements) + [self.transverse_displacement] + list(self.rotations)
+
+    def _variable_units(self) -> dict:
+        return {**dict.fromkeys(self.in_plane_displacements, "m"), self.transverse_displacement: "m", **dict.fromkeys(self.rotations, "rad")}
 
     def _build(self, problem) -> None:
         options = dict(_structural_parameters(self, poissons_ratio=True), in_plane_load_x=self.in_plane_load_x, in_plane_load_y=self.in_plane_load_y, in_plane_displacements=list(self.in_plane_displacements), transverse_displacement=self.transverse_displacement, rotations=list(self.rotations), **self._restriction())
@@ -968,6 +994,9 @@ class CircularPlate(Physics):
     def variables(self) -> list[str]:
         third = self.bending_moment if self.theory == "classical" else self.rotation
         return [self.radial_displacement, self.transverse_displacement, third]
+
+    def _variable_units(self) -> dict:
+        return {self.radial_displacement: "m", self.transverse_displacement: "m", self.rotation: "rad", self.bending_moment: "N m/m"}
 
     def _build(self, problem) -> None:
         variables = self.variables()

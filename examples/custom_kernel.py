@@ -30,7 +30,7 @@ def solve(load, num_elements=8, num_load_steps=5):
     problem.add_kernel(LargeDeformationBar(variable="displacement", axial_stiffness=1.0))
     problem.add_boundary_condition("Dirichlet_boundary_condition", variable="displacement", boundary="left", value=0.0)
     problem.add_boundary_condition("Neumann_boundary_condition", variable="displacement", boundary="right", flux=load)
-    problem.solve(load_factors=list(np.linspace(1.0 / num_load_steps, 1.0, num_load_steps)))
+    problem.solve(load_factors=list(np.linspace(1.0 / num_load_steps, 1.0, num_load_steps)), report="none")
     return problem
 
 

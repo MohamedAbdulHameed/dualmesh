@@ -22,7 +22,9 @@ measured band of the upper thermocouple.  The runs follow a scrambled
 Sobol' design, whose first points are the design of a smaller study, and
 are kept in ``run_ifa677_uq_store.npz``, so that an interrupted study resumes
 and a larger study runs only the new points.  The Gaussian process of the
-Sobol' indices is trained on the same runs.  The script writes
+Sobol' indices is trained on the same runs.  It models the logarithm of the
+release, which changes by factors (leave-one-out Q2 of 0.99 on 64 runs,
+against 0.80 for the release itself on 32 runs).  The script writes
 ``ifa677_uq_results.csv`` beside itself.
 """
 
@@ -70,10 +72,8 @@ def rod_1(**factors):
 def main():
     samples = int(sys.argv[1]) if len(sys.argv) > 1 else 64
     processes = int(sys.argv[2]) if len(sys.argv) > 2 else 1
-    runs = uq.propagate(rod_1, INPUTS, samples, method="sobol", seed=0, processes=processes, store=STORE, progress=True)
-    print(runs.summary())
-    indices = uq.sobol(rod_1, INPUTS, 1024, surrogate="gaussian_process", training=runs, seed=0)
-    print(indices.summary())
+    runs = uq.propagate(rod_1, INPUTS, samples, method="sobol", seed=0, processes=processes, store=STORE)
+    indices = uq.sobol(rod_1, INPUTS, 4096, surrogate="gaussian_process", training=runs, seed=0, output_transform={"release": "log"}, report="summary")
     lines = ["quantity,mean,standard_deviation,low_95,high_95"]
     for name in ("release", "thermocouple_bias"):
         low, high = runs.interval(name)

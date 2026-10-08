@@ -1841,6 +1841,7 @@ runTransient(const TransientOptions & tr,
              double & current_time,
              const std::function<SolveResult(const Vector &, double)> & take_step,
              const std::function<void(int, double)> & on_accept,
+             const std::function<void(int)> & write_output,
              bool verbose_root)
 {
   if (tr.dt <= 0)
@@ -1877,14 +1878,37 @@ runTransient(const TransientOptions & tr,
   double dt = std::min(std::max(tr.dt, dt_min), dt_max);
   int rejected_in_a_row = 0;
 
+  // The output times: the solution is written at each of them, and the steps
+  // land on them.  The times at the start are written before the first step.
+  const double time_tolerance = 1e-10 * std::max(std::abs(span), 1e-300);
+  for (std::size_t k = 1; k < tr.output_times.size(); ++k)
+    if (!(tr.output_times[k] > tr.output_times[k - 1]))
+      throw InputError("Transient: the output times must increase.");
+  std::size_t next_output = 0;
+  while (next_output < tr.output_times.size() &&
+         tr.output_times[next_output] <= current_time + time_tolerance)
+  {
+    if (write_output)
+      write_output(static_cast<int>(next_output));
+    ++next_output;
+  }
+
   while (current_time < tr.end_time - 1e-12 * std::abs(span))
   {
-    const double remaining = tr.end_time - current_time;
-    // Land exactly on the end time, and do not leave a sliver behind: if one
-    // step would nearly finish the interval, finish it.
+    // Land exactly on the next output time or on the end time, and do not
+    // leave a sliver behind: if one step would nearly reach the target, reach
+    // it.
+    const double target = next_output < tr.output_times.size()
+                              ? std::min(tr.output_times[next_output], tr.end_time)
+                              : tr.end_time;
+    const double remaining = target - current_time;
     double step_size = std::min(dt, remaining);
     if (remaining - step_size < 1e-8 * std::abs(span))
       step_size = remaining;
+    // A step that is shortened to land on an output time is not the choice of
+    // the step controller, so the step after it starts from the size that the
+    // controller chose.
+    const bool shortened = step_size < dt;
 
     const Vector old = solution;
     const double oldcurrent_time = current_time;
@@ -2000,6 +2024,15 @@ runTransient(const TransientOptions & tr,
       std::cout << "  step " << step << ": t = " << current_time << ", dt = " << step_size
                 << ", iterations " << iterations << "\n";
     on_accept(step, step_size);
+    while (next_output < tr.output_times.size() &&
+           tr.output_times[next_output] <= current_time + time_tolerance)
+    {
+      if (write_output)
+        write_output(static_cast<int>(next_output));
+      ++next_output;
+    }
+    if (shortened)
+      next_dt = std::max(next_dt, dt);
     dt = std::min(std::max(next_dt, dt_min), dt_max);
   }
   total.converged = true;
@@ -2015,16 +2048,17 @@ Problem::solveTransient(const TransientOptions & tr, const SolverOptions & optio
   SolverOptions attempt = options;
   attempt.error_on_divergence = false;
   applyDirichlet(_U, 1.0);
-  const auto write = [&](int step)
+  const auto write = [&](int index)
   {
-    if (tr.output_interval > 0 && step % tr.output_interval == 0 && !tr.output_file_base.empty())
+    if (!tr.output_file_base.empty())
     {
       std::ostringstream os;
-      os << tr.output_file_base << "_" << std::setw(5) << std::setfill('0') << step << ".vtu";
-      writeVTU(os.str());
+      os << tr.output_file_base << "_" << std::setw(5) << std::setfill('0') << index << ".vtu";
+      writeVTU(os.str(), {}, tr.output_fields);
     }
+    if (_output_callback)
+      _output_callback(index);
   };
-  write(0);
   // The history of stateful property objects follows the solution: a step starts
   // from the committed history when it starts from the last accepted
   // solution, and from the state its predecessor reached when it continues
@@ -2057,8 +2091,8 @@ Problem::solveTransient(const TransientOptions & tr, const SolverOptions & optio
         }
         if (_step_callback)
           _step_callback(_time, *this);
-        write(step);
       },
+      write,
       true);
 }
 

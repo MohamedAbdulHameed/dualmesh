@@ -17,14 +17,44 @@ the post-processors to CSV files; these reports are for reading.
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import datetime
 import platform
 import socket
 from collections.abc import Sequence
 
 from . import _core
+from ._core import InputError
 
 RULE = "-" * 79
+
+#: The levels of the parameter ``report`` of every study.  ``"full"`` (the
+#: default) prints the inputs with their defaults marked, the progress and
+#: the summary.  ``"summary"`` prints one line that names the study and the
+#: summary at the end.  ``"none"`` prints nothing.
+REPORT_LEVELS = ("full", "summary", "none")
+
+_INNER_STUDY = contextvars.ContextVar("dualmesh_inner_study", default=False)
+
+
+def report_level(report: str, where: str) -> str:
+    """The report level that a study prints at.  A study inside a different
+    study (for example, a fuel rod in an uncertainty study) prints nothing."""
+    if report not in REPORT_LEVELS:
+        raise InputError(f"{where}: report must be one of {', '.join(REPORT_LEVELS)}, not '{report}'.")
+    return "none" if _INNER_STUDY.get() else report
+
+
+@contextlib.contextmanager
+def inner_study():
+    """The studies in this context print nothing: a study that runs other
+    studies (an uncertainty study, a convergence study) runs them in it."""
+    token = _INNER_STUDY.set(True)
+    try:
+        yield
+    finally:
+        _INNER_STUDY.reset(token)
 
 
 def table(rows: Sequence[Sequence], headers: Sequence[str], indent: int = 2) -> str:

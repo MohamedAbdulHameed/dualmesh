@@ -150,7 +150,10 @@ def audit_dataclass(cls, label: str) -> list[str]:
         findings += check_name(f.name, where)
         description = f.metadata.get("description", "")
         findings += check_description(description, where)
-        if _has_default(f) and description and not re.search(r"(?i)\bdefault", description):
+        # A parameter whose default is None and whose description says
+        # "Required" has no default: the input of the case gives it.
+        required = f.default is None and re.search(r"\bRequired\b", description)
+        if _has_default(f) and description and not required and not re.search(r"(?i)\bdefault", description):
             findings.append(f"{where}: the description does not state the default and its reason.")
     return findings
 

@@ -53,7 +53,7 @@ def solve(rayleigh_number=1.0e5, num_elements=32, method="dmcdm"):
     heat.add_boundary_condition("Dirichlet_boundary_condition", "right", value=-0.5)
     # Continuation in the Rayleigh number, one decade at a time.
     steps = [ra / rayleigh_number for ra in (1e3, 1e4, 1e5, 1e6) if ra <= rayleigh_number]
-    result = problem.solve(load_factors=steps, max_iterations=40)
+    result = problem.solve(load_factors=steps, max_iterations=40, report="none")
     return problem, result
 
 

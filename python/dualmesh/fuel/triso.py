@@ -410,10 +410,37 @@ class TrisoParticleModel:
         if not isinstance(self.numerics, ParticleNumerics):
             raise TypeError("TrisoParticleModel: 'numerics' must be a ParticleNumerics.")
 
-    def run(self) -> ParticleResult:
-        """Integrate the layer stresses over the history."""
+    def input_report(self) -> str:
+        """The input groups with every parameter, the defaults marked."""
+        from ..console import table
+        from ..parameters import describe
+
+        lines = ["TRISO particle input"]
+        groups = [("particle", self.particle)] + [(f"layer {layer.name}", layer) for layer in self.particle.layers] + [("history", self.history), ("numerics", self.numerics)]
+        for name, group in groups:
+            lines.append(f"  {name} ({type(group).__name__})")
+            lines.append(table(describe(group), ["parameter", "value", "unit", "source"], indent=4))
+        return "\n".join(lines)
+
+    def run(self, report: str = "full") -> ParticleResult:
+        """Integrate the layer stresses over the history.
+
+        ``report`` sets what the run prints: ``"full"`` (the default: the
+        input with the defaults marked and the summary), ``"summary"`` (one
+        line that names the particle, then the summary) or ``"none"``."""
+        from ..console import header, report_level
+
+        level = report_level(report, "TrisoParticleModel.run")
+        if level == "full":
+            print(header("TRISO particle"))
+            print(self.input_report())
+        elif level == "summary":
+            print(f"dualmesh TRISO particle: layers {', '.join(layer.name for layer in self.particle.layers)}")
         n = self.numerics
-        return _solve_particle(self.particle, self.history, steps=n.steps, elements_per_layer=n.elements_per_layer, implicitness=n.implicitness)
+        result = _solve_particle(self.particle, self.history, steps=n.steps, elements_per_layer=n.elements_per_layer, implicitness=n.implicitness)
+        if level != "none":
+            print(result.summary())
+        return result
 
 
 def _solve_particle(particle: TrisoParticle, history: ParticleHistory, *, steps: int = 600, elements_per_layer: int = 32, implicitness: float = 0.5) -> ParticleResult:

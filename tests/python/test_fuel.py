@@ -102,7 +102,7 @@ def test_escore_densification_follows_falcon():
             calls.append((type_name, parameters))
 
     context = types.SimpleNamespace(models=fuel.RodModels(relocation=False, gaseous_swelling=False, densification=True, solid_swelling=True), geometry=None, temperature="temperature", stress_free_temperature=293.15, formulation="axisymmetric", factors=None, burnup=dict(burnup="burnup", burnup_unit="FIMA"))
-    fuel.UO2Fuel(densification_model="escore").add_eigenstrains(Recorder(), "fuel", context)
+    fuel.UO2Fuel(grain_radius=5.0e-6, densification_model="escore").add_eigenstrains(Recorder(), "fuel", context)
     swelling = [parameters for type_name, parameters in calls if type_name == "UO2_volumetric_swelling_eigenstrain"]
     assert swelling[0]["densification_burnup"] == "pellet_average_burnup"
     assert swelling[0]["burnup"] == "burnup"
@@ -216,7 +216,7 @@ def test_one_fima_is_938_megawatt_days_per_kilogram():
     values = np.array([0.0, 10.0, 60.0])
     back = converter.to_fima(converter.from_fima(values, "MWd/kgHM"), "MWd/kgHM")
     assert back == pytest.approx(values)
-    assert fuel.UO2Fuel(enrichment=0.05).heavy_metal_molar_mass < 0.238029
+    assert fuel.UO2Fuel(grain_radius=5.0e-6, enrichment=0.05).heavy_metal_molar_mass < 0.238029
     with pytest.raises(ValueError, match="Unknown burnup unit"):
         converter.to_fima(1.0, "atom_percent")
 
@@ -461,16 +461,16 @@ def _rod(model="axisymmetric", method="fem", fuel_material=None, geometry=None, 
     history = history or fuel.PowerHistory(linear_heat_rate=[1e3, 25e3, 25e3], time=[0, 3600, 100 * DAY])
     rod = fuel.FuelRod(
         geometry,
-        fuel_material or fuel.UO2Fuel(),
+        fuel_material or fuel.UO2Fuel(grain_radius=5.0e-6),
         fuel.ZircaloyCladding(),
         fuel.FillGas(pressure=2.0e6, plenum_volume=0.15e-6),
         coolant,
         history,
         models=models,
         numerics=fuel.RodNumerics(model=model, method=method, mesh=mesh or fuel.RodMesh(num_axial_elements=2, num_axial_slices=1), max_time_step=max_time_step),
-        output=fuel.RodOutput(output_times=output_times, print_input=False, print_steps=False, **output),
+        output=fuel.RodOutput(times=output_times, **output),
     )
-    return rod, rod.run()
+    return rod, rod.run(report="none")
 
 
 def test_axisymmetric_and_one_and_a_half_dimensional_rods_agree():
@@ -512,7 +512,7 @@ def test_uranium_nitride_rod_runs_with_all_its_models():
     """A UN rod (Hayes conductivity, Ross swelling, Hayes creep, Storms gas
     release) in the axisymmetric model."""
     history = fuel.PowerHistory(linear_heat_rate=[1e3, 40e3, 40e3], time=[0, 3600, 200 * DAY])
-    rod, out = _rod(fuel_material=fuel.UNFuel(), history=history, output_times=[0, 3600, 100 * DAY, 200 * DAY], max_time_step=20 * DAY)
+    rod, out = _rod(fuel_material=fuel.UNFuel(grain_radius=5.0e-6), history=history, output_times=[0, 3600, 100 * DAY, 200 * DAY], max_time_step=20 * DAY)
     assert rod.active_models.relocation is False
     assert rod.active_models.fission_gas_release == "storms"
     # UN conducts heat far better than UO2: at 40 kW/m its centerline stays
@@ -521,7 +521,7 @@ def test_uranium_nitride_rod_runs_with_all_its_models():
     assert 100.0 < rise < 400.0
     assert 0.0 <= out.fission_gas_release[-1] < 1.0
     with pytest.raises(ValueError, match="relocation is not modelled for UN fuel"):
-        _rod(fuel_material=fuel.UNFuel(), models=fuel.RodModels(relocation=True))
+        _rod(fuel_material=fuel.UNFuel(grain_radius=5.0e-6), models=fuel.RodModels(relocation=True))
 
 
 def test_three_dimensional_rod_agrees_with_the_axisymmetric_one():
@@ -592,7 +592,7 @@ def test_gaseous_swelling_opens_no_gap_and_closes_it_faster():
     history = fuel.PowerHistory(linear_heat_rate=[1e3, 30e3, 30e3], time=[0, 3600, 300 * DAY])
     gaps = {}
     for swelling in (False, True):
-        _, out = _rod(history=history, fuel_material=fuel.UO2Fuel(gaseous_swelling_model="matpro"), models=fuel.RodModels(gaseous_swelling=swelling, fission_gas_release="none"), max_time_step=30 * DAY)
+        _, out = _rod(history=history, fuel_material=fuel.UO2Fuel(grain_radius=5.0e-6, gaseous_swelling_model="matpro"), models=fuel.RodModels(gaseous_swelling=swelling, fission_gas_release="none"), max_time_step=30 * DAY)
         gaps[swelling] = out.gap_width[-1].min()
     assert gaps[True] < gaps[False]
 
@@ -627,11 +627,11 @@ def test_specifications_refuse_nonsense_with_the_reason():
     with pytest.raises(ValueError, match="Unknown burnup unit"):
         fuel.PowerHistory(linear_heat_rate=[1.0, 2.0], burnup=[0, 1], burnup_unit="GWd/t")
     with pytest.raises(TypeError, match="'coolant' must be a ForcedConvection"):
-        fuel.FuelRod(fuel.RodGeometry.from_diameters(8e-3, 8.2e-3, 9e-3, 0.1), fuel.UO2Fuel(), fuel.ZircaloyCladding(), fuel.FillGas(pressure=1e6, plenum_volume=0.0), 600.0, fuel.PowerHistory(linear_heat_rate=[1.0, 2.0], time=[0, 1]))
+        fuel.FuelRod(fuel.RodGeometry.from_diameters(8e-3, 8.2e-3, 9e-3, 0.1), fuel.UO2Fuel(grain_radius=5.0e-6), fuel.ZircaloyCladding(), fuel.FillGas(pressure=1e6, plenum_volume=0.0), 600.0, fuel.PowerHistory(linear_heat_rate=[1.0, 2.0], time=[0, 1]))
 
 
 def test_describe_marks_the_defaults():
-    rows = {row[0]: row for row in fuel.describe(fuel.UO2Fuel(enrichment=0.05))}
+    rows = {row[0]: row for row in fuel.describe(fuel.UO2Fuel(grain_radius=5.0e-6, enrichment=0.05))}
     assert rows["enrichment"][3] == "given"
     assert rows["theoretical_density_fraction"][3] == "(default)"
     assert rows["grain_radius"][2] == "m"
@@ -710,10 +710,10 @@ UN_AS_EXPRESSIONS = dict(
 
 
 def _custom_un(**changes):
-    un = fuel.UNFuel()
+    un = fuel.UNFuel(grain_radius=5.0e-6)
     data = dict(name="UN written out", theoretical_density=14326.0, compound_molar_mass=un.compound_molar_mass, heavy_metal_molar_mass=un.heavy_metal_molar_mass, **UN_AS_EXPRESSIONS)
     data.update(changes)
-    return fuel.CustomFuel(**data)
+    return fuel.CustomFuel(grain_radius=5.0e-6, **data)
 
 
 @pytest.mark.parametrize("model", ["axisymmetric", "1.5d"])
@@ -725,7 +725,7 @@ def test_a_custom_fuel_reproduces_the_built_in_fuel_it_writes_out(model):
     history = fuel.PowerHistory(linear_heat_rate=[1e3, 40e3, 40e3], time=[0, 3600, 100 * DAY])
     models = fuel.RodModels(solid_swelling=False, fission_gas_release="none")
     results = []
-    for material in (fuel.UNFuel(), _custom_un()):
+    for material in (fuel.UNFuel(grain_radius=5.0e-6), _custom_un()):
         _, out = _rod(model, fuel_material=material, history=history, models=models, max_time_step=20 * DAY)
         results.append(out)
     built_in, custom = results
@@ -783,33 +783,33 @@ def test_a_custom_cladding_reproduces_zircaloy_heat_conduction():
         geometry = fuel.RodGeometry.from_diameters(8.19e-3, 8.36e-3, 9.50e-3, 0.05)
         rod = fuel.FuelRod(
             geometry,
-            fuel.UO2Fuel(),
+            fuel.UO2Fuel(grain_radius=5.0e-6),
             cladding,
             fuel.FillGas(pressure=2.0e6, plenum_volume=0.15e-6),
             fuel.ForcedConvection(inlet_temperature=565.0, pressure=15.5e6, mass_flux=3800.0, rod_pitch=12.6e-3),
             history,
             models=models,
             numerics=fuel.RodNumerics(mesh=fuel.RodMesh(num_axial_elements=2)),
-            output=fuel.RodOutput(print_input=False, print_steps=False),
+            output=fuel.RodOutput(),
         )
-        temperatures.append(rod.run().clad_inner_temperature)
+        temperatures.append(rod.run(report="none").clad_inner_temperature)
     # The steady state is independent of the specific heat and the density.
     assert temperatures[1][0] == pytest.approx(temperatures[0][0], rel=1e-9)
     # The full custom cladding also runs with its mechanics.
-    _, out = _rod(fuel_material=fuel.UO2Fuel(), models=fuel.RodModels(fission_gas_release="none"))
+    _, out = _rod(fuel_material=fuel.UO2Fuel(grain_radius=5.0e-6), models=fuel.RodModels(fission_gas_release="none"))
     geometry = fuel.RodGeometry.from_diameters(8.19e-3, 8.36e-3, 9.50e-3, 0.05)
     rod = fuel.FuelRod(
         geometry,
-        fuel.UO2Fuel(),
+        fuel.UO2Fuel(grain_radius=5.0e-6),
         zircaloy_like,
         fuel.FillGas(pressure=2.0e6, plenum_volume=0.15e-6),
         fuel.ForcedConvection(inlet_temperature=565.0, pressure=15.5e6, mass_flux=3800.0, rod_pitch=12.6e-3),
         fuel.PowerHistory(linear_heat_rate=[1e3, 25e3, 25e3], time=[0, 3600, 100 * DAY]),
         models=fuel.RodModels(fission_gas_release="none"),
         numerics=fuel.RodNumerics(mesh=fuel.RodMesh(num_axial_elements=2), max_time_step=20 * DAY),
-        output=fuel.RodOutput(print_input=False, print_steps=False),
+        output=fuel.RodOutput(),
     )
-    custom = rod.run()
+    custom = rod.run(report="none")
     # Both claddings creep down under the coolant pressure.
     assert custom.clad_hoop_strain[-1, 0] < custom.clad_hoop_strain[1, 0]
     assert out.clad_hoop_strain[-1, 0] < out.clad_hoop_strain[1, 0]
@@ -828,10 +828,10 @@ def test_the_custom_fuel_example_runs_and_agrees():
     example = importlib.util.module_from_spec(spec)
     sys.modules["custom_fuel"] = example  # the example's dataclass needs its module
     spec.loader.exec_module(example)
-    a = example.run(fuel.UNFuel())
+    a = example.run(fuel.UNFuel(grain_radius=5.0e-6))
     b = example.run(example.un_written_out())
     assert b.fuel_centerline_temperature == pytest.approx(a.fuel_centerline_temperature, rel=1e-9)
-    c = example.run(example.UNWithPowerLawCreep())
+    c = example.run(example.UNWithPowerLawCreep(grain_radius=5.0e-6))
     assert np.all(np.isfinite(c.clad_hoop_strain))
 
 
@@ -846,16 +846,16 @@ def test_finite_strain_agrees_with_small_strain_in_normal_operation(model):
         geometry = fuel.RodGeometry.from_diameters(8.19e-3, 8.36e-3, 9.50e-3, 0.05)
         rod = fuel.FuelRod(
             geometry,
-            fuel.UO2Fuel(),
+            fuel.UO2Fuel(grain_radius=5.0e-6),
             fuel.ZircaloyCladding(),
             fuel.FillGas(pressure=2.0e6, plenum_volume=0.15e-6),
             fuel.ForcedConvection(inlet_temperature=565.0, pressure=15.5e6, mass_flux=3800.0, rod_pitch=12.6e-3),
             fuel.PowerHistory(linear_heat_rate=[1e3, 25e3, 25e3], time=[0, 3600, 100 * DAY]),
             models=fuel.RodModels(fission_gas_release="none"),
             numerics=fuel.RodNumerics(model=model, strain=strain, mesh=fuel.RodMesh(num_axial_elements=2, num_axial_slices=1), max_time_step=20 * DAY),
-            output=fuel.RodOutput(print_input=False, print_steps=False),
+            output=fuel.RodOutput(),
         )
-        results[strain] = rod.run()
+        results[strain] = rod.run(report="none")
     small, finite = results["small"], results["finite"]
     assert finite.fuel_centerline_temperature == pytest.approx(small.fuel_centerline_temperature, rel=1e-3)
     # Gaps of tens of micrometres agree within 0.5 micrometre, hoop strains
@@ -927,23 +927,23 @@ def test_the_steps_land_on_a_short_shutdown():
 
 def test_the_rod_state_is_recorded_at_the_history_points_or_every_output_interval():
     """By default the rod state is recorded at the points of the power
-    history. With RodOutput.output_interval it is recorded every interval from
-    the first point and at the last point. RodOutput refuses both
-    output_times and output_interval."""
+    history. With RodOutput.interval it is recorded every interval from the
+    first point and at the last point. RodOutput refuses both times and
+    interval."""
     history = fuel.PowerHistory(linear_heat_rate=[1e3, 20e3, 20e3], time=[0, 3600, 25 * DAY])
     models = fuel.RodModels(mechanics=False, fission_gas_release="none")
     _, by_points = _rod(history=history, models=models)
     assert list(by_points.time) == pytest.approx([0, 3600, 25 * DAY])
-    _, by_interval = _rod(history=history, models=models, output_interval=10 * DAY)
+    _, by_interval = _rod(history=history, models=models, interval=10 * DAY)
     assert list(by_interval.time) == pytest.approx([0, 10 * DAY, 20 * DAY, 25 * DAY])
-    _, even = _rod(history=fuel.PowerHistory(linear_heat_rate=[1e3, 20e3, 20e3], time=[0, 3600, 20 * DAY]), models=models, output_interval=10 * DAY)
+    _, even = _rod(history=fuel.PowerHistory(linear_heat_rate=[1e3, 20e3, 20e3], time=[0, 3600, 20 * DAY]), models=models, interval=10 * DAY)
     assert list(even.time) == pytest.approx([0, 10 * DAY, 20 * DAY])
     # The steps still land on the end of the ramp, so both runs agree there.
     assert by_interval.fuel_centerline_temperature[-1, 0] == pytest.approx(by_points.fuel_centerline_temperature[-1, 0], rel=1e-6)
-    with pytest.raises(ValueError, match="output_times or output_interval"):
-        fuel.RodOutput(output_times=[0, DAY], output_interval=DAY)
-    with pytest.raises(ValueError, match="output_interval must be positive"):
-        fuel.RodOutput(output_interval=0.0)
+    with pytest.raises(ValueError, match="give only one of times and interval"):
+        fuel.RodOutput(times=[0, DAY], interval=DAY)
+    with pytest.raises(ValueError, match="interval must be positive"):
+        fuel.RodOutput(interval=0.0)
 
 
 def test_relocation_opens_crack_volume():
@@ -967,5 +967,5 @@ def test_relocation_opens_crack_volume():
 
 
 def test_doped_fuel_densifies_as_measured_at_halden():
-    assert fuel.DopedUO2Fuel().total_densification == 0.001
-    assert fuel.UO2Fuel().total_densification == 0.01
+    assert fuel.DopedUO2Fuel(grain_radius=25.0e-6).total_densification == 0.001
+    assert fuel.UO2Fuel(grain_radius=5.0e-6).total_densification == 0.01

@@ -42,6 +42,7 @@ from .adaptivity import AdaptivityResult, mark_by_error_fraction, mark_by_fracti
 from .expressions import Expression, ParsedFunction, parsed_function
 from .meshing import annulus_coordinates, generate_annulus_mesh, generate_box_mesh, generate_line_mesh, generate_rectangle_mesh, graded_coordinates, mesh_from_arrays, read_mesh, sideset_summary, write_mesh, write_sidesets
 from .objects import PythonBoundaryCondition, PythonKernel, PythonNodalBoundaryCondition, PythonProperty
+from .output import Output
 from .parallel import have_metis, have_mpi, have_petsc, is_root, num_ranks, partition_mesh, petsc_version
 from .problem import Problem, SolveResult
 from .tables import Table
@@ -58,6 +59,7 @@ __all__ = [
     "Kernel",
     "Mesh",
     "NodalBC",
+    "Output",
     "Problem",
     "Expression",
     "ParsedFunction",

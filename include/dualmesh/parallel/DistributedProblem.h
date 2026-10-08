@@ -160,7 +160,8 @@ public:
   /// VisIt open as a single data set.  @p base is the file name without an
   /// extension.
   void writeVTU(const std::string & base,
-                const std::vector<std::string> & cell_properties = {}) const;
+                const std::vector<std::string> & cell_properties = {},
+                const std::vector<std::string> & fields = {}) const;
 
   /// A one-line description of the partition, for logs.
   std::string summary() const;

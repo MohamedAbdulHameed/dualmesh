@@ -80,6 +80,16 @@ class RodContext:
 # ---------------------------------------------------------------------------
 # The interfaces
 # ---------------------------------------------------------------------------
+def _check_grain_radius(material) -> None:
+    """Refuse a fuel without its grain radius, which is fabrication data of
+    the case and has no default."""
+    name = type(material).__name__
+    if material.grain_radius is None:
+        raise ValueError(f"{name}: missing required parameter 'grain_radius', the mean grain radius of the fuel (m), from its fabrication data.")
+    if not material.grain_radius > 0.0:
+        raise ValueError(f"{name}: grain_radius must be positive, not {material.grain_radius}.")
+
+
 class FuelMaterial(abc.ABC):
     """The interface of a fuel material.  See the module documentation.
 
@@ -185,7 +195,7 @@ class UO2Fuel(FuelMaterial):
 
     enrichment: float = parameter(0.045, description="U-235 weight fraction of the uranium. Default 0.045, typical of LWR fuel. It enters only the heavy-metal molar mass (the burnup conversion).")
     theoretical_density_fraction: float = parameter(0.95, description="As-fabricated density as a fraction of the theoretical density (10963 kg/m^3). Default 0.95, typical of LWR fuel.")
-    grain_radius: float = parameter(5.0e-6, unit="m", description="Grain radius, for fission gas diffusion and creep: the radius of the sphere of the grain's volume, 1.56 times half the mean linear intercept length. Default 5 um, typical of LWR fuel.")
+    grain_radius: float | None = parameter(None, unit="m", description="Grain radius, for fission gas diffusion and creep: the radius of the sphere of the grain's volume, 1.56 times half the mean linear intercept length. Required, from the fabrication data of the fuel.")
     thermal_conductivity_model: str = parameter("fink_lucuta", description="fink, fink_lucuta, nfi or halden (see UO2_thermal). Default fink_lucuta: the recommended unirradiated conductivity with a published treatment of irradiation.")
     specific_heat_model: str = parameter("fink", description="fink or matpro. Default fink, recommended by IAEA-TECDOC-1496.")
     gadolinia_weight_fraction: float = parameter(0.0, description="Gd2O3 weight fraction (nfi conductivity only). Default 0.")
@@ -212,6 +222,7 @@ class UO2Fuel(FuelMaterial):
     theoretical_density = 10963.0  # kg/m^3, Fink (2000)
 
     def __post_init__(self):
+        _check_grain_radius(self)
         _check_fraction(self, "enrichment", 0.0, 1.0)
         _check_fraction(self, "theoretical_density_fraction", 0.5, 1.0, open_low=True)
         if self.thermal_conductivity_model not in ("fink", "fink_lucuta", "nfi", "halden"):
@@ -303,7 +314,7 @@ class UNFuel(FuelMaterial):
 
     enrichment: float = parameter(0.05, description="U-235 weight fraction. Default 0.05. It enters only the heavy-metal molar mass (the burnup conversion).")
     theoretical_density_fraction: float = parameter(0.95, description="Density as a fraction of the theoretical density, 14326 kg/m^3 at 298 K. Default 0.95.")
-    grain_radius: float = parameter(5.0e-6, unit="m", description="Grain radius, for the grain-boundary creep (grain size 2 x radius). Default 5 um: fabricated UN has 5-30 um grains (AbdulHameed et al. 2025).")
+    grain_radius: float | None = parameter(None, unit="m", description="Grain radius, for the grain-boundary creep (grain size 2 x radius). Required, from the fabrication data of the fuel (fabricated UN has 5 to 30 um grains, AbdulHameed et al. 2025).")
     grain_boundary_creep: bool = parameter(True, description="Include the grain-boundary (Coble) creep of AbdulHameed et al. (2025), which dominates dislocation creep for 5-30 um grains below about 1800 K. Default True.")
     surface_roughness: float = parameter(2.0e-6, unit="m", description="Pellet surface roughness. Default 2 um (as UO2).")
     emissivity: float = parameter(0.8, description="Pellet surface emissivity. Default 0.8, the UO2 value.")
@@ -315,6 +326,7 @@ class UNFuel(FuelMaterial):
     theoretical_density = 14326.0  # kg/m^3 at 298 K, Hayes et al. (1990, part I), Eq. (3)
 
     def __post_init__(self):
+        _check_grain_radius(self)
         _check_fraction(self, "enrichment", 0.0, 1.0)
         _check_fraction(self, "theoretical_density_fraction", 0.5, 1.0, open_low=True)
 
@@ -506,6 +518,7 @@ class CustomFuel(_ExpressionMaterial, FuelMaterial):
             name="UC",
             theoretical_density=13630.0,
             compound_molar_mass=0.250039,
+            grain_radius=10.0e-6,
             thermal_conductivity="21.7 - 3.04e-3*temperature + 3.61e-6*temperature^2",
             specific_heat="...",
             youngs_modulus="...",
@@ -535,7 +548,7 @@ class CustomFuel(_ExpressionMaterial, FuelMaterial):
     heavy_metal_atoms_per_formula_unit: int = parameter(1, description="Heavy-metal atoms in one formula unit: 1 for UC, UN, UO2 or UB2, 3 for U3Si2. Default 1.")
     heavy_metal_molar_mass: float = parameter(NATURAL_URANIUM_MOLAR_MASS, unit="kg/mol", description="Molar mass of the heavy metal. Default 0.238029, natural uranium. Set it for enriched uranium or another heavy metal. It enters the burnup only.")
     theoretical_density_fraction: float = parameter(0.95, description="Fabricated density as a fraction of theoretical. Default 0.95.")
-    grain_radius: float = parameter(5.0e-6, unit="m", description="Mean grain radius. Default 5 um.")
+    grain_radius: float | None = parameter(None, unit="m", description="Mean grain radius. Required, from the fabrication data of the fuel.")
     surface_roughness: float = parameter(2.0e-6, unit="m", description="Pellet surface roughness. Default 2 um.")
     emissivity: float = parameter(0.8, description="Pellet surface emissivity. Default 0.8.")
     energy_per_fission: float = parameter(DEFAULT_ENERGY_PER_FISSION, unit="J", description="Recoverable energy per fission. Default 3.2044e-11 J (200 MeV).")
@@ -556,6 +569,7 @@ class CustomFuel(_ExpressionMaterial, FuelMaterial):
         return (self.fission_gas_release,)
 
     def __post_init__(self):
+        _check_grain_radius(self)
         _check_fraction(self, "theoretical_density_fraction", 0.0, 1.0, open_low=True)
         if self.fission_gas_release not in ("none", "booth", "fraction"):
             raise ValueError(f"CustomFuel '{self.name}': fission_gas_release must be none, booth or fraction.")

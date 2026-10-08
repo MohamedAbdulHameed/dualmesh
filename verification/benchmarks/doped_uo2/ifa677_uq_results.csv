@@ -1,0 +1,14 @@
+quantity,mean,standard_deviation,low_95,high_95
+release,9.194,7.776,1.650,29.623
+thermocouple_bias,-48.594,58.222,-158.791,56.959
+
+input,release first order,release total,thermocouple_bias first order,thermocouple_bias total
+linear_heat_rate,0.004,0.007,0.188,0.188
+densification,0.000,0.000,0.000,0.000
+gap_gas_conductance,0.008,0.010,0.133,0.134
+gap_contact_conductance,0.000,0.000,0.000,0.000
+fuel_thermal_conductivity,0.018,0.050,0.670,0.671
+grain_radius,0.269,0.374,-0.001,0.001
+intragranular_diffusivity,0.280,0.459,-0.000,0.001
+resolution,0.208,0.362,0.005,0.006
+grain_boundary_diffusivity,0.000,0.000,0.001,0.000

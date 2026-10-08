@@ -47,7 +47,7 @@ import numpy as np
 
 from .. import _core
 from ..problem import Problem
-from . import report
+from . import report as rod_report
 from .fields import TimeHistory, irradiation_fields, normalized_axial_profile
 from .materials import MAXIMUM_TEMPERATURE, CladdingMaterial, FuelMaterial, RodContext, UO2Fuel
 from .mesh import axisymmetric_rod_mesh, radial_slice_mesh, three_dimensional_rod_mesh
@@ -751,14 +751,14 @@ class FuelRod:
     def _solve_steady(self, p) -> int:
         options = {"line_search": "backtracking", **self.numerics.solver_options}
         if not self._with_axial_balance():
-            return int(p.solve(**options).total_iterations)
+            return int(p.solve(report="none", **options).total_iterations)
         # Every trial of the axial balance starts from the same history.
         p.initialize()
         state = p._problem.save_state()
 
         def solve():
             p._problem.restore_state(state)
-            return int(p.solve(**options).total_iterations)
+            return int(p.solve(report="none", **options).total_iterations)
 
         return self._solve_axial_balance(p, solve)
 
@@ -769,7 +769,7 @@ class FuelRod:
             state = p._problem.save_state()
             start = {v: np.asarray(p.values(v)).copy() for v in ["temperature"] + p._displacements}
             try:
-                result = p.solve_transient(start_time=t_old, end_time=t_new, time_step=dt, **options)
+                result = p.solve_transient(start_time=t_old, end_time=t_new, time_step=dt, report="none", **options)
             except RuntimeError:
                 if "line_search" in self.numerics.solver_options:
                     raise
@@ -783,7 +783,7 @@ class FuelRod:
                     p.set_values(v, values)
                 p._problem.restore_state(state)
                 options["line_search"] = "none"
-                result = p.solve_transient(start_time=t_old, end_time=t_new, time_step=dt, **options)
+                result = p.solve_transient(start_time=t_old, end_time=t_new, time_step=dt, report="none", **options)
             return int(result.total_iterations)
         variables = ["temperature"] + p._displacements
         start = {v: np.asarray(p.values(v)).copy() for v in variables}
@@ -793,7 +793,7 @@ class FuelRod:
             for v, values in start.items():
                 p.set_values(v, values)
             p._problem.restore_state(state)
-            result = p.solve_transient(start_time=t_old, end_time=t_new, time_step=dt, **options)
+            result = p.solve_transient(start_time=t_old, end_time=t_new, time_step=dt, report="none", **options)
             return int(result.total_iterations)
 
         return self._solve_axial_balance(p, solve)
@@ -834,19 +834,19 @@ class FuelRod:
         return max(1, steps)
 
     def _output_times(self) -> np.ndarray:
-        if self.output.output_interval is not None:
+        if self.output.interval is not None:
             start, end = float(self.history.time[0]), float(self.history.time[-1])
-            num_intervals = int(np.floor((end - start) / self.output.output_interval * (1.0 + 1e-12)))
-            times = start + self.output.output_interval * np.arange(num_intervals + 1)
+            num_intervals = int(np.floor((end - start) / self.output.interval * (1.0 + 1e-12)))
+            times = start + self.output.interval * np.arange(num_intervals + 1)
             if end - times[-1] > 1e-6:
                 return np.append(times, end)
             times[-1] = end
             return times
-        if self.output.output_times is None:
+        if self.output.times is None:
             return np.asarray(self.history.time, dtype=float)
-        times = np.asarray(self.output.output_times, dtype=float)
+        times = np.asarray(self.output.times, dtype=float)
         if len(times) < 1 or np.any(np.diff(times) <= 0):
-            raise ValueError("RodOutput: output_times must increase strictly.")
+            raise ValueError("RodOutput: times must be a list of increasing times.")
         return times
 
     def _record(self, result: RodResult, iterations: int):
@@ -884,9 +884,14 @@ class FuelRod:
                 self._warned_boiling = True
                 warnings.warn(f"FuelRod: the cladding surface reaches {wall:.1f} K, above the coolant saturation temperature {saturation:.1f} K. Subcooled nucleate boiling, which would hold the wall a few kelvin above saturation, is not modelled.", stacklevel=3)
 
-    def run(self) -> RodResult:
+    def run(self, report: str = "full") -> RodResult:
         """Follow the power history from the first output time to the last
         and return the rod state at every output time (:class:`RodResult`).
+
+        ``report`` sets what the run prints: ``"full"`` (the default: the
+        input with the defaults marked, a table row at every output time and
+        the summary), ``"summary"`` (one line that names the rod, then the
+        summary) or ``"none"``.
 
         The rod starts in the steady state of the first power level.  The
         steps land on the output times and on the points of the power history,
@@ -894,12 +899,17 @@ class FuelRod:
         ``numerics.max_burnup_step`` and ``numerics.max_power_step``.  After
         every step the fission gas, the gaseous swelling and the gas pressure
         are updated."""
+        from ..console import report_level
+
+        level = report_level(report, "FuelRod.run")
         out = self.output
         started = wall_clock.perf_counter()
         result = RodResult(out.burnup_unit, self.converter, self.axial_positions.copy())
-        result.input_report = report.input_report(self)
-        if out.print_input:
+        result.input_report = rod_report.input_report(self)
+        if level == "full":
             print(result.input_report)
+        elif level == "summary":
+            print(f"dualmesh fuel rod: {self.fuel.__class__.__name__} fuel, {len(self.axial_positions)} axial slices, power history to {float(self.history.time[-1]) / SECONDS_PER_DAY:.6g} days")
         times = self._output_times()
         self.time = float(times[0])
         iterations = 0
@@ -908,9 +918,9 @@ class FuelRod:
             iterations += self._solve_steady(p)
         self._update_maximum_temperature()
         self._record(result, iterations)
-        if out.print_steps:
-            print(report.step_header(out.burnup_unit))
-            print(report.step_row(result, 0))
+        if level == "full":
+            print(rod_report.step_header(out.burnup_unit))
+            print(rod_report.step_row(result, 0))
         bounds = self._step_boundaries(times)
         iterations, k = 0, 0
         for t_next in bounds[1:]:
@@ -931,17 +941,17 @@ class FuelRod:
                 k += 1
                 self._record(result, iterations)
                 iterations = 0
-                if out.print_steps:
-                    print(report.step_row(result, k))
+                if level == "full":
+                    print(rod_report.step_row(result, k))
             else:
                 self._update_gas_pressure(self._state_along_the_rod())
         self.wall_time = wall_clock.perf_counter() - started
-        if out.print_steps:
+        if level != "none":
             print(result.summary())
             print(f"  wall time: {self.wall_time:.3g} s")
         if out.directory is not None:
-            for path in result._write_files(out.directory, out.file_base):
-                if out.print_steps:
+            for path in result._write_files(out.directory, out.file_base, out.formats):
+                if level == "full":
                     print(f"  wrote {path}")
         return result
 

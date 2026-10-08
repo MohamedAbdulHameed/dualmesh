@@ -168,6 +168,32 @@ def test_store_resumes_and_records_failures(tmp_path):
     assert "deliberate failure" in next(iter(second.failed.values()))
 
 
+def test_store_finds_runs_whose_inputs_differ_in_the_last_digit(tmp_path):
+    # Other versions of NumPy and SciPy calculate the inverse distribution
+    # functions with a different last digit (6.7e-16 relative between the
+    # versions of two IFA-677 studies). The store must find these runs.
+    store = tmp_path / "runs.npz"
+    inputs = {"a": uq.Normal(1.0, 0.1), "b": uq.LogNormal(median=1.0, factor=10.0)}
+    _CALLS["n"] = 0
+    uq.propagate(_counted_sum, inputs, 16, method="sobol", seed=0, store=store)
+    assert _CALLS["n"] == 16
+    with np.load(store, allow_pickle=False) as f:
+        arrays = {k: f[k] for k in f.files}
+    arrays["x"] = arrays["x"] * (1.0 + 4.0 * np.finfo(float).eps)
+    np.savez(store, **arrays)
+    uq.propagate(_counted_sum, inputs, 16, method="sobol", seed=0, store=store)
+    assert _CALLS["n"] == 16
+    arrays["x"] = arrays["x"] * (1.0 + 1e-9)
+    np.savez(store, **arrays)
+    uq.propagate(_counted_sum, inputs, 16, method="sobol", seed=0, store=store)
+    assert _CALLS["n"] == 32
+
+
+def _counted_sum(a, b):
+    _CALLS["n"] += 1
+    return a + b
+
+
 def _slow_square(a):
     return a * a
 
@@ -249,6 +275,140 @@ def test_sobol_on_given_training_runs():
         uq.sobol(_ishigami, inputs, 64, surrogate="gaussian_process", training=runs, training_samples=50)
     with pytest.raises(ValueError, match="only with surrogate"):
         uq.sobol(_ishigami, inputs, 64, training=runs)
+
+
+def test_the_interval_of_a_surrogate_index_holds_its_estimate():
+    """The interval of an index on a Gaussian process is centred on the
+    estimate on the mean of the process. On this design of 60 runs the
+    interval of the realizations alone (Marrel et al. 2009, Eq. 11) gave the
+    total index of x3 as 0.031 with the interval [0.049, 0.142]."""
+    inputs = {n: uq.Uniform(-math.pi, math.pi) for n in ("x1", "x2", "x3")}
+    runs = uq.propagate(_ishigami, inputs, 60, seed=101, report="none")
+    s = uq.sobol(_ishigami, inputs, 1024, surrogate="gaussian_process", training=runs, seed=1, report="none")
+    for n in ("x1", "x2", "x3"):
+        for estimate, interval in ((s.first_order, s.first_order_interval), (s.total, s.total_interval)):
+            low, high = interval["output"][n]
+            assert low <= estimate["output"][n] <= high
+
+
+def test_the_indices_of_the_global_process_are_reported_beside():
+    """With a surrogate, the result also gives the indices of the global
+    process (Marrel et al. 2009, Eq. 12), which add the error of the
+    surrogate to every effect: close to the exact Ishigami indices for a
+    good surrogate, and never below the estimate on the mean of the process
+    for the total index of an input without effect."""
+    inputs = {n: uq.Uniform(-math.pi, math.pi) for n in ("x1", "x2", "x3")}
+    first, total, _ = _ishigami_exact()
+    runs = uq.propagate(_ishigami, inputs, 200, report="none")
+    s = uq.sobol(_ishigami, inputs, 1024, surrogate="gaussian_process", training=runs, report="none")
+    for j, n in enumerate(("x1", "x2", "x3")):
+        assert s.first_order_global_process["output"][n] == pytest.approx(first[j], abs=0.08)
+        assert s.total_global_process["output"][n] == pytest.approx(total[j], abs=0.08)
+        low, high = s.total_global_process_interval["output"][n]
+        assert low <= s.total_global_process["output"][n] <= high
+    table = s.tables["indices"]
+    assert "total_global_process" in table.names and len(table) == 3
+    assert "global process" in s.summary() and "total_global_process" in s.to_dict()
+    plain = uq.sobol(_ishigami, inputs, 256, report="none")
+    assert plain.first_order_global_process is None and "total_global_process" not in plain.tables["indices"].names
+
+
+C_LOG = (0.8, 0.5, 0.3)
+
+
+def _exponential_of_a_sum(x1, x2, x3):
+    return math.exp(C_LOG[0] * x1 + C_LOG[1] * x2 + C_LOG[2] * x3)
+
+
+def test_a_surrogate_of_the_logarithm_of_a_positive_output():
+    """Y = exp(c . X) with standard normal X: S_i = (e^(c_i^2) - 1) /
+    (e^(|c|^2) - 1) and T_i = 1 - (e^(|c|^2 - c_i^2) - 1) / (e^(|c|^2) - 1).
+    The logarithm of Y is linear, which a process of the logarithm fits
+    exactly from 40 runs."""
+    names = ("x1", "x2", "x3")
+    inputs = {n: uq.Normal(0.0, 1.0) for n in names}
+    c2 = np.array(C_LOG) ** 2
+    first = (np.exp(c2) - 1.0) / (np.exp(c2.sum()) - 1.0)
+    total = 1.0 - (np.exp(c2.sum() - c2) - 1.0) / (np.exp(c2.sum()) - 1.0)
+    runs = uq.propagate(_exponential_of_a_sum, inputs, 40, method="sobol", report="none")
+    s = uq.sobol(_exponential_of_a_sum, inputs, 8192, surrogate="gaussian_process", training=runs, output_transform={"output": "log"}, report="none")
+    # The output is log-normal, so the Monte Carlo error of the estimators is
+    # large: 8192 rows hold it below 0.03. On the same rows the surrogate
+    # gives the indices of the model itself.
+    direct = uq.sobol(_exponential_of_a_sum, inputs, 8192, report="none")
+    for j, n in enumerate(names):
+        assert s.first_order["output"][n] == pytest.approx(first[j], abs=0.03)
+        assert s.total["output"][n] == pytest.approx(total[j], abs=0.03)
+        assert s.first_order["output"][n] == pytest.approx(direct.first_order["output"][n], abs=2e-3)
+    with pytest.raises(ValueError, match="applies to a surrogate"):
+        uq.sobol(_exponential_of_a_sum, inputs, 64, output_transform={"output": "log"}, report="none")
+    with pytest.raises(ValueError, match="which the runs do not have"):
+        uq.sobol(_exponential_of_a_sum, inputs, 64, surrogate="gaussian_process", training=runs, output_transform={"release": "log"}, report="none")
+    with pytest.raises(ValueError, match="unknown output transform 'sqrt'"):
+        uq.sobol(_exponential_of_a_sum, inputs, 64, surrogate="gaussian_process", training=runs, output_transform={"output": "sqrt"}, report="none")
+    negative = uq.propagate(_ishigami, {n: uq.Uniform(-math.pi, math.pi) for n in names}, 16, report="none")
+    with pytest.raises(ValueError, match="needs a positive output"):
+        uq.sobol(_ishigami, {n: uq.Uniform(-math.pi, math.pi) for n in names}, 64, surrogate="gaussian_process", training=negative, output_transform={"output": "log"}, report="none")
+
+
+def _scaled_exponential(theta):
+    return 3.0 * math.exp(theta)
+
+
+@pytest.mark.parametrize("surrogate", [None, "gaussian_process"])
+def test_a_calibration_on_the_logarithmic_scale(surrogate):
+    """y = 3 exp(theta) measured with a relative error of 5%: on the log
+    scale log y = theta + log 3 is linear with Gaussian noise of standard
+    deviation 0.05, so the posterior of theta under the prior N(1, 0.5) is
+    normal with the conjugate mean and standard deviation."""
+    observed, sigma = 3.0 * math.exp(1.3), 0.05
+    prior_mean, prior_sd = 1.0, 0.5
+    precision = 1.0 / prior_sd**2 + 1.0 / sigma**2
+    mean = (prior_mean / prior_sd**2 + (math.log(observed) - math.log(3.0)) / sigma**2) / precision
+    post = uq.calibrate(_scaled_exponential, {"theta": uq.Normal(prior_mean, prior_sd)}, {"output": observed}, {"output": sigma}, surrogate=surrogate, samples=8000, output_transform={"output": "log"}, report="none")
+    assert post.mean("theta") == pytest.approx(mean, abs=0.01)
+    assert post.standard_deviation("theta") == pytest.approx(precision**-0.5, rel=0.1)
+    prediction = post.predict()["output"]
+    assert prediction["low"] < observed < prediction["high"]
+    with pytest.raises(ValueError, match="needs positive measurements"):
+        uq.calibrate(_scaled_exponential, {"theta": uq.Normal(1.0, 0.5)}, {"output": -1.0}, {"output": 0.05}, surrogate=None, output_transform={"output": "log"}, report="none")
+
+
+def _first_experiment(a, b1):
+    return a + b1
+
+
+def _second_experiment(a, b2):
+    return 2.0 * a - b2
+
+
+@pytest.mark.parametrize("surrogate", [None, "gaussian_process"])
+def test_a_calibration_of_two_experiments_with_a_shared_parameter(surrogate):
+    """Two experiments share the parameter a, and each has its own input:
+    y1 = a + b1 and y2 = 2a - b2, with normal priors and noise. The model is
+    linear, so the posterior is normal with the covariance (P0^-1 + H^T R^-1
+    H)^-1 and the mean cov H^T R^-1 y."""
+    inputs = {"a": uq.Normal(0.0, 1.0), "b1": uq.Normal(0.0, 0.5), "b2": uq.Normal(0.0, 0.5)}
+    observed, noise = {"first": {"output": 1.0}, "second": {"output": 1.5}}, {"first": {"output": 0.1}, "second": {"output": 0.1}}
+    H = np.array([[1.0, 1.0, 0.0], [2.0, 0.0, -1.0]])
+    covariance = np.linalg.inv(np.diag([1.0, 4.0, 4.0]) + H.T @ H / 0.01)
+    mean = covariance @ H.T @ np.array([1.0, 1.5]) / 0.01
+    models = {"first": _first_experiment, "second": _second_experiment}
+    training = None
+    if surrogate is not None:
+        training = {"first": uq.propagate(_first_experiment, {n: inputs[n] for n in ("a", "b1")}, 30, report="none"), "second": uq.propagate(_second_experiment, {n: inputs[n] for n in ("a", "b2")}, 30, report="none")}
+    post = uq.calibrate(models, inputs, observed, noise, surrogate=surrogate, training=training, samples=12000, seed=2, report="none")
+    for j, name in enumerate(("a", "b1", "b2")):
+        assert post.mean(name) == pytest.approx(mean[j], abs=0.1 * math.sqrt(covariance[j, j]))
+        assert post.standard_deviation(name) == pytest.approx(math.sqrt(covariance[j, j]), rel=0.1)
+    prediction = post.predict()
+    assert set(prediction) == {"first", "second"} and prediction["second"]["output"]["low"] < 1.5 < prediction["second"]["output"]["high"]
+    with pytest.raises(ValueError, match="enter no experiment"):
+        uq.calibrate(models, {**inputs, "c": uq.Normal(0.0, 1.0)}, observed, noise, surrogate=None, report="none")
+    with pytest.raises(ValueError, match="no entry 'second'"):
+        uq.calibrate(models, inputs, {"first": {"output": 1.0}}, noise, surrogate=None, report="none")
+    with pytest.raises(ValueError, match="which have no prior"):
+        uq.calibrate(models, {n: inputs[n] for n in ("a", "b1")}, observed, noise, surrogate=None, report="none")
 
 
 # ---------------------------------------------------------------------------

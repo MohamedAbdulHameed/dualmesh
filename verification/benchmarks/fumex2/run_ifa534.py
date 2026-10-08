@@ -152,9 +152,9 @@ def run(rod_number):
         coolant=fuel.PrescribedCladdingTemperature(temperature=wall, pressure=15.5e6),
         power_history=fuel.PowerHistory(linear_heat_rate=power, time=times, fast_neutron_flux_per_linear_heat_rate=5e13),
         numerics=fuel.RodNumerics(max_time_step=10 * DAY),
-        output=fuel.RodOutput(print_input=False, print_steps=False, output_times=np.unique(np.concatenate([np.linspace(0, times[-1], 300), times]))),
+        output=fuel.RodOutput(times=np.unique(np.concatenate([np.linspace(0, times[-1], 300), times]))),
     )
-    result = rod.run()
+    result = rod.run(report="none")
     t = np.asarray(result.time)
     burnup = np.asarray(result.burnup_in("MWd/kgU", rod_average=True)) * (1.0 / UO2_PER_U)
     fgr = 100.0 * np.asarray(result.fission_gas_release)

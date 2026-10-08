@@ -8,10 +8,11 @@ an array, or a dict of them.  The uncertain inputs are distributions::
 
     inputs = {"k": uq.Normal(1.0, 0.05), "D": uq.LogNormal(median=1.0, factor=10)}
     runs = uq.propagate(model, inputs, samples=200)
-    print(runs.summary())
     indices = uq.sobol(model, inputs, samples=512)
     posterior = uq.calibrate(model, inputs, observed={"T": T_measured}, noise={"T": 20.0})
-    print(posterior.summary())
+
+Each study prints its report (``report="full"``, the default) and returns its
+result, whose ``summary()`` gives the report again.
 
 See the documentation chapter on uncertainty quantification for the theory,
 the sources and the verification.

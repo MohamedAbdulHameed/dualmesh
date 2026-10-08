@@ -15,7 +15,7 @@ fuel performance input deck is written:
 :class:`PowerHistory`     the linear heat rate in time or in burnup
 :class:`RodModels`        which physical models are switched on
 :class:`RodNumerics`      the model dimension, discretisation, mesh, time step
-:class:`RodOutput`        what is printed and written
+:class:`RodOutput`        the record times, the burnup unit and the files
 ========================  =====================================================
 
 Every field carries its unit and a description, and every default carries
@@ -450,19 +450,25 @@ class RodNumerics:
 
 @dataclass
 class RodOutput:
-    """What is printed and written."""
+    """The output of a fuel rod: the times at which the rod state is
+    recorded, the unit of burnup and the files.  The parameters have the
+    names and meanings of :class:`dualmesh.Output`."""
 
     burnup_unit: str = parameter("MWd/kgHM", description="Unit of every burnup reported. Default MWd/kgHM.")
-    output_times: Sequence[float] | None = parameter(None, unit="s", description="Times at which the rod state is recorded. Default None: the points of the power history, or every output_interval when that is given. Only one of output_times and output_interval is used.")
-    output_interval: float | None = parameter(None, unit="s", description="Record the rod state every output_interval from the first point of the power history, and at its last point. Default None: the points of the power history. Only one of output_times and output_interval is used.")
-    print_input: bool = parameter(True, description="Print the input summary before the run. Default True.")
-    print_steps: bool = parameter(True, description="Print one table row per output time. Default True.")
-    directory: str | None = parameter(None, description="Directory for the CSV files (history, axial profiles, input). Default None: nothing written.")
-    file_base: str = parameter("rod", description="Prefix of the files written. Default rod.")
+    times: Sequence[float] | None = parameter(None, unit="s", description="Times at which the rod state is recorded. Give only one of times and interval. Default None: the points of the power history, or the times of interval when interval is given.")
+    interval: float | None = parameter(None, unit="s", description="Time between two records of the rod state, from the first point of the power history. The rod state is also recorded at the last point. Give only one of times and interval. Default None: the points of the power history.")
+    directory: str | None = parameter(None, description="Directory of the files: the history and the axial profiles (CSV) and the input report (text). The study makes the directory when it does not exist. Default None: the study writes no file.")
+    file_base: str = parameter("rod", description="Start of the name of every file. Default rod.")
+    formats: Sequence[str] = parameter(("csv",), description="File formats of the tables: csv (the history and the axial profiles, with the units in the header) and json (all the results in one file). Default csv.")
 
     def __post_init__(self):
         check_burnup_unit(self.burnup_unit)
-        if self.output_times is not None and self.output_interval is not None:
-            raise ValueError("RodOutput: give output_times or output_interval, not both.")
-        if self.output_interval is not None and not self.output_interval > 0.0:
-            raise ValueError("RodOutput: output_interval must be positive.")
+        if self.times is not None and self.interval is not None:
+            raise ValueError("RodOutput: give only one of times and interval. The two set the times of the records.")
+        if self.interval is not None and not self.interval > 0.0:
+            raise ValueError("RodOutput: interval must be positive.")
+        formats = [self.formats] if isinstance(self.formats, str) else list(self.formats)
+        for name in formats:
+            if name not in ("csv", "json"):
+                raise ValueError(f"RodOutput: unknown format '{name}'. The formats are: csv, json.")
+        self.formats = tuple(formats)

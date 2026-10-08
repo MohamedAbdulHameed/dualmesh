@@ -98,8 +98,9 @@ iteration, while a value above one over-relaxes and accelerates a slow
 monotone one.  Under-relaxation is the usual remedy for a direct iteration that
 oscillates without settling.
 
-``verbose`` prints the residual norm at every iteration, which distinguishes a
-slow convergence from a stalled one.
+The full report (``report="full"``, the default) prints the residual norm at
+every iteration. The residual norms show whether an iteration converges slowly
+or stalls.
 
 Load stepping
 ~~~~~~~~~~~~~
@@ -385,7 +386,7 @@ to the right-hand side), ``linear_max_iterations`` (default 5000) and
    thread.  ``linear_solver="automatic"`` therefore uses the built-in version
    for a Taylor-Hood system too large for an inexpensive direct factorisation
    (more than 100 000 unknowns in two dimensions, 4000 in three), and reports
-   this choice when ``verbose=True``.  The preconditioner is available for the
+   this choice in the full report.  The preconditioner is available for the
    serial solver and the methods ``fem``, ``dmcdm`` and ``hfvm``.
 
 For use with an external solver, :meth:`~dualmesh.Problem.linear_system` returns
@@ -448,11 +449,11 @@ member of the family.
    of the test suite the critical step is between :math:`0.2 h^2` and
    :math:`0.3 h^2`, and above it the solution diverges within a few steps.
 
-``start_time`` (default zero) sets the initial time, and ``output_interval``
-with ``output_file_base`` writes a VTU file every ``output_interval`` accepted
-steps.  All
-the steady options above are accepted too and apply to the nonlinear solve
-inside each step.
+``start_time`` (default zero) sets the initial time. An
+:class:`~dualmesh.Output` group in the ``output`` parameter writes the fields at
+the output times, and the time steps land on these times. For more
+information, see :doc:`output`. The transient solve also takes all the steady
+options, which apply to the nonlinear solve in each step.
 
 Choosing the time step
 ~~~~~~~~~~~~~~~~~~~~~~

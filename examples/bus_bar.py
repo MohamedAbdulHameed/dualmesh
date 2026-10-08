@@ -31,7 +31,6 @@ def bus_bar(method="dmcdm"):
 
 if __name__ == "__main__":
     problem = bus_bar()
-    print(problem.postprocessor_table())
     problem.write_vtu("bus_bar.vtu")
     problem.write_postprocessor_csv("bus_bar_postprocessors.csv")
     print("book (DMCDM): temperature_bottom = 83.142")

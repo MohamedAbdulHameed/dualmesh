@@ -186,15 +186,21 @@ class RodResult:
 
         ResultTables.write_csv(self, path, table)
 
-    def _write_files(self, directory: str, file_base: str = "rod") -> list[str]:
-        """Write ``<file_base>_history.csv``, ``<file_base>_axial.csv`` and
-        the input report ``<file_base>_input.txt``, for RodOutput.directory.
-        Returns the paths."""
+    def _write_files(self, directory: str, file_base: str = "rod", formats=("csv",)) -> list[str]:
+        """Write ``<file_base>_history.csv`` and ``<file_base>_axial.csv``
+        (format csv), ``<file_base>.json`` (format json) and the input report
+        ``<file_base>_input.txt``, for RodOutput.directory.  Returns the
+        paths."""
         os.makedirs(directory, exist_ok=True)
         paths = []
-        for name in ("history", "axial"):
-            path = os.path.join(directory, f"{file_base}_{name}.csv")
-            self.write_csv(path, table=name)
+        if "csv" in formats:
+            for name in ("history", "axial"):
+                path = os.path.join(directory, f"{file_base}_{name}.csv")
+                self.write_csv(path, table=name)
+                paths.append(path)
+        if "json" in formats:
+            path = os.path.join(directory, f"{file_base}.json")
+            self.write_json(path)
             paths.append(path)
         if self.input_report:
             report = os.path.join(directory, f"{file_base}_input.txt")

@@ -8,6 +8,7 @@
 #include <omp.h>
 #endif
 
+#include <algorithm>
 #include <cmath>
 #include <fstream>
 #include <iomanip>
@@ -533,8 +534,24 @@ Problem::boundaryFluxIntegral(const std::string & kernel, const std::string & bo
 
 void
 Problem::writeVTU(const std::string & filename,
-                  const std::vector<std::string> & cell_properties) const
+                  const std::vector<std::string> & cell_properties,
+                  const std::vector<std::string> & fields) const
 {
+  for (const auto & name : fields)
+    if (!hasVariable(name))
+    {
+      std::string names;
+      for (const auto & v : _vars)
+        names += " " + v.name;
+      throw InputError("The output field '" + name +
+                       "' is not a variable. The variables are:" + names + ".");
+    }
+  const auto written = [&](const Variable & v)
+  { return fields.empty() || std::find(fields.begin(), fields.end(), v.name) != fields.end(); };
+  // The unit is an attribute of the data array: ParaView and VisIt read the
+  // array and do not use the attribute.
+  const auto unit = [](const Variable & v)
+  { return v.unit.empty() ? std::string() : " units=\"" + v.unit + "\""; };
   std::ofstream f(filename);
   if (!f)
     throw InputError("Cannot open '" + filename + "' for writing.");
@@ -548,7 +565,10 @@ Problem::writeVTU(const std::string & filename,
   if (!_cells)
     for (const auto & v : _vars)
     {
-      f << "<DataArray type=\"Float64\" Name=\"" << v.name << "\" format=\"ascii\">\n";
+      if (!written(v))
+        continue;
+      f << "<DataArray type=\"Float64\" Name=\"" << v.name << "\"" << unit(v)
+        << " format=\"ascii\">\n";
       for (Index n = 0; n < m.numNodes(); ++n)
         f << _U[dof(n, v.index)] << "\n";
       f << "</DataArray>\n";
@@ -558,7 +578,10 @@ Problem::writeVTU(const std::string & filename,
   if (_cells)
     for (const auto & v : _vars)
     {
-      f << "<DataArray type=\"Float64\" Name=\"" << v.name << "\" format=\"ascii\">\n";
+      if (!written(v))
+        continue;
+      f << "<DataArray type=\"Float64\" Name=\"" << v.name << "\"" << unit(v)
+        << " format=\"ascii\">\n";
       for (Index c = 0; c < m.numElements(); ++c)
         f << _U[dof(c, v.index)] << "\n";
       f << "</DataArray>\n";

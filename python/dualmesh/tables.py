@@ -24,7 +24,13 @@ from collections.abc import Sequence
 
 import numpy as np
 
-__all__ = ["Table"]
+__all__ = ["Table", "column_header"]
+
+
+def column_header(name: str, unit: str) -> str:
+    """The header of a column: the name and, when there is one, the unit in
+    parentheses, for example ``temperature (K)``."""
+    return f"{name} ({unit})" if unit and unit not in ("-", "1") else name
 
 
 def _is_number(value) -> bool:
@@ -74,7 +80,7 @@ class Table:
 
     def headers(self) -> list[str]:
         """The column names with their units, as in the CSV header."""
-        return [f"{n} ({u})" if u else n for n, u in zip(self.names, self.units)]
+        return [column_header(n, u) for n, u in zip(self.names, self.units)]
 
     def unit(self, name: str) -> str:
         return self.units[self.names.index(name)]

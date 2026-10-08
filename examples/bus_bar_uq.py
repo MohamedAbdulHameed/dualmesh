@@ -29,5 +29,4 @@ inputs = {"conductivity": uq.Normal(20.0, 1.0), "heat_source": uq.Normal(1.0, 0.
 
 if __name__ == "__main__":
     runs = uq.propagate(bus_bar, inputs, samples=64, method="latin_hypercube", seed=1)
-    print(runs.summary())
     runs.write_json("bus_bar_uq.json")

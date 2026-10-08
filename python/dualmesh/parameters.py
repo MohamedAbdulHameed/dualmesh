@@ -85,6 +85,22 @@ def _same(a, b) -> bool:
         return False
 
 
+def _sequence_text(value) -> str:
+    """A list or an array as text: the numbers when there are six or fewer,
+    otherwise their count and range."""
+    if any(v is None or isinstance(v, str) for v in value):
+        return "[" + ", ".join(str(v) for v in value) + "]"
+    try:
+        array = np.asarray(value, dtype=float)
+    except (TypeError, ValueError):
+        return "[" + ", ".join(str(v) for v in value) + "]"
+    if array.size > 6:
+        return f"{array.size} values, {array.min():.4g} to {array.max():.4g}"
+    if array.ndim > 1:
+        return "[" + ", ".join(_sequence_text(row) for row in array) + "]"
+    return "[" + ", ".join(f"{float(v):.6g}" for v in array) + "]"
+
+
 def describe(spec) -> list[list[str]]:
     """Rows ``[name, value, unit, source]`` for a dataclass instance, where
     ``source`` is ``(default)`` when the value is the field's default and
@@ -100,11 +116,10 @@ def describe(spec) -> list[list[str]]:
             text = type(value).__name__
         elif callable(value):
             text = getattr(value, "__name__", "function")
-        elif isinstance(value, (list, tuple, np.ndarray)) and len(value) > 6:
-            array = np.asarray(value, dtype=float)
-            text = f"{len(array)} values, {array.min():.4g} to {array.max():.4g}"
+        elif isinstance(value, (list, tuple)) and value and all(dataclasses.is_dataclass(v) for v in value):
+            text = "[" + ", ".join(str(getattr(v, "name", type(v).__name__)) for v in value) + "]"
         elif isinstance(value, (list, tuple, np.ndarray)):
-            text = "[" + ", ".join(str(v) if isinstance(v, str) or v is None else f"{float(v):.6g}" for v in value) + "]"
+            text = _sequence_text(value)
         elif isinstance(value, float):
             text = f"{value:.6g}"
         else:
