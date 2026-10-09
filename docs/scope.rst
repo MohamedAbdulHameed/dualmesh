@@ -70,14 +70,24 @@ What is in place
        generation and convection by a computed flow.  Prescribed temperature,
        flux, convection and radiation boundaries.
    * - Solid mechanics
-     - Small-strain linear elasticity in plane stress, plane strain,
-       axisymmetric and three-dimensional form, for isotropic and orthotropic
-       materials and with thermal strain.  Euler-Bernoulli and Timoshenko
-       beams, classical and first-order shear deformation plates, axisymmetric
+     - Linear elasticity in plane stress, plane strain, axisymmetric and
+       three-dimensional form, for isotropic and orthotropic materials and
+       with thermal strain.  Finite strain with a neo-Hookean material, creep
+       laws given as expressions, eigenstrains, and frictionless contact
+       between bodies by a penalty.  Euler-Bernoulli and Timoshenko beams,
+       classical and first-order shear deformation plates, axisymmetric
        plates, von Kármán nonlinearity and functionally graded sections.
    * - Fluid dynamics
      - Steady and transient incompressible Navier-Stokes flow by the penalty
-       method, and Boussinesq buoyancy.
+       method, by a stabilized equal-order pressure-velocity formulation
+       (PSPG and SUPG) or with Taylor-Hood elements, and Boussinesq buoyancy.
+   * - General equations
+     - Systems of any number of fields in general form (flux and source as
+       expressions of the fields and their gradients) and in coefficient
+       form, compiled and differentiated automatically.
+   * - Eigenvalues
+     - The eigenvalues and modes of any problem, for a linear or quadratic
+       dependence on the eigenvalue.
    * - Coupling
      - Monolithic, exact-Jacobian coupling of any fields on one mesh.
        Verified on natural convection [DeVahlDavis1983]_.
@@ -93,9 +103,11 @@ What is in place
      - Newton with exact AD Jacobians, direct (Picard) iteration with
        relaxation, load stepping.
    * - Linear solvers
-     - Sparse LU, and BiCGSTAB, GMRES and CG with ILU(0), ILUT or Jacobi
-       preconditioning, chosen automatically.  A distributed solver with a
-       two-level overlapping Schwarz preconditioner.
+     - Sparse LU, and BiCGSTAB, GMRES and CG with ILU(0), ILUT, Jacobi or
+       smoothed aggregation algebraic multigrid preconditioning, chosen
+       automatically.  A saddle point solver for flow.  A distributed solver
+       with a two-level overlapping Schwarz preconditioner, and PETSc as an
+       option at build time.
    * - Parallelism
      - OpenMP threads in assembly, and MPI across processes.
    * - Meshes
@@ -131,38 +143,35 @@ written.
 **Where dualmesh is substantially more limited**, in decreasing order of how
 much each limitation restricts the problems that can be solved:
 
-1. **Breadth of physics.**  dualmesh has thirty-five objects.  MOOSE's physics
-   modules and COMSOL's add-on modules cover, among much else, finite-strain
-   solid mechanics with plasticity and contact, turbulent flow, porous media,
-   phase field, electromagnetics and chemical reactions.  In dualmesh the solid
-   mechanics is small-strain and linear (apart from the von Kármán terms of
-   beams and plates), there is no contact, and the flow is laminar and
-   incompressible.
+1. **Breadth of physics.**  dualmesh has 52 objects, eight physics and two
+   couplings.  MOOSE's physics modules and COMSOL's add-on modules cover,
+   among much else, plasticity, contact with friction, turbulent flow, porous
+   media, phase field, electromagnetics and chemical reactions.  In dualmesh
+   such a model is written in general form, without the dedicated objects,
+   material models and verified defaults of those codes.
 
-2. **Incompressible flow formulation.**  The penalty method is simple and
-   robust on the node-based methods, but it requires reduced integration, it
-   makes the linear systems ill-conditioned, and it cannot be used with the
-   cell-centred finite volume method.  A mixed or stabilised finite element
-   formulation, and a pressure-velocity coupling for the finite volume
-   methods, are what the other codes offer.
-
-3. **Scale.**  MOOSE distributes the mesh as well as the unknowns, and solves
+2. **Scale.**  MOOSE distributes the mesh as well as the unknowns, and solves
    through PETSc with algebraic multigrid, field-split and scalable direct
    solvers, and it runs on very large parallel machines.  dualmesh replicates
-   the mesh on every process and has its own Krylov solvers and Schwarz
-   preconditioner.  Its iteration counts do not grow with the number of
-   processes, but its memory and its setup time do, and the cell-centred method
-   is not yet distributed.  dualmesh is intended for workstations and small
-   clusters.
+   the mesh on every process.  Its iteration counts do not grow with the
+   number of processes, but its memory and its setup time do, and the
+   cell-centred method and the gap conditions are not distributed.  It suits
+   workstations and small clusters.
 
-4. **Coupling across meshes and time scales.**  Every field of a dualmesh
+3. **Coupling across meshes and time scales.**  Every field of a dualmesh
    problem is defined on one mesh and advances with one time step.  MOOSE's
    MultiApps couple separate applications on different meshes and time scales
    with transfers between them, and COMSOL couples physics on different domains
    and dimensions.
 
-5. **Time integration and analysis types.**  dualmesh has the :math:`\theta`
-   family only, and no eigenvalue, frequency-domain or optimisation solvers.
+4. **Time integration and analysis types.**  dualmesh has the :math:`\theta`
+   family only, with no second-order backward differences and no scheme for
+   second time derivatives, and no frequency-domain or optimisation solvers.
+
+5. **Contact.**  The contact of dualmesh is frictionless and pairs the two
+   surfaces at their closest points, which converges at first order when
+   their meshes do not match.  MOOSE and COMSOL offer friction and mortar
+   methods.
 
 6. **Geometry and user interface.**  COMSOL provides CAD, meshing and a
    graphical interface, and MOOSE provides input-file syntax checking and a
@@ -173,7 +182,7 @@ much each limitation restricts the problems that can be solved:
 In summary, dualmesh is a multiphysics framework in its architecture and in the
 way problems are coupled and solved, and every capability is verified against
 analytical solutions, manufactured solutions or published reference results.
-It covers a far narrower range of physics, and it is not
-designed for very large parallel runs.  Items 2 and 3 would most extend its
-capabilities: a pressure-velocity formulation of flow, and a PETSc backend for
-the linear algebra and the distributed mesh.
+It covers a far narrower range of physics, and it does not yet run very
+large parallel problems.  Items 1 and 2 would most extend its capabilities:
+dedicated models for plasticity, turbulence and phase field, and a
+distributed mesh with a scalable solver path through PETSc.

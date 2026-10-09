@@ -3,10 +3,10 @@
 **A multiphysics framework for heat transfer, solid mechanics, fluid dynamics and general partial differential equations, with the dual mesh control domain method available as one of the discretization options.**
 
 `dualmesh` is a multiphysics framework for **heat transfer**, **solid
-mechanics**, **fluid dynamics** and **general partial differential equations**. A problem consists of any number of fields (for example
+mechanics**, **fluid dynamics** and **general partial differential
+equations**. A problem consists of any number of fields (for example
 temperatures, displacements, velocities, or quantities defined by the user),
-each governed by a
-conservation law written as a sum of named terms. Every term may depend on
+each governed by a conservation law written as a sum of named terms. Every term may depend on
 every field. All the fields are solved together as one monolithic system by
 Newton's method, with an exact Jacobian computed by automatic differentiation.
 The same problem description is discretized, by changing one keyword, with the
@@ -50,6 +50,42 @@ A boundary condition named after a side set of the mesh acts on that side set.
 The complete script, with post-processors and output files, is
 [`examples/bus_bar.py`](examples/bus_bar.py).
 
+## General partial differential equations
+
+An equation that no physics names is written by its flux and its source.
+For every field `u`, `general_form_PDE` solves `d du/dt + div(Gamma) = f`,
+where the flux `Gamma` and the source `f` are expressions of all the fields,
+the components of their gradients (`grad_x(u)`, `grad_y(u)`, `grad_z(u)`),
+the coordinates, the time, properties and constants. The expressions are
+compiled to C++ and differentiated automatically, so Newton's method gets the
+exact Jacobian, and the assembly runs on every thread with every method. A
+nonlinear diffusion (a p-Laplacian) coupled to a second field reads:
+
+```python
+gradient = "(grad_x(u)^2 + grad_y(u)^2)"
+flux = {
+    "u": [f"-(1 + {gradient})*grad_x(u)", f"-(1 + {gradient})*grad_y(u)"],
+    "v": ["-k*grad_x(v)", "-k*grad_y(v)"],
+}
+source = {"u": "v - u^3", "v": "1"}
+pde = problem.add_physics(
+    "general_form_PDE",
+    "system",
+    variables=["u", "v"],
+    flux=flux,
+    source=source,
+    constants={"k": 2.0},
+)
+```
+
+`coefficient_form_PDE` writes the same kind of system by its diffusion,
+convection, absorption and source coefficients, which may couple the fields
+and depend on them. `Problem.solve_eigenvalue` gives the eigenvalues and
+modes of any problem: the time derivatives define the eigenvalue, and the
+expressions may also use the symbol `eigenvalue`. The script
+[`examples/reactor_criticality.py`](examples/reactor_criticality.py) uses it
+for the criticality of a reactor in two-group diffusion theory.
+
 ## Uncertainty quantification
 
 The `dualmesh.uq` package propagates input uncertainties through any model,
@@ -91,9 +127,13 @@ kernels to be discretized by every method.
 - **Heat transfer**: conduction with temperature-dependent conductivity,
   volumetric heating, heat capacity, convection by a computed flow, and
   prescribed temperature, flux, convection and radiation boundary conditions.
+  Heat crosses a gap between two bodies with a given conductance or through a
+  gas (`gas_gap_heat_transfer`: gas conduction with the temperature jump,
+  radiation and solid contact, with the gap width from the displacements).
 - **Solid mechanics**: elasticity in plane stress, plane strain,
   axisymmetric and three-dimensional form with thermal strain, tractions and
-  pressures, small or finite strain and creep. The structural members are
+  pressures, small or finite strain, creep laws given as expressions, and
+  frictionless contact between bodies (`gap_contact`). The structural members are
   mixed Euler-Bernoulli beams, displacement and mixed Timoshenko beams,
   axisymmetric circular plates and rectangular plates, with functionally
   graded sections and the von Kármán nonlinearity.
@@ -101,14 +141,17 @@ kernels to be discretized by every method.
   formulation with a recovered pressure, by a stabilized equal-order
   pressure-velocity formulation (PSPG and SUPG), or with Taylor-Hood
   elements, and buoyancy in the Boussinesq approximation.
-- **General partial differential equations**: `general_form_PDE` for
-  systems whose fluxes and sources are expressions of all the fields and
-  their gradients, and `coefficient_form_PDE` for systems written by their
-  diffusion, convection, absorption and source coefficients. The expressions
-  are compiled and differentiated automatically, so the Jacobian is exact
-  and the assembly runs on every thread and every process. The eigenvalue
-  study of any problem gives its eigenvalues and modes, for example the
-  criticality of a reactor in `examples/reactor_criticality.py`.
+- **General partial differential equations**: `general_form_PDE` and
+  `coefficient_form_PDE` for systems of any number of fields, with
+  coefficients that differ between regions through properties, and Neumann
+  and Robin conditions whose values depend on the fields.
+- **Eigenvalue studies**: the eigenvalues closest to a given value and their
+  modes, for linear and quadratic dependence on the eigenvalue, with complex
+  eigenvalues where the operator is not symmetric.
+- **Material properties**: compressed liquid water (IAPWS-IF97 region 1,
+  with the IAPWS viscosity and thermal conductivity) and the thermal
+  conductivity of helium, argon, krypton, xenon, hydrogen, nitrogen and their
+  mixtures (`dualmesh.materials`).
 - **Framework objects**: diffusion, anisotropic diffusion, reaction,
   advection, body force, time derivative, coupled force, Dirichlet, Neumann
   and Robin conditions, point sources, constant, function and parsed properties, and expressions
@@ -126,7 +169,9 @@ kernels to be discretized by every method.
   the matrix does not change.
 - **Parallel execution**: threaded assembly, and an MPI solver with a
   two-level overlapping Schwarz preconditioner whose iteration count does not
-  grow with the number of processes.
+  grow with the number of processes. Every process reads the whole mesh and
+  keeps its part, and the cell-centered method and the gap conditions run on
+  one process.
 - **Quadrature per kernel**: Gauss rules, midpoint, trapezoid, Simpson, nodal
   lumping, interface and control-domain trapezoid rules, and selective reduced
   integration for locking and penalty terms.
@@ -157,35 +202,40 @@ conduction, plane elasticity, pressurized cylinders, squeezed flow, the
 lid-driven cavity at Re = 0 and Re = 1000, functionally graded beams (linear and
 von Kármán), circular plates and rectangular plates. Natural convection is
 checked against de Vahl Davis (1983), and a manufactured-solution study checks
-the convergence order of every method and element type. See
+the convergence order of every method and element type, also for nonlinear
+coupled systems in general form, in three dimensions, in axisymmetric
+coordinates and in time. The eigenvalue study reproduces the exact
+eigenvalues of the Laplacian and of a non-symmetric operator, and the
+two-dimensional IAEA PWR benchmark (ANL-7416, problem 11-A2) to 0.2 pcm with
+the finite element method. The gap conditions are checked against exact
+solutions on matching and non-matching meshes, with the Jacobian against
+finite differences. See
 [`docs/verification.rst`](docs/verification.rst) and `tests/python`. The suite
 also cross-checks against OpenFOAM (see `verification/openfoam`).
 
 ## Installation
 
+Install from a clone of the repository:
+
 ```console
-pip install dualmesh-multiphysics        # binary wheels from PyPI
-pip install "dualmesh-multiphysics[all]" # with meshio, matplotlib, SymPy, SciPy
+pip install .[all]           # with meshio, matplotlib, SymPy and SciPy
+pytest                       # run the verification suite
 ```
 
-The distribution on PyPI is called `dualmesh-multiphysics`, but the package is
-imported as `dualmesh` and the command is `dualmesh`:
+The package is imported as `dualmesh`, and the command is `dualmesh`:
 
 ```console
 python -c "import dualmesh; print(dualmesh.__version__)"
 dualmesh --version
 ```
 
-From a clone:
+Building requires a C++17 compiler, CMake 3.18 or later and Python 3.9 or
+later. Eigen and pybind11 are used if installed and are downloaded
+otherwise. MPI, METIS and PETSc are optional:
 
 ```console
-pip install .[all]           # build from source
-pytest                       # run the verification suite
+pip install -C cmake.define.DUALMESH_ENABLE_MPI=ON -C cmake.define.DUALMESH_ENABLE_PETSC=ON .[all]
 ```
-
-Building from source requires a C++17 compiler, CMake 3.18 or later and
-Python 3.9 or later. Eigen and pybind11 are used if installed and are
-downloaded otherwise.
 
 Documentation: <https://dualmesh.readthedocs.io>
 
