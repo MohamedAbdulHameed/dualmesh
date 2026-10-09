@@ -50,7 +50,16 @@ import math
 import numpy as np
 from scipy import linalg, optimize
 
-from ._engine import check_inputs, check_output_transform, evaluate, study_header, to_inputs, transformed_runs, unit_design, write_json
+from ._engine import (
+    check_inputs,
+    check_output_transform,
+    evaluate,
+    study_header,
+    to_inputs,
+    transformed_runs,
+    unit_design,
+    write_json,
+)
 from .gaussian_process import _kernel
 
 __all__ = ["Posterior", "calibrate"]
@@ -92,7 +101,9 @@ def _flatten(outputs, names, shapes, rows):
             raise KeyError(f"calibrate: the model does not return the observed output '{name}'.")
         v = np.asarray(outputs[name], dtype=float).reshape(rows, -1)
         if v.shape[1] != int(np.prod(shape)):
-            raise ValueError(f"calibrate: the model output '{name}' has {v.shape[1]} values per run, the measurement {int(np.prod(shape))}.")
+            raise ValueError(
+                f"calibrate: the model output '{name}' has {v.shape[1]} values per run, the measurement {int(np.prod(shape))}."
+            )
         parts.append(v)
     return np.concatenate(parts, axis=1)
 
@@ -323,8 +334,16 @@ class Posterior:
         if "experiments" in context:
             experiments = context["experiments"]
             self.surrogate = {name: ctx.get("gp") for name, ctx in experiments.items()}
-            self.discrepancy = {name: ctx.get("discrepancy") for name, ctx in experiments.items()} if any(ctx.get("discrepancy") for ctx in experiments.values()) else None
-            self.mode = {name: ctx.get("mode") for name, ctx in experiments.items()} if any(ctx.get("mode") for ctx in experiments.values()) else None
+            self.discrepancy = (
+                {name: ctx.get("discrepancy") for name, ctx in experiments.items()}
+                if any(ctx.get("discrepancy") for ctx in experiments.values())
+                else None
+            )
+            self.mode = (
+                {name: ctx.get("mode") for name, ctx in experiments.items()}
+                if any(ctx.get("mode") for ctx in experiments.values())
+                else None
+            )
         else:
             self.surrogate = context.get("gp")
             self.discrepancy = context.get("discrepancy")
@@ -383,7 +402,9 @@ class Posterior:
                 note.append(f"at the {self.at_bound[n]} end of the prior")
             if self.r_hat[n] > 1.01:
                 note.append("not converged")
-            lines.append(f"{n:<28}{d.mean:11.4g}{d.standard_deviation:10.3g}{self.mean(n):11.4g}{self.standard_deviation(n):10.3g}{mp[n]:10.4g}  [{lo:9.4g}, {hi:9.4g}] {self.contraction[n]:7.2f}{self.r_hat[n]:7.3f}{self.effective_sample_size[n]:7.0f}  {'; '.join(note)}")
+            lines.append(
+                f"{n:<28}{d.mean:11.4g}{d.standard_deviation:10.3g}{self.mean(n):11.4g}{self.standard_deviation(n):10.3g}{mp[n]:10.4g}  [{lo:9.4g}, {hi:9.4g}] {self.contraction[n]:7.2f}{self.r_hat[n]:7.3f}{self.effective_sample_size[n]:7.0f}  {'; '.join(note)}"
+            )
         lines.append("")
         lines.append(f"{len(self.x)} samples, acceptance {self.acceptance:.2f}")
         surrogates = self.surrogate if isinstance(self.surrogate, dict) else {None: self.surrogate}
@@ -392,7 +413,9 @@ class Posterior:
                 continue
             q2 = np.atleast_1d(gp.q2)
             label = "surrogate" if experiment is None else f"surrogate of {experiment}"
-            lines.append(f"{label}: {len(gp._u_train)} runs, {gp.components} component(s), leave-one-out Q2 {np.nanmin(q2):.3f} (lowest) to {np.nanmax(q2):.3f}")
+            lines.append(
+                f"{label}: {len(gp._u_train)} runs, {gp.components} component(s), leave-one-out Q2 {np.nanmin(q2):.3f} (lowest) to {np.nanmax(q2):.3f}"
+            )
         return "\n".join(lines)
 
     def __repr__(self):
@@ -411,7 +434,10 @@ class Posterior:
         idx = rng.choice(len(self.x), size=min(samples, len(self.x)), replace=False)
         theta = self.x[idx]
         if "experiments" in self._ctx:
-            return {name: _predict(ctx, theta[:, ctx["input_index"]], rng, level) for name, ctx in self._ctx["experiments"].items()}
+            return {
+                name: _predict(ctx, theta[:, ctx["input_index"]], rng, level)
+                for name, ctx in self._ctx["experiments"].items()
+            }
         return _predict(self._ctx, theta, rng, level)
 
     def to_dict(self) -> dict:
@@ -419,9 +445,24 @@ class Posterior:
         and maximum of every parameter, with its contraction, its position
         against the prior bounds and the convergence diagnostics."""
         numbers = {
-            name: dict(mean=self.mean(name), standard_deviation=self.standard_deviation(name), interval=self.interval(name), map=self.map[name], contraction=self.contraction[name], at_bound=self.at_bound[name], r_hat=self.r_hat[name], effective_sample_size=self.effective_sample_size[name]) for name in self.names
+            name: dict(
+                mean=self.mean(name),
+                standard_deviation=self.standard_deviation(name),
+                interval=self.interval(name),
+                map=self.map[name],
+                contraction=self.contraction[name],
+                at_bound=self.at_bound[name],
+                r_hat=self.r_hat[name],
+                effective_sample_size=self.effective_sample_size[name],
+            )
+            for name in self.names
         }
-        return {"study": "calibrate", "level": self.level, "acceptance": self.acceptance, "parameters": numbers}
+        return {
+            "study": "calibrate",
+            "level": self.level,
+            "acceptance": self.acceptance,
+            "parameters": numbers,
+        }
 
     def write_json(self, path):
         """Write :meth:`to_dict` to a JSON file (a non-finite value is written
@@ -439,8 +480,41 @@ class Posterior:
         for n in self.names:
             d = self.distributions[n]
             lo, hi = self.interval(n)
-            rows.append([n, float(d.mean), float(d.standard_deviation), float(self.mean(n)), float(self.standard_deviation(n)), float(self.map[n]), float(lo), float(hi), float(self.contraction[n]), float(self.r_hat[n]), float(self.effective_sample_size[n])])
-        return {"parameters": Table(["parameter", "prior_mean", "prior_standard_deviation", "posterior_mean", "posterior_standard_deviation", "map", "interval_low", "interval_high", "contraction", "r_hat", "effective_sample_size"], None, rows, title="Posterior of the parameters")}
+            rows.append(
+                [
+                    n,
+                    float(d.mean),
+                    float(d.standard_deviation),
+                    float(self.mean(n)),
+                    float(self.standard_deviation(n)),
+                    float(self.map[n]),
+                    float(lo),
+                    float(hi),
+                    float(self.contraction[n]),
+                    float(self.r_hat[n]),
+                    float(self.effective_sample_size[n]),
+                ]
+            )
+        return {
+            "parameters": Table(
+                [
+                    "parameter",
+                    "prior_mean",
+                    "prior_standard_deviation",
+                    "posterior_mean",
+                    "posterior_standard_deviation",
+                    "map",
+                    "interval_low",
+                    "interval_high",
+                    "contraction",
+                    "r_hat",
+                    "effective_sample_size",
+                ],
+                None,
+                rows,
+                title="Posterior of the parameters",
+            )
+        }
 
     def write_csv(self, path, table: str | None = None):
         """Write the table ``parameters`` to a CSV file."""
@@ -450,7 +524,15 @@ class Posterior:
 
     def save(self, path):
         """Write the samples and the diagnostics to a ``.npz`` file."""
-        np.savez(path, names=np.array(self.names), samples=self.x, log_posterior=self.log_posterior, r_hat=np.array([self.r_hat[n] for n in self.names]), effective_sample_size=np.array([self.effective_sample_size[n] for n in self.names]), contraction=np.array([self.contraction[n] for n in self.names]))
+        np.savez(
+            path,
+            names=np.array(self.names),
+            samples=self.x,
+            log_posterior=self.log_posterior,
+            r_hat=np.array([self.r_hat[n] for n in self.names]),
+            effective_sample_size=np.array([self.effective_sample_size[n] for n in self.names]),
+            contraction=np.array([self.contraction[n] for n in self.names]),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -485,12 +567,34 @@ def _predict(ctx, theta, rng, level):
         lo = np.percentile(draws[:, sl], a, axis=0)
         hi = np.percentile(draws[:, sl], 100 - a, axis=0)
         inside = (y[sl] >= lo) & (y[sl] <= hi)
-        out[name] = dict(mean=mean[:, sl].mean(axis=0).reshape(shape), low=lo.reshape(shape), high=hi.reshape(shape), model_low=np.percentile(mean[:, sl], a, axis=0).reshape(shape), model_high=np.percentile(mean[:, sl], 100 - a, axis=0).reshape(shape), coverage=float(np.mean(inside)))
+        out[name] = dict(
+            mean=mean[:, sl].mean(axis=0).reshape(shape),
+            low=lo.reshape(shape),
+            high=hi.reshape(shape),
+            model_low=np.percentile(mean[:, sl], a, axis=0).reshape(shape),
+            model_high=np.percentile(mean[:, sl], 100 - a, axis=0).reshape(shape),
+            coverage=float(np.mean(inside)),
+        )
         j += m
     return out
 
 
-def _experiment(model, dists, observed, noise, surrogate, training_samples, training, discrepancy, locations, output_transform, seed, processes, store, progress) -> dict:
+def _experiment(
+    model,
+    dists,
+    observed,
+    noise,
+    surrogate,
+    training_samples,
+    training,
+    discrepancy,
+    locations,
+    output_transform,
+    seed,
+    processes,
+    store,
+    progress,
+) -> dict:
     """The likelihood of one experiment: its data, its surrogate (or its
     model) and its discrepancy, as a context with ``predict`` and ``like``."""
     names = list(dists)
@@ -503,14 +607,20 @@ def _experiment(model, dists, observed, noise, surrogate, training_samples, trai
         m = int(np.prod(shape)) if shape else 1
         if name in transform:
             if transform[name] != "log":
-                raise ValueError(f"calibrate: unknown output transform '{transform[name]}' of '{name}'. The transforms are: log.")
+                raise ValueError(
+                    f"calibrate: unknown output transform '{transform[name]}' of '{name}'. The transforms are: log."
+                )
             if np.any(y[j : j + m] <= 0.0):
-                raise ValueError(f"calibrate: the log transform needs positive measurements, and '{name}' has the value {float(np.min(y[j : j + m])):.6g}.")
+                raise ValueError(
+                    f"calibrate: the log transform needs positive measurements, and '{name}' has the value {float(np.min(y[j : j + m])):.6g}."
+                )
             log_rows[j : j + m] = True
         j += m
     unknown = [name for name in transform if name not in onames]
     if unknown:
-        raise ValueError(f"calibrate: output_transform names the outputs {unknown}, which are not observed. Observed: {', '.join(onames)}.")
+        raise ValueError(
+            f"calibrate: output_transform names the outputs {unknown}, which are not observed. Observed: {', '.join(onames)}."
+        )
     measured = y.copy()
     y = np.where(log_rows, np.log(np.where(log_rows, y, 1.0)), y)
     context = dict(names=onames, shapes=shapes, y=y, measured=measured, log_rows=log_rows)
@@ -524,7 +634,9 @@ def _experiment(model, dists, observed, noise, surrogate, training_samples, trai
             raise ValueError("calibrate: give training_samples or training, not both.")
         if training is None:
             m = int(training_samples) if training_samples else max(10 * k, 30)
-            training = _propagate(model, dists, m, "latin_hypercube", seed, processes, store, progress)
+            training = _propagate(
+                model, dists, m, "latin_hypercube", seed, processes, store, progress
+            )
         if list(training.distributions) != names:
             raise ValueError("calibrate: the training runs must have the same inputs, in order.")
         missing = [n for n in onames if n not in training.outputs]
@@ -568,15 +680,28 @@ def _experiment(model, dists, observed, noise, surrogate, training_samples, trai
         j = 0
         for name, shape in zip(onames, shapes):
             m = int(np.prod(shape)) if shape else 1
-            loc = np.asarray(locations[name], dtype=float).reshape(m, -1) if locations and name in locations else np.arange(m, dtype=float).reshape(m, 1)
+            loc = (
+                np.asarray(locations[name], dtype=float).reshape(m, -1)
+                if locations and name in locations
+                else np.arange(m, dtype=float).reshape(m, 1)
+            )
             span = np.ptp(loc, axis=0)
             x = (loc - loc.min(axis=0)) / np.where(span > 0, span, 1.0)
-            blocks.append((name, shape, slice(j, j + m), ((x[:, None, :] - x[None, :, :]) ** 2).sum(axis=-1)[..., None]))
+            blocks.append(
+                (
+                    name,
+                    shape,
+                    slice(j, j + m),
+                    ((x[:, None, :] - x[None, :, :]) ** 2).sum(axis=-1)[..., None],
+                )
+            )
             j += m
         theta0 = np.array([dists[n].mean for n in names])
         scale = np.array([dists[n].standard_deviation for n in names])
         r0 = y - predict(theta0[None])[0][0]
-        v0 = [max(float(np.var(r0[b[2]])), float(np.mean(np.diag(Sn)[b[2]])), 1e-30) for b in blocks]
+        v0 = [
+            max(float(np.var(r0[b[2]])), float(np.mean(np.diag(Sn)[b[2]])), 1e-30) for b in blocks
+        ]
 
         def covariance(hyper):
             P = np.zeros_like(Sn)
@@ -598,12 +723,20 @@ def _experiment(model, dists, observed, noise, surrogate, training_samples, trai
             except linalg.LinAlgError:
                 return 1e25
             r = y - mean[0]
-            return 0.5 * float(r @ linalg.cho_solve(c, r)) + float(np.sum(np.log(np.diag(c[0])))) - prior
+            return (
+                0.5 * float(r @ linalg.cho_solve(c, r))
+                + float(np.sum(np.log(np.diag(c[0]))))
+                - prior
+            )
 
         best = None
         for le in (math.log(0.2), math.log(1.0)):
             z0 = np.concatenate([np.zeros(k)] + [[math.log(v), le] for v in v0])
-            bounds = [(-6.0, 6.0)] * k + [b for v in v0 for b in ((math.log(v) - 20, math.log(v) + 8), (math.log(1e-2), math.log(10.0)))]
+            bounds = [(-6.0, 6.0)] * k + [
+                b
+                for v in v0
+                for b in ((math.log(v) - 20, math.log(v) + 8), (math.log(1e-2), math.log(10.0)))
+            ]
             res = optimize.minimize(negative_log_posterior, z0, method="L-BFGS-B", bounds=bounds)
             if best is None or res.fun < best.fun:
                 best = res
@@ -627,12 +760,42 @@ def _experiment(model, dists, observed, noise, surrogate, training_samples, trai
     return context
 
 
-def _experiments(model, dists, observed, noise, surrogate, training_samples, training, discrepancy, locations, output_transform, seed, processes, store, progress) -> dict:
+def _experiments(
+    model,
+    dists,
+    observed,
+    noise,
+    surrogate,
+    training_samples,
+    training,
+    discrepancy,
+    locations,
+    output_transform,
+    seed,
+    processes,
+    store,
+    progress,
+) -> dict:
     """The contexts of the experiments: one for a single model, or one per
     experiment for a dict of models, each with the indices of its inputs."""
     names = list(dists)
     if not isinstance(model, dict):
-        context = _experiment(model, dists, observed, noise, surrogate, training_samples, training, discrepancy, locations, output_transform, seed, processes, store, progress)
+        context = _experiment(
+            model,
+            dists,
+            observed,
+            noise,
+            surrogate,
+            training_samples,
+            training,
+            discrepancy,
+            locations,
+            output_transform,
+            seed,
+            processes,
+            store,
+            progress,
+        )
         context["input_index"] = list(range(len(names)))
         return {None: context}
 
@@ -640,7 +803,9 @@ def _experiments(model, dists, observed, noise, surrogate, training_samples, tra
         if value is None:
             return None
         if not isinstance(value, dict) or name not in value:
-            raise ValueError(f"calibrate: with several experiments, {label} is a dict of experiment name -> the {label} of that experiment, and it has no entry '{name}'.")
+            raise ValueError(
+                f"calibrate: with several experiments, {label} is a dict of experiment name -> the {label} of that experiment, and it has no entry '{name}'."
+            )
         return value[name]
 
     contexts, used = {}, set()
@@ -651,22 +816,63 @@ def _experiments(model, dists, observed, noise, surrogate, training_samples, tra
         else:
             signature = inspect.signature(function).parameters.values()
             if any(p.kind in (p.VAR_KEYWORD, p.VAR_POSITIONAL) for p in signature):
-                raise ValueError(f"calibrate: the model of experiment '{name}' takes **keywords, so its inputs are not known. Give its training runs, or name its inputs as parameters.")
+                raise ValueError(
+                    f"calibrate: the model of experiment '{name}' takes **keywords, so its inputs are not known. Give its training runs, or name its inputs as parameters."
+                )
             parameters = [p.name for p in signature]
         missing = [n for n in parameters if n not in dists]
         if missing:
-            raise ValueError(f"calibrate: the experiment '{name}' has the inputs {missing}, which have no prior. Inputs: {', '.join(names)}.")
-        context = _experiment(function, {n: dists[n] for n in parameters}, per(observed, "observed", name), per(noise, "noise", name), surrogate, training_samples, runs, discrepancy, per(locations, "locations", name) if locations else None, (output_transform or {}).get(name), seed, processes, store, progress)
+            raise ValueError(
+                f"calibrate: the experiment '{name}' has the inputs {missing}, which have no prior. Inputs: {', '.join(names)}."
+            )
+        context = _experiment(
+            function,
+            {n: dists[n] for n in parameters},
+            per(observed, "observed", name),
+            per(noise, "noise", name),
+            surrogate,
+            training_samples,
+            runs,
+            discrepancy,
+            per(locations, "locations", name) if locations else None,
+            (output_transform or {}).get(name),
+            seed,
+            processes,
+            store,
+            progress,
+        )
         context["input_index"] = [names.index(n) for n in parameters]
         contexts[name] = context
         used.update(parameters)
     unused = [n for n in names if n not in used]
     if unused:
-        raise ValueError(f"calibrate: the inputs {unused} enter no experiment. Remove them, or give them to a model.")
+        raise ValueError(
+            f"calibrate: the inputs {unused} enter no experiment. Remove them, or give them to a model."
+        )
     return contexts
 
 
-def calibrate(model, inputs, observed, noise, surrogate="gaussian_process", training_samples=None, training=None, discrepancy=None, locations=None, sampler="ensemble", samples=20000, walkers=None, chains=4, level=0.95, seed=0, processes=1, store=None, output_transform=None, report="full") -> Posterior:
+def calibrate(
+    model,
+    inputs,
+    observed,
+    noise,
+    surrogate="gaussian_process",
+    training_samples=None,
+    training=None,
+    discrepancy=None,
+    locations=None,
+    sampler="ensemble",
+    samples=20000,
+    walkers=None,
+    chains=4,
+    level=0.95,
+    seed=0,
+    processes=1,
+    store=None,
+    output_transform=None,
+    report="full",
+) -> Posterior:
     r"""Sample the posterior distribution of the ``inputs`` of ``model``
     given measurements.  See the module documentation.
 
@@ -731,7 +937,22 @@ def calibrate(model, inputs, observed, noise, surrogate="gaussian_process", trai
     study_header(report, "Bayesian calibration", dists)
     names = list(dists)
     k = len(names)
-    contexts = _experiments(model, dists, observed, noise, surrogate, training_samples, training, discrepancy, locations, output_transform, seed, processes, store, progress)
+    contexts = _experiments(
+        model,
+        dists,
+        observed,
+        noise,
+        surrogate,
+        training_samples,
+        training,
+        discrepancy,
+        locations,
+        output_transform,
+        seed,
+        processes,
+        store,
+        progress,
+    )
     rng = np.random.default_rng(seed)
 
     def logpost(theta):

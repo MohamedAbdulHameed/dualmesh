@@ -32,7 +32,17 @@ from . import _core
 _counter = itertools.count()
 
 
-def _base_parameters(valid_params, variable=None, name=None, block=(), quadrature="gauss2", reduced_integration=False, scale_with_load=False, boundary=None, type_name="PythonObject"):
+def _base_parameters(
+    valid_params,
+    variable=None,
+    name=None,
+    block=(),
+    quadrature="gauss2",
+    reduced_integration=False,
+    scale_with_load=False,
+    boundary=None,
+    type_name="PythonObject",
+):
     params = valid_params()
     if variable is not None:
         params.set("variable", variable)
@@ -62,8 +72,26 @@ class _PythonObjectMixin:
 class PythonKernel(_core.Kernel, _PythonObjectMixin):
     """A kernel implemented in Python (flux and/or source)."""
 
-    def __init__(self, variable: str, name: str | None = None, block=(), quadrature: str = "gauss2", reduced_integration: bool = False, scale_with_load: bool = False, **parameters):
-        params = _base_parameters(_core.Kernel.valid_params, variable=variable, name=name, block=block, quadrature=quadrature, reduced_integration=reduced_integration, scale_with_load=scale_with_load, type_name=type(self).__name__)
+    def __init__(
+        self,
+        variable: str,
+        name: str | None = None,
+        block=(),
+        quadrature: str = "gauss2",
+        reduced_integration: bool = False,
+        scale_with_load: bool = False,
+        **parameters,
+    ):
+        params = _base_parameters(
+            _core.Kernel.valid_params,
+            variable=variable,
+            name=name,
+            block=block,
+            quadrature=quadrature,
+            reduced_integration=reduced_integration,
+            scale_with_load=scale_with_load,
+            type_name=type(self).__name__,
+        )
         _core.Kernel.__init__(self, params)
         self.parameters = dict(parameters)
         for key, value in parameters.items():
@@ -95,8 +123,28 @@ class PythonBoundaryCondition(_core.IntegratedBC, _PythonObjectMixin):
     ``compute_boundary_flux`` returns the outward normal flux ``q = n . F``.
     """
 
-    def __init__(self, variable: str, boundary, name: str | None = None, block=(), quadrature: str = "gauss2", reduced_integration: bool = False, scale_with_load: bool = False, **parameters):
-        params = _base_parameters(_core.IntegratedBC.valid_params, variable=variable, boundary=boundary, name=name, block=block, quadrature=quadrature, reduced_integration=reduced_integration, scale_with_load=scale_with_load, type_name=type(self).__name__)
+    def __init__(
+        self,
+        variable: str,
+        boundary,
+        name: str | None = None,
+        block=(),
+        quadrature: str = "gauss2",
+        reduced_integration: bool = False,
+        scale_with_load: bool = False,
+        **parameters,
+    ):
+        params = _base_parameters(
+            _core.IntegratedBC.valid_params,
+            variable=variable,
+            boundary=boundary,
+            name=name,
+            block=block,
+            quadrature=quadrature,
+            reduced_integration=reduced_integration,
+            scale_with_load=scale_with_load,
+            type_name=type(self).__name__,
+        )
         _core.IntegratedBC.__init__(self, params)
         self.parameters = dict(parameters)
         for key, value in parameters.items():
@@ -114,8 +162,22 @@ class PythonBoundaryCondition(_core.IntegratedBC, _PythonObjectMixin):
 class PythonNodalBoundaryCondition(_core.NodalBC, _PythonObjectMixin):
     """An essential (Dirichlet) boundary condition implemented in Python."""
 
-    def __init__(self, variable: str, boundary, name: str | None = None, scale_with_load: bool = False, **parameters):
-        params = _base_parameters(_core.NodalBC.valid_params, variable=variable, boundary=boundary, name=name, scale_with_load=scale_with_load, type_name=type(self).__name__)
+    def __init__(
+        self,
+        variable: str,
+        boundary,
+        name: str | None = None,
+        scale_with_load: bool = False,
+        **parameters,
+    ):
+        params = _base_parameters(
+            _core.NodalBC.valid_params,
+            variable=variable,
+            boundary=boundary,
+            name=name,
+            scale_with_load=scale_with_load,
+            type_name=type(self).__name__,
+        )
         _core.NodalBC.__init__(self, params)
         self.parameters = dict(parameters)
         for key, value in parameters.items():

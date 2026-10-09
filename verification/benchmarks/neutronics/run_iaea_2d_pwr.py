@@ -39,7 +39,12 @@ CM = 0.01  # m
 
 # Two-group constants of 11-A2 (cm and 1/cm): D_1, D_2, Sigma_1->2,
 # Sigma_a1, Sigma_a2, nu Sigma_f2.
-CONSTANTS = {"fuel_1": (1.5, 0.4, 0.02, 0.01, 0.08, 0.135), "fuel_2": (1.5, 0.4, 0.02, 0.01, 0.085, 0.135), "fuel_2_rodded": (1.5, 0.4, 0.02, 0.01, 0.13, 0.135), "reflector": (2.0, 0.3, 0.04, 0.0, 0.01, 0.0)}
+CONSTANTS = {
+    "fuel_1": (1.5, 0.4, 0.02, 0.01, 0.08, 0.135),
+    "fuel_2": (1.5, 0.4, 0.02, 0.01, 0.085, 0.135),
+    "fuel_2_rodded": (1.5, 0.4, 0.02, 0.01, 0.13, 0.135),
+    "reflector": (2.0, 0.3, 0.04, 0.0, 0.01, 0.0),
+}
 BLOCKS = list(CONSTANTS)
 AXIAL_BUCKLING = 0.8e-4  # 1/cm^2
 REFERENCE_K = 1.02959
@@ -127,7 +132,9 @@ DIVISIONS = (2, 4, 8, 16, 32)
 def region(x: float, y: float) -> str | None:
     """The region at (x, y) in cm, in the quarter core (None outside)."""
     big, small = max(x, y), min(x, y)
-    if not ((small < 70 and big < 170) or (small < 110 and big < 150) or (small < 130 and big < 130)):
+    if not (
+        (small < 70 and big < 170) or (small < 110 and big < 150) or (small < 130 and big < 130)
+    ):
         return None
     if (big < 10) or (70 <= big < 90 and small < 10) or (70 <= big < 90 and 70 <= small < 90):
         return "fuel_2_rodded"
@@ -159,7 +166,9 @@ def core_mesh(divisions: int):
     used = np.unique(np.array(cells).ravel())
     renumber = -np.ones(len(points), dtype=int)
     renumber[used] = np.arange(len(used))
-    mesh = dm.mesh_from_arrays(points[used], renumber[np.array(cells)], element_type="Quad4", blocks=blocks)
+    mesh = dm.mesh_from_arrays(
+        points[used], renumber[np.array(cells)], element_type="Quad4", blocks=blocks
+    )
     for index, name in enumerate(BLOCKS):
         mesh.set_block_name(index, name)
     tolerance = 1e-9
@@ -170,10 +179,22 @@ def core_mesh(divisions: int):
 def solve(method: str, divisions: int) -> dict:
     mesh = core_mesh(divisions)
     problem = dm.Problem(mesh, method=method)
-    neutrons = problem.add_physics("neutron_diffusion", "neutrons", groups=2, transverse_buckling=AXIAL_BUCKLING / CM**2)
+    neutrons = problem.add_physics(
+        "neutron_diffusion", "neutrons", groups=2, transverse_buckling=AXIAL_BUCKLING / CM**2
+    )
     for name, (d1, d2, s12, a1, a2, nf2) in CONSTANTS.items():
-        problem.add_property("multigroup_cross_sections", name, block=[name], diffusion_coefficient=[d1 * CM, d2 * CM], absorption_cross_section=[a1 / CM, a2 / CM], scattering_cross_section=[[0.0, s12 / CM], [0.0, 0.0]], nu_fission_cross_section=[0.0, nf2 / CM])
-    neutrons.add_boundary_condition("vacuum_boundary_condition", "outer", extrapolation_distance_ratio=2.1312)
+        problem.add_property(
+            "multigroup_cross_sections",
+            name,
+            block=[name],
+            diffusion_coefficient=[d1 * CM, d2 * CM],
+            absorption_cross_section=[a1 / CM, a2 / CM],
+            scattering_cross_section=[[0.0, s12 / CM], [0.0, 0.0]],
+            nu_fission_cross_section=[0.0, nf2 / CM],
+        )
+    neutrons.add_boundary_condition(
+        "vacuum_boundary_condition", "outer", extrapolation_distance_ratio=2.1312
+    )
     start = time.perf_counter()
     result = problem.solve_eigenvalue()
     seconds = time.perf_counter() - start
@@ -184,7 +205,12 @@ def solve(method: str, divisions: int) -> dict:
     centres = np.array([mesh.element_centroid(e) for e in range(mesh.num_elements)]) / CM
     flux = {}
     for zone, i, j in ZONE_CELLS:
-        inside = (centres[:, 0] >= EDGES[i]) & (centres[:, 0] < EDGES[i + 1]) & (centres[:, 1] >= EDGES[j]) & (centres[:, 1] < EDGES[j + 1])
+        inside = (
+            (centres[:, 0] >= EDGES[i])
+            & (centres[:, 0] < EDGES[i + 1])
+            & (centres[:, 1] >= EDGES[j])
+            & (centres[:, 1] < EDGES[j + 1])
+        )
         if inside.any():
             flux[zone] = float(integrals[inside].sum() / volumes[inside].sum())
     return dict(k=result.k_effective, seconds=seconds, unknowns=result.num_dofs, flux=flux)
@@ -211,8 +237,16 @@ def compute() -> dict:
     for method in METHODS:
         for divisions in DIVISIONS:
             run = solve(method, divisions)
-            out[f"{method}/{divisions}"] = dict(k=run["k"], seconds=run["seconds"], unknowns=run["unknowns"], zones=np.array(sorted(run["flux"])), flux=np.array([run["flux"][z] for z in sorted(run["flux"])]))
-            print(f"{method:6s} {divisions:3d} per assembly: k = {run['k']:.6f} ({1e5 * (run['k'] - REFERENCE_K):+.1f} pcm), {run['unknowns']} unknowns, {run['seconds']:.2f} s")
+            out[f"{method}/{divisions}"] = dict(
+                k=run["k"],
+                seconds=run["seconds"],
+                unknowns=run["unknowns"],
+                zones=np.array(sorted(run["flux"])),
+                flux=np.array([run["flux"][z] for z in sorted(run["flux"])]),
+            )
+            print(
+                f"{method:6s} {divisions:3d} per assembly: k = {run['k']:.6f} ({1e5 * (run['k'] - REFERENCE_K):+.1f} pcm), {run['unknowns']} unknowns, {run['seconds']:.2f} s"
+            )
     return out
 
 
@@ -222,13 +256,17 @@ def main():
     if not plot_only:
         plotstyle.save_cache(CACHE, data)
     reference = assembly_powers(REFERENCE_THERMAL_FLUX)
-    lines = ["method,divisions_per_assembly,unknowns,k_effective,k_error_pcm,max_power_error_percent,rms_power_error_percent,seconds"]
+    lines = [
+        "method,divisions_per_assembly,unknowns,k_effective,k_error_pcm,max_power_error_percent,rms_power_error_percent,seconds"
+    ]
     for method in METHODS:
         for divisions in DIVISIONS:
             run = data[f"{method}/{divisions}"]
             powers = assembly_powers(dict(zip([int(z) for z in run["zones"]], run["flux"])))
             errors = np.array([100.0 * (powers[z] / reference[z] - 1.0) for z in reference])
-            lines.append(f"{method},{divisions},{int(run['unknowns'])},{float(run['k']):.6f},{1e5 * (float(run['k']) - REFERENCE_K):.1f},{np.max(np.abs(errors)):.2f},{np.sqrt(np.mean(errors**2)):.2f},{float(run['seconds']):.2f}")
+            lines.append(
+                f"{method},{divisions},{int(run['unknowns'])},{float(run['k']):.6f},{1e5 * (float(run['k']) - REFERENCE_K):.1f},{np.max(np.abs(errors)):.2f},{np.sqrt(np.mean(errors**2)):.2f},{float(run['seconds']):.2f}"
+            )
     (HERE / "iaea_2d_pwr_results.csv").write_text("\n".join(lines) + "\n")
     print("\n".join(lines))
     # Convergence of k with the element size.
@@ -238,7 +276,13 @@ def main():
         h = [20.0 / d for d in DIVISIONS]
         error = [abs(1e5 * (float(data[f"{method}/{d}"]["k"]) - REFERENCE_K)) for d in DIVISIONS]
         ax.loglog(h, error, "o-", color=colour, label=method)
-    ax.loglog([0.625, 10.0], [3.0, 3.0 * 256], color=plotstyle.REFERENCE_GREY, linestyle="--", label="second order")
+    ax.loglog(
+        [0.625, 10.0],
+        [3.0, 3.0 * 256],
+        color=plotstyle.REFERENCE_GREY,
+        linestyle="--",
+        label="second order",
+    )
     plotstyle.style(ax, "element size (cm)", "|k - 1.02959| (pcm)", "2D IAEA PWR: convergence of k")
     plotstyle.legend(ax)
     plotstyle.save(fig, out_dir / "iaea_2d_pwr_k_convergence.png")
@@ -247,10 +291,19 @@ def main():
     powers = assembly_powers(dict(zip([int(z) for z in run["zones"]], run["flux"])))
     zones = sorted(reference)
     fig, ax = plotstyle.new_figure()
-    ax.bar(np.arange(len(zones)), [100.0 * (powers[z] / reference[z] - 1.0) for z in zones], color=plotstyle.DUALMESH)
+    ax.bar(
+        np.arange(len(zones)),
+        [100.0 * (powers[z] / reference[z] - 1.0) for z in zones],
+        color=plotstyle.DUALMESH,
+    )
     ax.set_xticks(np.arange(len(zones)))
     ax.set_xticklabels([str(z) for z in zones], fontsize=7)
-    plotstyle.style(ax, "assembly", "power error (%)", f"2D IAEA PWR: assembly powers, fem, {DIVISIONS[-1]} elements per assembly")
+    plotstyle.style(
+        ax,
+        "assembly",
+        "power error (%)",
+        f"2D IAEA PWR: assembly powers, fem, {DIVISIONS[-1]} elements per assembly",
+    )
     plotstyle.save(fig, out_dir / "iaea_2d_pwr_assembly_power_error.png")
 
 

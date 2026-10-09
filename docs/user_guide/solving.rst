@@ -529,12 +529,36 @@ step itself.
    problem.add_variable("temperature")
    problem.set_values("temperature", np.full(mesh.num_nodes, 300.0))
 
-   problem.add_kernel("heat_conduction", "conduction", variable="temperature", thermal_conductivity=20.0)
-   problem.add_kernel("heat_conduction_time_derivative", "storage", variable="temperature", density=7800.0, specific_heat=460.0)
-   problem.add_boundary_condition("Dirichlet_boundary_condition", "hot", variable="temperature", boundary="left", value=3000.0)
-   problem.add_boundary_condition("radiative_heat_flux_boundary_condition", "radiation", variable="temperature", boundary="right", emissivity=0.9, ambient_temperature=300.0)
+   problem.add_kernel(
+       "heat_conduction", "conduction", variable="temperature", thermal_conductivity=20.0
+   )
+   problem.add_kernel(
+       "heat_conduction_time_derivative",
+       "storage",
+       variable="temperature",
+       density=7800.0,
+       specific_heat=460.0,
+   )
+   problem.add_boundary_condition(
+       "Dirichlet_boundary_condition", "hot", variable="temperature", boundary="left", value=3000.0
+   )
+   problem.add_boundary_condition(
+       "radiative_heat_flux_boundary_condition",
+       "radiation",
+       variable="temperature",
+       boundary="right",
+       emissivity=0.9,
+       ambient_temperature=300.0,
+   )
 
-   result = problem.solve_transient(end_time=400.0, time_step=400.0, implicitness=1.0, time_stepper="iteration", max_iterations=2, cutback_factor=0.25)
+   result = problem.solve_transient(
+       end_time=400.0,
+       time_step=400.0,
+       implicitness=1.0,
+       time_stepper="iteration",
+       max_iterations=2,
+       cutback_factor=0.25,
+   )
 
    print(result.converged, result.rejected_steps, len(result.step_history))
 

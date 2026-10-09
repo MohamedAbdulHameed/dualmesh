@@ -20,23 +20,46 @@ needs_petsc = pytest.mark.skipif(not dm.have_petsc(), reason="built without PETS
 def test_petsc_option_strings():
     assert petsc_option_string(None) == ""
     assert petsc_option_string("-ksp_type cg") == "-ksp_type cg"
-    assert petsc_option_string({"ksp_type": "cg", "-pc_type": "gamg", "ksp_monitor": None}) == "-ksp_type cg -pc_type gamg -ksp_monitor"
+    assert (
+        petsc_option_string({"ksp_type": "cg", "-pc_type": "gamg", "ksp_monitor": None})
+        == "-ksp_type cg -pc_type gamg -ksp_monitor"
+    )
     assert petsc_option_string({"ksp_view": True, "ksp_monitor": False}) == "-ksp_view"
 
 
 def _cavity(problem, reynolds_number=50.0, formulation="pressure"):
-    problem.add_physics("incompressible_flow", "flow", velocities=["u", "v"], dynamic_viscosity=1.0, density=reynolds_number, formulation=formulation, pressure_pin_point=(0.5, 0.0))
-    problem.add_boundary_condition("Dirichlet_boundary_condition", "lid", variable="u", boundary="top", value=1.0)
-    problem.add_boundary_condition("Dirichlet_boundary_condition", "lid_v", variable="v", boundary="top", value=0.0)
+    problem.add_physics(
+        "incompressible_flow",
+        "flow",
+        velocities=["u", "v"],
+        dynamic_viscosity=1.0,
+        density=reynolds_number,
+        formulation=formulation,
+        pressure_pin_point=(0.5, 0.0),
+    )
+    problem.add_boundary_condition(
+        "Dirichlet_boundary_condition", "lid", variable="u", boundary="top", value=1.0
+    )
+    problem.add_boundary_condition(
+        "Dirichlet_boundary_condition", "lid_v", variable="v", boundary="top", value=0.0
+    )
     for variable in ("u", "v"):
-        problem.add_boundary_condition("Dirichlet_boundary_condition", f"walls_{variable}", variable=variable, boundary=["left", "right", "bottom"], value=0.0)
+        problem.add_boundary_condition(
+            "Dirichlet_boundary_condition",
+            f"walls_{variable}",
+            variable=variable,
+            boundary=["left", "right", "bottom"],
+            value=0.0,
+        )
 
 
 def _heat(problem):
     problem.add_variable("T")
     problem.add_kernel("heat_conduction", "k", variable="T", thermal_conductivity=2.0)
     problem.add_kernel("heat_source", "q", variable="T", heat_source=10.0)
-    problem.add_boundary_condition("Dirichlet_boundary_condition", "cold", variable="T", boundary=["left", "bottom"], value=0.0)
+    problem.add_boundary_condition(
+        "Dirichlet_boundary_condition", "cold", variable="T", boundary=["left", "bottom"], value=0.0
+    )
 
 
 @needs_petsc
@@ -106,7 +129,9 @@ def test_petsc_algebraic_multigrid_on_conduction(preconditioner):
     reference.solve(linear_solver="lu")
     problem = dm.Problem(mesh, method="fem")
     _heat(problem)
-    result = problem.solve(linear_solver="petsc", petsc_options={"ksp_type": "cg", "pc_type": preconditioner})
+    result = problem.solve(
+        linear_solver="petsc", petsc_options={"ksp_type": "cg", "pc_type": preconditioner}
+    )
     assert problem.values("T") == pytest.approx(reference.values("T"), abs=1e-9)
     assert result.linear_iterations < 40
 
@@ -117,7 +142,9 @@ def test_petsc_reports_a_solve_that_does_not_converge():
     problem = dm.Problem(mesh, method="fem")
     _heat(problem)
     with pytest.raises(RuntimeError, match="DIVERGED_ITS"):
-        problem.solve(linear_solver="petsc", petsc_options="-ksp_type richardson -pc_type none -ksp_max_it 3")
+        problem.solve(
+            linear_solver="petsc", petsc_options="-ksp_type richardson -pc_type none -ksp_max_it 3"
+        )
 
 
 @needs_petsc

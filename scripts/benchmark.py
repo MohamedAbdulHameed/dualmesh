@@ -50,9 +50,17 @@ def heat_problem(n, method):
     problem = dm.Problem(mesh, method=method)
     problem.set_num_threads(1)
     problem.add_variable("temperature")
-    problem.add_kernel("heat_conduction", "conduction", variable="temperature", thermal_conductivity=2.0, temperature_polynomial=[1.0, 0.01])
+    problem.add_kernel(
+        "heat_conduction",
+        "conduction",
+        variable="temperature",
+        thermal_conductivity=2.0,
+        temperature_polynomial=[1.0, 0.01],
+    )
     problem.add_kernel("heat_source", "heating", variable="temperature", heat_source=10.0)
-    problem.add_boundary_condition("Dirichlet_boundary_condition", "cold", variable="temperature", boundary="left", value=0.0)
+    problem.add_boundary_condition(
+        "Dirichlet_boundary_condition", "cold", variable="temperature", boundary="left", value=0.0
+    )
     return problem
 
 
@@ -60,9 +68,21 @@ def elasticity_problem(n, method):
     mesh = dm.generate_rectangle_mesh(0, 1, 0, 1, n, n)
     problem = dm.Problem(mesh, method=method)
     problem.set_num_threads(1)
-    problem.add_physics("solid_mechanics", "solid", youngs_modulus=200e9, poissons_ratio=0.3, formulation="plane_strain")
+    problem.add_physics(
+        "solid_mechanics",
+        "solid",
+        youngs_modulus=200e9,
+        poissons_ratio=0.3,
+        formulation="plane_strain",
+    )
     for component in ("displacement_x", "displacement_y"):
-        problem.add_boundary_condition("Dirichlet_boundary_condition", f"fixed_{component}", variable=component, boundary="left", value=0.0)
+        problem.add_boundary_condition(
+            "Dirichlet_boundary_condition",
+            f"fixed_{component}",
+            variable=component,
+            boundary="left",
+            value=0.0,
+        )
     return problem
 
 
@@ -70,23 +90,53 @@ def flow_problem(n, method, formulation="pressure", element_type="Quad4", densit
     mesh = dm.generate_rectangle_mesh(0, 1, 0, 1, n, n, element_type=element_type)
     problem = dm.Problem(mesh, method=method)
     problem.set_num_threads(1)
-    problem.add_physics("incompressible_flow", "flow", velocities=["u", "v"], density=density, formulation=formulation, pressure_pin_point=(0.5, 0.0))
-    problem.add_boundary_condition("Dirichlet_boundary_condition", "lid", variable="u", boundary="top", value=1.0)
-    problem.add_boundary_condition("Dirichlet_boundary_condition", "lid_v", variable="v", boundary="top", value=0.0)
+    problem.add_physics(
+        "incompressible_flow",
+        "flow",
+        velocities=["u", "v"],
+        density=density,
+        formulation=formulation,
+        pressure_pin_point=(0.5, 0.0),
+    )
+    problem.add_boundary_condition(
+        "Dirichlet_boundary_condition", "lid", variable="u", boundary="top", value=1.0
+    )
+    problem.add_boundary_condition(
+        "Dirichlet_boundary_condition", "lid_v", variable="v", boundary="top", value=0.0
+    )
     for variable in ("u", "v"):
-        problem.add_boundary_condition("Dirichlet_boundary_condition", f"walls_{variable}", variable=variable, boundary=["left", "right", "bottom"], value=0.0)
+        problem.add_boundary_condition(
+            "Dirichlet_boundary_condition",
+            f"walls_{variable}",
+            variable=variable,
+            boundary=["left", "right", "bottom"],
+            value=0.0,
+        )
     return problem
 
 
 def assembly_benchmarks(quick, repeat):
     n = 32 if quick else 96
     rows = []
-    for physics, build in (("heat conduction", heat_problem), ("plane elasticity", elasticity_problem), ("pressure-velocity flow", flow_problem)):
+    for physics, build in (
+        ("heat conduction", heat_problem),
+        ("plane elasticity", elasticity_problem),
+        ("pressure-velocity flow", flow_problem),
+    ):
         for method in ("fem", "dmcdm", "hfvm", "zfvm"):
             problem = build(n, method)
             problem.initialize()
             seconds, (residual, _) = best_of(repeat, problem.linear_system)
-            rows.append({"group": "assembly", "case": f"{physics}, {n} x {n} Quad4", "method": method, "unknowns": int(len(residual)), "seconds": seconds, "microseconds_per_unknown": 1e6 * seconds / len(residual)})
+            rows.append(
+                {
+                    "group": "assembly",
+                    "case": f"{physics}, {n} x {n} Quad4",
+                    "method": method,
+                    "unknowns": int(len(residual)),
+                    "seconds": seconds,
+                    "microseconds_per_unknown": 1e6 * seconds / len(residual),
+                }
+            )
     return rows
 
 
@@ -95,11 +145,30 @@ def solver_benchmarks(quick, repeat):
 
     n = 6 if quick else 10
     fields = {"u": "sin(y+z)", "v": "sin(x+z)", "w": "sin(x+y)", "pressure": "cos(x)*y*z + x"}
-    study = mms.ManufacturedSolution(fields, dimension=3, flux_boundaries={"right": (1.0, 0.0, 0.0)})
-    study.add_physics("incompressible_flow", "flow", velocities=["u", "v", "w"], formulation="Taylor_Hood")
-    variants = [("direct LU", dict(linear_solver="lu")), ("GMRES + pressure mass Schur (built-in)", dict(linear_solver="gmres", preconditioner="pressure_mass_schur"))]
+    study = mms.ManufacturedSolution(
+        fields, dimension=3, flux_boundaries={"right": (1.0, 0.0, 0.0)}
+    )
+    study.add_physics(
+        "incompressible_flow", "flow", velocities=["u", "v", "w"], formulation="Taylor_Hood"
+    )
+    variants = [
+        ("direct LU", dict(linear_solver="lu")),
+        (
+            "GMRES + pressure mass Schur (built-in)",
+            dict(linear_solver="gmres", preconditioner="pressure_mass_schur"),
+        ),
+    ]
     if dm.have_petsc():
-        variants.append(("PETSc Schur field split, GAMG on momentum", dict(linear_solver="petsc", preconditioner="pressure_mass_schur", petsc_options="-fieldsplit_0_pc_type gamg")))
+        variants.append(
+            (
+                "PETSc Schur field split, GAMG on momentum",
+                dict(
+                    linear_solver="petsc",
+                    preconditioner="pressure_mass_schur",
+                    petsc_options="-fieldsplit_0_pc_type gamg",
+                ),
+            )
+        )
     rows = []
     for label, options in variants:
 
@@ -111,7 +180,16 @@ def solver_benchmarks(quick, repeat):
             return problem
 
         seconds, problem = best_of(repeat, run)
-        rows.append({"group": "linear solver", "case": f"Taylor-Hood Stokes, {n}^3 Tet10", "method": label, "unknowns": int(problem.num_active_dofs()), "seconds": seconds, "velocity_l2_error": float(study.errors(problem)[("u", "l2")])})
+        rows.append(
+            {
+                "group": "linear solver",
+                "case": f"Taylor-Hood Stokes, {n}^3 Tet10",
+                "method": label,
+                "unknowns": int(problem.num_active_dofs()),
+                "seconds": seconds,
+                "velocity_l2_error": float(study.errors(problem)[("u", "l2")]),
+            }
+        )
     return rows
 
 
@@ -120,7 +198,9 @@ def main(argv=None):
     parser.add_argument("--quick", action="store_true", help="smaller problems")
     parser.add_argument("--repeat", type=int, default=3, help="runs per benchmark (best kept)")
     parser.add_argument("--output", default="benchmark_results.json")
-    parser.add_argument("--only", choices=["assembly", "solver"], help="run one group of benchmarks")
+    parser.add_argument(
+        "--only", choices=["assembly", "solver"], help="run one group of benchmarks"
+    )
     args = parser.parse_args(argv)
     groups = {"assembly": assembly_benchmarks, "solver": solver_benchmarks}
     rows = []
@@ -133,7 +213,18 @@ def main(argv=None):
     print("-" * len(header))
     for row in rows:
         print(f"{row['group']:15s} {row['case']:42s} {row['method']:42s} {row['seconds']:9.3f}")
-    record = {"dualmesh_version": dm.__version__, "petsc": dm.have_petsc(), "mpi": dm.have_mpi(), "python": platform.python_version(), "machine": platform.machine(), "processor": platform.processor(), "cpu_count": os.cpu_count(), "date": time.strftime("%Y-%m-%d %H:%M:%S"), "quick": args.quick, "results": rows}
+    record = {
+        "dualmesh_version": dm.__version__,
+        "petsc": dm.have_petsc(),
+        "mpi": dm.have_mpi(),
+        "python": platform.python_version(),
+        "machine": platform.machine(),
+        "processor": platform.processor(),
+        "cpu_count": os.cpu_count(),
+        "date": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "quick": args.quick,
+        "results": rows,
+    }
     Path(args.output).write_text(json.dumps(record, indent=2) + "\n")
     print(f"\nwritten to {args.output}")
 

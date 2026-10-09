@@ -14,17 +14,36 @@ import dualmesh as dm
 
 
 def bus_bar(method="dmcdm"):
-    mesh = dm.generate_rectangle_mesh(x_min=0.0, x_max=0.1, y_min=0.0, y_max=0.05, num_x_elements=10, num_y_elements=5)
+    mesh = dm.generate_rectangle_mesh(
+        x_min=0.0, x_max=0.1, y_min=0.0, y_max=0.05, num_x_elements=10, num_y_elements=5
+    )
     problem = dm.Problem(mesh, method=method)
-    heat = problem.add_physics("heat_transfer", "heat", thermal_conductivity=20.0, heat_source=1.0e6)
+    heat = problem.add_physics(
+        "heat_transfer", "heat", thermal_conductivity=20.0, heat_source=1.0e6
+    )
     heat.add_boundary_condition("Dirichlet_boundary_condition", "left", value=40.0)
     heat.add_boundary_condition("Dirichlet_boundary_condition", "right", value=10.0)
-    heat.add_boundary_condition("convective_heat_flux_boundary_condition", "top", heat_transfer_coefficient=75.0, ambient_temperature=0.0)
-    problem.add_postprocessor("total_reaction", "heat_through_left", variable="temperature", boundary="left")
-    problem.add_postprocessor("total_reaction", "heat_through_right", variable="temperature", boundary="right")
-    problem.add_postprocessor("point_value", "temperature_bottom", variable="temperature", point=[0.05, 0.0])
-    problem.add_postprocessor("point_value", "temperature_top", variable="temperature", point=[0.05, 0.05])
-    problem.add_postprocessor("nodal_extreme_value", "hottest", variable="temperature", value_type="max")
+    heat.add_boundary_condition(
+        "convective_heat_flux_boundary_condition",
+        "top",
+        heat_transfer_coefficient=75.0,
+        ambient_temperature=0.0,
+    )
+    problem.add_postprocessor(
+        "total_reaction", "heat_through_left", variable="temperature", boundary="left"
+    )
+    problem.add_postprocessor(
+        "total_reaction", "heat_through_right", variable="temperature", boundary="right"
+    )
+    problem.add_postprocessor(
+        "point_value", "temperature_bottom", variable="temperature", point=[0.05, 0.0]
+    )
+    problem.add_postprocessor(
+        "point_value", "temperature_top", variable="temperature", point=[0.05, 0.05]
+    )
+    problem.add_postprocessor(
+        "nodal_extreme_value", "hottest", variable="temperature", value_type="max"
+    )
     problem.solve()
     return problem
 

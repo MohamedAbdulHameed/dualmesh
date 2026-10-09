@@ -22,23 +22,61 @@ import numpy as np
 import pytest
 
 METHODS = ("dmcdm", "fem", "hfvm", "zfvm")
-SUPPORTED = {"Quad8": {"fem", "zfvm"}, "Hex20": {"fem", "zfvm"}, "Wedge6": set(METHODS), "Pyramid5": {"fem", "zfvm"}}
+SUPPORTED = {
+    "Quad8": {"fem", "zfvm"},
+    "Hex20": {"fem", "zfvm"},
+    "Wedge6": set(METHODS),
+    "Pyramid5": {"fem", "zfvm"},
+}
 
 
 def distorted_square(element_type, num_elements=3):
-    mesh = dm.generate_rectangle_mesh(x_min=0.0, x_max=1.0, y_min=0.0, y_max=1.0, num_x_elements=num_elements, num_y_elements=num_elements, element_type=element_type)
-    mesh.transform_nodes(lambda x, y, z: [x + 0.3 * x * (1 - x) * y * (1 - y), y - 0.2 * x * (1 - x) * y * (1 - y), 0.0])
+    mesh = dm.generate_rectangle_mesh(
+        x_min=0.0,
+        x_max=1.0,
+        y_min=0.0,
+        y_max=1.0,
+        num_x_elements=num_elements,
+        num_y_elements=num_elements,
+        element_type=element_type,
+    )
+    mesh.transform_nodes(
+        lambda x, y, z: [
+            x + 0.3 * x * (1 - x) * y * (1 - y),
+            y - 0.2 * x * (1 - x) * y * (1 - y),
+            0.0,
+        ]
+    )
     return mesh
 
 
 def distorted_cube(element_type, num_elements=2):
-    mesh = dm.generate_box_mesh(x_min=0.0, x_max=1.0, y_min=0.0, y_max=1.0, z_min=0.0, z_max=1.0, num_x_elements=num_elements, num_y_elements=num_elements, num_z_elements=num_elements, element_type=element_type)
-    mesh.transform_nodes(lambda x, y, z: [x + 0.2 * x * (1 - x) * y, y - 0.15 * y * (1 - y) * z, z + 0.1 * z * (1 - z) * x])
+    mesh = dm.generate_box_mesh(
+        x_min=0.0,
+        x_max=1.0,
+        y_min=0.0,
+        y_max=1.0,
+        z_min=0.0,
+        z_max=1.0,
+        num_x_elements=num_elements,
+        num_y_elements=num_elements,
+        num_z_elements=num_elements,
+        element_type=element_type,
+    )
+    mesh.transform_nodes(
+        lambda x, y, z: [
+            x + 0.2 * x * (1 - x) * y,
+            y - 0.15 * y * (1 - y) * z,
+            z + 0.1 * z * (1 - z) * x,
+        ]
+    )
     return mesh
 
 
 def mesh_for(element_type):
-    return distorted_square(element_type) if element_type == "Quad8" else distorted_cube(element_type)
+    return (
+        distorted_square(element_type) if element_type == "Quad8" else distorted_cube(element_type)
+    )
 
 
 def patch_test_error(mesh, method):
@@ -48,7 +86,13 @@ def patch_test_error(mesh, method):
     problem = dm.Problem(mesh, method=method)
     problem.add_variable("u")
     problem.add_kernel("diffusion", "diffusion", variable="u")
-    problem.add_boundary_condition("Dirichlet_boundary_condition", "all", variable="u", boundary=mesh.sideset_names(), value=exact)
+    problem.add_boundary_condition(
+        "Dirichlet_boundary_condition",
+        "all",
+        variable="u",
+        boundary=mesh.sideset_names(),
+        value=exact,
+    )
     problem.solve()
     points = problem.entity_points()
     expected = 1.0 + 2.0 * points[:, 0] - 3.0 * points[:, 1] + 0.5 * points[:, 2]
@@ -64,7 +108,17 @@ def hybrid_mesh(second_type):
     quadrilateral to its neighbour in x, and a cell divided into six pyramids
     presents each of its faces as the base of one of them.
     """
-    base = dm.generate_box_mesh(x_min=0.0, x_max=1.0, y_min=0.0, y_max=1.0, z_min=0.0, z_max=1.0, num_x_elements=4, num_y_elements=2, num_z_elements=2)
+    base = dm.generate_box_mesh(
+        x_min=0.0,
+        x_max=1.0,
+        y_min=0.0,
+        y_max=1.0,
+        z_min=0.0,
+        z_max=1.0,
+        num_x_elements=4,
+        num_y_elements=2,
+        num_z_elements=2,
+    )
     points = [list(p) for p in np.asarray(base.points())]
     cells = []
     for _type, connectivity, _block in base.cells():
@@ -73,11 +127,23 @@ def hybrid_mesh(second_type):
         if centroid[0] < 0.5:
             cells.append(("Hex8", [h]))
         elif second_type == "Wedge6":
-            cells.append(("Wedge6", [[h[0], h[1], h[2], h[4], h[5], h[6]], [h[0], h[2], h[3], h[4], h[6], h[7]]]))
+            cells.append(
+                (
+                    "Wedge6",
+                    [[h[0], h[1], h[2], h[4], h[5], h[6]], [h[0], h[2], h[3], h[4], h[6], h[7]]],
+                )
+            )
         else:
             points.append(list(centroid))
             c = len(points) - 1
-            faces = [(0, 1, 5, 4), (1, 2, 6, 5), (2, 3, 7, 6), (0, 4, 7, 3), (0, 3, 2, 1), (4, 5, 6, 7)]
+            faces = [
+                (0, 1, 5, 4),
+                (1, 2, 6, 5),
+                (2, 3, 7, 6),
+                (0, 4, 7, 3),
+                (0, 3, 2, 1),
+                (4, 5, 6, 7),
+            ]
             cells.append(("Pyramid5", [[h[f[0]], h[f[1]], h[f[2]], h[f[3]], c] for f in faces]))
     groups = {}
     for element_type, connectivity in cells:
@@ -105,7 +171,10 @@ def test_each_element_is_offered_to_exactly_the_methods_that_can_use_it(element_
 # ---------------------------------------------------------------------------
 # The patch test
 # ---------------------------------------------------------------------------
-@pytest.mark.parametrize("element_type, method", [(t, m) for t in sorted(SUPPORTED) for m in METHODS if m in SUPPORTED[t]])
+@pytest.mark.parametrize(
+    "element_type, method",
+    [(t, m) for t in sorted(SUPPORTED) for m in METHODS if m in SUPPORTED[t]],
+)
 def test_linear_field_is_exact_on_a_distorted_mesh(element_type, method):
     tolerance = 1e-12
     assert patch_test_error(mesh_for(element_type), method) < tolerance
@@ -159,10 +228,22 @@ def test_serendipity_promotion():
     """``second_order(serendipity=True)`` adds the mid-edge nodes and no
     others: a 2 by 2 Quad4 mesh has 9 corners and 12 edges, so 21 nodes, where
     the full promotion to Quad9 adds the 4 centres as well and gives 25."""
-    mesh = dm.generate_rectangle_mesh(x_min=0.0, x_max=1.0, y_min=0.0, y_max=1.0, num_x_elements=2, num_y_elements=2)
+    mesh = dm.generate_rectangle_mesh(
+        x_min=0.0, x_max=1.0, y_min=0.0, y_max=1.0, num_x_elements=2, num_y_elements=2
+    )
     assert mesh.second_order(serendipity=True).num_nodes == 21
     assert mesh.second_order().num_nodes == 25
-    box = dm.generate_box_mesh(x_min=0.0, x_max=1.0, y_min=0.0, y_max=1.0, z_min=0.0, z_max=1.0, num_x_elements=1, num_y_elements=1, num_z_elements=1)
+    box = dm.generate_box_mesh(
+        x_min=0.0,
+        x_max=1.0,
+        y_min=0.0,
+        y_max=1.0,
+        z_min=0.0,
+        z_max=1.0,
+        num_x_elements=1,
+        num_y_elements=1,
+        num_z_elements=1,
+    )
     assert box.second_order(serendipity=True).num_nodes == 20
     assert box.second_order().num_nodes == 27
 
@@ -193,7 +274,17 @@ def test_new_elements_survive_a_file_round_trip(tmp_path, element_type):
 
 
 def test_the_generators_build_the_expected_element_counts():
-    box = dict(x_min=0.0, x_max=1.0, y_min=0.0, y_max=1.0, z_min=0.0, z_max=1.0, num_x_elements=2, num_y_elements=2, num_z_elements=2)
+    box = dict(
+        x_min=0.0,
+        x_max=1.0,
+        y_min=0.0,
+        y_max=1.0,
+        z_min=0.0,
+        z_max=1.0,
+        num_x_elements=2,
+        num_y_elements=2,
+        num_z_elements=2,
+    )
     assert dm.generate_box_mesh(element_type="Wedge6", **box).num_elements == 16
     pyramids = dm.generate_box_mesh(element_type="Pyramid5", **box)
     assert pyramids.num_elements == 48

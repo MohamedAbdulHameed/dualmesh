@@ -63,7 +63,9 @@ act as a node set, while a node set cannot act as a side set.
 
    import dualmesh as dm
 
-   mesh = dm.generate_rectangle_mesh(x_min=0.0, x_max=1.0, y_min=0.0, y_max=1.0, num_x_elements=2, num_y_elements=2)
+   mesh = dm.generate_rectangle_mesh(
+       x_min=0.0, x_max=1.0, y_min=0.0, y_max=1.0, num_x_elements=2, num_y_elements=2
+   )
 
    print(mesh.dimension, mesh.num_nodes, mesh.num_elements)  # 2 9 4
    print(mesh.sideset_names())  # ['bottom', 'left', 'right', 'top']
@@ -139,9 +141,20 @@ linear mesh, and eleven nodes compared with six.  Side sets and node sets
 
 .. code-block:: python
 
-   quads = dm.generate_rectangle_mesh(x_min=0.0, x_max=2.0, y_min=0.0, y_max=1.0, num_x_elements=20, num_y_elements=10)
+   quads = dm.generate_rectangle_mesh(
+       x_min=0.0, x_max=2.0, y_min=0.0, y_max=1.0, num_x_elements=20, num_y_elements=10
+   )
 
-   triangles = dm.generate_rectangle_mesh(x_min=0.0, x_max=2.0, y_min=0.0, y_max=1.0, num_x_elements=20, num_y_elements=10, element_type="Tri3", diagonal="alternate")
+   triangles = dm.generate_rectangle_mesh(
+       x_min=0.0,
+       x_max=2.0,
+       y_min=0.0,
+       y_max=1.0,
+       num_x_elements=20,
+       num_y_elements=10,
+       element_type="Tri3",
+       diagonal="alternate",
+   )
 
    print(quads.num_elements, triangles.num_elements)  # 200 400
 
@@ -175,7 +188,9 @@ of a uniformly fine mesh.
 
    import numpy as np
 
-   graded = dm.generate_rectangle_mesh(x_min=0.0, x_max=1.0, y_min=0.0, y_max=1.0, num_x_elements=8, num_y_elements=8, y_bias=0.7)
+   graded = dm.generate_rectangle_mesh(
+       x_min=0.0, x_max=1.0, y_min=0.0, y_max=1.0, num_x_elements=8, num_y_elements=8, y_bias=0.7
+   )
 
    y = np.unique(np.asarray(graded.points())[:, 1])
    print(np.round(np.diff(y), 4))
@@ -198,7 +213,9 @@ their sum.
 
    from dualmesh.meshing import coordinates_from_spacings
 
-   mesh = dm.generate_rectangle_mesh(x_coordinates=[0.0, 0.5, 1.5, 3.0], y_coordinates=dm.graded_coordinates(0.0, 1.0, 10, bias=0.8))
+   mesh = dm.generate_rectangle_mesh(
+       x_coordinates=[0.0, 0.5, 1.5, 3.0], y_coordinates=dm.graded_coordinates(0.0, 1.0, 10, bias=0.8)
+   )
    print(mesh.num_elements)  # 30
 
    print(coordinates_from_spacings(0.0, [0.1, 0.1, 0.2, 0.4, 0.8]))
@@ -209,7 +226,18 @@ their sum.
 
 .. code-block:: python
 
-   box = dm.generate_box_mesh(x_min=0.0, x_max=1.0, y_min=0.0, y_max=1.0, z_min=0.0, z_max=1.0, num_x_elements=4, num_y_elements=4, num_z_elements=4, element_type="Tet4")
+   box = dm.generate_box_mesh(
+       x_min=0.0,
+       x_max=1.0,
+       y_min=0.0,
+       y_max=1.0,
+       z_min=0.0,
+       z_max=1.0,
+       num_x_elements=4,
+       num_y_elements=4,
+       num_z_elements=4,
+       element_type="Tet4",
+   )
    print(box.num_elements)  # 384
    print(box.sideset_names())
    # ['back', 'bottom', 'front', 'left', 'right', 'top']
@@ -231,7 +259,15 @@ exactly as in two dimensions.  The six side sets are ``left`` and ``right``
 
 .. code-block:: python
 
-   annulus = dm.generate_annulus_mesh(inner_radius=0.05, outer_radius=0.10, num_radial_elements=8, num_angular_elements=12, start_angle=0.0, end_angle=90.0, radial_bias=0.85)
+   annulus = dm.generate_annulus_mesh(
+       inner_radius=0.05,
+       outer_radius=0.10,
+       num_radial_elements=8,
+       num_angular_elements=12,
+       start_angle=0.0,
+       end_angle=90.0,
+       radial_bias=0.85,
+   )
 
    print(annulus.sideset_names())
    # ['bottom', 'end', 'inner', 'left', 'outer', 'right', 'start', 'top']
@@ -266,7 +302,12 @@ computation or another library), pass the arrays to
 
 .. code-block:: python
 
-   mesh = dm.mesh_from_arrays([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0], [2.0, 0.0], [2.0, 1.0]], [[0, 1, 2, 3], [1, 4, 5, 2]], element_type="Quad4", blocks=[1, 2])
+   mesh = dm.mesh_from_arrays(
+       [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0], [2.0, 0.0], [2.0, 1.0]],
+       [[0, 1, 2, 3], [1, 4, 5, 2]],
+       element_type="Quad4",
+       blocks=[1, 2],
+   )
    print(mesh.num_nodes, mesh.num_elements, mesh.block_ids())  # 6 2 [1, 2]
 
 ``points`` has one row per node and one to three columns, missing columns being
@@ -277,7 +318,9 @@ mesh of mixed element types is built:
 
 .. code-block:: python
 
-   mixed = dm.mesh_from_arrays([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]], [("Tri3", [[0, 1, 2], [0, 2, 3]])])
+   mixed = dm.mesh_from_arrays(
+       [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]], [("Tri3", [[0, 1, 2], [0, 2, 3]])]
+   )
    print(mixed.num_elements)  # 2
 
 ``blocks`` gives one block number per element in the order in which the
@@ -375,7 +418,9 @@ solve.
 
 .. code-block:: python
 
-   mesh = dm.generate_rectangle_mesh(x_min=0.0, x_max=2.0, y_min=0.0, y_max=1.0, num_x_elements=20, num_y_elements=10)
+   mesh = dm.generate_rectangle_mesh(
+       x_min=0.0, x_max=2.0, y_min=0.0, y_max=1.0, num_x_elements=20, num_y_elements=10
+   )
 
    mesh.add_sideset_by_predicate("outlet_half", lambda x, y, z: x > 2.0 - 1e-9 and y > 0.5)
    mesh.add_nodeset_by_predicate("centre_line", lambda x, y, z: abs(y - 0.5) < 1e-9)
@@ -417,7 +462,9 @@ name its edges, and map it onto the curved domain.
 
    import math
 
-   rectangle = dm.generate_rectangle_mesh(x_min=1.0, x_max=2.0, y_min=0.0, y_max=0.5 * math.pi, num_x_elements=4, num_y_elements=6)
+   rectangle = dm.generate_rectangle_mesh(
+       x_min=1.0, x_max=2.0, y_min=0.0, y_max=0.5 * math.pi, num_x_elements=4, num_y_elements=6
+   )
 
    sector = rectangle.second_order()  # promote FIRST
    sector.transform_nodes(lambda r, theta, z: [r * math.cos(theta), r * math.sin(theta), 0.0])
@@ -458,7 +505,9 @@ so that a convergence study requires only a short loop.
 
 .. code-block:: python
 
-   coarse = dm.generate_rectangle_mesh(x_min=0.0, x_max=1.0, y_min=0.0, y_max=1.0, num_x_elements=2, num_y_elements=2)
+   coarse = dm.generate_rectangle_mesh(
+       x_min=0.0, x_max=1.0, y_min=0.0, y_max=1.0, num_x_elements=2, num_y_elements=2
+   )
 
    fine = coarse.refined()
    print(fine.num_elements, fine.num_nodes)  # 16 25
@@ -498,7 +547,9 @@ quadrilateral is returned in the conventional order:
 
 .. code-block:: python
 
-   flipped = dm.mesh_from_arrays([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]], [[0, 3, 2, 1]], element_type="Quad4")
+   flipped = dm.mesh_from_arrays(
+       [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]], [[0, 3, 2, 1]], element_type="Quad4"
+   )
    print(flipped.element_nodes(0))  # [0, 1, 2, 3]
 
 Call it after :meth:`~dualmesh.Mesh.transform_nodes`, and after any

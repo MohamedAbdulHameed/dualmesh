@@ -18,15 +18,28 @@ LENGTH, DIFFUSIVITY, END_TIME = 1.0, 1.0, 0.05
 def exact(x, t, terms=200):
     total = np.zeros_like(x)
     for n in range(1, 2 * terms, 2):
-        total += (4.0 / (n * np.pi)) * np.sin(n * np.pi * x / LENGTH) * np.exp(-((n * np.pi / LENGTH) ** 2) * DIFFUSIVITY * t)
+        total += (
+            (4.0 / (n * np.pi))
+            * np.sin(n * np.pi * x / LENGTH)
+            * np.exp(-((n * np.pi / LENGTH) ** 2) * DIFFUSIVITY * t)
+        )
     return total
 
 
 def solve(num_elements=40, time_step=0.001, implicitness=0.5):
     mesh = dm.generate_line_mesh(start=0.0, end=LENGTH, num_elements=num_elements)
     problem = dm.Problem(mesh)
-    heat = problem.add_physics("heat_transfer", "heat", thermal_conductivity=DIFFUSIVITY, density=1.0, specific_heat=1.0, initial_condition=1.0)
-    heat.add_boundary_condition("Dirichlet_boundary_condition", "ends", boundary=["left", "right"], value=0.0)
+    heat = problem.add_physics(
+        "heat_transfer",
+        "heat",
+        thermal_conductivity=DIFFUSIVITY,
+        density=1.0,
+        specific_heat=1.0,
+        initial_condition=1.0,
+    )
+    heat.add_boundary_condition(
+        "Dirichlet_boundary_condition", "ends", boundary=["left", "right"], value=0.0
+    )
     problem.solve_transient(end_time=END_TIME, time_step=time_step, implicitness=implicitness)
     return problem
 

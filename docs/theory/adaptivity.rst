@@ -514,11 +514,19 @@ on every new mesh to build a new problem there:
        problem.add_variable("u")
        problem.add_kernel("diffusion", "diffusion", variable="u")
        problem.add_kernel("body_force", "source", variable="u", value=1.0)
-       problem.add_boundary_condition("Dirichlet_boundary_condition", "walls", variable="u", boundary=mesh.sideset_names(), value=0.0)
+       problem.add_boundary_condition(
+           "Dirichlet_boundary_condition",
+           "walls",
+           variable="u",
+           boundary=mesh.sideset_names(),
+           value=0.0,
+       )
        return problem
 
 
-   problem, mesh = dualmesh.solve_with_adaptive_refinement(build, initial_mesh, variable="u", num_cycles=4)
+   problem, mesh = dualmesh.solve_with_adaptive_refinement(
+       build, initial_mesh, variable="u", num_cycles=4
+   )
 
 Rebuilding the problem on each mesh keeps the boundary conditions, the property
 objects and the initial state exactly as the user wrote them, at the cost

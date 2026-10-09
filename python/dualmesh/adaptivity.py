@@ -32,7 +32,13 @@ A worked example::
         problem.add_variable("u")
         problem.add_kernel("diffusion", "diffusion", variable="u")
         problem.add_kernel("body_force", "source", variable="u", value=1.0)
-        problem.add_boundary_condition("Dirichlet_boundary_condition", "walls", variable="u", boundary=mesh.sideset_names(), value=0.0)
+        problem.add_boundary_condition(
+            "Dirichlet_boundary_condition",
+            "walls",
+            variable="u",
+            boundary=mesh.sideset_names(),
+            value=0.0,
+        )
         return problem
 
 
@@ -54,7 +60,14 @@ from .console import header, inner_study, report_level
 from .problem import Problem
 from .tables import ResultTables
 
-__all__ = ["AdaptivityResult", "mark_by_fraction", "mark_by_error_fraction", "mark_by_threshold", "refine_marked", "solve_with_adaptive_refinement"]
+__all__ = [
+    "AdaptivityResult",
+    "mark_by_fraction",
+    "mark_by_error_fraction",
+    "mark_by_threshold",
+    "refine_marked",
+    "solve_with_adaptive_refinement",
+]
 
 
 def refine_marked(mesh, marked: Sequence[bool]):
@@ -137,13 +150,30 @@ class AdaptivityResult(ResultTables):
         """``cycles``: one row per cycle of refinement."""
         from .tables import Table
 
-        return {"cycles": Table(["cycle", "num_elements", "num_dofs", "estimated_error"], None, [[i, e, d, eta] for i, (e, d, eta) in enumerate(zip(self.num_elements, self.num_dofs, self.estimated_error))], title=f"Adaptive refinement, {len(self.num_elements)} cycles")}
+        return {
+            "cycles": Table(
+                ["cycle", "num_elements", "num_dofs", "estimated_error"],
+                None,
+                [
+                    [i, e, d, eta]
+                    for i, (e, d, eta) in enumerate(
+                        zip(self.num_elements, self.num_dofs, self.estimated_error)
+                    )
+                ],
+                title=f"Adaptive refinement, {len(self.num_elements)} cycles",
+            )
+        }
 
     def summary(self) -> str:
         return self.tables["cycles"].format()
 
     def to_dict(self) -> dict:
-        return {"study": "adaptive_refinement", "num_elements": list(self.num_elements), "num_dofs": list(self.num_dofs), "estimated_error": list(self.estimated_error)}
+        return {
+            "study": "adaptive_refinement",
+            "num_elements": list(self.num_elements),
+            "num_dofs": list(self.num_dofs),
+            "estimated_error": list(self.estimated_error),
+        }
 
     def write_json(self, path) -> None:
         """Write :meth:`to_dict` to a JSON file."""
@@ -152,7 +182,16 @@ class AdaptivityResult(ResultTables):
         write_json_numbers(self.to_dict(), path)
 
 
-def solve_with_adaptive_refinement(build_problem: Callable[[object], Problem], mesh, variable: str, num_cycles: int = 3, marker: Callable[[np.ndarray], np.ndarray] = mark_by_error_fraction, max_elements: int | None = None, callback: Callable[[int, Problem, np.ndarray], None] | None = None, report: str = "full"):
+def solve_with_adaptive_refinement(
+    build_problem: Callable[[object], Problem],
+    mesh,
+    variable: str,
+    num_cycles: int = 3,
+    marker: Callable[[np.ndarray], np.ndarray] = mark_by_error_fraction,
+    max_elements: int | None = None,
+    callback: Callable[[int, Problem, np.ndarray], None] | None = None,
+    report: str = "full",
+):
     """Solve, estimate, mark and refine, ``num_cycles`` times.
 
     ``build_problem`` is called with a mesh and must return a solved-ready
@@ -179,7 +218,9 @@ def solve_with_adaptive_refinement(build_problem: Callable[[object], Problem], m
     if level == "full":
         print(header("adaptive refinement"))
     if level != "none":
-        print(f"dualmesh adaptive refinement of {variable}: at most {num_cycles} cycles", flush=True)
+        print(
+            f"dualmesh adaptive refinement of {variable}: at most {num_cycles} cycles", flush=True
+        )
     result = AdaptivityResult(problem=None, mesh=mesh)
     for cycle in range(num_cycles):
         with inner_study():
@@ -191,7 +232,10 @@ def solve_with_adaptive_refinement(build_problem: Callable[[object], Problem], m
         result.num_dofs.append(int(problem.num_active_dofs()))
         result.estimated_error.append(float(np.sqrt(np.sum(indicators**2))))
         if level == "full":
-            print(f"  cycle {cycle}: {mesh.num_elements} elements, {problem.num_active_dofs()} unknowns, estimated error {result.estimated_error[-1]:.6g}", flush=True)
+            print(
+                f"  cycle {cycle}: {mesh.num_elements} elements, {problem.num_active_dofs()} unknowns, estimated error {result.estimated_error[-1]:.6g}",
+                flush=True,
+            )
         if callback is not None:
             callback(cycle, problem, indicators)
         if cycle == num_cycles - 1:

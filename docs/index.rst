@@ -41,13 +41,17 @@ two sides and convection on the top (Example 5.4.3 of Reddy's book) reads:
 
    import dualmesh as dm
 
-   mesh = dm.generate_rectangle_mesh(x_min=0.0, x_max=0.1, y_min=0.0, y_max=0.05, num_x_elements=10, num_y_elements=5)
+   mesh = dm.generate_rectangle_mesh(
+       x_min=0.0, x_max=0.1, y_min=0.0, y_max=0.05, num_x_elements=10, num_y_elements=5
+   )
 
    problem = dm.Problem(mesh, method="dmcdm")
    heat = problem.add_physics("heat_transfer", "heat", thermal_conductivity=20.0, heat_source=1.0e6)
    heat.add_boundary_condition("Dirichlet_boundary_condition", "left", value=40.0)
    heat.add_boundary_condition("Dirichlet_boundary_condition", "right", value=10.0)
-   heat.add_boundary_condition("convective_heat_flux_boundary_condition", "top", heat_transfer_coefficient=75.0)
+   heat.add_boundary_condition(
+       "convective_heat_flux_boundary_condition", "top", heat_transfer_coefficient=75.0
+   )
    problem.solve()
 
    print(problem.sample("temperature", [[0.05, 0.0]]))  # 83.142 (Reddy, Table 5.4.3)

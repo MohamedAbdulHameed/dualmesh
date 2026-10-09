@@ -23,7 +23,14 @@ LOAD = 0.5
 
 
 def stiffness(power_law_index):
-    return dm.fgm.beam_stiffness(modulus_top=MODULUS_TOP, modulus_bottom=MODULUS_BOTTOM, power_law_index=power_law_index, height=HEIGHT, width=WIDTH, poissons_ratio=POISSON)
+    return dm.fgm.beam_stiffness(
+        modulus_top=MODULUS_TOP,
+        modulus_bottom=MODULUS_BOTTOM,
+        power_law_index=power_law_index,
+        height=HEIGHT,
+        width=WIDTH,
+        poissons_ratio=POISSON,
+    )
 
 
 def test_functionally_graded_stiffness_formulas():
@@ -41,7 +48,15 @@ def test_functionally_graded_stiffness_formulas():
         assert s.bending == pytest.approx(d, rel=1e-8)
 
 
-def beam_problem(model, num_elements, power_law_index=0.0, support="pinned", method="dmcdm", von_karman=False, load=LOAD):
+def beam_problem(
+    model,
+    num_elements,
+    power_law_index=0.0,
+    support="pinned",
+    method="dmcdm",
+    von_karman=False,
+    load=LOAD,
+):
     """Half-beam model; returns (problem, third_variable_name)."""
     s = stiffness(power_law_index)
     mesh = dm.generate_line_mesh(start=0.0, end=LENGTH / 2, num_elements=num_elements)
@@ -49,11 +64,26 @@ def beam_problem(model, num_elements, power_law_index=0.0, support="pinned", met
     third = "rotation" if model == "beam_Timoshenko_displacement" else "moment"
     for name in ("axial_displacement", "deflection", third):
         problem.add_variable(name)
-    common = dict(extensional_stiffness=s.extensional, coupling_stiffness=s.coupling, bending_stiffness=s.bending, shear_stiffness=s.shear, transverse_load=load, von_karman=von_karman)
+    common = dict(
+        extensional_stiffness=s.extensional,
+        coupling_stiffness=s.coupling,
+        bending_stiffness=s.bending,
+        shear_stiffness=s.shear,
+        transverse_load=load,
+        von_karman=von_karman,
+    )
     if model == "beam_Timoshenko_displacement":
-        variables = dict(axial_displacement="axial_displacement", transverse_displacement="deflection", rotation="rotation")
+        variables = dict(
+            axial_displacement="axial_displacement",
+            transverse_displacement="deflection",
+            rotation="rotation",
+        )
     else:
-        variables = dict(axial_displacement="axial_displacement", transverse_displacement="deflection", bending_moment="moment")
+        variables = dict(
+            axial_displacement="axial_displacement",
+            transverse_displacement="deflection",
+            bending_moment="moment",
+        )
     for variable in ("axial_displacement", "deflection", third):
         options = dict(common, **variables, variable=variable)
         if model == "beam_Timoshenko_displacement" and variable == "rotation":
@@ -62,16 +92,48 @@ def beam_problem(model, num_elements, power_law_index=0.0, support="pinned", met
         problem.add_kernel(model, f"{model}_{variable}", **options)
 
     # x = 0: pinned (w = 0, M = 0) or clamped (w = 0, rotation = 0)
-    problem.add_boundary_condition("Dirichlet_boundary_condition", "fixed_axial", variable="axial_displacement", boundary="left", value=0.0)
-    problem.add_boundary_condition("Dirichlet_boundary_condition", "support", variable="deflection", boundary="left", value=0.0)
+    problem.add_boundary_condition(
+        "Dirichlet_boundary_condition",
+        "fixed_axial",
+        variable="axial_displacement",
+        boundary="left",
+        value=0.0,
+    )
+    problem.add_boundary_condition(
+        "Dirichlet_boundary_condition", "support", variable="deflection", boundary="left", value=0.0
+    )
     if support == "pinned" and third == "moment":
-        problem.add_boundary_condition("Dirichlet_boundary_condition", "no_moment", variable="moment", boundary="left", value=0.0)
+        problem.add_boundary_condition(
+            "Dirichlet_boundary_condition",
+            "no_moment",
+            variable="moment",
+            boundary="left",
+            value=0.0,
+        )
     elif support == "clamped" and third == "rotation":
-        problem.add_boundary_condition("Dirichlet_boundary_condition", "no_rotation", variable="rotation", boundary="left", value=0.0)
+        problem.add_boundary_condition(
+            "Dirichlet_boundary_condition",
+            "no_rotation",
+            variable="rotation",
+            boundary="left",
+            value=0.0,
+        )
     # x = L/2: symmetry (u = 0, and the natural conditions V = 0, rotation = 0)
-    problem.add_boundary_condition("Dirichlet_boundary_condition", "symmetry_axial", variable="axial_displacement", boundary="right", value=0.0)
+    problem.add_boundary_condition(
+        "Dirichlet_boundary_condition",
+        "symmetry_axial",
+        variable="axial_displacement",
+        boundary="right",
+        value=0.0,
+    )
     if third == "rotation":
-        problem.add_boundary_condition("Dirichlet_boundary_condition", "symmetry_rotation", variable="rotation", boundary="right", value=0.0)
+        problem.add_boundary_condition(
+            "Dirichlet_boundary_condition",
+            "symmetry_rotation",
+            variable="rotation",
+            boundary="right",
+            value=0.0,
+        )
     return problem, third
 
 
@@ -116,10 +178,16 @@ def test_table_7_5_2_bending_moment_is_exact(model, num_elements):
         (20.0, 0.1141, 0.1140, 0.1142),
     ],
 )
-def test_table_7_5_3_functionally_graded_pinned_beam(power_law_index, euler_mixed, timoshenko_displacement, timoshenko_mixed):
+def test_table_7_5_3_functionally_graded_pinned_beam(
+    power_law_index, euler_mixed, timoshenko_displacement, timoshenko_mixed
+):
     s = stiffness(power_law_index)
     reduced_bending = s.bending - s.coupling**2 / s.extensional
-    references = {"beam_Euler_Bernoulli_mixed": euler_mixed, "beam_Timoshenko_displacement": timoshenko_displacement, "beam_Timoshenko_mixed": timoshenko_mixed}
+    references = {
+        "beam_Euler_Bernoulli_mixed": euler_mixed,
+        "beam_Timoshenko_displacement": timoshenko_displacement,
+        "beam_Timoshenko_mixed": timoshenko_mixed,
+    }
     for model, reference in references.items():
         problem, _ = beam_problem(model, 16, power_law_index=power_law_index)
         problem.solve()
@@ -154,7 +222,9 @@ def test_euler_bernoulli_and_timoshenko_agree_for_a_slender_beam():
     euler.solve()
     timoshenko, _ = beam_problem("beam_Timoshenko_mixed", 32)
     timoshenko.solve()
-    assert euler.values("deflection")[-1] == pytest.approx(timoshenko.values("deflection")[-1], rel=1e-3)
+    assert euler.values("deflection")[-1] == pytest.approx(
+        timoshenko.values("deflection")[-1], rel=1e-3
+    )
 
 
 def test_reduced_integration_removes_shear_locking():
@@ -180,10 +250,26 @@ def test_reduced_integration_removes_shear_locking():
             shear_stiffness=s.shear,
             transverse_load=LOAD,
         )
-    problem.add_boundary_condition("Dirichlet_boundary_condition", "a", variable="axial_displacement", boundary="left", value=0.0)
-    problem.add_boundary_condition("Dirichlet_boundary_condition", "b", variable="deflection", boundary="left", value=0.0)
-    problem.add_boundary_condition("Dirichlet_boundary_condition", "c", variable="axial_displacement", boundary="right", value=0.0)
-    problem.add_boundary_condition("Dirichlet_boundary_condition", "d", variable="rotation", boundary="right", value=0.0)
+    problem.add_boundary_condition(
+        "Dirichlet_boundary_condition",
+        "a",
+        variable="axial_displacement",
+        boundary="left",
+        value=0.0,
+    )
+    problem.add_boundary_condition(
+        "Dirichlet_boundary_condition", "b", variable="deflection", boundary="left", value=0.0
+    )
+    problem.add_boundary_condition(
+        "Dirichlet_boundary_condition",
+        "c",
+        variable="axial_displacement",
+        boundary="right",
+        value=0.0,
+    )
+    problem.add_boundary_condition(
+        "Dirichlet_boundary_condition", "d", variable="rotation", boundary="right", value=0.0
+    )
     problem.solve()
     reduced_problem.solve()
     full_integration = problem.values("deflection")[-1]
@@ -232,7 +318,13 @@ def test_nonlinear_beam_direct_iteration_with_acceleration():
     s = stiffness(0.0)
     reduced_bending = s.bending - s.coupling**2 / s.extensional
     problem, _ = beam_problem("beam_Euler_Bernoulli_mixed", 16, von_karman=True, load=10.0)
-    problem.solve(nonlinear_solver="picard", relaxation=0.35, load_factors=list(np.linspace(0.1, 1.0, 10)), max_iterations=200, step_tolerance=1e-8)
+    problem.solve(
+        nonlinear_solver="picard",
+        relaxation=0.35,
+        load_factors=list(np.linspace(0.1, 1.0, 10)),
+        max_iterations=200,
+        step_tolerance=1e-8,
+    )
     normalized = problem.values("deflection")[-1] * reduced_bending / LENGTH**4 * 10
     assert normalized == pytest.approx(0.2743, abs=1.1e-4)
 

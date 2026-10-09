@@ -13,7 +13,9 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "release.py"
 
-pytestmark = pytest.mark.skipif(not SCRIPT.exists(), reason="scripts/release.py is not in this tree")
+pytestmark = pytest.mark.skipif(
+    not SCRIPT.exists(), reason="scripts/release.py is not in this tree"
+)
 
 
 @pytest.fixture(scope="module")
@@ -57,11 +59,16 @@ def test_workflow_guard_rejects_the_fixed_mistakes(release):
     assert any("older than" in p for p in release.workflow_problems(old, {}))
     tag_only = re.sub(r"pypa/cibuildwheel@[0-9a-f]{40} # v4.2.1", "pypa/cibuildwheel@v4.2.1", good)
     assert tag_only != good
-    assert any("pinned to a commit" in p for p in release.workflow_problems(tag_only, {"wheels.yml": tag_only}))
+    assert any(
+        "pinned to a commit" in p
+        for p in release.workflow_problems(tag_only, {"wheels.yml": tag_only})
+    )
     no_dry_run = good.replace("workflow_dispatch:", "")
     assert any("workflow_dispatch" in p for p in release.workflow_problems(no_dry_run, {}))
     token = good + "\n        with:\n          password: ${{ secrets.PYPI_API_TOKEN }}\n"
-    assert any("Trusted Publishing" in p for p in release.workflow_problems(token, {"wheels.yml": token}))
+    assert any(
+        "Trusted Publishing" in p for p in release.workflow_problems(token, {"wheels.yml": token})
+    )
 
 
 def test_repository_matches_the_released_configuration(release, monkeypatch):
@@ -71,7 +78,15 @@ def test_repository_matches_the_released_configuration(release, monkeypatch):
     assert meta["name"] == "dualmesh-multiphysics"
     assert release.module_version() == meta["version"]
     assert release.citation_version() == meta["version"]
-    workflows = {p.name: p.read_text(encoding="utf-8") for p in (ROOT / ".github" / "workflows").glob("*.yml")}
+    workflows = {
+        p.name: p.read_text(encoding="utf-8")
+        for p in (ROOT / ".github" / "workflows").glob("*.yml")
+    }
     assert release.workflow_problems(workflows["wheels.yml"], workflows) == []
-    missing = [f"{path.relative_to(ROOT)}:{line}" for path in sorted((ROOT / "docs").rglob("*.rst")) if "_build" not in path.parts for line in release.contents_without_furo_class(path.read_text(encoding="utf-8"))]
+    missing = [
+        f"{path.relative_to(ROOT)}:{line}"
+        for path in sorted((ROOT / "docs").rglob("*.rst"))
+        if "_build" not in path.parts
+        for line in release.contents_without_furo_class(path.read_text(encoding="utf-8"))
+    ]
     assert missing == []

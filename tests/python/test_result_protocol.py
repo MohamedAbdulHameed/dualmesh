@@ -18,7 +18,11 @@ def _check(result, tmp_path, name):
     for method in PROTOCOL:
         assert callable(getattr(result, method, None)), f"{type(result).__name__} lacks {method}"
     assert isinstance(result.summary(), str) and result.summary()
-    assert isinstance(result.tables, dict) and result.tables and all(isinstance(t, dm.Table) for t in result.tables.values())
+    assert (
+        isinstance(result.tables, dict)
+        and result.tables
+        and all(isinstance(t, dm.Table) for t in result.tables.values())
+    )
     numbers = result.to_dict()
     result.write_json(tmp_path / f"{name}.json")
     assert json.loads((tmp_path / f"{name}.json").read_text()).keys() == numbers.keys()
@@ -30,12 +34,16 @@ def _check(result, tmp_path, name):
 
 
 def _square(n=4):
-    return dm.generate_rectangle_mesh(x_min=0.0, x_max=1.0, y_min=0.0, y_max=1.0, num_x_elements=n, num_y_elements=n)
+    return dm.generate_rectangle_mesh(
+        x_min=0.0, x_max=1.0, y_min=0.0, y_max=1.0, num_x_elements=n, num_y_elements=n
+    )
 
 
 def test_a_solve_result_follows_the_protocol(tmp_path):
     problem = dm.Problem(_square(), method="fem")
-    pde = problem.add_physics("coefficient_form_PDE", "pde", diffusion_coefficient="1 + u", source=1.0)
+    pde = problem.add_physics(
+        "coefficient_form_PDE", "pde", diffusion_coefficient="1 + u", source=1.0
+    )
     pde.add_boundary_condition("Dirichlet_boundary_condition", "left", value=0.0)
     numbers, rows = _check(problem.solve(), tmp_path, "solve")
     assert numbers["converged"] is True
@@ -64,16 +72,28 @@ def test_the_uncertainty_results_follow_the_protocol(tmp_path):
     indices = uq.sobol(model, inputs, 64)
     _, rows = _check(indices, tmp_path, "sobol")
     assert len(rows) == 3
-    posterior = uq.calibrate(model, inputs, {"y": 2.0}, {"y": 0.1}, surrogate=None, samples=400, chains=2)
+    posterior = uq.calibrate(
+        model, inputs, {"y": 2.0}, {"y": 0.1}, surrogate=None, samples=400, chains=2
+    )
     _, rows = _check(posterior, tmp_path, "posterior")
     assert [r[0] for r in rows[1:]] == ["a", "b"]
 
 
 def test_a_table_prints_aligned_and_writes_units_in_the_header(tmp_path):
-    table = dm.Table(["region", "volume", "flux", "count"], ["", "m^3", "1/(m^2 s)", "-"], [["fuel", 1.5, 2.0e17, 3], ["reflector", 0.25, float("nan"), 4]], title="Regions")
+    table = dm.Table(
+        ["region", "volume", "flux", "count"],
+        ["", "m^3", "1/(m^2 s)", "-"],
+        [["fuel", 1.5, 2.0e17, 3], ["reflector", 0.25, float("nan"), 4]],
+        title="Regions",
+    )
     text = str(table)
     assert text.splitlines()[0] == "Regions"
-    assert "volume (m^3)" in text and "flux (1/(m^2 s))" in text and "count" in text and "count (" not in text
+    assert (
+        "volume (m^3)" in text
+        and "flux (1/(m^2 s))" in text
+        and "count" in text
+        and "count (" not in text
+    )
     table.write_csv(tmp_path / "t.csv")
     lines = (tmp_path / "t.csv").read_text().splitlines()
     assert lines[0] == "region,volume (m^3),flux (1/(m^2 s)),count"

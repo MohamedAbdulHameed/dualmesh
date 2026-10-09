@@ -14,8 +14,12 @@ def _linear_field_problem():
     problem = dm.Problem(mesh, method="fem")
     problem.add_variable("u")
     problem.add_kernel("diffusion", "diffusion", variable="u")
-    problem.add_boundary_condition("Dirichlet_boundary_condition", "left", variable="u", boundary="left", value=0.0)
-    problem.add_boundary_condition("Dirichlet_boundary_condition", "right", variable="u", boundary="right", value=1.0)
+    problem.add_boundary_condition(
+        "Dirichlet_boundary_condition", "left", variable="u", boundary="left", value=0.0
+    )
+    problem.add_boundary_condition(
+        "Dirichlet_boundary_condition", "right", variable="u", boundary="right", value=1.0
+    )
     return problem
 
 
@@ -27,7 +31,9 @@ def test_the_scalar_types_give_the_exact_values_of_a_linear_field():
     problem.add_postprocessor("nodal_extreme_value", "largest", variable="u")
     problem.add_postprocessor("nodal_extreme_value", "smallest", variable="u", value_type="min")
     problem.add_postprocessor("total_reaction", "flux_in", variable="u", boundary="left")
-    problem.add_postprocessor("boundary_flux_integral", "flux_out", kernel="diffusion", boundary="right")
+    problem.add_postprocessor(
+        "boundary_flux_integral", "flux_out", kernel="diffusion", boundary="right"
+    )
     problem.solve()
     values = {k: v[-1] for k, v in problem.postprocessor_values().items()}
     assert values["integral"] == pytest.approx(0.5)

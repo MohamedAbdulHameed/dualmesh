@@ -26,22 +26,131 @@ import dualmesh as dm
 import numpy as np
 
 # Ghia et al. (1982), Re = 100: u on the vertical centreline (x = 1/2).
-GHIA_Y = np.array([0.0000, 0.0547, 0.0625, 0.0703, 0.1016, 0.1719, 0.2813, 0.4531, 0.5000, 0.6172, 0.7344, 0.8516, 0.9531, 0.9609, 0.9688, 0.9766, 1.0000])
-GHIA_U = np.array([0.00000, -0.03717, -0.04192, -0.04775, -0.06434, -0.10150, -0.15662, -0.21090, -0.20581, -0.13641, 0.00332, 0.23151, 0.68717, 0.73722, 0.78871, 0.84123, 1.00000])
+GHIA_Y = np.array(
+    [
+        0.0000,
+        0.0547,
+        0.0625,
+        0.0703,
+        0.1016,
+        0.1719,
+        0.2813,
+        0.4531,
+        0.5000,
+        0.6172,
+        0.7344,
+        0.8516,
+        0.9531,
+        0.9609,
+        0.9688,
+        0.9766,
+        1.0000,
+    ]
+)
+GHIA_U = np.array(
+    [
+        0.00000,
+        -0.03717,
+        -0.04192,
+        -0.04775,
+        -0.06434,
+        -0.10150,
+        -0.15662,
+        -0.21090,
+        -0.20581,
+        -0.13641,
+        0.00332,
+        0.23151,
+        0.68717,
+        0.73722,
+        0.78871,
+        0.84123,
+        1.00000,
+    ]
+)
 # v on the horizontal centreline (y = 1/2).
-GHIA_X = np.array([0.0000, 0.0625, 0.0703, 0.0781, 0.0938, 0.1563, 0.2266, 0.2344, 0.5000, 0.8047, 0.8594, 0.9063, 0.9453, 0.9531, 0.9609, 0.9688, 1.0000])
-GHIA_V = np.array([0.00000, 0.09233, 0.10091, 0.10890, 0.12317, 0.16077, 0.17507, 0.17527, 0.05454, -0.24533, -0.22445, -0.16914, -0.10313, -0.08864, -0.07391, -0.05906, 0.00000])
+GHIA_X = np.array(
+    [
+        0.0000,
+        0.0625,
+        0.0703,
+        0.0781,
+        0.0938,
+        0.1563,
+        0.2266,
+        0.2344,
+        0.5000,
+        0.8047,
+        0.8594,
+        0.9063,
+        0.9453,
+        0.9531,
+        0.9609,
+        0.9688,
+        1.0000,
+    ]
+)
+GHIA_V = np.array(
+    [
+        0.00000,
+        0.09233,
+        0.10091,
+        0.10890,
+        0.12317,
+        0.16077,
+        0.17507,
+        0.17527,
+        0.05454,
+        -0.24533,
+        -0.22445,
+        -0.16914,
+        -0.10313,
+        -0.08864,
+        -0.07391,
+        -0.05906,
+        0.00000,
+    ]
+)
 
 
 def solve_with_dualmesh(resolution: int, reynolds_number: float = 100.0):
     """Lid-driven cavity on the unit square, penalty Navier-Stokes."""
-    mesh = dm.generate_rectangle_mesh(x_min=0.0, x_max=1.0, y_min=0.0, y_max=1.0, num_x_elements=resolution, num_y_elements=resolution)
+    mesh = dm.generate_rectangle_mesh(
+        x_min=0.0,
+        x_max=1.0,
+        y_min=0.0,
+        y_max=1.0,
+        num_x_elements=resolution,
+        num_y_elements=resolution,
+    )
     problem = dm.Problem(mesh, method="dmcdm")
-    problem.add_physics("incompressible_flow", "flow", velocities=["u", "v"], dynamic_viscosity=1.0, density=reynolds_number, penalty_parameter=1.0e8)
+    problem.add_physics(
+        "incompressible_flow",
+        "flow",
+        velocities=["u", "v"],
+        dynamic_viscosity=1.0,
+        density=reynolds_number,
+        penalty_parameter=1.0e8,
+    )
     for variable in ("u", "v"):
-        problem.add_boundary_condition("Dirichlet_boundary_condition", f"walls_{variable}", variable=variable, boundary=["left", "right", "bottom"], value=0.0)
-    problem.add_boundary_condition("Dirichlet_boundary_condition", "lid_u", variable="u", boundary="top", value=1.0, scale_with_load=True)
-    problem.add_boundary_condition("Dirichlet_boundary_condition", "lid_v", variable="v", boundary="top", value=0.0)
+        problem.add_boundary_condition(
+            "Dirichlet_boundary_condition",
+            f"walls_{variable}",
+            variable=variable,
+            boundary=["left", "right", "bottom"],
+            value=0.0,
+        )
+    problem.add_boundary_condition(
+        "Dirichlet_boundary_condition",
+        "lid_u",
+        variable="u",
+        boundary="top",
+        value=1.0,
+        scale_with_load=True,
+    )
+    problem.add_boundary_condition(
+        "Dirichlet_boundary_condition", "lid_v", variable="v", boundary="top", value=0.0
+    )
     problem.solve(load_factors=[0.25, 0.5, 1.0], max_iterations=50)
     return problem
 
@@ -76,7 +185,9 @@ def main() -> int:
     else:
         print("No OpenFOAM data found; run ./cavity_openfoam.sh first.\n")
 
-    print(f"Lid-driven cavity, Re = {arguments.reynolds_number:g}, {arguments.resolution} x {arguments.resolution} mesh\n")
+    print(
+        f"Lid-driven cavity, Re = {arguments.reynolds_number:g}, {arguments.resolution} x {arguments.resolution} mesh\n"
+    )
     print("u along the vertical centreline")
     header = f"{'y':>8}{'dualmesh':>12}{'OpenFOAM':>12}{'Ghia 1982':>12}"
     print(header)

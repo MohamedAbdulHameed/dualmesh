@@ -210,7 +210,15 @@ def thermal_conductivity(p, T, parts: bool = False):
     mu = viscosity_from_density(rho, T) / 1e-6
     cpb = cp / R_IAPWS95
     with np.errstate(divide="ignore", invalid="ignore"):
-        Z = 2.0 / (np.pi * ydim) * ((1.0 - 1.0 / kappa) * np.arctan(ydim) + ydim / kappa - (1.0 - np.exp(-1.0 / (1.0 / ydim + ydim**2 / (3.0 * rb**2)))))
+        Z = (
+            2.0
+            / (np.pi * ydim)
+            * (
+                (1.0 - 1.0 / kappa) * np.arctan(ydim)
+                + ydim / kappa
+                - (1.0 - np.exp(-1.0 / (1.0 / ydim + ydim**2 / (3.0 * rb**2))))
+            )
+        )
     Z = np.where(ydim < 1.2e-7, 0.0, Z)
     l2 = 177.8514 * rb * cpb * Tb / mu * Z
     total = l0 * l1 + l2
@@ -221,4 +229,9 @@ def thermal_conductivity(p, T, parts: bool = False):
 
 def properties(p, T) -> dict:
     """Density, specific heat, conductivity and viscosity at (p, T)."""
-    return dict(density=density(p, T), specific_heat=isobaric_heat_capacity(p, T), thermal_conductivity=thermal_conductivity(p, T), viscosity=viscosity(p, T))
+    return dict(
+        density=density(p, T),
+        specific_heat=isobaric_heat_capacity(p, T),
+        thermal_conductivity=thermal_conductivity(p, T),
+        viscosity=viscosity(p, T),
+    )

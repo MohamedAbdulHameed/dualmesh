@@ -111,7 +111,13 @@ which format:
 
 .. code-block:: python
 
-   output = dm.Output(directory="results", file_base="slab", interval=10.0, fields=["temperature"], formats=["vtu", "csv"])
+   output = dm.Output(
+       directory="results",
+       file_base="slab",
+       interval=10.0,
+       fields=["temperature"],
+       formats=["vtu", "csv"],
+   )
    problem.solve_transient(end_time=100.0, time_step=1.0, output=output)
 
 ``directory`` and ``file_base``

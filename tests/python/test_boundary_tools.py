@@ -13,14 +13,31 @@ dm = pytest.importorskip("dualmesh")
 
 
 def box(n=(6, 2, 2)):
-    return dm.generate_box_mesh(x_min=0.0, x_max=1.0, y_min=0.0, y_max=0.2, z_min=0.0, z_max=0.1, num_x_elements=n[0], num_y_elements=n[1], num_z_elements=n[2])
+    return dm.generate_box_mesh(
+        x_min=0.0,
+        x_max=1.0,
+        y_min=0.0,
+        y_max=0.2,
+        z_min=0.0,
+        z_max=0.1,
+        num_x_elements=n[0],
+        num_y_elements=n[1],
+        num_z_elements=n[2],
+    )
 
 
 def cantilever(conditions, mesh=None):
     """A 3D cantilever clamped at x = 0 and loaded at x = 1, with the
     boundary conditions added by ``conditions(problem)``."""
     problem = dm.Problem(mesh or box(), method="fem")
-    problem.add_physics("solid_mechanics", "solid", displacements=["u", "v", "w"], formulation="three_dimensional", youngs_modulus=1.0e9, poissons_ratio=0.3)
+    problem.add_physics(
+        "solid_mechanics",
+        "solid",
+        displacements=["u", "v", "w"],
+        formulation="three_dimensional",
+        youngs_modulus=1.0e9,
+        poissons_ratio=0.3,
+    )
     conditions(problem)
     problem.solve()
     return problem
@@ -35,19 +52,27 @@ def test_sideset_measure_of_flat_and_curved_boundaries():
     # A linear mesh measures the inscribed polygon exactly, a quadratic one
     # approximates the arc to within its interpolation error.
     linear = dm.generate_annulus_mesh(0.5, 1.0, 2, 8, 0.0, 90.0, element_type="Quad4")
-    assert linear.sideset_measure(["outer"]) == pytest.approx(16 * math.sin(math.pi / 32), rel=1e-12)
+    assert linear.sideset_measure(["outer"]) == pytest.approx(
+        16 * math.sin(math.pi / 32), rel=1e-12
+    )
     quadratic = dm.generate_annulus_mesh(0.5, 1.0, 2, 8, 0.0, 90.0, element_type="Quad9")
     assert quadratic.sideset_measure(["outer"]) == pytest.approx(math.pi / 2, rel=1e-5)
 
 
 def test_boundary_measure_includes_the_coordinate_factor():
     radius, length = 0.3, 2.0
-    mesh = dm.generate_rectangle_mesh(x_min=0.1, x_max=radius, y_min=0.0, y_max=length, num_x_elements=3, num_y_elements=5)
+    mesh = dm.generate_rectangle_mesh(
+        x_min=0.1, x_max=radius, y_min=0.0, y_max=length, num_x_elements=3, num_y_elements=5
+    )
     problem = dm.Problem(mesh, method="fem", coordinates="axisymmetric")
     problem.add_variable("u")
-    assert problem.boundary_measure("right") == pytest.approx(2 * math.pi * radius * length, rel=1e-12)
+    assert problem.boundary_measure("right") == pytest.approx(
+        2 * math.pi * radius * length, rel=1e-12
+    )
     # The top annulus between r = 0.1 and 0.3: pi (0.3^2 - 0.1^2).
-    assert problem.boundary_measure("top") == pytest.approx(math.pi * (radius**2 - 0.1**2), rel=1e-12)
+    assert problem.boundary_measure("top") == pytest.approx(
+        math.pi * (radius**2 - 0.1**2), rel=1e-12
+    )
 
 
 # ---- report and file ---------------------------------------------------------
@@ -77,7 +102,9 @@ def test_write_sidesets_marks_every_face_of_every_side_set(tmp_path):
     # and counts every side set once.
     side_set = surface.cell_data["side_set"][0]
     assert np.all(side_set > 0)
-    assert [int(np.sum(side_set == k + 1)) for k in range(len(names))] == [len(mesh.sideset(n)) for n in names]
+    assert [int(np.sum(side_set == k + 1)) for k in range(len(names))] == [
+        len(mesh.sideset(n)) for n in names
+    ]
 
 
 def test_cli_mesh_lists_the_side_sets_and_writes_them(tmp_path, capsys):
@@ -97,20 +124,30 @@ def test_cli_mesh_lists_the_side_sets_and_writes_them(tmp_path, capsys):
 
 def clamped_by_loop(problem):
     for v in ("u", "v", "w"):
-        problem.add_boundary_condition("Dirichlet_boundary_condition", f"left_{v}", variable=v, boundary="left", value=0.0)
-    problem.add_boundary_condition("traction_boundary_condition", "right", variable="v", traction=-50.0 / 0.02)
+        problem.add_boundary_condition(
+            "Dirichlet_boundary_condition", f"left_{v}", variable=v, boundary="left", value=0.0
+        )
+    problem.add_boundary_condition(
+        "traction_boundary_condition", "right", variable="v", traction=-50.0 / 0.02
+    )
 
 
 def test_variables_list_and_fixed_constraint_equal_one_condition_per_variable():
     reference = np.array(cantilever(clamped_by_loop).values("v"))
 
     def with_variables(problem):
-        problem.add_boundary_condition("Dirichlet_boundary_condition", "left", variables=["u", "v", "w"], value=0.0)
-        problem.add_boundary_condition("traction_boundary_condition", "right", variable="v", traction=-50.0 / 0.02)
+        problem.add_boundary_condition(
+            "Dirichlet_boundary_condition", "left", variables=["u", "v", "w"], value=0.0
+        )
+        problem.add_boundary_condition(
+            "traction_boundary_condition", "right", variable="v", traction=-50.0 / 0.02
+        )
 
     def with_fixed_constraint(problem):
         problem.add_boundary_condition("fixed_constraint", "left", displacements=["u", "v", "w"])
-        problem.add_boundary_condition("traction_boundary_condition", "right", variable="v", traction=-50.0 / 0.02)
+        problem.add_boundary_condition(
+            "traction_boundary_condition", "right", variable="v", traction=-50.0 / 0.02
+        )
 
     for conditions in (with_variables, with_fixed_constraint):
         values = np.array(cantilever(conditions).values("v"))
@@ -122,9 +159,13 @@ def test_conditions_that_define_the_same_thing_are_refused():
     for v in ("u", "v", "w"):
         problem.add_variable(v)
     with pytest.raises(Exception, match="'variable' and 'variables' define the same thing"):
-        problem.add_boundary_condition("Dirichlet_boundary_condition", "left", variable="u", variables=["u", "v"], value=0.0)
+        problem.add_boundary_condition(
+            "Dirichlet_boundary_condition", "left", variable="u", variables=["u", "v"], value=0.0
+        )
     with pytest.raises(Exception, match="'variables' and 'displacements' define the same thing"):
-        problem.add_boundary_condition("fixed_constraint", "right", displacements=["u"], variables=["v"])
+        problem.add_boundary_condition(
+            "fixed_constraint", "right", displacements=["u"], variables=["v"]
+        )
     with pytest.raises(Exception, match="'variable' and 'displacements' define the same thing"):
         problem.add_boundary_condition("fixed_constraint", "top", displacements=["u"], variable="v")
 
@@ -137,10 +178,14 @@ def test_total_force_gives_the_same_solution_as_the_traction():
 
     def by_force(problem):
         problem.add_boundary_condition("fixed_constraint", "left", displacements=["u", "v", "w"])
-        problem.add_boundary_condition("traction_boundary_condition", "right", variable="v", total_force=-50.0)
+        problem.add_boundary_condition(
+            "traction_boundary_condition", "right", variable="v", total_force=-50.0
+        )
 
     problem = cantilever(by_force)
-    assert np.max(np.abs(np.array(problem.values("v")) - np.array(reference.values("v")))) < 1e-10 * np.max(np.abs(reference.values("v")))
+    assert np.max(
+        np.abs(np.array(problem.values("v")) - np.array(reference.values("v")))
+    ) < 1e-10 * np.max(np.abs(reference.values("v")))
     assert problem.total_reaction("v", "left") == pytest.approx(50.0, rel=1e-9)
 
 
@@ -150,11 +195,27 @@ def test_total_force_on_a_plane_strip_with_a_thickness():
     # proportional to the thickness.
     extension = {}
     for thickness in (1.0, 0.01):
-        mesh = dm.generate_rectangle_mesh(x_min=0.0, x_max=1.0, y_min=0.0, y_max=0.1, num_x_elements=10, num_y_elements=2)
+        mesh = dm.generate_rectangle_mesh(
+            x_min=0.0, x_max=1.0, y_min=0.0, y_max=0.1, num_x_elements=10, num_y_elements=2
+        )
         problem = dm.Problem(mesh, method="fem")
-        problem.add_physics("solid_mechanics", "solid", displacements=["u", "v"], formulation="plane_stress", youngs_modulus=1.0e9, poissons_ratio=0.3, thickness=thickness)
+        problem.add_physics(
+            "solid_mechanics",
+            "solid",
+            displacements=["u", "v"],
+            formulation="plane_stress",
+            youngs_modulus=1.0e9,
+            poissons_ratio=0.3,
+            thickness=thickness,
+        )
         problem.add_boundary_condition("fixed_constraint", "left", displacements=["u", "v"])
-        problem.add_boundary_condition("traction_boundary_condition", "right", variable="u", total_force=1000.0, thickness=thickness)
+        problem.add_boundary_condition(
+            "traction_boundary_condition",
+            "right",
+            variable="u",
+            total_force=1000.0,
+            thickness=thickness,
+        )
         problem.solve()
         assert problem.total_reaction("u", "left") == pytest.approx(-1000.0, rel=1e-9)
         extension[thickness] = max(problem.values("u"))
@@ -163,11 +224,24 @@ def test_total_force_on_a_plane_strip_with_a_thickness():
 
 def test_total_force_in_axisymmetric_coordinates():
     # A hollow cylinder pulled along its axis by 1 kN on its top annulus.
-    mesh = dm.generate_rectangle_mesh(x_min=0.1, x_max=0.3, y_min=0.0, y_max=1.0, num_x_elements=4, num_y_elements=8)
+    mesh = dm.generate_rectangle_mesh(
+        x_min=0.1, x_max=0.3, y_min=0.0, y_max=1.0, num_x_elements=4, num_y_elements=8
+    )
     problem = dm.Problem(mesh, method="fem", coordinates="axisymmetric")
-    problem.add_physics("solid_mechanics", "solid", displacements=["u", "v"], formulation="axisymmetric", youngs_modulus=1.0e9, poissons_ratio=0.0)
-    problem.add_boundary_condition("Dirichlet_boundary_condition", "bottom", variable="v", value=0.0)
-    problem.add_boundary_condition("traction_boundary_condition", "top", variable="v", total_force=1000.0)
+    problem.add_physics(
+        "solid_mechanics",
+        "solid",
+        displacements=["u", "v"],
+        formulation="axisymmetric",
+        youngs_modulus=1.0e9,
+        poissons_ratio=0.0,
+    )
+    problem.add_boundary_condition(
+        "Dirichlet_boundary_condition", "bottom", variable="v", value=0.0
+    )
+    problem.add_boundary_condition(
+        "traction_boundary_condition", "top", variable="v", total_force=1000.0
+    )
     problem.solve()
     area = math.pi * (0.3**2 - 0.1**2)
     # With nu = 0 the axial stress is uniform, F / A, and the top moves by
@@ -178,7 +252,9 @@ def test_total_force_in_axisymmetric_coordinates():
 def test_traction_and_total_force_together_are_refused():
     def both(problem):
         problem.add_boundary_condition("fixed_constraint", "left", displacements=["u", "v", "w"])
-        problem.add_boundary_condition("traction_boundary_condition", "right", variable="v", traction=-1.0, total_force=-50.0)
+        problem.add_boundary_condition(
+            "traction_boundary_condition", "right", variable="v", traction=-1.0, total_force=-50.0
+        )
 
     with pytest.raises(Exception, match="give only one of 'traction' and 'total_force'"):
         cantilever(both)
@@ -201,14 +277,24 @@ def test_a_part_without_any_condition_is_reported():
     problem.add_variable("T")
     problem.add_kernel("diffusion", variable="T")
     problem.add_boundary_condition("Dirichlet_boundary_condition", "left", variable="T", value=1.0)
-    with pytest.raises(Exception, match=r"singular: the variable 'T' on a part of the mesh with 4 nodes \(x from 2 to 3, y from 0 to 1\)"):
+    with pytest.raises(
+        Exception,
+        match=r"singular: the variable 'T' on a part of the mesh with 4 nodes \(x from 2 to 3, y from 0 to 1\)",
+    ):
         problem.solve()
 
 
 def test_a_floating_elastic_body_is_reported():
     mesh = two_squares()
     problem = dm.Problem(mesh, method="fem")
-    problem.add_physics("solid_mechanics", "solid", displacements=["u", "v"], formulation="plane_stress", youngs_modulus=1.0e9, poissons_ratio=0.3)
+    problem.add_physics(
+        "solid_mechanics",
+        "solid",
+        displacements=["u", "v"],
+        formulation="plane_stress",
+        youngs_modulus=1.0e9,
+        poissons_ratio=0.3,
+    )
     problem.add_boundary_condition("fixed_constraint", "left", displacements=["u", "v"])
     with pytest.raises(Exception, match="singular"):
         problem.solve()
@@ -221,11 +307,15 @@ def test_a_part_held_otherwise_is_accepted(anchor):
     problem.add_kernel("diffusion", variable="T")
     problem.add_boundary_condition("Dirichlet_boundary_condition", "left", variable="T", value=1.0)
     if anchor == "robin":
-        problem.add_boundary_condition("Robin_boundary_condition", "far", variable="T", transfer_coefficient=2.0)
+        problem.add_boundary_condition(
+            "Robin_boundary_condition", "far", variable="T", transfer_coefficient=2.0
+        )
     elif anchor == "reaction":
         problem.add_kernel("reaction", variable="T", coefficient=1.0e-3)
     else:
-        problem.add_boundary_condition("Dirichlet_boundary_condition", "far", variable="T", value=0.0)
+        problem.add_boundary_condition(
+            "Dirichlet_boundary_condition", "far", variable="T", value=0.0
+        )
     assert problem.solve().converged
 
 

@@ -50,29 +50,56 @@ _ROOT = Path(__file__).resolve().parents[2]
 
 # A divergence-free velocity (from a stream function) and a pressure with no
 # symmetry.
-CARTESIAN = {"u": "sin(pi*x)*cos(pi*y)", "v": "-cos(pi*x)*sin(pi*y)", "pressure": "sin(2*x)*cos(y) + x*y"}
+CARTESIAN = {
+    "u": "sin(pi*x)*cos(pi*y)",
+    "v": "-cos(pi*x)*sin(pi*y)",
+    "pressure": "sin(2*x)*cos(y) + x*y",
+}
 # Regular on the axis: u_r odd and u_z even in r (Stokes stream function
 # psi = r^2 (1 + r^2) cos z).
-AXISYMMETRIC = {"u": "x*(1 + x**2)*sin(y)", "v": "(2 + 4*x**2)*cos(y)", "pressure": "cos(x)*sin(y) + x**2*y"}
+AXISYMMETRIC = {
+    "u": "x*(1 + x**2)*sin(y)",
+    "v": "(2 + 4*x**2)*cos(y)",
+    "pressure": "cos(x)*sin(y) + x**2*y",
+}
 # From the stream function psi = sin^2(pi x) sin^2(pi y): the velocity and its
 # normal flux vanish on the whole boundary of the unit square, so the flow is
 # enclosed and compatible, and the pressure must be pinned.
-ENCLOSED = {"u": "2*pi*sin(pi*x)**2*sin(pi*y)*cos(pi*y)", "v": "-2*pi*sin(pi*x)*cos(pi*x)*sin(pi*y)**2", "pressure": "cos(pi*x)*sin(y) + x*y"}
-THREE_DIMENSIONAL = {"u": "sin(y+z)", "v": "sin(x+z)", "w": "sin(x+y)", "pressure": "cos(x)*y*z + x"}
+ENCLOSED = {
+    "u": "2*pi*sin(pi*x)**2*sin(pi*y)*cos(pi*y)",
+    "v": "-2*pi*sin(pi*x)*cos(pi*x)*sin(pi*y)**2",
+    "pressure": "cos(pi*x)*sin(y) + x*y",
+}
+THREE_DIMENSIONAL = {
+    "u": "sin(y+z)",
+    "v": "sin(x+z)",
+    "w": "sin(x+y)",
+    "pressure": "cos(x)*y*z + x",
+}
 
 
 def _distorted_square(n, element_type):
     """The unit square shifted off the origin, with curved interior mesh
     lines, so that no symmetry or superconvergence helps."""
     mesh = dm.generate_rectangle_mesh(0.1, 1.1, 0.2, 1.2, n, n, element_type=element_type)
-    mesh.transform_nodes(lambda x, y, z: [x + 0.6 * (x - 0.1) * (1.1 - x) * (y - 0.2) * (1.2 - y) * np.sin(3 * y), y - 0.5 * (x - 0.1) * (1.1 - x) * (y - 0.2) * (1.2 - y), 0.0])
+    mesh.transform_nodes(
+        lambda x, y, z: [
+            x + 0.6 * (x - 0.1) * (1.1 - x) * (y - 0.2) * (1.2 - y) * np.sin(3 * y),
+            y - 0.5 * (x - 0.1) * (1.1 - x) * (y - 0.2) * (1.2 - y),
+            0.0,
+        ]
+    )
     return mesh
 
 
 def _flow_study(fields, velocities, dimension, coordinates="cartesian", outflow=None, **options):
     """A manufactured incompressible flow with the Taylor-Hood element."""
-    study = mms.ManufacturedSolution(fields, dimension=dimension, coordinates=coordinates, flux_boundaries=outflow)
-    study.add_physics("incompressible_flow", "flow", velocities=velocities, formulation="Taylor_Hood", **options)
+    study = mms.ManufacturedSolution(
+        fields, dimension=dimension, coordinates=coordinates, flux_boundaries=outflow
+    )
+    study.add_physics(
+        "incompressible_flow", "flow", velocities=velocities, formulation="Taylor_Hood", **options
+    )
     return study
 
 
@@ -93,7 +120,9 @@ def test_manufactured_flow_converges_at_the_taylor_hood_orders(element_type, den
     and 3.00, 1.99 and 2.4 (the pressure still approaching 2 from above) on
     Tri6."""
     study = _flow_study(CARTESIAN, ["u", "v"], 2, outflow={"right": (1.0, 0.0)}, density=density)
-    result = study.convergence_study(lambda n: _distorted_square(n, element_type), [4, 8, 16], method="fem")
+    result = study.convergence_study(
+        lambda n: _distorted_square(n, element_type), [4, 8, 16], method="fem"
+    )
     _check(result, "u")
 
 
@@ -101,8 +130,19 @@ def test_manufactured_flow_converges_at_the_taylor_hood_orders(element_type, den
 def test_axisymmetric_flow_including_the_axis(element_type):
     """The radial momentum equation carries the hoop term, and the axis r = 0
     is part of the domain."""
-    study = _flow_study(AXISYMMETRIC, ["u", "v"], 2, coordinates="axisymmetric", outflow={"top": (0.0, 1.0)}, density=1.0)
-    result = study.convergence_study(lambda n: dm.generate_rectangle_mesh(0, 1, 0, 1, n, n, element_type=element_type), [4, 8, 16], method="fem")
+    study = _flow_study(
+        AXISYMMETRIC,
+        ["u", "v"],
+        2,
+        coordinates="axisymmetric",
+        outflow={"top": (0.0, 1.0)},
+        density=1.0,
+    )
+    result = study.convergence_study(
+        lambda n: dm.generate_rectangle_mesh(0, 1, 0, 1, n, n, element_type=element_type),
+        [4, 8, 16],
+        method="fem",
+    )
     _check(result, "u")
 
 
@@ -111,7 +151,11 @@ def test_enclosed_flow_with_a_pinned_pressure(element_type):
     """Every boundary is a wall, the pressure is fixed at one corner node, and
     the orders are unchanged."""
     study = _flow_study(ENCLOSED, ["u", "v"], 2, density=1.0)
-    result = study.convergence_study(lambda n: dm.generate_rectangle_mesh(0, 1, 0, 1, n, n, element_type=element_type), [4, 8, 16], method="fem")
+    result = study.convergence_study(
+        lambda n: dm.generate_rectangle_mesh(0, 1, 0, 1, n, n, element_type=element_type),
+        [4, 8, 16],
+        method="fem",
+    )
     _check(result, "u")
 
 
@@ -121,7 +165,11 @@ def test_no_pressure_spike_at_the_pin_when_the_boundary_flux_does_not_vanish():
     ``mms.ManufacturedSolution``).  The Taylor-Hood element has no pressure
     Laplacian to do that: the pressure still converges at second order."""
     study = _flow_study(CARTESIAN, ["u", "v"], 2)
-    result = study.convergence_study(lambda n: dm.generate_rectangle_mesh(0, 1, 0, 1, n, n, element_type="Quad9"), [4, 8, 16], method="fem")
+    result = study.convergence_study(
+        lambda n: dm.generate_rectangle_mesh(0, 1, 0, 1, n, n, element_type="Quad9"),
+        [4, 8, 16],
+        method="fem",
+    )
     _check(result, "u")
 
 
@@ -130,8 +178,14 @@ def test_three_dimensional_flow(element_type):
     """P2-P1 on tetrahedra and Q2-Q1 on hexahedra.  Measured on n = 2, 4:
     2.96, 1.97, 2.25 (Tet10) and 3.00, 1.99, 2.09 (Hex27).  Hex27 needs 89
     derivative slots per element (27 x 3 + 8), within the default of 96."""
-    study = _flow_study(THREE_DIMENSIONAL, ["u", "v", "w"], 3, outflow={"right": (1.0, 0.0, 0.0)}, density=1.0)
-    result = study.convergence_study(lambda n: dm.generate_box_mesh(0, 1, 0, 1, 0, 1, n, n, n, element_type=element_type), [2, 4], method="fem")
+    study = _flow_study(
+        THREE_DIMENSIONAL, ["u", "v", "w"], 3, outflow={"right": (1.0, 0.0, 0.0)}, density=1.0
+    )
+    result = study.convergence_study(
+        lambda n: dm.generate_box_mesh(0, 1, 0, 1, 0, 1, n, n, n, element_type=element_type),
+        [2, 4],
+        method="fem",
+    )
     _check(result, "u", velocity_l2=2.7)
 
 
@@ -173,8 +227,20 @@ def _inf_sup_constant(mesh, pressure_order):
     problem.add_variable("pressure", order=pressure_order)
     for component, velocity in enumerate(("u", "v")):
         problem.add_kernel("diffusion", f"laplacian_{velocity}", variable=velocity)
-        problem.add_kernel("pressure_gradient", f"gradient_{velocity}", variable=velocity, component=component, pressure="pressure")
-        problem.add_boundary_condition("Dirichlet_boundary_condition", f"wall_{velocity}", variable=velocity, boundary=["left", "right", "bottom", "top"], value=0.0)
+        problem.add_kernel(
+            "pressure_gradient",
+            f"gradient_{velocity}",
+            variable=velocity,
+            component=component,
+            pressure="pressure",
+        )
+        problem.add_boundary_condition(
+            "Dirichlet_boundary_condition",
+            f"wall_{velocity}",
+            variable=velocity,
+            boundary=["left", "right", "bottom", "top"],
+            value=0.0,
+        )
     problem.add_kernel("reaction", "pressure_mass", variable="pressure")
     _, jacobian = problem.linear_system()
     jacobian = jacobian.toarray()
@@ -231,11 +297,34 @@ def test_equal_order_pairs_fail_the_inf_sup_condition(promote):
 def _cavity(n):
     mesh = dm.generate_rectangle_mesh(0, 1, 0, 1, n, n, element_type="Quad9")
     problem = dm.Problem(mesh, method="fem")
-    problem.add_physics("incompressible_flow", "flow", velocities=["u", "v"], dynamic_viscosity=1.0, density=100.0, formulation="Taylor_Hood", pressure_pin_point=(0.5, 0.0))
-    problem.add_boundary_condition("Dirichlet_boundary_condition", "lid", variable="u", boundary="top", value=1.0, scale_with_load=True)
-    problem.add_boundary_condition("Dirichlet_boundary_condition", "lid_v", variable="v", boundary="top", value=0.0)
+    problem.add_physics(
+        "incompressible_flow",
+        "flow",
+        velocities=["u", "v"],
+        dynamic_viscosity=1.0,
+        density=100.0,
+        formulation="Taylor_Hood",
+        pressure_pin_point=(0.5, 0.0),
+    )
+    problem.add_boundary_condition(
+        "Dirichlet_boundary_condition",
+        "lid",
+        variable="u",
+        boundary="top",
+        value=1.0,
+        scale_with_load=True,
+    )
+    problem.add_boundary_condition(
+        "Dirichlet_boundary_condition", "lid_v", variable="v", boundary="top", value=0.0
+    )
     for variable in ("u", "v"):
-        problem.add_boundary_condition("Dirichlet_boundary_condition", f"walls_{variable}", variable=variable, boundary=["left", "right", "bottom"], value=0.0)
+        problem.add_boundary_condition(
+            "Dirichlet_boundary_condition",
+            f"walls_{variable}",
+            variable=variable,
+            boundary=["left", "right", "bottom"],
+            value=0.0,
+        )
     problem.solve()
     return problem
 
@@ -244,12 +333,18 @@ def test_cavity_matches_ghia():
     """Re = 100 on 16 by 16 Quad9 elements (the nodes of a 32 by 32 linear
     mesh): the centreline velocities agree with Ghia, Ghia and Shin (1982)
     within 0.01."""
-    spec = importlib.util.spec_from_file_location("compare_cavity", _ROOT / "verification" / "openfoam" / "compare_cavity.py")
+    spec = importlib.util.spec_from_file_location(
+        "compare_cavity", _ROOT / "verification" / "openfoam" / "compare_cavity.py"
+    )
     reference = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(reference)
     problem = _cavity(16)
-    u = problem.sample("u", np.column_stack([np.full_like(reference.GHIA_Y, 0.5), reference.GHIA_Y]))
-    v = problem.sample("v", np.column_stack([reference.GHIA_X, np.full_like(reference.GHIA_X, 0.5)]))
+    u = problem.sample(
+        "u", np.column_stack([np.full_like(reference.GHIA_Y, 0.5), reference.GHIA_Y])
+    )
+    v = problem.sample(
+        "v", np.column_stack([reference.GHIA_X, np.full_like(reference.GHIA_X, 0.5)])
+    )
     assert np.max(np.abs(u - reference.GHIA_U)) < 0.01
     assert np.max(np.abs(v - reference.GHIA_V)) < 0.01
 
@@ -262,11 +357,31 @@ def test_the_pressure_at_non_corner_nodes_is_the_linear_field():
     node even when the point given is a mid-edge node."""
     mesh = dm.generate_rectangle_mesh(0, 1, 0, 1, 4, 4, element_type="Quad9")
     problem = dm.Problem(mesh, method="fem")
-    problem.add_physics("incompressible_flow", "flow", velocities=["u", "v"], formulation="Taylor_Hood", pressure_pin_point=(0.125, 0.0))
-    problem.add_boundary_condition("Dirichlet_boundary_condition", "lid", variable="u", boundary="top", value=1.0)
+    problem.add_physics(
+        "incompressible_flow",
+        "flow",
+        velocities=["u", "v"],
+        formulation="Taylor_Hood",
+        pressure_pin_point=(0.125, 0.0),
+    )
+    problem.add_boundary_condition(
+        "Dirichlet_boundary_condition", "lid", variable="u", boundary="top", value=1.0
+    )
     for variable, boundaries in (("u", ["left", "right", "bottom"]), ("v", ["top"])):
-        problem.add_boundary_condition("Dirichlet_boundary_condition", f"wall_{variable}", variable=variable, boundary=boundaries, value=0.0)
-    problem.add_boundary_condition("Dirichlet_boundary_condition", "walls_v", variable="v", boundary=["left", "right", "bottom"], value=0.0)
+        problem.add_boundary_condition(
+            "Dirichlet_boundary_condition",
+            f"wall_{variable}",
+            variable=variable,
+            boundary=boundaries,
+            value=0.0,
+        )
+    problem.add_boundary_condition(
+        "Dirichlet_boundary_condition",
+        "walls_v",
+        variable="v",
+        boundary=["left", "right", "bottom"],
+        value=0.0,
+    )
     problem.solve()
     assert problem.variable_order("pressure") == "first"
     assert problem.num_active_dofs() == 2 * 9 * 9 + 5 * 5
@@ -310,17 +425,27 @@ def test_a_first_order_variable_needs_the_finite_element_method(method):
 def test_taylor_hood_needs_a_quadratic_mesh_and_the_finite_element_method():
     linear = dm.generate_rectangle_mesh(0, 1, 0, 1, 2, 2)
     with pytest.raises(ValueError, match="second_order"):
-        dm.Problem(linear, method="fem").add_physics("incompressible_flow", "flow", velocities=["u", "v"], formulation="Taylor_Hood")
+        dm.Problem(linear, method="fem").add_physics(
+            "incompressible_flow", "flow", velocities=["u", "v"], formulation="Taylor_Hood"
+        )
     quadratic = linear.second_order()
     with pytest.raises(ValueError, match="method='fem'"):
-        dm.Problem(quadratic, method="dmcdm").add_physics("incompressible_flow", "flow", velocities=["u", "v"], formulation="Taylor_Hood")
+        dm.Problem(quadratic, method="dmcdm").add_physics(
+            "incompressible_flow", "flow", velocities=["u", "v"], formulation="Taylor_Hood"
+        )
 
 
 @pytest.mark.parametrize("option", ["stabilization", "streamline_stabilization"])
 def test_taylor_hood_refuses_stabilisation(option):
     mesh = dm.generate_rectangle_mesh(0, 1, 0, 1, 2, 2, element_type="Quad9")
     with pytest.raises(ValueError, match="Taylor-Hood"):
-        dm.Problem(mesh, method="fem").add_physics("incompressible_flow", "flow", velocities=["u", "v"], formulation="Taylor_Hood", **{option: True})
+        dm.Problem(mesh, method="fem").add_physics(
+            "incompressible_flow",
+            "flow",
+            velocities=["u", "v"],
+            formulation="Taylor_Hood",
+            **{option: True},
+        )
 
 
 def test_an_existing_pressure_of_the_wrong_order_is_refused():
@@ -328,7 +453,9 @@ def test_an_existing_pressure_of_the_wrong_order_is_refused():
     problem = dm.Problem(mesh, method="fem")
     problem.add_variable("pressure")
     with pytest.raises(ValueError, match="order='first'"):
-        problem.add_physics("incompressible_flow", "flow", velocities=["u", "v"], formulation="Taylor_Hood")
+        problem.add_physics(
+            "incompressible_flow", "flow", velocities=["u", "v"], formulation="Taylor_Hood"
+        )
 
 
 def test_unstabilised_equal_order_is_refused():
@@ -338,7 +465,9 @@ def test_unstabilised_equal_order_is_refused():
     problem = dm.Problem(mesh, method="fem")
     for variable in ("u", "v", "pressure"):
         problem.add_variable(variable)
-    problem.add_kernel("mass_conservation", "mass", variable="pressure", velocities=["u", "v"], stabilization=False)
+    problem.add_kernel(
+        "mass_conservation", "mass", variable="pressure", velocities=["u", "v"], stabilization=False
+    )
     with pytest.raises(ValueError, match="order 'first'"):
         problem.solve()
 
@@ -346,4 +475,6 @@ def test_unstabilised_equal_order_is_refused():
 def test_an_unknown_formulation_lists_the_valid_ones():
     mesh = dm.generate_rectangle_mesh(0, 1, 0, 1, 2, 2)
     with pytest.raises(ValueError, match="penalty, pressure, Taylor_Hood"):
-        dm.Problem(mesh, method="fem").add_physics("incompressible_flow", "flow", velocities=["u", "v"], formulation="taylor-hood")
+        dm.Problem(mesh, method="fem").add_physics(
+            "incompressible_flow", "flow", velocities=["u", "v"], formulation="taylor-hood"
+        )

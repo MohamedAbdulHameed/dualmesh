@@ -74,18 +74,53 @@ class EigenvalueResult(ResultTables):
         out = {}
         if self.regions:
             groups = len(self.regions[0]["average_flux"])
-            columns = ["region", "volume"] + [f"average_flux_{g}" for g in range(1, groups + 1)] + ["fission_neutron_production", "production_share"]
+            columns = (
+                ["region", "volume"]
+                + [f"average_flux_{g}" for g in range(1, groups + 1)]
+                + ["fission_neutron_production", "production_share"]
+            )
             units = ["", "m^3"] + ["1/(m^2 s)"] * groups + ["1/s", "%"]
-            rows = [[r["region"], r["volume"], *r["average_flux"], r["production"], 100.0 * r["production"] / self.normalization] for r in self.regions]
-            out["regions"] = Table(columns, units, rows, title=f"Regions (fluxes for a total production of {self.normalization:g} fission neutron{'' if self.normalization == 1.0 else 's'} per second)")
+            rows = [
+                [
+                    r["region"],
+                    r["volume"],
+                    *r["average_flux"],
+                    r["production"],
+                    100.0 * r["production"] / self.normalization,
+                ]
+                for r in self.regions
+            ]
+            out["regions"] = Table(
+                columns,
+                units,
+                rows,
+                title=f"Regions (fluxes for a total production of {self.normalization:g} fission neutron{'' if self.normalization == 1.0 else 's'} per second)",
+            )
         if self.history:
-            out["iterations"] = Table(["iteration", "k_effective"], ["", ""], [[i + 1, k] for i, k in enumerate(self.history)], title="Power iteration")
+            out["iterations"] = Table(
+                ["iteration", "k_effective"],
+                ["", ""],
+                [[i + 1, k] for i, k in enumerate(self.history)],
+                title="Power iteration",
+            )
         return out
 
     def summary(self) -> str:
         from .tables import Table
 
-        head = Table(["quantity", "value"], None, [["k_effective", f"{self.k_effective:.7f}"], ["reactivity (pcm)", f"{1e5 * self.reactivity:.1f}"], ["method", self.method], ["solves with L", self.iterations], ["unknowns", self.num_dofs], ["relative residual", f"{self.residual_norm:.2e}"]], title="Eigenvalue study")
+        head = Table(
+            ["quantity", "value"],
+            None,
+            [
+                ["k_effective", f"{self.k_effective:.7f}"],
+                ["reactivity (pcm)", f"{1e5 * self.reactivity:.1f}"],
+                ["method", self.method],
+                ["solves with L", self.iterations],
+                ["unknowns", self.num_dofs],
+                ["relative residual", f"{self.residual_norm:.2e}"],
+            ],
+            title="Eigenvalue study",
+        )
         parts = [head.format()]
         if "regions" in self.tables:
             parts.append(self.tables["regions"].format())
@@ -95,7 +130,18 @@ class EigenvalueResult(ResultTables):
         return self.summary()
 
     def to_dict(self) -> dict:
-        return {"study": "eigenvalue", "k_effective": self.k_effective, "reactivity": self.reactivity, "method": self.method, "iterations": self.iterations, "num_dofs": self.num_dofs, "residual_norm": self.residual_norm, "normalization": self.normalization, "regions": list(self.regions), "history": list(self.history)}
+        return {
+            "study": "eigenvalue",
+            "k_effective": self.k_effective,
+            "reactivity": self.reactivity,
+            "method": self.method,
+            "iterations": self.iterations,
+            "num_dofs": self.num_dofs,
+            "residual_norm": self.residual_norm,
+            "normalization": self.normalization,
+            "regions": list(self.regions),
+            "history": list(self.history),
+        }
 
     def write_json(self, path) -> None:
         """Write :meth:`to_dict` to a JSON file."""
@@ -115,12 +161,24 @@ def region_table(problem, physics) -> list[dict]:
     for p in physics:
         for g, name in enumerate(p.variables(), start=1):
             integrals[name] = problem.element_integrals(name)
-            production += np.asarray(problem.property_at_centroids(f"nu_fission_cross_section_{g}"), dtype=float).ravel() * integrals[name]
+            production += (
+                np.asarray(
+                    problem.property_at_centroids(f"nu_fission_cross_section_{g}"), dtype=float
+                ).ravel()
+                * integrals[name]
+            )
     out = []
     for block in sorted(set(blocks.tolist())):
         inside = blocks == block
         volume = float(volumes[inside].sum())
-        out.append(dict(region=names.get(block, str(block)), volume=volume, average_flux=[float(integrals[n][inside].sum() / volume) for n in integrals], production=float(production[inside].sum())))
+        out.append(
+            dict(
+                region=names.get(block, str(block)),
+                volume=volume,
+                average_flux=[float(integrals[n][inside].sum() / volume) for n in integrals],
+                production=float(production[inside].sum()),
+            )
+        )
     return out
 
 
@@ -132,7 +190,9 @@ def fission_production(problem) -> float:
     total = 0.0
     for p in _neutron_physics(problem):
         for g, name in enumerate(p.variables(), start=1):
-            cross_section = np.asarray(problem.property_at_centroids(f"nu_fission_cross_section_{g}"), dtype=float).ravel()
+            cross_section = np.asarray(
+                problem.property_at_centroids(f"nu_fission_cross_section_{g}"), dtype=float
+            ).ravel()
             total += float(np.dot(cross_section, problem.element_integrals(name)))
     return total
 
@@ -142,16 +202,26 @@ def _neutron_physics(problem):
 
     found = [p for p in problem._physics.values() if isinstance(p, NeutronDiffusion)]
     if not found:
-        raise ValueError("solve_eigenvalue: the problem has no neutron_diffusion physics, whose fission source defines the eigenvalue.")
+        raise ValueError(
+            "solve_eigenvalue: the problem has no neutron_diffusion physics, whose fission source defines the eigenvalue."
+        )
     return found
 
 
-def solve_eigenvalue(problem, method: str = "krylov", tolerance: float = 1.0e-10, max_iterations: int = 2000, normalization: float = 1.0) -> EigenvalueResult:
+def solve_eigenvalue(
+    problem,
+    method: str = "krylov",
+    tolerance: float = 1.0e-10,
+    max_iterations: int = 2000,
+    normalization: float = 1.0,
+) -> EigenvalueResult:
     """See :meth:`dualmesh.Problem.solve_eigenvalue`."""
     import scipy.sparse.linalg as sparse_linalg
 
     if method not in ("krylov", "power"):
-        raise ValueError(f"solve_eigenvalue: unknown method '{method}'. Use krylov (the Arnoldi method) or power (the power iteration).")
+        raise ValueError(
+            f"solve_eigenvalue: unknown method '{method}'. Use krylov (the Arnoldi method) or power (the power iteration)."
+        )
     if problem.is_distributed:
         raise ValueError("solve_eigenvalue: the eigenvalue study runs on one process.")
     physics = _neutron_physics(problem)
@@ -166,9 +236,14 @@ def solve_eigenvalue(problem, method: str = "krylov", tolerance: float = 1.0e-10
     fission = (loss - with_fission).tocsc()
     fission.eliminate_zeros()
     if fission.nnz == 0:
-        raise ValueError("solve_eigenvalue: the fission source is zero. Give a nu_fission_cross_section to a fissile region.")
+        raise ValueError(
+            "solve_eigenvalue: the fission source is zero. Give a nu_fission_cross_section to a fissile region."
+        )
     factor = sparse_linalg.splu(loss.tocsc())
-    free = np.asarray(abs(fission).sum(axis=0)).ravel() + np.asarray(abs(fission).sum(axis=1)).ravel() > 0.0
+    free = (
+        np.asarray(abs(fission).sum(axis=0)).ravel() + np.asarray(abs(fission).sum(axis=1)).ravel()
+        > 0.0
+    )
     start = np.where(free, 1.0, 0.0)
     history = []
     if method == "krylov":
@@ -179,7 +254,9 @@ def solve_eigenvalue(problem, method: str = "krylov", tolerance: float = 1.0e-10
             return factor.solve(fission @ v)
 
         operator = sparse_linalg.LinearOperator((n, n), matvec=apply, dtype=float)
-        values, vectors = sparse_linalg.eigs(operator, k=1, which="LM", v0=start, tol=tolerance, maxiter=max_iterations)
+        values, vectors = sparse_linalg.eigs(
+            operator, k=1, which="LM", v0=start, tol=tolerance, maxiter=max_iterations
+        )
         k = float(values[0].real)
         phi = vectors[:, 0].real
         # The cost of the Arnoldi method is its number of solves with L.
@@ -197,15 +274,21 @@ def solve_eigenvalue(problem, method: str = "krylov", tolerance: float = 1.0e-10
             k_new = k * source_new.sum() / source.sum()
             history.append(float(k_new))
             change = abs(k_new - k) / abs(k_new)
-            point = np.max(np.abs(source_new / source_new.sum() - source / source.sum())) / max(np.max(np.abs(source_new / source_new.sum())), 1e-300)
+            point = np.max(np.abs(source_new / source_new.sum() - source / source.sum())) / max(
+                np.max(np.abs(source_new / source_new.sum())), 1e-300
+            )
             phi, source, k = phi_new, source_new, k_new
             if change < tolerance and point < np.sqrt(tolerance):
                 break
         else:
-            raise RuntimeError(f"solve_eigenvalue: the power iteration did not converge in {max_iterations} iterations (last k = {k:.8f}).")
+            raise RuntimeError(
+                f"solve_eigenvalue: the power iteration did not converge in {max_iterations} iterations (last k = {k:.8f})."
+            )
     if phi.sum() < 0.0:
         phi = -phi
-    residual = np.linalg.norm(loss @ phi - fission @ phi / k) / max(np.linalg.norm(fission @ phi / k), 1e-300)
+    residual = np.linalg.norm(loss @ phi - fission @ phi / k) / max(
+        np.linalg.norm(fission @ phi / k), 1e-300
+    )
     names = list(problem._problem.variable_names())
     count = len(names)
     for v, name in enumerate(names):
@@ -215,4 +298,13 @@ def solve_eigenvalue(problem, method: str = "krylov", tolerance: float = 1.0e-10
     for p in physics:
         for name in p.variables():
             problem.set_values(name, problem.values(name) * (normalization / total))
-    return EigenvalueResult(k_effective=k, method=method, iterations=iterations, num_dofs=int(n), residual_norm=float(residual), normalization=float(normalization), history=history, regions=region_table(problem, physics))
+    return EigenvalueResult(
+        k_effective=k,
+        method=method,
+        iterations=iterations,
+        num_dofs=int(n),
+        residual_norm=float(residual),
+        normalization=float(normalization),
+        history=history,
+        regions=region_table(problem, physics),
+    )

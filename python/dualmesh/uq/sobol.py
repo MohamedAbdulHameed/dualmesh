@@ -35,7 +35,18 @@ import itertools
 
 import numpy as np
 
-from ._engine import check_inputs, check_output_transform, evaluate, study_header, surrogate_mean, surrogate_sample, to_inputs, transformed_runs, unit_design, write_json
+from ._engine import (
+    check_inputs,
+    check_output_transform,
+    evaluate,
+    study_header,
+    surrogate_mean,
+    surrogate_sample,
+    to_inputs,
+    transformed_runs,
+    unit_design,
+    write_json,
+)
 
 __all__ = ["SobolIndices", "sobol"]
 
@@ -83,7 +94,9 @@ class SobolIndices:
         Number of model runs.
     """
 
-    def __init__(self, names, outputs, first, total, first_ci, total_ci, second, runs, level, process=None):
+    def __init__(
+        self, names, outputs, first, total, first_ci, total_ci, second, runs, level, process=None
+    ):
         self.names = names
         self.runs = runs
         self.level = level
@@ -97,10 +110,17 @@ class SobolIndices:
 
             self.first_order[o] = {n: val(first[o][j]) for j, n in enumerate(names)}
             self.total[o] = {n: val(total[o][j]) for j, n in enumerate(names)}
-            self.first_order_interval[o] = {n: (val(first_ci[o][0][j]), val(first_ci[o][1][j])) for j, n in enumerate(names)}
-            self.total_interval[o] = {n: (val(total_ci[o][0][j]), val(total_ci[o][1][j])) for j, n in enumerate(names)}
+            self.first_order_interval[o] = {
+                n: (val(first_ci[o][0][j]), val(first_ci[o][1][j])) for j, n in enumerate(names)
+            }
+            self.total_interval[o] = {
+                n: (val(total_ci[o][0][j]), val(total_ci[o][1][j])) for j, n in enumerate(names)
+            }
             if second is not None:
-                self.second_order[o] = {(a, b): val(second[o][i, j]) for (i, a), (j, b) in itertools.combinations(enumerate(names), 2)}
+                self.second_order[o] = {
+                    (a, b): val(second[o][i, j])
+                    for (i, a), (j, b) in itertools.combinations(enumerate(names), 2)
+                }
         self.first_order_global_process = self.total_global_process = None
         self.first_order_global_process_interval = self.total_global_process_interval = None
         if process is not None:
@@ -111,10 +131,26 @@ class SobolIndices:
                 def value(a, shape=shape):
                     return float(a[0]) if shape == () else a.reshape(shape)
 
-                self.first_order_global_process[o] = {n: value(process["first"][o][j]) for j, n in enumerate(names)}
-                self.total_global_process[o] = {n: value(process["total"][o][j]) for j, n in enumerate(names)}
-                self.first_order_global_process_interval[o] = {n: (value(process["first_interval"][o][0][j]), value(process["first_interval"][o][1][j])) for j, n in enumerate(names)}
-                self.total_global_process_interval[o] = {n: (value(process["total_interval"][o][0][j]), value(process["total_interval"][o][1][j])) for j, n in enumerate(names)}
+                self.first_order_global_process[o] = {
+                    n: value(process["first"][o][j]) for j, n in enumerate(names)
+                }
+                self.total_global_process[o] = {
+                    n: value(process["total"][o][j]) for j, n in enumerate(names)
+                }
+                self.first_order_global_process_interval[o] = {
+                    n: (
+                        value(process["first_interval"][o][0][j]),
+                        value(process["first_interval"][o][1][j]),
+                    )
+                    for j, n in enumerate(names)
+                }
+                self.total_global_process_interval[o] = {
+                    n: (
+                        value(process["total_interval"][o][0][j]),
+                        value(process["total_interval"][o][1][j]),
+                    )
+                    for j, n in enumerate(names)
+                }
 
     def summary(self) -> str:
         """A table of the indices of every scalar output."""
@@ -130,23 +166,49 @@ class SobolIndices:
             for n in order:
                 f, (fl, fh) = self.first_order[o][n], self.first_order_interval[o][n]
                 t, (tl, th) = self.total[o][n], self.total_interval[o][n]
-                lines.append(f"  {n:<28}{f:7.3f} [{fl:6.3f}, {fh:6.3f}]   {t:7.3f} [{tl:6.3f}, {th:6.3f}]")
+                lines.append(
+                    f"  {n:<28}{f:7.3f} [{fl:6.3f}, {fh:6.3f}]   {t:7.3f} [{tl:6.3f}, {th:6.3f}]"
+                )
             if self.first_order_global_process is not None:
                 lines.append("  global process (Marrel et al. 2009, Eq. 12):")
                 for n in order:
-                    f, (fl, fh) = self.first_order_global_process[o][n], self.first_order_global_process_interval[o][n]
-                    t, (tl, th) = self.total_global_process[o][n], self.total_global_process_interval[o][n]
-                    lines.append(f"  {n:<28}{f:7.3f} [{fl:6.3f}, {fh:6.3f}]   {t:7.3f} [{tl:6.3f}, {th:6.3f}]")
+                    f, (fl, fh) = (
+                        self.first_order_global_process[o][n],
+                        self.first_order_global_process_interval[o][n],
+                    )
+                    t, (tl, th) = (
+                        self.total_global_process[o][n],
+                        self.total_global_process_interval[o][n],
+                    )
+                    lines.append(
+                        f"  {n:<28}{f:7.3f} [{fl:6.3f}, {fh:6.3f}]   {t:7.3f} [{tl:6.3f}, {th:6.3f}]"
+                    )
         return "\n".join(lines)
 
     def to_dict(self) -> dict:
         """The first-order and total indices of every output with their
         intervals, and the second-order indices when they were computed."""
-        numbers = {"study": "sobol", "runs": self.runs, "level": self.level, "first_order": self.first_order, "first_order_interval": self.first_order_interval, "total": self.total, "total_interval": self.total_interval}
+        numbers = {
+            "study": "sobol",
+            "runs": self.runs,
+            "level": self.level,
+            "first_order": self.first_order,
+            "first_order_interval": self.first_order_interval,
+            "total": self.total,
+            "total_interval": self.total_interval,
+        }
         if self.second_order is not None:
-            numbers["second_order"] = {o: {f"{a},{b}": v for (a, b), v in pairs.items()} for o, pairs in self.second_order.items()}
+            numbers["second_order"] = {
+                o: {f"{a},{b}": v for (a, b), v in pairs.items()}
+                for o, pairs in self.second_order.items()
+            }
         if self.first_order_global_process is not None:
-            numbers.update(first_order_global_process=self.first_order_global_process, first_order_global_process_interval=self.first_order_global_process_interval, total_global_process=self.total_global_process, total_global_process_interval=self.total_global_process_interval)
+            numbers.update(
+                first_order_global_process=self.first_order_global_process,
+                first_order_global_process_interval=self.first_order_global_process_interval,
+                total_global_process=self.total_global_process,
+                total_global_process_interval=self.total_global_process_interval,
+            )
         return numbers
 
     def write_json(self, path):
@@ -166,15 +228,54 @@ class SobolIndices:
                 if not isinstance(self.first_order[o][n], float):
                     continue
                 (fl, fh), (tl, th) = self.first_order_interval[o][n], self.total_interval[o][n]
-                row = [o, n, self.first_order[o][n], float(fl), float(fh), self.total[o][n], float(tl), float(th)]
+                row = [
+                    o,
+                    n,
+                    self.first_order[o][n],
+                    float(fl),
+                    float(fh),
+                    self.total[o][n],
+                    float(tl),
+                    float(th),
+                ]
                 if self.first_order_global_process is not None:
-                    (gfl, gfh), (gtl, gth) = self.first_order_global_process_interval[o][n], self.total_global_process_interval[o][n]
-                    row += [self.first_order_global_process[o][n], float(gfl), float(gfh), self.total_global_process[o][n], float(gtl), float(gth)]
+                    (gfl, gfh), (gtl, gth) = (
+                        self.first_order_global_process_interval[o][n],
+                        self.total_global_process_interval[o][n],
+                    )
+                    row += [
+                        self.first_order_global_process[o][n],
+                        float(gfl),
+                        float(gfh),
+                        self.total_global_process[o][n],
+                        float(gtl),
+                        float(gth),
+                    ]
                 rows.append(row)
-        columns = ["output", "input", "first_order", "first_order_low", "first_order_high", "total", "total_low", "total_high"]
+        columns = [
+            "output",
+            "input",
+            "first_order",
+            "first_order_low",
+            "first_order_high",
+            "total",
+            "total_low",
+            "total_high",
+        ]
         if self.first_order_global_process is not None:
-            columns += ["first_order_global_process", "first_order_global_process_low", "first_order_global_process_high", "total_global_process", "total_global_process_low", "total_global_process_high"]
-        return {"indices": Table(columns, None, rows, title=f"Sobol' indices from {self.runs} model runs")}
+            columns += [
+                "first_order_global_process",
+                "first_order_global_process_low",
+                "first_order_global_process_high",
+                "total_global_process",
+                "total_global_process_low",
+                "total_global_process_high",
+            ]
+        return {
+            "indices": Table(
+                columns, None, rows, title=f"Sobol' indices from {self.runs} model runs"
+            )
+        }
 
     def write_csv(self, path, table: str | None = None):
         """Write the table ``indices`` to a CSV file."""
@@ -219,7 +320,10 @@ def _surrogate_intervals(mean, realizations, rng, level):
             functions.append((r_first / r_var, r_total / r_var))
         f_first = np.array([f for f, _ in functions])
         f_total = np.array([t for _, t in functions])
-        d_first, d_total = f_first - np.nanmean(f_first, axis=0), f_total - np.nanmean(f_total, axis=0)
+        d_first, d_total = (
+            f_first - np.nanmean(f_first, axis=0),
+            f_total - np.nanmean(f_total, axis=0),
+        )
         reps_f, reps_t = [], []
         for r in range(len(realizations)):
             i = rng.integers(0, n, n)
@@ -231,7 +335,10 @@ def _surrogate_intervals(mean, realizations, rng, level):
     # A total index is not negative, so neither is the low end of its
     # interval (the deviations of the random functions can reach below zero
     # for an index near zero).
-    return (np.nanpercentile(rf, a, axis=0), np.nanpercentile(rf, 100 - a, axis=0)), (np.maximum(np.nanpercentile(rt, a, axis=0), 0.0), np.nanpercentile(rt, 100 - a, axis=0))
+    return (np.nanpercentile(rf, a, axis=0), np.nanpercentile(rf, 100 - a, axis=0)), (
+        np.maximum(np.nanpercentile(rt, a, axis=0), 0.0),
+        np.nanpercentile(rt, 100 - a, axis=0),
+    )
 
 
 def _global_process_indices(mean, realizations, rng, level):
@@ -271,7 +378,12 @@ def _global_process_indices(mean, realizations, rng, level):
             reps_t.append((b_total + r_total - p_total) / variance)
     a = 50.0 * (1.0 - level)
     rf, rt = np.array(reps_f), np.array(reps_t)
-    return first, total, (np.nanpercentile(rf, a, axis=0), np.nanpercentile(rf, 100 - a, axis=0)), (np.nanpercentile(rt, a, axis=0), np.nanpercentile(rt, 100 - a, axis=0))
+    return (
+        first,
+        total,
+        (np.nanpercentile(rf, a, axis=0), np.nanpercentile(rf, 100 - a, axis=0)),
+        (np.nanpercentile(rt, a, axis=0), np.nanpercentile(rt, 100 - a, axis=0)),
+    )
 
 
 def _bootstrap(fa, fb, fab, resamples, rng, level):
@@ -284,10 +396,31 @@ def _bootstrap(fa, fb, fab, resamples, rng, level):
         reps_t.append(t)
     a = 50.0 * (1.0 - level)
     rf, rt = np.array(reps_f), np.array(reps_t)
-    return ((np.nanpercentile(rf, a, axis=0), np.nanpercentile(rf, 100 - a, axis=0)), (np.nanpercentile(rt, a, axis=0), np.nanpercentile(rt, 100 - a, axis=0)), rf, rt)
+    return (
+        (np.nanpercentile(rf, a, axis=0), np.nanpercentile(rf, 100 - a, axis=0)),
+        (np.nanpercentile(rt, a, axis=0), np.nanpercentile(rt, 100 - a, axis=0)),
+        rf,
+        rt,
+    )
 
 
-def sobol(model, inputs, samples, seed=0, processes=1, store=None, surrogate=None, second_order=False, training_samples=None, training=None, realizations=100, level=0.95, resamples=500, output_transform=None, report="full") -> SobolIndices:
+def sobol(
+    model,
+    inputs,
+    samples,
+    seed=0,
+    processes=1,
+    store=None,
+    surrogate=None,
+    second_order=False,
+    training_samples=None,
+    training=None,
+    realizations=100,
+    level=0.95,
+    resamples=500,
+    output_transform=None,
+    report="full",
+) -> SobolIndices:
     r"""First-order and total Sobol' indices of every output of ``model``.
 
     ``samples``
@@ -326,7 +459,9 @@ def sobol(model, inputs, samples, seed=0, processes=1, store=None, surrogate=Non
     if n < 2:
         raise ValueError("sobol: samples must be at least 2.")
     if surrogate is None and (training is not None or training_samples is not None):
-        raise ValueError("sobol: training and training_samples are used only with surrogate='gaussian_process'.")
+        raise ValueError(
+            "sobol: training and training_samples are used only with surrogate='gaussian_process'."
+        )
     u = unit_design(n, 2 * k, "sobol", seed)
     ua, ub = u[:, :k], u[:, k:]
     uab = np.repeat(ua[None], k, axis=0)
@@ -343,7 +478,9 @@ def sobol(model, inputs, samples, seed=0, processes=1, store=None, surrogate=Non
     gp = None
     if surrogate is None:
         if output_transform:
-            raise ValueError("sobol: output_transform applies to a surrogate. Give surrogate='gaussian_process', or remove output_transform.")
+            raise ValueError(
+                "sobol: output_transform applies to a surrogate. Give surrogate='gaussian_process', or remove output_transform."
+            )
         xall = to_inputs(uall, dists)
         outputs, _ = evaluate(model, names, xall, processes, store, progress)
         runs = len(xall)
@@ -355,7 +492,9 @@ def sobol(model, inputs, samples, seed=0, processes=1, store=None, surrogate=Non
             raise ValueError("sobol: give training_samples or training, not both.")
         if training is None:
             m = int(training_samples) if training_samples else max(10 * k, 50)
-            training = _propagate(model, dists, m, "latin_hypercube", seed, processes, store, progress)
+            training = _propagate(
+                model, dists, m, "latin_hypercube", seed, processes, store, progress
+            )
         if list(training.distributions) != names:
             raise ValueError("sobol: the training runs must have the same inputs, in order.")
         m = training.successful
@@ -371,7 +510,11 @@ def sobol(model, inputs, samples, seed=0, processes=1, store=None, surrogate=Non
 
     rng = np.random.default_rng(seed)
     first, total, second, fci, tci, shapes = {}, {}, {}, {}, {}, {}
-    process = {"first": {}, "total": {}, "first_interval": {}, "total_interval": {}} if gp is not None else None
+    process = (
+        {"first": {}, "total": {}, "first_interval": {}, "total_interval": {}}
+        if gp is not None
+        else None
+    )
     nb = 2 + k
     for o, y in outputs.items():
         shapes[o] = y.shape[1:]
@@ -387,9 +530,25 @@ def sobol(model, inputs, samples, seed=0, processes=1, store=None, surrogate=Non
             real = sampled[o].reshape(realizations, nb, ns, -1)
             (fl, fh), (tl, th) = _surrogate_intervals(f[:nb], real, rng, level)
             g_first, g_total, g_fci, g_tci = _global_process_indices(f[:nb], real, rng, level)
-            process["first"][o], process["total"][o], process["first_interval"][o], process["total_interval"][o] = g_first, g_total, g_fci, g_tci
+            (
+                process["first"][o],
+                process["total"][o],
+                process["first_interval"][o],
+                process["total_interval"][o],
+            ) = g_first, g_total, g_fci, g_tci
         fci[o], tci[o] = (fl, fh), (tl, th)
-    indices = SobolIndices(names, shapes, first, total, fci, tci, second if second_order else None, runs, level, process)
+    indices = SobolIndices(
+        names,
+        shapes,
+        first,
+        total,
+        fci,
+        tci,
+        second if second_order else None,
+        runs,
+        level,
+        process,
+    )
     if report != "none":
         print(indices.summary())
     return indices

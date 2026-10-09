@@ -31,7 +31,12 @@ PRANDTL = 0.71
 #: de Vahl Davis (1983), Table: average Nusselt number, the largest horizontal
 #: velocity on the vertical centreline and the largest vertical velocity on the
 #: horizontal centreline.
-BENCHMARK = {1.0e3: {"nusselt": 1.118, "u_max": 3.649, "v_max": 3.697}, 1.0e4: {"nusselt": 2.243, "u_max": 16.178, "v_max": 19.617}, 1.0e5: {"nusselt": 4.519, "u_max": 34.73, "v_max": 68.59}, 1.0e6: {"nusselt": 8.800, "u_max": 64.63, "v_max": 219.36}}
+BENCHMARK = {
+    1.0e3: {"nusselt": 1.118, "u_max": 3.649, "v_max": 3.697},
+    1.0e4: {"nusselt": 2.243, "u_max": 16.178, "v_max": 19.617},
+    1.0e5: {"nusselt": 4.519, "u_max": 34.73, "v_max": 68.59},
+    1.0e6: {"nusselt": 8.800, "u_max": 64.63, "v_max": 219.36},
+}
 
 
 def cavity_mesh(num_elements=32):
@@ -45,10 +50,30 @@ def cavity_mesh(num_elements=32):
 def solve(rayleigh_number=1.0e5, num_elements=32, method="dmcdm"):
     mesh = cavity_mesh(num_elements)
     problem = dm.Problem(mesh, method=method)
-    flow = problem.add_physics("incompressible_flow", "flow", velocities=["u", "v"], dynamic_viscosity=PRANDTL, density=1.0, penalty_parameter=1.0e7)
+    flow = problem.add_physics(
+        "incompressible_flow",
+        "flow",
+        velocities=["u", "v"],
+        dynamic_viscosity=PRANDTL,
+        density=1.0,
+        penalty_parameter=1.0e7,
+    )
     heat = problem.add_physics("heat_transfer", "heat", thermal_conductivity=1.0)
-    problem.add_coupling("nonisothermal_flow", "coupling", heat_transfer="heat", incompressible_flow="flow", gravity=[0.0, -1.0], thermal_expansion_coefficient=rayleigh_number * PRANDTL, scale_with_load=True)
-    flow.add_boundary_condition("Dirichlet_boundary_condition", "no_slip", boundary=["left", "right", "bottom", "top"], value=[0.0, 0.0])
+    problem.add_coupling(
+        "nonisothermal_flow",
+        "coupling",
+        heat_transfer="heat",
+        incompressible_flow="flow",
+        gravity=[0.0, -1.0],
+        thermal_expansion_coefficient=rayleigh_number * PRANDTL,
+        scale_with_load=True,
+    )
+    flow.add_boundary_condition(
+        "Dirichlet_boundary_condition",
+        "no_slip",
+        boundary=["left", "right", "bottom", "top"],
+        value=[0.0, 0.0],
+    )
     heat.add_boundary_condition("Dirichlet_boundary_condition", "left", value=0.5)
     heat.add_boundary_condition("Dirichlet_boundary_condition", "right", value=-0.5)
     # Continuation in the Rayleigh number, one decade at a time.
@@ -62,7 +87,11 @@ def measure(problem):
     s = np.linspace(0.0, 1.0, 801)
     u = problem.sample("u", np.column_stack([np.full_like(s, 0.5), s]))
     v = problem.sample("v", np.column_stack([s, np.full_like(s, 0.5)]))
-    return {"nusselt": problem.total_reaction("temperature", "left"), "u_max": float(np.nanmax(u)), "v_max": float(np.nanmax(v))}
+    return {
+        "nusselt": problem.total_reaction("temperature", "left"),
+        "u_max": float(np.nanmax(u)),
+        "v_max": float(np.nanmax(v)),
+    }
 
 
 if __name__ == "__main__":
@@ -72,4 +101,6 @@ if __name__ == "__main__":
         computed = measure(problem)
         for key, value in computed.items():
             difference = 100.0 * (value - reference[key]) / reference[key]
-            print(f"{rayleigh_number:7.0e}  {key:9s}  {value:9.3f}  {reference[key]:13.3f}   {difference:+6.2f} %")
+            print(
+                f"{rayleigh_number:7.0e}  {key:9s}  {value:9.3f}  {reference[key]:13.3f}   {difference:+6.2f} %"
+            )

@@ -22,7 +22,18 @@ from scipy import integrate, stats  # noqa: E402
 # ---------------------------------------------------------------------------
 # distributions
 # ---------------------------------------------------------------------------
-@pytest.mark.parametrize("dist", [uq.Normal(1.0, 0.3), uq.Normal(1.0, 0.3, lower=0.2), uq.Normal(1.0, 0.3, lower=0.9, upper=1.6), uq.LogNormal(median=1.0, factor=10), uq.LogNormal(median=2.0, sigma=0.4, lower=1.0, upper=5.0), uq.Uniform(-1.0, 3.0), uq.LogUniform(0.1, 10.0)])
+@pytest.mark.parametrize(
+    "dist",
+    [
+        uq.Normal(1.0, 0.3),
+        uq.Normal(1.0, 0.3, lower=0.2),
+        uq.Normal(1.0, 0.3, lower=0.9, upper=1.6),
+        uq.LogNormal(median=1.0, factor=10),
+        uq.LogNormal(median=2.0, sigma=0.4, lower=1.0, upper=5.0),
+        uq.Uniform(-1.0, 3.0),
+        uq.LogUniform(0.1, 10.0),
+    ],
+)
 def test_distribution_moments_and_quantiles(dist):
     """Mean and standard deviation against numerical integration of the
     density, the density integrates to one, and ppf inverts cdf."""
@@ -272,7 +283,9 @@ def test_sobol_on_given_training_runs():
     b = uq.sobol(_ishigami, inputs, 256, surrogate="gaussian_process", training_samples=200)
     assert a.total["output"] == pytest.approx(b.total["output"], abs=1e-12)
     with pytest.raises(ValueError, match="not both"):
-        uq.sobol(_ishigami, inputs, 64, surrogate="gaussian_process", training=runs, training_samples=50)
+        uq.sobol(
+            _ishigami, inputs, 64, surrogate="gaussian_process", training=runs, training_samples=50
+        )
     with pytest.raises(ValueError, match="only with surrogate"):
         uq.sobol(_ishigami, inputs, 64, training=runs)
 
@@ -284,9 +297,14 @@ def test_the_interval_of_a_surrogate_index_holds_its_estimate():
     total index of x3 as 0.031 with the interval [0.049, 0.142]."""
     inputs = {n: uq.Uniform(-math.pi, math.pi) for n in ("x1", "x2", "x3")}
     runs = uq.propagate(_ishigami, inputs, 60, seed=101, report="none")
-    s = uq.sobol(_ishigami, inputs, 1024, surrogate="gaussian_process", training=runs, seed=1, report="none")
+    s = uq.sobol(
+        _ishigami, inputs, 1024, surrogate="gaussian_process", training=runs, seed=1, report="none"
+    )
     for n in ("x1", "x2", "x3"):
-        for estimate, interval in ((s.first_order, s.first_order_interval), (s.total, s.total_interval)):
+        for estimate, interval in (
+            (s.first_order, s.first_order_interval),
+            (s.total, s.total_interval),
+        ):
             low, high = interval["output"][n]
             assert low <= estimate["output"][n] <= high
 
@@ -300,7 +318,9 @@ def test_the_indices_of_the_global_process_are_reported_beside():
     inputs = {n: uq.Uniform(-math.pi, math.pi) for n in ("x1", "x2", "x3")}
     first, total, _ = _ishigami_exact()
     runs = uq.propagate(_ishigami, inputs, 200, report="none")
-    s = uq.sobol(_ishigami, inputs, 1024, surrogate="gaussian_process", training=runs, report="none")
+    s = uq.sobol(
+        _ishigami, inputs, 1024, surrogate="gaussian_process", training=runs, report="none"
+    )
     for j, n in enumerate(("x1", "x2", "x3")):
         assert s.first_order_global_process["output"][n] == pytest.approx(first[j], abs=0.08)
         assert s.total_global_process["output"][n] == pytest.approx(total[j], abs=0.08)
@@ -310,7 +330,10 @@ def test_the_indices_of_the_global_process_are_reported_beside():
     assert "total_global_process" in table.names and len(table) == 3
     assert "global process" in s.summary() and "total_global_process" in s.to_dict()
     plain = uq.sobol(_ishigami, inputs, 256, report="none")
-    assert plain.first_order_global_process is None and "total_global_process" not in plain.tables["indices"].names
+    assert (
+        plain.first_order_global_process is None
+        and "total_global_process" not in plain.tables["indices"].names
+    )
 
 
 C_LOG = (0.8, 0.5, 0.3)
@@ -331,7 +354,15 @@ def test_a_surrogate_of_the_logarithm_of_a_positive_output():
     first = (np.exp(c2) - 1.0) / (np.exp(c2.sum()) - 1.0)
     total = 1.0 - (np.exp(c2.sum() - c2) - 1.0) / (np.exp(c2.sum()) - 1.0)
     runs = uq.propagate(_exponential_of_a_sum, inputs, 40, method="sobol", report="none")
-    s = uq.sobol(_exponential_of_a_sum, inputs, 8192, surrogate="gaussian_process", training=runs, output_transform={"output": "log"}, report="none")
+    s = uq.sobol(
+        _exponential_of_a_sum,
+        inputs,
+        8192,
+        surrogate="gaussian_process",
+        training=runs,
+        output_transform={"output": "log"},
+        report="none",
+    )
     # The output is log-normal, so the Monte Carlo error of the estimators is
     # large: 8192 rows hold it below 0.03. On the same rows the surrogate
     # gives the indices of the model itself.
@@ -339,16 +370,46 @@ def test_a_surrogate_of_the_logarithm_of_a_positive_output():
     for j, n in enumerate(names):
         assert s.first_order["output"][n] == pytest.approx(first[j], abs=0.03)
         assert s.total["output"][n] == pytest.approx(total[j], abs=0.03)
-        assert s.first_order["output"][n] == pytest.approx(direct.first_order["output"][n], abs=2e-3)
+        assert s.first_order["output"][n] == pytest.approx(
+            direct.first_order["output"][n], abs=2e-3
+        )
     with pytest.raises(ValueError, match="applies to a surrogate"):
-        uq.sobol(_exponential_of_a_sum, inputs, 64, output_transform={"output": "log"}, report="none")
+        uq.sobol(
+            _exponential_of_a_sum, inputs, 64, output_transform={"output": "log"}, report="none"
+        )
     with pytest.raises(ValueError, match="which the runs do not have"):
-        uq.sobol(_exponential_of_a_sum, inputs, 64, surrogate="gaussian_process", training=runs, output_transform={"release": "log"}, report="none")
+        uq.sobol(
+            _exponential_of_a_sum,
+            inputs,
+            64,
+            surrogate="gaussian_process",
+            training=runs,
+            output_transform={"release": "log"},
+            report="none",
+        )
     with pytest.raises(ValueError, match="unknown output transform 'sqrt'"):
-        uq.sobol(_exponential_of_a_sum, inputs, 64, surrogate="gaussian_process", training=runs, output_transform={"output": "sqrt"}, report="none")
-    negative = uq.propagate(_ishigami, {n: uq.Uniform(-math.pi, math.pi) for n in names}, 16, report="none")
+        uq.sobol(
+            _exponential_of_a_sum,
+            inputs,
+            64,
+            surrogate="gaussian_process",
+            training=runs,
+            output_transform={"output": "sqrt"},
+            report="none",
+        )
+    negative = uq.propagate(
+        _ishigami, {n: uq.Uniform(-math.pi, math.pi) for n in names}, 16, report="none"
+    )
     with pytest.raises(ValueError, match="needs a positive output"):
-        uq.sobol(_ishigami, {n: uq.Uniform(-math.pi, math.pi) for n in names}, 64, surrogate="gaussian_process", training=negative, output_transform={"output": "log"}, report="none")
+        uq.sobol(
+            _ishigami,
+            {n: uq.Uniform(-math.pi, math.pi) for n in names},
+            64,
+            surrogate="gaussian_process",
+            training=negative,
+            output_transform={"output": "log"},
+            report="none",
+        )
 
 
 def _scaled_exponential(theta):
@@ -365,13 +426,30 @@ def test_a_calibration_on_the_logarithmic_scale(surrogate):
     prior_mean, prior_sd = 1.0, 0.5
     precision = 1.0 / prior_sd**2 + 1.0 / sigma**2
     mean = (prior_mean / prior_sd**2 + (math.log(observed) - math.log(3.0)) / sigma**2) / precision
-    post = uq.calibrate(_scaled_exponential, {"theta": uq.Normal(prior_mean, prior_sd)}, {"output": observed}, {"output": sigma}, surrogate=surrogate, samples=8000, output_transform={"output": "log"}, report="none")
+    post = uq.calibrate(
+        _scaled_exponential,
+        {"theta": uq.Normal(prior_mean, prior_sd)},
+        {"output": observed},
+        {"output": sigma},
+        surrogate=surrogate,
+        samples=8000,
+        output_transform={"output": "log"},
+        report="none",
+    )
     assert post.mean("theta") == pytest.approx(mean, abs=0.01)
     assert post.standard_deviation("theta") == pytest.approx(precision**-0.5, rel=0.1)
     prediction = post.predict()["output"]
     assert prediction["low"] < observed < prediction["high"]
     with pytest.raises(ValueError, match="needs positive measurements"):
-        uq.calibrate(_scaled_exponential, {"theta": uq.Normal(1.0, 0.5)}, {"output": -1.0}, {"output": 0.05}, surrogate=None, output_transform={"output": "log"}, report="none")
+        uq.calibrate(
+            _scaled_exponential,
+            {"theta": uq.Normal(1.0, 0.5)},
+            {"output": -1.0},
+            {"output": 0.05},
+            surrogate=None,
+            output_transform={"output": "log"},
+            report="none",
+        )
 
 
 def _first_experiment(a, b1):
@@ -389,26 +467,65 @@ def test_a_calibration_of_two_experiments_with_a_shared_parameter(surrogate):
     linear, so the posterior is normal with the covariance (P0^-1 + H^T R^-1
     H)^-1 and the mean cov H^T R^-1 y."""
     inputs = {"a": uq.Normal(0.0, 1.0), "b1": uq.Normal(0.0, 0.5), "b2": uq.Normal(0.0, 0.5)}
-    observed, noise = {"first": {"output": 1.0}, "second": {"output": 1.5}}, {"first": {"output": 0.1}, "second": {"output": 0.1}}
+    observed, noise = (
+        {"first": {"output": 1.0}, "second": {"output": 1.5}},
+        {"first": {"output": 0.1}, "second": {"output": 0.1}},
+    )
     H = np.array([[1.0, 1.0, 0.0], [2.0, 0.0, -1.0]])
     covariance = np.linalg.inv(np.diag([1.0, 4.0, 4.0]) + H.T @ H / 0.01)
     mean = covariance @ H.T @ np.array([1.0, 1.5]) / 0.01
     models = {"first": _first_experiment, "second": _second_experiment}
     training = None
     if surrogate is not None:
-        training = {"first": uq.propagate(_first_experiment, {n: inputs[n] for n in ("a", "b1")}, 30, report="none"), "second": uq.propagate(_second_experiment, {n: inputs[n] for n in ("a", "b2")}, 30, report="none")}
-    post = uq.calibrate(models, inputs, observed, noise, surrogate=surrogate, training=training, samples=12000, seed=2, report="none")
+        training = {
+            "first": uq.propagate(
+                _first_experiment, {n: inputs[n] for n in ("a", "b1")}, 30, report="none"
+            ),
+            "second": uq.propagate(
+                _second_experiment, {n: inputs[n] for n in ("a", "b2")}, 30, report="none"
+            ),
+        }
+    post = uq.calibrate(
+        models,
+        inputs,
+        observed,
+        noise,
+        surrogate=surrogate,
+        training=training,
+        samples=12000,
+        seed=2,
+        report="none",
+    )
     for j, name in enumerate(("a", "b1", "b2")):
         assert post.mean(name) == pytest.approx(mean[j], abs=0.1 * math.sqrt(covariance[j, j]))
         assert post.standard_deviation(name) == pytest.approx(math.sqrt(covariance[j, j]), rel=0.1)
     prediction = post.predict()
-    assert set(prediction) == {"first", "second"} and prediction["second"]["output"]["low"] < 1.5 < prediction["second"]["output"]["high"]
+    assert (
+        set(prediction) == {"first", "second"}
+        and prediction["second"]["output"]["low"] < 1.5 < prediction["second"]["output"]["high"]
+    )
     with pytest.raises(ValueError, match="enter no experiment"):
-        uq.calibrate(models, {**inputs, "c": uq.Normal(0.0, 1.0)}, observed, noise, surrogate=None, report="none")
+        uq.calibrate(
+            models,
+            {**inputs, "c": uq.Normal(0.0, 1.0)},
+            observed,
+            noise,
+            surrogate=None,
+            report="none",
+        )
     with pytest.raises(ValueError, match="no entry 'second'"):
-        uq.calibrate(models, inputs, {"first": {"output": 1.0}}, noise, surrogate=None, report="none")
+        uq.calibrate(
+            models, inputs, {"first": {"output": 1.0}}, noise, surrogate=None, report="none"
+        )
     with pytest.raises(ValueError, match="which have no prior"):
-        uq.calibrate(models, {n: inputs[n] for n in ("a", "b1")}, observed, noise, surrogate=None, report="none")
+        uq.calibrate(
+            models,
+            {n: inputs[n] for n in ("a", "b1")},
+            observed,
+            noise,
+            surrogate=None,
+            report="none",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -416,7 +533,11 @@ def test_a_calibration_of_two_experiments_with_a_shared_parameter(surrogate):
 # ---------------------------------------------------------------------------
 def _branin(x):
     x1, x2 = 15 * x[:, 0] - 5, 15 * x[:, 1]
-    return (x2 - 5.1 / (4 * np.pi**2) * x1**2 + 5 / np.pi * x1 - 6) ** 2 + 10 * (1 - 1 / (8 * np.pi)) * np.cos(x1) + 10
+    return (
+        (x2 - 5.1 / (4 * np.pi**2) * x1**2 + 5 / np.pi * x1 - 6) ** 2
+        + 10 * (1 - 1 / (8 * np.pi)) * np.cos(x1)
+        + 10
+    )
 
 
 def test_gaussian_process_interpolates_and_predicts():
@@ -502,12 +623,24 @@ def _conjugate_case():
     return inputs, y, sig, mp, np.sqrt(np.diag(Sp))
 
 
-@pytest.mark.parametrize("surrogate,sampler", [(None, "ensemble"), (None, "metropolis"), ("gaussian_process", "ensemble")])
+@pytest.mark.parametrize(
+    "surrogate,sampler",
+    [(None, "ensemble"), (None, "metropolis"), ("gaussian_process", "ensemble")],
+)
 def test_calibration_recovers_the_conjugate_posterior(surrogate, sampler):
     """Linear model, normal prior and noise: the posterior is normal with
     the closed-form mean and covariance."""
     inputs, y, sig, mp, sp = _conjugate_case()
-    post = uq.calibrate(_quadratic, inputs, {"y": y}, {"y": sig}, surrogate=surrogate, sampler=sampler, samples=12000, seed=4)
+    post = uq.calibrate(
+        _quadratic,
+        inputs,
+        {"y": y},
+        {"y": sig},
+        surrogate=surrogate,
+        sampler=sampler,
+        samples=12000,
+        seed=4,
+    )
     for j, n in enumerate("abc"):
         assert post.mean(n) == pytest.approx(mp[j], abs=0.1 * sp[j] + 0.002)
         assert post.standard_deviation(n) == pytest.approx(sp[j], rel=0.1)
@@ -531,7 +664,14 @@ def test_calibration_flags_parameters_the_data_do_not_inform():
     assert abs(post.contraction["b"]) < 0.1
     assert "not identified by the data" in post.summary()
     # Data far above the prior push the parameter to the upper end.
-    far = uq.calibrate(_only_a, {"a": uq.Normal(1.0, 0.1, upper=1.3), "b": inputs["b"]}, {"y": 3.0 * T_OBS}, {"y": 0.02}, surrogate=None, samples=4000)
+    far = uq.calibrate(
+        _only_a,
+        {"a": uq.Normal(1.0, 0.1, upper=1.3), "b": inputs["b"]},
+        {"y": 3.0 * T_OBS},
+        {"y": 0.02},
+        surrogate=None,
+        samples=4000,
+    )
     assert far.at_bound["a"] == "upper"
 
 
@@ -550,11 +690,22 @@ def test_discrepancy_widens_the_posterior_and_does_not_hold_it_at_the_prior():
     Sect. 5): with prior means 0.7, 1.0 and 1.4 it gave 0.70, 1.00 and 1.40,
     each with a standard deviation of 0.009."""
     y = T_OBS + 0.3 * T_OBS**2
-    plain = uq.calibrate(_slope, {"theta": uq.Normal(1.0, 0.5)}, {"y": y}, {"y": 0.01}, surrogate=None, samples=6000)
+    plain = uq.calibrate(
+        _slope, {"theta": uq.Normal(1.0, 0.5)}, {"y": y}, {"y": 0.01}, surrogate=None, samples=6000
+    )
     assert plain.mean("theta") == pytest.approx(1.24, abs=0.01)
     means = []
     for prior_mean in (0.7, 1.0, 1.4):
-        post = uq.calibrate(_slope, {"theta": uq.Normal(prior_mean, 0.5)}, {"y": y}, {"y": 0.01}, surrogate=None, samples=6000, discrepancy="gaussian_process", locations={"y": T_OBS})
+        post = uq.calibrate(
+            _slope,
+            {"theta": uq.Normal(prior_mean, 0.5)},
+            {"y": y},
+            {"y": 0.01},
+            surrogate=None,
+            samples=6000,
+            discrepancy="gaussian_process",
+            locations={"y": T_OBS},
+        )
         means.append(post.mean("theta"))
         assert post.standard_deviation("theta") > 5 * plain.standard_deviation("theta")
         assert post.predict()["y"]["coverage"] == 1.0
@@ -613,10 +764,19 @@ def test_bus_bar_sobol_and_calibration_summaries(tmp_path):
     assert s.runs == 64 * 4
     assert s.total["hottest"]["conductivity"] > 0.2
     s.write_json(tmp_path / "sobol.json")
-    assert json.loads((tmp_path / "sobol.json").read_text())["total"]["hottest"]["conductivity"] == pytest.approx(s.total["hottest"]["conductivity"])
+    assert json.loads((tmp_path / "sobol.json").read_text())["total"]["hottest"][
+        "conductivity"
+    ] == pytest.approx(s.total["hottest"]["conductivity"])
     # Calibrate the conductivity on a measurement made with k = 21.
     measured = module.bus_bar(conductivity=21.0)["hottest"]
-    post = uq.calibrate(module.bus_bar, {"conductivity": inputs["conductivity"]}, {"hottest": measured}, {"hottest": 0.2}, training_samples=12, samples=4000)
+    post = uq.calibrate(
+        module.bus_bar,
+        {"conductivity": inputs["conductivity"]},
+        {"hottest": measured},
+        {"hottest": 0.2},
+        training_samples=12,
+        samples=4000,
+    )
     assert post.mean("conductivity") == pytest.approx(21.0, abs=0.15)
     post.write_json(tmp_path / "posterior.json")
     numbers = json.loads((tmp_path / "posterior.json").read_text())
@@ -626,7 +786,10 @@ def test_bus_bar_sobol_and_calibration_summaries(tmp_path):
 def test_jsonable_writes_non_finite_values_as_null():
     from dualmesh.parameters import jsonable
 
-    assert jsonable({"a": np.array([1.0, np.nan]), "b": (np.int64(2), math.inf)}) == {"a": [1.0, None], "b": [2, None]}
+    assert jsonable({"a": np.array([1.0, np.nan]), "b": (np.int64(2), math.inf)}) == {
+        "a": [1.0, None],
+        "b": [2, None],
+    }
 
 
 def test_split_rhat_is_rank_normalized_and_folded():
@@ -642,9 +805,13 @@ def test_split_rhat_is_rank_normalized_and_folded():
     scales = mixed * np.array([1.0, 1.0, 1.0, 3.0])[None, :, None]
     assert _split_rhat(scales) > 1.05
     # The classic split R-hat of the same draws misses the different scales.
-    halves = np.column_stack([scales[:1000, c, 0] for c in range(4)] + [scales[1000:, c, 0] for c in range(4)])
+    halves = np.column_stack(
+        [scales[:1000, c, 0] for c in range(4)] + [scales[1000:, c, 0] for c in range(4)]
+    )
     assert _classic_split_rhat(halves) < 1.01
     # The rank-normalized (bulk) part is invariant to a monotone transformation.
-    assert _classic_split_rhat(_normal_scores(np.exp(halves))) == pytest.approx(_classic_split_rhat(_normal_scores(halves)), rel=1e-12)
+    assert _classic_split_rhat(_normal_scores(np.exp(halves))) == pytest.approx(
+        _classic_split_rhat(_normal_scores(halves)), rel=1e-12
+    )
     # Defined for heavy tails (Cauchy draws in stationary chains).
     assert _split_rhat(rng.standard_cauchy((2000, 4, 1))) < 1.01

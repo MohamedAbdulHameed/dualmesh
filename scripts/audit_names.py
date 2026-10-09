@@ -33,7 +33,20 @@ from dualmesh import _core
 from dualmesh import physics as physics_module
 
 #: Proper names and abbreviations that keep their capitals (rule 4.1).
-CAPITALISED = {"Dirichlet", "Neumann", "Robin", "Boussinesq", "Euler", "Bernoulli", "Timoshenko", "Taylor", "Hood", "NAFEMS", "PDE", "Newmark"}
+CAPITALISED = {
+    "Dirichlet",
+    "Neumann",
+    "Robin",
+    "Boussinesq",
+    "Euler",
+    "Bernoulli",
+    "Timoshenko",
+    "Taylor",
+    "Hood",
+    "NAFEMS",
+    "PDE",
+    "Newmark",
+}
 
 #: Abbreviations allowed by rule 4.2.
 ALLOWED_ABBREVIATIONS = {"num", "max", "min", "x", "y", "z", "r", "id"}
@@ -100,9 +113,17 @@ def check_name(name: str, where: str) -> list[str]:
         if word == "nu" and i + 1 < len(words) and words[i + 1] == "fission":
             continue
         if word in FORBIDDEN_WORDS:
-            findings.append(f"{where}: '{name}' abbreviates '{word}'. Write {FORBIDDEN_WORDS[word]}.")
-        if word != word.lower() and word not in CAPITALISED and not re.fullmatch(r"[A-Z][a-z0-9]*[0-9]+[A-Za-z0-9]*|[A-Z]+[0-9]*", word):
-            findings.append(f"{where}: '{name}' has the capitalised word '{word}', which is not a proper name or an abbreviation of the list.")
+            findings.append(
+                f"{where}: '{name}' abbreviates '{word}'. Write {FORBIDDEN_WORDS[word]}."
+            )
+        if (
+            word != word.lower()
+            and word not in CAPITALISED
+            and not re.fullmatch(r"[A-Z][a-z0-9]*[0-9]+[A-Za-z0-9]*|[A-Z]+[0-9]*", word)
+        ):
+            findings.append(
+                f"{where}: '{name}' has the capitalised word '{word}', which is not a proper name or an abbreviation of the list."
+            )
     if "__" in name or name.startswith("_") or name.endswith("_"):
         findings.append(f"{where}: '{name}' has a stray underscore.")
     return findings
@@ -117,7 +138,9 @@ def check_description(text: str, where: str) -> list[str]:
     if DASH.search(text):
         findings.append(f"{where}: the description has a dash used as punctuation.")
     if UNICODE.search(text):
-        findings.append(f"{where}: the description has a Unicode symbol ({UNICODE.search(text).group()}). Write it in words or in plain characters.")
+        findings.append(
+            f"{where}: the description has a Unicode symbol ({UNICODE.search(text).group()}). Write it in words or in plain characters."
+        )
     return findings
 
 
@@ -150,7 +173,12 @@ def audit_dataclass(cls, label: str) -> list[str]:
         # A parameter whose default is None and whose description says
         # "Required" has no default: the input of the case gives it.
         required = f.default is None and re.search(r"\bRequired\b", description)
-        if _has_default(f) and description and not required and not re.search(r"(?i)\bdefault", description):
+        if (
+            _has_default(f)
+            and description
+            and not required
+            and not re.search(r"(?i)\bdefault", description)
+        ):
             findings.append(f"{where}: the description does not state the default and its reason.")
     return findings
 

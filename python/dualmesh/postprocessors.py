@@ -81,7 +81,9 @@ class NodalExtremeValue(Postprocessor):
 
     def __post_init__(self):
         if self.value_type not in ("max", "min"):
-            raise ValueError(f"Post-processor '{self.name}': value_type must be 'max' or 'min', not '{self.value_type}'.")
+            raise ValueError(
+                f"Post-processor '{self.name}': value_type must be 'max' or 'min', not '{self.value_type}'."
+            )
 
     def compute(self, problem) -> float:
         values = np.asarray(problem.values(self.variable))
@@ -113,7 +115,14 @@ class BoundaryFluxIntegral(Postprocessor):
         return float(problem.boundary_flux_integral(self.kernel, self.boundary))
 
 
-TYPES = {"variable_integral": VariableIntegral, "variable_average": VariableAverage, "point_value": PointValue, "nodal_extreme_value": NodalExtremeValue, "total_reaction": TotalReaction, "boundary_flux_integral": BoundaryFluxIntegral}
+TYPES = {
+    "variable_integral": VariableIntegral,
+    "variable_average": VariableAverage,
+    "point_value": PointValue,
+    "nodal_extreme_value": NodalExtremeValue,
+    "total_reaction": TotalReaction,
+    "boundary_flux_integral": BoundaryFluxIntegral,
+}
 """Post-processor types by name.  The names are lower case with underscores,
 like every object type."""
 
@@ -128,13 +137,21 @@ def create(type_name: str, name: str, **parameters) -> Postprocessor:
         renamed = [t for t in TYPES if _name_key(t) == _name_key(type_name)]
         if _name_key(type_name) == "reaction":
             renamed = ["total_reaction"]
-        hint = f" Object types are written in lower case with underscores since dualmesh 0.2: use '{renamed[0]}'." if renamed else ""
-        raise ValueError(f"Unknown post-processor type '{type_name}'.{hint} Use one of: {', '.join(sorted(TYPES))}.")
+        hint = (
+            f" Object types are written in lower case with underscores since dualmesh 0.2: use '{renamed[0]}'."
+            if renamed
+            else ""
+        )
+        raise ValueError(
+            f"Unknown post-processor type '{type_name}'.{hint} Use one of: {', '.join(sorted(TYPES))}."
+        )
     cls = TYPES[type_name]
     allowed = {f for f in cls.__dataclass_fields__ if f != "name"}
     unknown = set(parameters) - allowed
     if unknown:
-        raise ValueError(f"Post-processor '{name}' ({type_name}): unknown parameter(s) {', '.join(sorted(unknown))}. It takes: {', '.join(sorted(allowed))}.")
+        raise ValueError(
+            f"Post-processor '{name}' ({type_name}): unknown parameter(s) {', '.join(sorted(unknown))}. It takes: {', '.join(sorted(allowed))}."
+        )
     if "point" in parameters:
         parameters["point"] = tuple(float(c) for c in parameters["point"])
     return cls(name=name, **parameters)

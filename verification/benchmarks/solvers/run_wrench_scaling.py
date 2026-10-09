@@ -35,9 +35,18 @@ def solve(mesh_file, linear_solver):
 
     mesh = dm.read_mesh(str(mesh_file))
     problem = dm.Problem(mesh, method="fem")
-    problem.add_physics("solid_mechanics", "solid", displacements=["u", "v", "w"], formulation="three_dimensional", youngs_modulus=wrench.YOUNGS_MODULUS, poissons_ratio=wrench.POISSONS_RATIO)
+    problem.add_physics(
+        "solid_mechanics",
+        "solid",
+        displacements=["u", "v", "w"],
+        formulation="three_dimensional",
+        youngs_modulus=wrench.YOUNGS_MODULUS,
+        poissons_ratio=wrench.POISSONS_RATIO,
+    )
     problem.add_boundary_condition("fixed_constraint", "jaws", displacements=["u", "v", "w"])
-    problem.add_boundary_condition("traction_boundary_condition", "grip", variable="v", total_force=-wrench.FORCE)
+    problem.add_boundary_condition(
+        "traction_boundary_condition", "grip", variable="v", total_force=-wrench.FORCE
+    )
     start = time.perf_counter()
     result = problem.solve(linear_solver=linear_solver, nonlinear_solver="linear")
     elapsed = time.perf_counter() - start
@@ -48,7 +57,17 @@ def solve(mesh_file, linear_solver):
 def compute():
     import make_wrench_mesh
 
-    data = {"size_mm": [], "unknowns": [], "time_amg": [], "iterations_amg": [], "time_lu": [], "reaction": [], "moment": [], "bending_stress": [], "von_mises_max": []}
+    data = {
+        "size_mm": [],
+        "unknowns": [],
+        "time_amg": [],
+        "iterations_amg": [],
+        "time_lu": [],
+        "reaction": [],
+        "moment": [],
+        "bending_stress": [],
+        "von_mises_max": [],
+    }
     with tempfile.TemporaryDirectory() as work:
         for size in SIZES_MM:
             path = make_wrench_mesh.build(size, order=2, path=Path(work) / f"wrench_{size}.msh")
@@ -65,16 +84,35 @@ def compute():
             data["moment"].append(checks["moment about the nut (N m)"][0])
             data["bending_stress"].append(checks["bending stress at x = 60 mm (MPa)"][0])
             data["von_mises_max"].append(checks["largest von Mises stress (MPa)"][0])
-            print(f"h = {size} mm: {unknowns} unknowns, multigrid {t_amg:.1f} s ({iterations} iterations), direct {t_lu:.1f} s, bending stress {data['bending_stress'][-1]:.3f} MPa, peak von Mises {data['von_mises_max'][-1]:.1f} MPa", flush=True)
+            print(
+                f"h = {size} mm: {unknowns} unknowns, multigrid {t_amg:.1f} s ({iterations} iterations), direct {t_lu:.1f} s, bending stress {data['bending_stress'][-1]:.3f} MPa, peak von Mises {data['von_mises_max'][-1]:.1f} MPa",
+                flush=True,
+            )
     return {key: np.asarray(value) for key, value in data.items()}
 
 
 def plot(data, out):
     fig, ax = plotstyle.new_figure()
     n = data["unknowns"]
-    ax.loglog(n, data["time_amg"], "o-", color=plotstyle.DUALMESH, lw=2, ms=7, label="conjugate gradients with algebraic multigrid")
+    ax.loglog(
+        n,
+        data["time_amg"],
+        "o-",
+        color=plotstyle.DUALMESH,
+        lw=2,
+        ms=7,
+        label="conjugate gradients with algebraic multigrid",
+    )
     direct = np.isfinite(data["time_lu"])
-    ax.loglog(n[direct], data["time_lu"][direct], "s-", color=plotstyle.REFERENCE_GREY, lw=2, ms=7, label="sparse direct solver (LU)")
+    ax.loglog(
+        n[direct],
+        data["time_lu"][direct],
+        "s-",
+        color=plotstyle.REFERENCE_GREY,
+        lw=2,
+        ms=7,
+        label="sparse direct solver (LU)",
+    )
     plotstyle.style(ax, "unknowns", "wall time of the solve (s)")
     plotstyle.legend(ax, loc="upper left")
     plotstyle.save(fig, out / "wrench_solver_time.png")

@@ -11,3 +11,6 @@ IndentWidth: 2
 PointerAlignment: Middle
 SpaceAfterCStyleCast: true
 Standard: c++17
+# A comment or a string keeps one sentence on one line, however long.
+ReflowComments: false
+BreakStringLiterals: false

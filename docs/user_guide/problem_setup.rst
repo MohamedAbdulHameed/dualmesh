@@ -18,7 +18,9 @@ Creating the problem
 
    import dualmesh as dm
 
-   mesh = dm.generate_rectangle_mesh(x_min=0.0, x_max=1.0, y_min=0.0, y_max=1.0, num_x_elements=10, num_y_elements=10)
+   mesh = dm.generate_rectangle_mesh(
+       x_min=0.0, x_max=1.0, y_min=0.0, y_max=1.0, num_x_elements=10, num_y_elements=10
+   )
 
    problem = dm.Problem(mesh, method="dmcdm", coordinates="cartesian")
 
@@ -95,7 +97,9 @@ the variables.
 
    heat = problem.add_physics("heat_transfer", "heat", thermal_conductivity=20.0, heat_source=1.0e6)
    heat.add_boundary_condition("Dirichlet_boundary_condition", "left", value=40.0)
-   heat.add_boundary_condition("convective_heat_flux_boundary_condition", "top", heat_transfer_coefficient=75.0)
+   heat.add_boundary_condition(
+       "convective_heat_flux_boundary_condition", "top", heat_transfer_coefficient=75.0
+   )
 
 The first argument is the type of the physics, the second its name, which the
 couplings refer to.  The physics available are:
@@ -161,8 +165,21 @@ property of the same name, so that a property object added to a block, such as
 
 .. code-block:: python
 
-   problem.add_property("parsed_property", "wall_conductivity", block=["wall"], property_name="thermal_conductivity", expression="10.0 + 0.01 * temperature", coupled_variables=["temperature"])
-   problem.add_property("constant_property", "water", block=["coolant"], property_names=["thermal_conductivity"], property_values=[0.6])
+   problem.add_property(
+       "parsed_property",
+       "wall_conductivity",
+       block=["wall"],
+       property_name="thermal_conductivity",
+       expression="10.0 + 0.01 * temperature",
+       coupled_variables=["temperature"],
+   )
+   problem.add_property(
+       "constant_property",
+       "water",
+       block=["coolant"],
+       property_names=["thermal_conductivity"],
+       property_values=[0.6],
+   )
    heat = problem.add_physics("heat_transfer", "heat")
 
 **Couplings.**  Two physics are coupled by a coupling, which refers to them by
@@ -170,7 +187,14 @@ name:
 
 .. code-block:: python
 
-   problem.add_coupling("thermal_expansion", "expansion", heat_transfer="heat", solid_mechanics="solid", thermal_expansion_coefficient=1.2e-5, stress_free_temperature=293.15)
+   problem.add_coupling(
+       "thermal_expansion",
+       "expansion",
+       heat_transfer="heat",
+       solid_mechanics="solid",
+       thermal_expansion_coefficient=1.2e-5,
+       stress_free_temperature=293.15,
+   )
 
 The couplings are ``thermal_expansion`` (the thermal strain of a solid) and
 ``nonisothermal_flow`` (the transport of heat by a flow and, with ``gravity``
@@ -288,10 +312,21 @@ identified either by node number or by the coordinates of the nearest node.
 
 .. code-block:: python
 
-   problem.add_kernel("heat_conduction", "conduction", variable="temperature", thermal_conductivity=20.0)
+   problem.add_kernel(
+       "heat_conduction", "conduction", variable="temperature", thermal_conductivity=20.0
+   )
    problem.add_kernel("heat_source", "source", variable="temperature", heat_source=1.0e6)
-   problem.add_boundary_condition("Dirichlet_boundary_condition", "cold", variable="temperature", boundary="left", value=40.0)
-   problem.add_boundary_condition("convective_heat_flux_boundary_condition", "film", variable="temperature", boundary="top", heat_transfer_coefficient=75.0, ambient_temperature=20.0)
+   problem.add_boundary_condition(
+       "Dirichlet_boundary_condition", "cold", variable="temperature", boundary="left", value=40.0
+   )
+   problem.add_boundary_condition(
+       "convective_heat_flux_boundary_condition",
+       "film",
+       variable="temperature",
+       boundary="top",
+       heat_transfer_coefficient=75.0,
+       ambient_temperature=20.0,
+   )
 
 The second argument of each call is the object's name.  It is optional, and one
 is generated when it is omitted, but explicit names are recommended: the name
@@ -350,7 +385,9 @@ Any parameter declared as a real number accepts four kinds of value.
 
    # 2. An expression in x, y, z and t, given as text or compiled first.
    problem.add_kernel("body_force", "parsed", variable="u", value="sin(pi*x) * sin(pi*y)")
-   problem.add_kernel("body_force", "compiled", variable="u", value=dm.parsed_function("sin(pi*x) * sin(pi*y)"))
+   problem.add_kernel(
+       "body_force", "compiled", variable="u", value=dm.parsed_function("sin(pi*x) * sin(pi*y)")
+   )
 
    # 3. The name of a function registered on the problem.
    problem.add_function("ramp", lambda x, y, z, t: min(t, 1.0))

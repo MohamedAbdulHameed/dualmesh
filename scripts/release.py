@@ -110,7 +110,14 @@ def run(cmd, cwd=None, env=None, capture=False, check=True, quiet=False) -> str:
     """Run a command; on failure raise GateError with its output."""
     if not quiet:
         print("    $ " + " ".join(str(c) for c in cmd), flush=True)
-    proc = subprocess.run([str(c) for c in cmd], cwd=cwd or ROOT, env=env, text=True, stdout=subprocess.PIPE if capture else None, stderr=subprocess.STDOUT if capture else None)
+    proc = subprocess.run(
+        [str(c) for c in cmd],
+        cwd=cwd or ROOT,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE if capture else None,
+        stderr=subprocess.STDOUT if capture else None,
+    )
     if check and proc.returncode != 0:
         tail = "\n".join((proc.stdout or "").splitlines()[-40:]) if capture else ""
         raise GateError(f"command failed ({proc.returncode}): {' '.join(map(str, cmd))}\n{tail}")
@@ -163,7 +170,12 @@ def _toml_tables(text: str) -> dict[str, dict[str, str]]:
 def project_metadata() -> dict:
     tables = _toml_tables((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     project = tables.get("project", {})
-    return {"name": project.get("name"), "version": project.get("version"), "scripts": tables.get("project.scripts", {}), "urls": tables.get("project.urls", {})}
+    return {
+        "name": project.get("name"),
+        "version": project.get("version"),
+        "scripts": tables.get("project.scripts", {}),
+        "urls": tables.get("project.urls", {}),
+    }
 
 
 def module_version() -> str | None:
@@ -182,7 +194,10 @@ def citation_version() -> str | None:
 
 def changelog_has_release(version: str) -> bool:
     text = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-    return re.search(rf"^## \[{re.escape(version)}\] - \d{{4}}-\d{{2}}-\d{{2}}\s*$", text, re.M) is not None
+    return (
+        re.search(rf"^## \[{re.escape(version)}\] - \d{{4}}-\d{{2}}-\d{{2}}\s*$", text, re.M)
+        is not None
+    )
 
 
 # -----------------------------------------------------------------------------
@@ -245,32 +260,42 @@ def workflow_problems(wheels_yml: str, all_workflows: dict[str, str]) -> list[st
     problems = []
     for runner in RETIRED_RUNNERS:
         if re.search(rf"\b{re.escape(runner)}\b", wheels_yml):
-            problems.append(f"the retired runner '{runner}' is back in wheels.yml (use macos-15-intel)")
+            problems.append(
+                f"the retired runner '{runner}' is back in wheels.yml (use macos-15-intel)"
+            )
     m = re.search(r"os:\s*\[([^\]]*)\]", wheels_yml)
     oses = [o.strip() for o in m.group(1).split(",")] if m else []
     if oses != WHEEL_OSES:
         problems.append(f"the wheel matrix is {oses}, expected {WHEEL_OSES}")
     # An action is pinned to a commit, with its version in a comment:
     # "uses: owner/action@<40 hex digits> # v4.2.1".
-    m = re.search(r"pypa/cibuildwheel@[0-9a-f]{40}\s+#\s*v(\d+)(?:\.(\d+))?(?:\.(\d+))?", wheels_yml)
+    m = re.search(
+        r"pypa/cibuildwheel@[0-9a-f]{40}\s+#\s*v(\d+)(?:\.(\d+))?(?:\.(\d+))?", wheels_yml
+    )
     if not m:
         problems.append("pypa/cibuildwheel is not pinned to a commit with its version in a comment")
     else:
         version = tuple(int(x or 0) for x in m.groups())
         if version < MIN_CIBUILDWHEEL:
-            problems.append(f"cibuildwheel v{'.'.join(map(str, version))} is older than the v{'.'.join(map(str, MIN_CIBUILDWHEEL))} that fixed the Linux wheel tests")
+            problems.append(
+                f"cibuildwheel v{'.'.join(map(str, version))} is older than the v{'.'.join(map(str, MIN_CIBUILDWHEEL))} that fixed the Linux wheel tests"
+            )
     if not re.search(r"^\s*workflow_dispatch:", wheels_yml, re.M):
         problems.append("wheels.yml has lost its workflow_dispatch trigger (the dry run)")
     if not re.search(r"tags:\s*\[\s*[\"']v\*[\"']\s*\]", wheels_yml):
         problems.append("wheels.yml no longer runs on tags 'v*'")
     if "if: startsWith(github.ref, 'refs/tags/v')" not in wheels_yml:
-        problems.append("the Publish to PyPI job is not guarded by startsWith(github.ref, 'refs/tags/v')")
+        problems.append(
+            "the Publish to PyPI job is not guarded by startsWith(github.ref, 'refs/tags/v')"
+        )
     if not re.search(r"^\s*environment:\s*pypi\s*$", wheels_yml, re.M):
         problems.append("the publish job does not use the GitHub environment 'pypi'")
     if not re.search(r"id-token:\s*write", wheels_yml):
         problems.append("the publish job lacks 'id-token: write' (Trusted Publishing)")
     if not re.search(r"pypa/gh-action-pypi-publish@[0-9a-f]{40}\s+#\s*release/v1\b", wheels_yml):
-        problems.append("the publish job does not use pypa/gh-action-pypi-publish release/v1, pinned to a commit")
+        problems.append(
+            "the publish job does not use pypa/gh-action-pypi-publish release/v1, pinned to a commit"
+        )
     for name, text in all_workflows.items():
         for action in re.findall(r"^\s*-?\s*uses:\s*(\S+)", text, re.M):
             if not re.fullmatch(r"[\w.-]+/[\w./-]+@[0-9a-f]{40}", action):
@@ -302,7 +327,9 @@ def repository_gates(version: str | None, release: bool) -> str:
     gate("1", "Remote 'origin' is the personal SSH alias of the dualmesh repository")
     url = git("remote", "get-url", "origin", check=False)
     if url != EXPECTED_REMOTE:
-        raise GateError(f"origin is {url!r}, expected {EXPECTED_REMOTE!r} (the github-personal SSH alias, identity ~/.ssh/id_ed25519_mohamed).  Do not switch to another account.")
+        raise GateError(
+            f"origin is {url!r}, expected {EXPECTED_REMOTE!r} (the github-personal SSH alias, identity ~/.ssh/id_ed25519_mohamed).  Do not switch to another account."
+        )
     ok(url)
 
     gate("2", f"On branch {BRANCH}")
@@ -313,7 +340,9 @@ def repository_gates(version: str | None, release: bool) -> str:
 
     gate("3", f"Synchronised with origin/{BRANCH} (fast-forward only)")
     git("fetch", "origin", "--tags", "--prune")
-    pull = subprocess.run(["git", "pull", "--ff-only", "origin", BRANCH], cwd=ROOT, text=True, capture_output=True)
+    pull = subprocess.run(
+        ["git", "pull", "--ff-only", "origin", BRANCH], cwd=ROOT, text=True, capture_output=True
+    )
     if pull.returncode != 0:
         raise GateError(
             (pull.stdout + pull.stderr).strip() + "\n"
@@ -336,7 +365,10 @@ def repository_gates(version: str | None, release: bool) -> str:
     offenders = []
     for path in git("ls-files").splitlines():
         p = ROOT / path
-        if p.suffix.lower() in {".png", ".jpg", ".pdf", ".ico", ".gz", ".zip", ".bundle"} or not p.is_file():
+        if (
+            p.suffix.lower() in {".png", ".jpg", ".pdf", ".ico", ".gz", ".zip", ".bundle"}
+            or not p.is_file()
+        ):
             continue
         try:
             text = p.read_text(encoding="utf-8")
@@ -347,9 +379,17 @@ def repository_gates(version: str | None, release: bool) -> str:
             offenders.append(f"{path}: lines {lines}")
     if offenders:
         raise GateError("unresolved merge conflicts:\n" + "\n".join(offenders))
-    stray = sorted(str(p.relative_to(ROOT)) for pattern in ("_core*.so", "_core*.pyd") for p in (ROOT / "python" / IMPORT_NAME).glob(pattern))
+    stray = sorted(
+        str(p.relative_to(ROOT))
+        for pattern in ("_core*.so", "_core*.pyd")
+        for p in (ROOT / "python" / IMPORT_NAME).glob(pattern)
+    )
     if stray:
-        note("note: an in-place extension exists in python/dualmesh (" + ", ".join(stray) + "); the checks build from 'git archive' and ignore it")
+        note(
+            "note: an in-place extension exists in python/dualmesh ("
+            + ", ".join(stray)
+            + "); the checks build from 'git archive' and ignore it"
+        )
     ok("clean")
 
     gate("5", "Package name, import name and command")
@@ -361,7 +401,11 @@ def repository_gates(version: str | None, release: bool) -> str:
 
     gate("6", "Version agrees everywhere")
     wanted = version or meta["version"]
-    found = {"pyproject.toml": meta["version"], f"python/{IMPORT_NAME}/__init__.py": module_version(), "CITATION.cff": citation_version()}
+    found = {
+        "pyproject.toml": meta["version"],
+        f"python/{IMPORT_NAME}/__init__.py": module_version(),
+        "CITATION.cff": citation_version(),
+    }
     wrong = {k: v for k, v in found.items() if v is not None and v != wanted}
     if wrong or found["pyproject.toml"] is None:
         raise GateError(f"expected version {wanted}, found {found}")
@@ -378,7 +422,9 @@ def repository_gates(version: str | None, release: bool) -> str:
     if local or remote:
         where = " and ".join(w for w, t in (("locally", local), ("on origin", remote)) if t)
         if release:
-            raise GateError(f"{tag} already exists {where}.  Bump the version in pyproject.toml, python/{IMPORT_NAME}/__init__.py and CITATION.cff, and add a CHANGELOG section.")
+            raise GateError(
+                f"{tag} already exists {where}.  Bump the version in pyproject.toml, python/{IMPORT_NAME}/__init__.py and CITATION.cff, and add a CHANGELOG section."
+            )
         note(f"note: {tag} exists {where}; continuing because --dev was given")
     else:
         ok(f"{tag} is free")
@@ -387,13 +433,18 @@ def repository_gates(version: str | None, release: bool) -> str:
 
 def static_gates() -> None:
     gate("7+", "Wheels workflow and documentation keep the fixes of v0.1.0")
-    workflows = {p.name: p.read_text(encoding="utf-8") for p in (ROOT / ".github" / "workflows").glob("*.yml")}
+    workflows = {
+        p.name: p.read_text(encoding="utf-8")
+        for p in (ROOT / ".github" / "workflows").glob("*.yml")
+    }
     problems = workflow_problems(workflows.get("wheels.yml", ""), workflows)
     for path in sorted((ROOT / "docs").rglob("*.rst")):
         if "_build" in path.parts:
             continue
         for line in contents_without_furo_class(path.read_text(encoding="utf-8")):
-            problems.append(f"{path.relative_to(ROOT)}:{line}: '.. contents::' needs ':class: {FURO_CONTENTS_CLASS}'")
+            problems.append(
+                f"{path.relative_to(ROOT)}:{line}: '.. contents::' needs ':class: {FURO_CONTENTS_CLASS}'"
+            )
     if problems:
         raise GateError("\n".join(problems))
     ok("runner matrix, cibuildwheel, Trusted Publishing and Furo contents classes as released")
@@ -407,7 +458,11 @@ def _venv_python(path: Path) -> Path:
 
 
 def _venv_bin(path: Path, name: str) -> Path:
-    return path / ("Scripts" if os.name == "nt" else "bin") / (name + (".exe" if os.name == "nt" else ""))
+    return (
+        path
+        / ("Scripts" if os.name == "nt" else "bin")
+        / (name + (".exe" if os.name == "nt" else ""))
+    )
 
 
 def _make_venv(path: Path) -> Path:
@@ -433,7 +488,9 @@ def _find_clang_format(explicit: str | None) -> str:
         if m and int(m.group(1)) == CLANG_FORMAT_MAJOR:
             return path
         note(f"skipping {path}: {out.strip()}")
-    raise GateError(f"clang-format {CLANG_FORMAT_MAJOR} not found (the Lint job uses {CLANG_FORMAT_MAJOR}; other major versions format differently).  Install it (macOS: brew install llvm@{CLANG_FORMAT_MAJOR}; Ubuntu: apt install clang-format-{CLANG_FORMAT_MAJOR}) or pass --clang-format PATH.")
+    raise GateError(
+        f"clang-format {CLANG_FORMAT_MAJOR} not found (the Lint job uses {CLANG_FORMAT_MAJOR}; other major versions format differently).  Install it (macOS: brew install llvm@{CLANG_FORMAT_MAJOR}; Ubuntu: apt install clang-format-{CLANG_FORMAT_MAJOR}) or pass --clang-format PATH."
+    )
 
 
 def local_gates(version: str, args) -> None:
@@ -441,7 +498,10 @@ def local_gates(version: str, args) -> None:
     WORK.mkdir(parents=True, exist_ok=True)
     source = WORK / "source"
 
-    gate("11", "Export the committed tree (git archive), so untracked and generated files cannot leak in")
+    gate(
+        "11",
+        "Export the committed tree (git archive), so untracked and generated files cannot leak in",
+    )
     if source.exists():
         shutil.rmtree(source)
     source.mkdir(parents=True)
@@ -457,40 +517,92 @@ def local_gates(version: str, args) -> None:
 
     gate("8", "clang-format --dry-run --Werror (the exact command of the Lint job)")
     clang_format = _find_clang_format(args.clang_format)
-    files = [str(p.relative_to(source)) for d in ("include", "src", "python/bindings", "tests/cpp") for p in sorted((source / d).rglob("*")) if p.suffix in (".h", ".cpp")]
-    out = run([clang_format, "--dry-run", "--Werror", *files], cwd=source, capture=True, check=False, quiet=True)
+    files = [
+        str(p.relative_to(source))
+        for d in ("include", "src", "python/bindings", "tests/cpp")
+        for p in sorted((source / d).rglob("*"))
+        if p.suffix in (".h", ".cpp")
+    ]
+    out = run(
+        [clang_format, "--dry-run", "--Werror", *files],
+        cwd=source,
+        capture=True,
+        check=False,
+        quiet=True,
+    )
     if out.strip():
-        raise GateError(f"clang-format would change files (fix with 'clang-format -i <file>' using version {CLANG_FORMAT_MAJOR}):\n" + "\n".join(out.splitlines()[:30]))
+        raise GateError(
+            f"clang-format would change files (fix with 'clang-format -i <file>' using version {CLANG_FORMAT_MAJOR}):\n"
+            + "\n".join(out.splitlines()[:30])
+        )
     ok(f"{len(files)} C++ files formatted")
 
     if not args.skip_cxx:
         gate("9", "Native C++ configure, build and CTest")
         cxx = WORK / "cxx"
-        run(["cmake", "-S", source, "-B", cxx, "-DCMAKE_BUILD_TYPE=Release", "-DDUALMESH_BUILD_PYTHON=OFF"], capture=True)
-        run(["cmake", "--build", cxx, "--config", "Release", "-j", str(os.cpu_count() or 2)], capture=True)
-        run(["ctest", "--test-dir", cxx, "--build-config", "Release", "--output-on-failure"], capture=True)
+        run(
+            [
+                "cmake",
+                "-S",
+                source,
+                "-B",
+                cxx,
+                "-DCMAKE_BUILD_TYPE=Release",
+                "-DDUALMESH_BUILD_PYTHON=OFF",
+            ],
+            capture=True,
+        )
+        run(
+            ["cmake", "--build", cxx, "--config", "Release", "-j", str(os.cpu_count() or 2)],
+            capture=True,
+        )
+        run(
+            ["ctest", "--test-dir", cxx, "--build-config", "Release", "--output-on-failure"],
+            capture=True,
+        )
         ok("C++ library and unit tests")
 
-    gate("-", "Tools: a fresh virtual environment with build, twine, ruff and the documentation tools")
+    gate(
+        "-",
+        "Tools: a fresh virtual environment with build, twine, ruff and the documentation tools",
+    )
     tools = _make_venv(WORK / "venv")
     run([tools, "-m", "pip", "install", "--quiet", "build", "twine", "ruff"])
     ok(str(WORK / "venv"))
 
     gate("10", "Ruff")
-    run([_venv_bin(WORK / "venv", "ruff"), "check", "python", "tests", "examples", "scripts"], cwd=source)
-    run([_venv_bin(WORK / "venv", "ruff"), "format", "--check", "python", "tests", "examples", "scripts"], cwd=source)
+    run(
+        [_venv_bin(WORK / "venv", "ruff"), "check", "python", "tests", "examples", "scripts"],
+        cwd=source,
+    )
+    run(
+        [
+            _venv_bin(WORK / "venv", "ruff"),
+            "format",
+            "--check",
+            "python",
+            "tests",
+            "examples",
+            "scripts",
+        ],
+        cwd=source,
+    )
     ok("lint and formatting")
 
     gate("11", "Isolated build of the sdist, and of the wheel from that sdist")
     dist = WORK / "dist"
     if dist.exists():
         shutil.rmtree(dist)
-    run([tools, "-m", "build", "--outdir", dist, source])  # sdist first, then the wheel built from it
+    run(
+        [tools, "-m", "build", "--outdir", dist, source]
+    )  # sdist first, then the wheel built from it
     stem = DISTRIBUTION.replace("-", "_")
     sdists = sorted(dist.glob(f"{stem}-{version}.tar.gz"))
     wheels = sorted(dist.glob(f"{stem}-{version}-*.whl"))
     if len(sdists) != 1 or len(wheels) != 1:
-        raise GateError(f"expected one sdist and one wheel for {version}, found {[p.name for p in dist.iterdir()]}")
+        raise GateError(
+            f"expected one sdist and one wheel for {version}, found {[p.name for p in dist.iterdir()]}"
+        )
     ok(f"{sdists[0].name}, {wheels[0].name}")
 
     gate("12", "twine check")
@@ -505,15 +617,21 @@ def local_gates(version: str, args) -> None:
     tops = {n.split("/")[0] for n in names}
     expected_tops = {IMPORT_NAME, f"{stem}-{version}.dist-info"}
     if tops != expected_tops:
-        raise GateError(f"the wheel's top level is {sorted(tops)}, expected {sorted(expected_tops)}")
+        raise GateError(
+            f"the wheel's top level is {sorted(tops)}, expected {sorted(expected_tops)}"
+        )
     if not any(re.match(rf"{IMPORT_NAME}/_core\.[^/]*(so|pyd)$", n) for n in names):
         raise GateError("the wheel has no compiled extension dualmesh/_core")
     with tarfile.open(sdists[0]) as sd:
         members = sd.getnames()
-    leaked = [m for m in members if re.search(r"/(build|_build|dist|\.git)/|_core[^/]*\.(so|pyd)$", m)]
+    leaked = [
+        m for m in members if re.search(r"/(build|_build|dist|\.git)/|_core[^/]*\.(so|pyd)$", m)
+    ]
     if leaked:
         raise GateError("the sdist contains build products:\n" + "\n".join(leaked[:20]))
-    ok(f"wheel: {len(names)} files under {sorted(tops)}; sdist: {len(members)} files, no build products")
+    ok(
+        f"wheel: {len(names)} files under {sorted(tops)}; sdist: {len(members)} files, no build products"
+    )
 
     gate("13", "Install the built wheel with its test and documentation extras; full Python suite")
     test_env = WORK / "test-venv"
@@ -526,7 +644,10 @@ def local_gates(version: str, args) -> None:
 
     gate("14", "Strict documentation build (sphinx -W --keep-going)")
     shutil.rmtree(source / "docs" / "_build", ignore_errors=True)
-    run([tpy, "-m", "sphinx", "-W", "--keep-going", "-b", "html", "docs", "docs/_build/html"], cwd=source)
+    run(
+        [tpy, "-m", "sphinx", "-W", "--keep-going", "-b", "html", "docs", "docs/_build/html"],
+        cwd=source,
+    )
     ok("no warnings")
 
     gate("15", "Clean install of the wheel alone: import, metadata, command")
@@ -536,7 +657,9 @@ def local_gates(version: str, args) -> None:
     _check_installed(cpy, _venv_bin(clean_env, CLI_NAME), version, clean_env)
     ok("import dualmesh, importlib.metadata and 'dualmesh --version' all report " + version)
 
-    STAMP.write_text(json.dumps({"sha": sha, "version": version, "time": time.time()}), encoding="utf-8")
+    STAMP.write_text(
+        json.dumps({"sha": sha, "version": version, "time": time.time()}), encoding="utf-8"
+    )
     if not args.keep:
         for d in (test_env, clean_env, source, WORK / "cxx"):
             shutil.rmtree(d, ignore_errors=True)
@@ -551,7 +674,9 @@ def _check_installed(python: Path, cli: Path, version: str, env_root: Path) -> N
         if Path(env_root).resolve() not in Path(location).resolve().parents:
             raise GateError(f"dualmesh was imported from {location}, not from the test environment")
         if module_ver != version or dist_ver != version:
-            raise GateError(f"expected {version}; dualmesh.__version__={module_ver}, metadata={dist_ver}")
+            raise GateError(
+                f"expected {version}; dualmesh.__version__={module_ver}, metadata={dist_ver}"
+            )
         cli_out = run([cli, "--version"], cwd=neutral, capture=True, quiet=True).strip()
         if version not in cli_out:
             raise GateError(f"'{CLI_NAME} --version' printed {cli_out!r}")
@@ -565,7 +690,9 @@ def require_stamp(version: str) -> None:
     except (OSError, ValueError):
         stamp = {}
     if stamp.get("sha") != sha or stamp.get("version") != version:
-        raise GateError(f"the local checks have not passed on {sha[:12]} for {version}; run 'python scripts/release.py check' first")
+        raise GateError(
+            f"the local checks have not passed on {sha[:12]} for {version}; run 'python scripts/release.py check' first"
+        )
     ok(f"local checks passed on {sha[:12]}")
 
 
@@ -584,7 +711,10 @@ def _token() -> str | None:
 
 
 def github(path: str) -> dict:
-    request = urllib.request.Request(f"https://api.github.com/repos/{SLUG}/{path}", headers={"Accept": "application/vnd.github+json", "User-Agent": "dualmesh-release"})
+    request = urllib.request.Request(
+        f"https://api.github.com/repos/{SLUG}/{path}",
+        headers={"Accept": "application/vnd.github+json", "User-Agent": "dualmesh-release"},
+    )
     token = _token()
     if token:
         request.add_header("Authorization", f"Bearer {token}")
@@ -643,13 +773,18 @@ def ci_gate(sha: str, wait: bool) -> None:
 
 
 def wheels_dry_run_gate(sha: str, wait: bool, dispatch: bool) -> None:
-    gate("18-19", f"Wheels dry run (workflow_dispatch from {BRANCH}) on {sha[:12]}: all platforms, publish skipped")
+    gate(
+        "18-19",
+        f"Wheels dry run (workflow_dispatch from {BRANCH}) on {sha[:12]}: all platforms, publish skipped",
+    )
     if dispatch and latest_run("wheels.yml", sha, "workflow_dispatch") is None:
         if which("gh"):
             run(["gh", "workflow", "run", "wheels.yml", "--repo", SLUG, "--ref", BRANCH])
             time.sleep(10)
         else:
-            note(f"the GitHub CLI is not installed; start the dry run in the browser:\n      https://github.com/{SLUG}/actions/workflows/wheels.yml -> Run workflow -> {BRANCH}")
+            note(
+                f"the GitHub CLI is not installed; start the dry run in the browser:\n      https://github.com/{SLUG}/actions/workflows/wheels.yml -> Run workflow -> {BRANCH}"
+            )
             wait = True
     result = wait_for_run("wheels.yml", sha, "workflow_dispatch", None, wait)
     jobs = run_jobs(result["id"])
@@ -665,9 +800,15 @@ def wheels_dry_run_gate(sha: str, wait: bool, dispatch: bool) -> None:
         failures.append("Source distribution did not succeed")
     publish = by_name.get("Publish to PyPI")
     if publish and publish.get("conclusion") != "skipped":
-        failures.append(f"Publish to PyPI was {publish.get('conclusion')} on a branch run; it must be skipped")
+        failures.append(
+            f"Publish to PyPI was {publish.get('conclusion')} on a branch run; it must be skipped"
+        )
     if failures:
-        raise GateError("the dry run is not green:\n      " + "\n      ".join(failures) + f"\n      {result['html_url']}")
+        raise GateError(
+            "the dry run is not green:\n      "
+            + "\n      ".join(failures)
+            + f"\n      {result['html_url']}"
+        )
     ok(f"{result['html_url']} (publication skipped, as it must be on a branch)")
 
 
@@ -704,7 +845,9 @@ def monitor_gate(version: str, wait: bool) -> None:
     by_name = {j["name"]: j for j in jobs}
     bad = [n for n in names if by_name.get(n, {}).get("conclusion") != "success"]
     if bad or result["conclusion"] != "success":
-        raise GateError(f"the release workflow failed ({', '.join(bad) or result['conclusion']}): {result['html_url']}\n      Do not delete and re-push the tag of a version that reached PyPI; fix forward with a new patch version.")
+        raise GateError(
+            f"the release workflow failed ({', '.join(bad) or result['conclusion']}): {result['html_url']}\n      Do not delete and re-push the tag of a version that reached PyPI; fix forward with a new patch version."
+        )
     ok(result["html_url"])
 
 
@@ -723,24 +866,43 @@ def verify_pypi_gate(version: str, retries: int = 20) -> None:
             break
         except urllib.error.URLError:
             if attempt == retries - 1:
-                raise GateError(f"https://pypi.org/project/{DISTRIBUTION}/{version}/ is not available") from None
+                raise GateError(
+                    f"https://pypi.org/project/{DISTRIBUTION}/{version}/ is not available"
+                ) from None
             time.sleep(30)
     stem = DISTRIBUTION.replace("-", "_")
     missing = [] if f"{stem}-{version}.tar.gz" in files else ["sdist"]
     for label, pattern in WHEEL_PLATFORMS.items():
         for py in PYTHON_VERSIONS:
-            if not any(f.startswith(f"{stem}-{version}-{py}-") and pattern.search(f) for f in files):
+            if not any(
+                f.startswith(f"{stem}-{version}-{py}-") and pattern.search(f) for f in files
+            ):
                 missing.append(f"{label} {py}")
     if missing:
         raise GateError("missing from PyPI: " + ", ".join(missing))
     ok(f"{len(files)} files at https://pypi.org/project/{DISTRIBUTION}/{version}/")
 
-    gate("23-24", "Fresh environment: pip install from PyPI, import, metadata, command; then clean up")
+    gate(
+        "23-24",
+        "Fresh environment: pip install from PyPI, import, metadata, command; then clean up",
+    )
     root = Path(tempfile.mkdtemp(prefix="dualmesh-pypi-test-"))
     try:
         python = _make_venv(root / "venv")
         for attempt in range(retries):
-            proc = subprocess.run([str(python), "-m", "pip", "install", "--no-cache-dir", f"{DISTRIBUTION}=={version}"], text=True, capture_output=True, cwd=root)
+            proc = subprocess.run(
+                [
+                    str(python),
+                    "-m",
+                    "pip",
+                    "install",
+                    "--no-cache-dir",
+                    f"{DISTRIBUTION}=={version}",
+                ],
+                text=True,
+                capture_output=True,
+                cwd=root,
+            )
             if proc.returncode == 0:
                 break
             if attempt == retries - 1:
@@ -821,7 +983,9 @@ def cmd_status(args) -> None:
     meta = project_metadata()
     sha = git("rev-parse", "HEAD")
     print(f"distribution {meta['name']}  version {meta['version']}  HEAD {sha[:12]}")
-    print(f"origin {git('remote', 'get-url', 'origin', check=False)}  branch {git('rev-parse', '--abbrev-ref', 'HEAD')}")
+    print(
+        f"origin {git('remote', 'get-url', 'origin', check=False)}  branch {git('rev-parse', '--abbrev-ref', 'HEAD')}"
+    )
     print("latest tags: " + " ".join(git("tag", "--sort=-creatordate").splitlines()[:5]))
     for workflow, event in (("ci.yml", "push"), ("wheels.yml", "workflow_dispatch")):
         try:
@@ -829,7 +993,11 @@ def cmd_status(args) -> None:
         except GateError as error:
             print(f"{workflow}: {error}")
             continue
-        state = f"{found['status']} {found.get('conclusion') or ''} {found['html_url']}" if found else "no run"
+        state = (
+            f"{found['status']} {found.get('conclusion') or ''} {found['html_url']}"
+            if found
+            else "no run"
+        )
         print(f"{workflow} ({event}) on HEAD: {state}")
 
 
@@ -844,14 +1012,22 @@ def main(argv=None) -> int:
         return p
 
     p = add("check", cmd_check, "gates 1-15: repository state and every local build and test")
-    p.add_argument("--dev", action="store_true", help="allow an existing tag and no CHANGELOG section")
+    p.add_argument(
+        "--dev", action="store_true", help="allow an existing tag and no CHANGELOG section"
+    )
     p.add_argument("--skip-cxx", action="store_true", help="skip the native C++ build and CTest")
     p.add_argument("--clang-format", help=f"path to clang-format {CLANG_FORMAT_MAJOR}")
-    p.add_argument("--keep", action="store_true", help="keep the build directories under build/release-check")
+    p.add_argument(
+        "--keep", action="store_true", help="keep the build directories under build/release-check"
+    )
     add("push", cmd_push, "gate 16: push main, fast-forward only")
     p = add("ci", cmd_ci, "gate 17: the CI workflow passed on HEAD")
     p.add_argument("--wait", action="store_true")
-    p = add("dry-run", cmd_dry_run, "gates 18-19: Wheels workflow_dispatch from main, publication skipped")
+    p = add(
+        "dry-run",
+        cmd_dry_run,
+        "gates 18-19: Wheels workflow_dispatch from main, publication skipped",
+    )
     p.add_argument("--wait", action="store_true")
     p = add("tag", cmd_tag, "gate 20: recheck everything, then create and push the tag")
     p.add_argument("--yes", action="store_true", help="do not ask for the tag name to confirm")

@@ -20,7 +20,15 @@ import pytest
 
 
 def unit_square(num_elements=4):
-    return dm.generate_rectangle_mesh(x_min=0.0, x_max=1.0, y_min=0.0, y_max=1.0, num_x_elements=num_elements, num_y_elements=num_elements, element_type="Tri3")
+    return dm.generate_rectangle_mesh(
+        x_min=0.0,
+        x_max=1.0,
+        y_min=0.0,
+        y_max=1.0,
+        num_x_elements=num_elements,
+        num_y_elements=num_elements,
+        element_type="Tri3",
+    )
 
 
 def signed_areas(mesh):
@@ -28,13 +36,27 @@ def signed_areas(mesh):
     out = []
     for _type, connectivity, _block in mesh.cells():
         x = points[list(connectivity)]
-        out.append(0.5 * ((x[1, 0] - x[0, 0]) * (x[2, 1] - x[0, 1]) - (x[2, 0] - x[0, 0]) * (x[1, 1] - x[0, 1])))
+        out.append(
+            0.5
+            * (
+                (x[1, 0] - x[0, 0]) * (x[2, 1] - x[0, 1])
+                - (x[2, 0] - x[0, 0]) * (x[1, 1] - x[0, 1])
+            )
+        )
     return np.asarray(out)
 
 
 def l_shaped_mesh(num_elements=2):
     """The unit square [-1, 1]^2 with the quadrant x > 0, y < 0 removed."""
-    full = dm.generate_rectangle_mesh(x_min=-1.0, x_max=1.0, y_min=-1.0, y_max=1.0, num_x_elements=2 * num_elements, num_y_elements=2 * num_elements, element_type="Tri3")
+    full = dm.generate_rectangle_mesh(
+        x_min=-1.0,
+        x_max=1.0,
+        y_min=-1.0,
+        y_max=1.0,
+        num_x_elements=2 * num_elements,
+        num_y_elements=2 * num_elements,
+        element_type="Tri3",
+    )
     points = np.asarray(full.points())
     kept = []
     for _type, connectivity, _block in full.cells():
@@ -43,7 +65,9 @@ def l_shaped_mesh(num_elements=2):
             kept.append(list(connectivity))
     used = sorted({node for cell in kept for node in cell})
     renumber = {old: new for new, old in enumerate(used)}
-    mesh = dm.mesh_from_arrays(points[used], [[renumber[node] for node in cell] for cell in kept], "Tri3")
+    mesh = dm.mesh_from_arrays(
+        points[used], [[renumber[node] for node in cell] for cell in kept], "Tri3"
+    )
     mesh.add_sideset_by_predicate("boundary", lambda x, y, z: True)
     return mesh
 
@@ -59,7 +83,13 @@ def solve_corner_problem(mesh):
     problem = dm.Problem(mesh)
     problem.add_variable("u")
     problem.add_kernel("diffusion", "diffusion", variable="u")
-    problem.add_boundary_condition("Dirichlet_boundary_condition", "boundary", variable="u", boundary="boundary", value=lambda x, y, z, t: float(corner_solution(np.array(x), np.array(y))))
+    problem.add_boundary_condition(
+        "Dirichlet_boundary_condition",
+        "boundary",
+        variable="u",
+        boundary="boundary",
+        value=lambda x, y, z, t: float(corner_solution(np.array(x), np.array(y))),
+    )
     problem.solve()
     points = problem.entity_points()
     error = float(np.abs(problem.values("u") - corner_solution(points[:, 0], points[:, 1])).max())
@@ -126,7 +156,13 @@ def test_refinement_leaves_no_hanging_node():
         problem = dm.Problem(mesh, method=method)
         problem.add_variable("u")
         problem.add_kernel("diffusion", "diffusion", variable="u")
-        problem.add_boundary_condition("Dirichlet_boundary_condition", "walls", variable="u", boundary=mesh.sideset_names(), value=exact)
+        problem.add_boundary_condition(
+            "Dirichlet_boundary_condition",
+            "walls",
+            variable="u",
+            boundary=mesh.sideset_names(),
+            value=exact,
+        )
         problem.solve()
         points = problem.entity_points()
         expected = 1.0 + 2.0 * points[:, 0] - 3.0 * points[:, 1]
@@ -144,14 +180,21 @@ def test_refinement_carries_the_boundary_sets_across():
         refined, _ = dm.refine_marked(refined, np.ones(refined.num_elements, dtype=bool))
     assert sorted(refined.sideset_names()) == sorted(mesh.sideset_names())
     points = np.asarray(refined.points())
-    for name, coordinate, value in (("left", 0, 0.0), ("right", 0, 1.0), ("bottom", 1, 0.0), ("top", 1, 1.0)):
+    for name, coordinate, value in (
+        ("left", 0, 0.0),
+        ("right", 0, 1.0),
+        ("bottom", 1, 0.0),
+        ("top", 1, 1.0),
+    ):
         ids = refined.boundary_nodes(name)
         assert len(ids) > 5
         assert points[ids, coordinate] == pytest.approx(value)
 
 
 def test_refinement_of_a_non_triangular_mesh_is_refused_with_a_reason():
-    mesh = dm.generate_rectangle_mesh(x_min=0.0, x_max=1.0, y_min=0.0, y_max=1.0, num_x_elements=2, num_y_elements=2)
+    mesh = dm.generate_rectangle_mesh(
+        x_min=0.0, x_max=1.0, y_min=0.0, y_max=1.0, num_x_elements=2, num_y_elements=2
+    )
     with pytest.raises(Exception, match="triangular"):
         dm.refine_marked(mesh, np.ones(mesh.num_elements, dtype=bool))
 
@@ -175,7 +218,13 @@ def test_the_indicator_vanishes_for_a_field_the_elements_represent_exactly():
     problem = dm.Problem(mesh)
     problem.add_variable("u")
     problem.add_kernel("diffusion", "diffusion", variable="u")
-    problem.add_boundary_condition("Dirichlet_boundary_condition", "walls", variable="u", boundary=mesh.sideset_names(), value=lambda x, y, z, t: 1.0 + 2.0 * x - 3.0 * y)
+    problem.add_boundary_condition(
+        "Dirichlet_boundary_condition",
+        "walls",
+        variable="u",
+        boundary=mesh.sideset_names(),
+        value=lambda x, y, z, t: 1.0 + 2.0 * x - 3.0 * y,
+    )
     problem.solve()
     assert np.abs(problem.error_indicator("u")).max() < 1e-12
 
@@ -187,8 +236,16 @@ def test_the_indicator_is_largest_where_the_solution_bends_most():
     problem = dm.Problem(mesh)
     problem.add_variable("u")
     problem.add_kernel("diffusion", "diffusion", variable="u")
-    problem.add_kernel("body_force", "source", variable="u", value=lambda x, y, z, t: 400.0 * np.exp(-20.0 * x))
-    problem.add_boundary_condition("Dirichlet_boundary_condition", "walls", variable="u", boundary=mesh.sideset_names(), value=lambda x, y, z, t: np.exp(-20.0 * x))
+    problem.add_kernel(
+        "body_force", "source", variable="u", value=lambda x, y, z, t: 400.0 * np.exp(-20.0 * x)
+    )
+    problem.add_boundary_condition(
+        "Dirichlet_boundary_condition",
+        "walls",
+        variable="u",
+        boundary=mesh.sideset_names(),
+        value=lambda x, y, z, t: np.exp(-20.0 * x),
+    )
     problem.solve()
     indicators = problem.error_indicator("u")
     points = np.asarray(mesh.points())
@@ -203,7 +260,13 @@ def test_the_indicator_is_not_available_for_cell_centred_finite_volume():
     problem = dm.Problem(mesh, method="zfvm")
     problem.add_variable("u")
     problem.add_kernel("diffusion", "diffusion", variable="u")
-    problem.add_boundary_condition("Dirichlet_boundary_condition", "walls", variable="u", boundary=mesh.sideset_names(), value=0.0)
+    problem.add_boundary_condition(
+        "Dirichlet_boundary_condition",
+        "walls",
+        variable="u",
+        boundary=mesh.sideset_names(),
+        value=0.0,
+    )
     problem.solve()
     with pytest.raises(Exception, match="cell-centred"):
         problem.error_indicator("u")
@@ -292,11 +355,24 @@ def test_the_adaptive_driver_runs_the_whole_loop():
         problem = dm.Problem(mesh)
         problem.add_variable("u")
         problem.add_kernel("diffusion", "diffusion", variable="u")
-        problem.add_boundary_condition("Dirichlet_boundary_condition", "boundary", variable="u", boundary="boundary", value=lambda x, y, z, t: float(corner_solution(np.array(x), np.array(y))))
+        problem.add_boundary_condition(
+            "Dirichlet_boundary_condition",
+            "boundary",
+            variable="u",
+            boundary="boundary",
+            value=lambda x, y, z, t: float(corner_solution(np.array(x), np.array(y))),
+        )
         return problem
 
     seen = []
-    result = dm.solve_with_adaptive_refinement(build, l_shaped_mesh(2), variable="u", num_cycles=8, marker=lambda eta: dm.mark_by_error_fraction(eta, 0.6), callback=lambda cycle, pb, eta: seen.append((cycle, len(eta))))
+    result = dm.solve_with_adaptive_refinement(
+        build,
+        l_shaped_mesh(2),
+        variable="u",
+        num_cycles=8,
+        marker=lambda eta: dm.mark_by_error_fraction(eta, 0.6),
+        callback=lambda cycle, pb, eta: seen.append((cycle, len(eta))),
+    )
     problem, mesh = result.problem, result.mesh
     assert [cycle for cycle, _ in seen] == list(range(8))
     assert [count for _, count in seen] == sorted(count for _, count in seen)
@@ -319,10 +395,18 @@ def test_the_adaptive_driver_stops_at_the_element_budget():
         problem = dm.Problem(mesh)
         problem.add_variable("u")
         problem.add_kernel("diffusion", "diffusion", variable="u")
-        problem.add_boundary_condition("Dirichlet_boundary_condition", "walls", variable="u", boundary=mesh.sideset_names(), value=0.0)
+        problem.add_boundary_condition(
+            "Dirichlet_boundary_condition",
+            "walls",
+            variable="u",
+            boundary=mesh.sideset_names(),
+            value=0.0,
+        )
         problem.add_kernel("body_force", "source", variable="u", value=1.0)
         return problem
 
-    mesh = dm.solve_with_adaptive_refinement(build, unit_square(4), variable="u", num_cycles=20, max_elements=200).mesh
+    mesh = dm.solve_with_adaptive_refinement(
+        build, unit_square(4), variable="u", num_cycles=20, max_elements=200
+    ).mesh
     assert mesh.num_elements >= 200
     assert mesh.num_elements < 600

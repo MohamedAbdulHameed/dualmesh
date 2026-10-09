@@ -34,7 +34,9 @@ def column_header(name: str, unit: str) -> str:
 
 
 def _is_number(value) -> bool:
-    return isinstance(value, (int, float, np.integer, np.floating)) and not isinstance(value, (bool, np.bool_))
+    return isinstance(value, (int, float, np.integer, np.floating)) and not isinstance(
+        value, (bool, np.bool_)
+    )
 
 
 class Table:
@@ -44,16 +46,31 @@ class Table:
     for a quantity without a unit, e.g., a count, a name or a ratio), and
     ``rows`` the rows.  ``title`` heads the printed table."""
 
-    def __init__(self, columns: Sequence[str], units: Sequence[str] | None = None, rows: Sequence[Sequence] = (), title: str = "", digits: int = 6):
+    def __init__(
+        self,
+        columns: Sequence[str],
+        units: Sequence[str] | None = None,
+        rows: Sequence[Sequence] = (),
+        title: str = "",
+        digits: int = 6,
+    ):
         self.names = [str(c) for c in columns]
         # A dimensionless quantity has no unit in the header ("-" is dropped).
-        self.units = [("" if str(u) in ("-", "1") else str(u)) for u in units] if units is not None else [""] * len(self.names)
+        self.units = (
+            [("" if str(u) in ("-", "1") else str(u)) for u in units]
+            if units is not None
+            else [""] * len(self.names)
+        )
         if len(self.units) != len(self.names):
-            raise ValueError(f"Table '{title}': {len(self.names)} columns and {len(self.units)} units.")
+            raise ValueError(
+                f"Table '{title}': {len(self.names)} columns and {len(self.units)} units."
+            )
         self.rows = [list(r) for r in rows]
         for row in self.rows:
             if len(row) != len(self.names):
-                raise ValueError(f"Table '{title}': a row has {len(row)} values for {len(self.names)} columns.")
+                raise ValueError(
+                    f"Table '{title}': a row has {len(row)} values for {len(self.names)} columns."
+                )
         self.title = title
         self.digits = int(digits)
 
@@ -68,10 +85,16 @@ class Table:
 
             close = difflib.get_close_matches(name, self.names, n=1)
             hint = f" Did you mean '{close[0]}'?" if close else ""
-            raise KeyError(f"Table '{self.title}' has no column '{name}'.{hint} Columns: {', '.join(self.names)}")
+            raise KeyError(
+                f"Table '{self.title}' has no column '{name}'.{hint} Columns: {', '.join(self.names)}"
+            )
         j = self.names.index(name)
         values = [row[j] for row in self.rows]
-        return np.asarray(values, dtype=float) if all(_is_number(v) for v in values) else np.asarray(values, dtype=object)
+        return (
+            np.asarray(values, dtype=float)
+            if all(_is_number(v) for v in values)
+            else np.asarray(values, dtype=object)
+        )
 
     @property
     def columns(self) -> dict:
@@ -113,11 +136,20 @@ class Table:
         headers = self.headers()
         text = [[self._cell(v) for v in row] for row in self.rows]
         widths = [max([len(h)] + [len(r[j]) for r in text]) for j, h in enumerate(headers)]
-        numeric = [bool(self.rows) and all(_is_number(row[j]) or row[j] is None for row in self.rows) for j in range(len(headers))]
+        numeric = [
+            bool(self.rows) and all(_is_number(row[j]) or row[j] is None for row in self.rows)
+            for j in range(len(headers))
+        ]
         pad = " " * indent
 
         def line(cells):
-            return (pad + "  ".join(c.rjust(w) if numeric[j] else c.ljust(w) for j, (c, w) in enumerate(zip(cells, widths)))).rstrip()
+            return (
+                pad
+                + "  ".join(
+                    c.rjust(w) if numeric[j] else c.ljust(w)
+                    for j, (c, w) in enumerate(zip(cells, widths))
+                )
+            ).rstrip()
 
         out = [self.title] if self.title else []
         out += [line(headers), pad + "  ".join("-" * w for w in widths)]

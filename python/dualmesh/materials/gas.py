@@ -33,14 +33,21 @@ def thermal_conductivity(composition: dict[str, float], temperature):
     return _gas.thermal_conductivity(dict(composition), temperature)
 
 
-def temperature_jump_distance(composition: dict[str, float], temperature: float, pressure: float, accommodation_coefficient: float | None = None) -> float:
+def temperature_jump_distance(
+    composition: dict[str, float],
+    temperature: float,
+    pressure: float,
+    accommodation_coefficient: float | None = None,
+) -> float:
     """Return the sum of the temperature jump distances at the two walls of a
     gap, m, by the equation of Kennard as Lanning and Hann (BNWL-1894, 1975,
     Appendix B) write it.
 
     Without an ``accommodation_coefficient``, the fits of Ullman et al. for
     helium and xenon are interpolated by the molar mass of the mixture."""
-    return _gas.temperature_jump_distance(dict(composition), temperature, pressure, accommodation_coefficient)
+    return _gas.temperature_jump_distance(
+        dict(composition), temperature, pressure, accommodation_coefficient
+    )
 
 
 __all__ = ["GASES", "temperature_jump_distance", "thermal_conductivity"]

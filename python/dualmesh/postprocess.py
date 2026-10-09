@@ -47,7 +47,9 @@ def convergence_rates(mesh_sizes: Sequence[float], errors: Sequence[float]) -> n
     return np.log(e[:-1] / e[1:]) / np.log(h[:-1] / h[1:])
 
 
-def comparison_table(labels: Sequence[str], computed: Sequence[float], reference: Sequence[float], title: str = "") -> str:
+def comparison_table(
+    labels: Sequence[str], computed: Sequence[float], reference: Sequence[float], title: str = ""
+) -> str:
     """A fixed-width table of computed values against reference values."""
     lines = []
     if title:

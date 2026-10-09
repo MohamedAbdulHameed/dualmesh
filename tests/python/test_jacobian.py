@@ -41,18 +41,24 @@ def compare(exact, approximate):
     """The largest difference outside the rows and columns of the prescribed
     unknowns, which linear_system writes before it assembles, so that a
     finite difference does not see them."""
-    prescribed = np.array([np.allclose(approximate[:, j], 0.0) and exact[j, j] == 1.0 for j in range(exact.shape[0])])
+    prescribed = np.array(
+        [np.allclose(approximate[:, j], 0.0) and exact[j, j] == 1.0 for j in range(exact.shape[0])]
+    )
     free = ~prescribed
     a, b = exact[np.ix_(free, free)], approximate[np.ix_(free, free)]
     return np.max(np.abs(a - b)) / np.max(np.abs(a))
 
 
 def two_block_square(n=4):
-    mesh = dm.generate_rectangle_mesh(x_min=0.0, x_max=1.0, y_min=0.0, y_max=1.0, num_x_elements=n, num_y_elements=n)
+    mesh = dm.generate_rectangle_mesh(
+        x_min=0.0, x_max=1.0, y_min=0.0, y_max=1.0, num_x_elements=n, num_y_elements=n
+    )
     points = np.array([mesh.element_centroid(e) for e in range(mesh.num_elements)])
     cells = [list(mesh.element_nodes(e)) for e in range(mesh.num_elements)]
     blocks = [0 if p[0] < 0.5 else 1 for p in points]
-    out = dm.mesh_from_arrays(np.asarray(mesh.points())[:, :2], cells, element_type="Quad4", blocks=blocks)
+    out = dm.mesh_from_arrays(
+        np.asarray(mesh.points())[:, :2], cells, element_type="Quad4", blocks=blocks
+    )
     out.set_block_name(0, "left_block")
     out.set_block_name(1, "right_block")
     out.add_sideset_by_predicate("left", lambda x, y, z: x < 1e-9)
@@ -65,9 +71,25 @@ def test_nonlinear_coefficients_and_a_jump_between_blocks(method):
     absorption 0.5 u^3, at a state that is not a solution."""
     mesh = two_block_square()
     problem = dm.Problem(mesh, method=method)
-    pde = problem.add_physics("coefficient_form_PDE", "pde", absorption_coefficient="0.5*u**2", source=1.0)
-    problem.add_property("parsed_property", "k_left", block=["left_block"], property_name="diffusion_coefficient", expression="1 + u^2", coupled_variables=["u"])
-    problem.add_property("parsed_property", "k_right", block=["right_block"], property_name="diffusion_coefficient", expression="3 * (1 + u^2)", coupled_variables=["u"])
+    pde = problem.add_physics(
+        "coefficient_form_PDE", "pde", absorption_coefficient="0.5*u**2", source=1.0
+    )
+    problem.add_property(
+        "parsed_property",
+        "k_left",
+        block=["left_block"],
+        property_name="diffusion_coefficient",
+        expression="1 + u^2",
+        coupled_variables=["u"],
+    )
+    problem.add_property(
+        "parsed_property",
+        "k_right",
+        block=["right_block"],
+        property_name="diffusion_coefficient",
+        expression="3 * (1 + u^2)",
+        coupled_variables=["u"],
+    )
     pde.add_boundary_condition("Dirichlet_boundary_condition", "left", value=0.5)
     problem.initialize()
     points = problem.entity_points()
@@ -80,11 +102,20 @@ def test_nonlinear_coefficients_and_a_jump_between_blocks(method):
 
 @pytest.mark.parametrize("method", ["fem", "dmcdm", "zfvm"])
 def test_navier_stokes_in_the_pressure_formulation(method):
-    mesh = dm.generate_rectangle_mesh(x_min=0.0, x_max=1.0, y_min=0.0, y_max=1.0, num_x_elements=3, num_y_elements=3)
+    mesh = dm.generate_rectangle_mesh(
+        x_min=0.0, x_max=1.0, y_min=0.0, y_max=1.0, num_x_elements=3, num_y_elements=3
+    )
     problem = dm.Problem(mesh, method=method)
-    flow = problem.add_physics("incompressible_flow", "flow", velocities=["u", "v"], formulation="pressure", density=10.0)
+    flow = problem.add_physics(
+        "incompressible_flow", "flow", velocities=["u", "v"], formulation="pressure", density=10.0
+    )
     flow.add_boundary_condition("Dirichlet_boundary_condition", "top", value=[1.0, 0.0])
-    flow.add_boundary_condition("Dirichlet_boundary_condition", "walls", boundary=["left", "right", "bottom"], value=[0.0, 0.0])
+    flow.add_boundary_condition(
+        "Dirichlet_boundary_condition",
+        "walls",
+        boundary=["left", "right", "bottom"],
+        value=[0.0, 0.0],
+    )
     problem.initialize()
     points = problem.entity_points()
     problem.set_values("u", np.sin(3.0 * points[:, 1]) * points[:, 0])

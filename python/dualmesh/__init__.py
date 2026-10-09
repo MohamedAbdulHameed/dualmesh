@@ -26,8 +26,15 @@ A minimal example (Reddy, *Computational Methods in Engineering*, Example
     problem.add_variable("temperature")
     problem.add_kernel("diffusion", variable="temperature")
     problem.add_kernel("reaction", variable="temperature", coefficient=400.0)
-    problem.add_boundary_condition("Dirichlet_boundary_condition", variable="temperature", boundary="left", value=300.0)
-    problem.add_boundary_condition("Robin_boundary_condition", variable="temperature", boundary="right", transfer_coefficient=2.0)
+    problem.add_boundary_condition(
+        "Dirichlet_boundary_condition", variable="temperature", boundary="left", value=300.0
+    )
+    problem.add_boundary_condition(
+        "Robin_boundary_condition",
+        variable="temperature",
+        boundary="right",
+        transfer_coefficient=2.0,
+    )
     problem.solve()
     print(problem.values("temperature"))
 """
@@ -36,14 +43,59 @@ from __future__ import annotations
 
 from . import _core as _core  # the compiled extension module
 from . import adaptivity, fgm, materials, mms, parallel, physics, postprocess
-from ._core import ADReal, InputParameters, IntegratedBC, Kernel, Mesh, NodalBC, QpContext, SettableFunction, describe_object, object_category, object_module, registered_types
+from ._core import (
+    ADReal,
+    InputParameters,
+    IntegratedBC,
+    Kernel,
+    Mesh,
+    NodalBC,
+    QpContext,
+    SettableFunction,
+    describe_object,
+    object_category,
+    object_module,
+    registered_types,
+)
 from .ad import abs, cos, exp, log, pow, sin, sqrt, tanh
-from .adaptivity import AdaptivityResult, mark_by_error_fraction, mark_by_fraction, mark_by_threshold, refine_marked, solve_with_adaptive_refinement
+from .adaptivity import (
+    AdaptivityResult,
+    mark_by_error_fraction,
+    mark_by_fraction,
+    mark_by_threshold,
+    refine_marked,
+    solve_with_adaptive_refinement,
+)
 from .expressions import Expression, ParsedFunction, parsed_function
-from .meshing import annulus_coordinates, generate_annulus_mesh, generate_box_mesh, generate_line_mesh, generate_rectangle_mesh, graded_coordinates, mesh_from_arrays, read_mesh, sideset_summary, write_mesh, write_sidesets
-from .objects import PythonBoundaryCondition, PythonKernel, PythonNodalBoundaryCondition, PythonProperty
+from .meshing import (
+    annulus_coordinates,
+    generate_annulus_mesh,
+    generate_box_mesh,
+    generate_line_mesh,
+    generate_rectangle_mesh,
+    graded_coordinates,
+    mesh_from_arrays,
+    read_mesh,
+    sideset_summary,
+    write_mesh,
+    write_sidesets,
+)
+from .objects import (
+    PythonBoundaryCondition,
+    PythonKernel,
+    PythonNodalBoundaryCondition,
+    PythonProperty,
+)
 from .output import Output
-from .parallel import have_metis, have_mpi, have_petsc, is_root, num_ranks, partition_mesh, petsc_version
+from .parallel import (
+    have_metis,
+    have_mpi,
+    have_petsc,
+    is_root,
+    num_ranks,
+    partition_mesh,
+    petsc_version,
+)
 from .problem import Problem, SolveResult
 from .tables import Table
 
@@ -137,11 +189,15 @@ def list_objects(category: str | None = None, module: str | None = None) -> list
     module."""
     categories = {object_category(name) for name in registered_types()} | {"physics", "coupling"}
     if category is not None and category not in categories:
-        raise ValueError(f"Unknown category '{category}'. Use one of: {', '.join(sorted(categories))}.")
+        raise ValueError(
+            f"Unknown category '{category}'. Use one of: {', '.join(sorted(categories))}."
+        )
     out = []
     for name in physics.registered():
         cls = physics._REGISTRY[name]
-        if (category is None or cls.category == category) and (module is None or cls.module == module):
+        if (category is None or cls.category == category) and (
+            module is None or cls.module == module
+        ):
             out.append(name)
     for name in registered_types():
         if category is not None and object_category(name) != category:

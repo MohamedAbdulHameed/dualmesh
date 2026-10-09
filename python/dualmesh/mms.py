@@ -40,8 +40,19 @@ Example
     from dualmesh import mms
 
     study = mms.ManufacturedSolution(fields={"u": "sin(pi*x)*cos(pi*y)"}, dimension=2)
-    study.add_physics("coefficient_form_PDE", "pde", diffusion_coefficient="1 + x*y", convection_coefficient=[1.0, 0.5])
-    result = study.convergence_study(lambda n: dm.generate_rectangle_mesh(x_min=0, x_max=1, y_min=0, y_max=1, num_x_elements=n, num_y_elements=n), levels=[4, 8, 16, 32], method="dmcdm")
+    study.add_physics(
+        "coefficient_form_PDE",
+        "pde",
+        diffusion_coefficient="1 + x*y",
+        convection_coefficient=[1.0, 0.5],
+    )
+    result = study.convergence_study(
+        lambda n: dm.generate_rectangle_mesh(
+            x_min=0, x_max=1, y_min=0, y_max=1, num_x_elements=n, num_y_elements=n
+        ),
+        levels=[4, 8, 16, 32],
+        method="dmcdm",
+    )
     print(result.table())
     result.rates("u", "l2")  # tends to 2 for linear elements
 
@@ -73,7 +84,9 @@ def _sympy():
     try:
         import sympy
     except ImportError as error:  # pragma: no cover - depends on the environment
-        raise ImportError("dualmesh.mms needs SymPy to derive the manufactured sources; install it with 'pip install sympy'.") from error
+        raise ImportError(
+            "dualmesh.mms needs SymPy to derive the manufactured sources; install it with 'pip install sympy'."
+        ) from error
     return sympy
 
 
@@ -141,7 +154,14 @@ class ConvergenceResult:
         """The element sizes, the numbers of unknowns, the errors and the
         orders between consecutive meshes."""
         keys = sorted(self.errors)
-        return {"study": "convergence", "method": self.method, "sizes": list(self.sizes), "num_dofs": list(self.num_dofs), "errors": {f"{v} {n}": list(self.errors[(v, n)]) for v, n in keys}, "orders": {f"{v} {n}": self.rates(v, n) for v, n in keys}}
+        return {
+            "study": "convergence",
+            "method": self.method,
+            "sizes": list(self.sizes),
+            "num_dofs": list(self.num_dofs),
+            "errors": {f"{v} {n}": list(self.errors[(v, n)]) for v, n in keys},
+            "orders": {f"{v} {n}": self.rates(v, n) for v, n in keys},
+        }
 
     def write_json(self, path) -> None:
         """Write :meth:`to_dict` to a JSON file."""
@@ -156,8 +176,18 @@ class ConvergenceResult:
         from .tables import Table
 
         keys = sorted(self.errors)
-        rows = [[float(h), int(self.num_dofs[i]), *(float(self.errors[k][i]) for k in keys)] for i, h in enumerate(self.sizes)]
-        return {"errors": Table(["element_size", "num_dofs", *(f"{v}_{n}_error" for v, n in keys)], None, rows, title=f"Convergence study ({self.method})")}
+        rows = [
+            [float(h), int(self.num_dofs[i]), *(float(self.errors[k][i]) for k in keys)]
+            for i, h in enumerate(self.sizes)
+        ]
+        return {
+            "errors": Table(
+                ["element_size", "num_dofs", *(f"{v}_{n}_error" for v, n in keys)],
+                None,
+                rows,
+                title=f"Convergence study ({self.method})",
+            )
+        }
 
     def write_csv(self, path, table: str | None = None) -> None:
         """Write the table ``errors`` to a CSV file."""
@@ -174,7 +204,10 @@ class ConvergenceResult:
             for key in keys:
                 row += f" {self.errors[key][i]:18.6e}"
             lines.append(row)
-        lines.append("orders (finest pair): " + ", ".join(f"{v} {n} {self.rates(v, n)[-1]:.2f}" for v, n in keys))
+        lines.append(
+            "orders (finest pair): "
+            + ", ".join(f"{v} {n} {self.rates(v, n)[-1]:.2f}" for v, n in keys)
+        )
         return "\n".join(lines)
 
 
@@ -214,11 +247,19 @@ class ManufacturedSolution:
     boundary removes both the pin and the constraint.
     """
 
-    def __init__(self, fields: dict, dimension: int, coordinates: str = "cartesian", flux_boundaries: dict | None = None):
+    def __init__(
+        self,
+        fields: dict,
+        dimension: int,
+        coordinates: str = "cartesian",
+        flux_boundaries: dict | None = None,
+    ):
         self.fields = {name: _expr(value) for name, value in fields.items()}
         self.dimension = int(dimension)
         self.coordinates = coordinates
-        self.flux_boundaries = {k: [float(c) for c in n] for k, n in (flux_boundaries or {}).items()}
+        self.flux_boundaries = {
+            k: [float(c) for c in n] for k, n in (flux_boundaries or {}).items()
+        }
         self._physics: list = []
         self._forcing = None
 
@@ -230,14 +271,20 @@ class ManufacturedSolution:
 
         name = name or physics
         if any(n == name for n, _t, _p, _i in self._physics):
-            raise _physics.InputError(f"The manufactured solution already has a physics named '{name}'.")
+            raise _physics.InputError(
+                f"The manufactured solution already has a physics named '{name}'."
+            )
         instance = _physics.create(physics, name, dict(parameters))
         if not isinstance(instance, _physics.Physics):
-            raise _physics.InputError(f"'{physics}' is a coupling. A manufactured solution takes physics only.")
+            raise _physics.InputError(
+                f"'{physics}' is a coupling. A manufactured solution takes physics only."
+            )
         instance._resolve(self.coordinates, self.dimension)
         missing = [v for v in instance.variables() if v not in self.fields]
         if missing:
-            raise _physics.InputError(f"{physics} '{name}': give the exact field of {', '.join(missing)} in 'fields'.")
+            raise _physics.InputError(
+                f"{physics} '{name}': give the exact field of {', '.join(missing)} in 'fields'."
+            )
         self._physics.append((name, physics, dict(parameters), instance))
         self._forcing = None
         return instance
@@ -256,7 +303,11 @@ class ManufacturedSolution:
         x, y, z, _t = _symbols()
         axes = (x, y, z)
         if self.coordinates == "axisymmetric":
-            return (x * flux[0]).diff(x) / x + flux[1].diff(y) if self.dimension > 1 else (x * flux[0]).diff(x) / x
+            return (
+                (x * flux[0]).diff(x) / x + flux[1].diff(y)
+                if self.dimension > 1
+                else (x * flux[0]).diff(x) / x
+            )
         if self.coordinates == "spherical":
             return (x**2 * flux[0]).diff(x) / x**2
         return sum(_expr(flux[d]).diff(axes[d]) for d in range(self.dimension))
@@ -282,7 +333,9 @@ class ManufacturedSolution:
                 for variable, (F, S) in parts.items():
                     flux[variable] = [a + _expr(b) for a, b in zip(flux[variable], F)]
                     source[variable] = source[variable] + _expr(S)
-            forcing = {v: -self._divergence([_expr(c) for c in flux[v]]) + source[v] for v in self.fields}
+            forcing = {
+                v: -self._divergence([_expr(c) for c in flux[v]]) + source[v] for v in self.fields
+            }
             if self.coordinates != "cartesian":
                 # The curvilinear divergence and the hoop terms divide by r,
                 # and for a field that is regular on the axis the divisions
@@ -290,7 +343,9 @@ class ManufacturedSolution:
                 # symbolically, and the forcing can then be evaluated on the
                 # axis itself, as the cell-centred method does at its faces.
                 sympy = _sympy()
-                forcing = {v: sympy.cancel(sympy.together(sympy.expand(f))) for v, f in forcing.items()}
+                forcing = {
+                    v: sympy.cancel(sympy.together(sympy.expand(f))) for v, f in forcing.items()
+                }
             self._forcing = forcing
         return self._forcing
 
@@ -301,7 +356,14 @@ class ManufacturedSolution:
         return [_text(g) for g in _gradient(self.fields[variable])]
 
     # ---- numerical ----------------------------------------------------------
-    def build(self, mesh, method: str = "dmcdm", boundary: Sequence[str] | None = None, start_time: float = 0.0, **problem_options) -> Problem:
+    def build(
+        self,
+        mesh,
+        method: str = "dmcdm",
+        boundary: Sequence[str] | None = None,
+        start_time: float = 0.0,
+        **problem_options,
+    ) -> Problem:
         """A dualmesh problem for this manufactured solution on ``mesh``: the
         physics, the manufactured source of every equation, and the exact
         solution imposed on ``boundary`` (every side set when omitted) less
@@ -314,7 +376,12 @@ class ManufacturedSolution:
         for name, type_name, parameters, _instance in self._physics:
             parameters = dict(parameters)
             if type_name == "incompressible_flow":
-                pins.append((parameters.pop("pressure_pin_point", None), parameters.get("pressure", "pressure")))
+                pins.append(
+                    (
+                        parameters.pop("pressure_pin_point", None),
+                        parameters.get("pressure", "pressure"),
+                    )
+                )
             physics = problem.add_physics(type_name, name, **parameters)
             served |= physics._set_manufactured_source({v: forcing[v] for v in physics.variables()})
         pressures = self._pressures()
@@ -322,23 +389,49 @@ class ManufacturedSolution:
         walls = [b for b in boundaries if b not in self.flux_boundaries]
         for variable, f in self.forcing().items():
             if variable not in served and not (variable in pressures and _expr(f) == 0):
-                problem.add_kernel("body_force", f"manufactured_{variable}", variable=variable, value=forcing[variable], scale_with_load=False)
+                problem.add_kernel(
+                    "body_force",
+                    f"manufactured_{variable}",
+                    variable=variable,
+                    value=forcing[variable],
+                    scale_with_load=False,
+                )
             if variable in pressures:
                 continue
             if walls:
-                problem.add_boundary_condition("Dirichlet_boundary_condition", f"exact_{variable}", variable=variable, boundary=walls, value=self.exact(variable))
+                problem.add_boundary_condition(
+                    "Dirichlet_boundary_condition",
+                    f"exact_{variable}",
+                    variable=variable,
+                    boundary=walls,
+                    value=self.exact(variable),
+                )
             flux = self.flux(variable)
             for side, normal in self.flux_boundaries.items():
                 traction = sum(flux[d] * normal[d] for d in range(len(normal)))
-                problem.add_boundary_condition("Neumann_boundary_condition", f"flux_{variable}_{side}", variable=variable, boundary=side, flux=_text(traction))
+                problem.add_boundary_condition(
+                    "Neumann_boundary_condition",
+                    f"flux_{variable}_{side}",
+                    variable=variable,
+                    boundary=side,
+                    flux=_text(traction),
+                )
         if not self.flux_boundaries:
             for point, pressure in pins:
                 pin = list(point) if point is not None else list(mesh.node(0))
-                problem.add_boundary_condition("point_Dirichlet_boundary_condition", f"exact_{pressure}_level", variable=pressure, point=[float(c) for c in pin], value=self.exact(pressure))
+                problem.add_boundary_condition(
+                    "point_Dirichlet_boundary_condition",
+                    f"exact_{pressure}_level",
+                    variable=pressure,
+                    point=[float(c) for c in pin],
+                    value=self.exact(pressure),
+                )
         points = problem.entity_points()
         for variable in self.fields:
             exact = _core.ParsedFunction(self.exact(variable))
-            problem.set_values(variable, np.array([exact(p[0], p[1], p[2], start_time) for p in points]))
+            problem.set_values(
+                variable, np.array([exact(p[0], p[1], p[2], start_time) for p in points])
+            )
         return problem
 
     def errors(self, problem: Problem) -> dict:
@@ -346,12 +439,23 @@ class ManufacturedSolution:
         problem, at the problem's current time."""
         out = {}
         for variable in self.fields:
-            l2, h1 = problem.error_norms(variable, self.exact(variable), self.exact_gradient(variable))
+            l2, h1 = problem.error_norms(
+                variable, self.exact(variable), self.exact_gradient(variable)
+            )
             out[(variable, "l2")] = l2
             out[(variable, "h1")] = h1
         return out
 
-    def convergence_study(self, mesh_factory: Callable[[int], object], levels: Sequence[int], method: str = "dmcdm", transient: dict | None = None, solve_options: dict | None = None, report: str = "full", **problem_options) -> ConvergenceResult:
+    def convergence_study(
+        self,
+        mesh_factory: Callable[[int], object],
+        levels: Sequence[int],
+        method: str = "dmcdm",
+        transient: dict | None = None,
+        solve_options: dict | None = None,
+        report: str = "full",
+        **problem_options,
+    ) -> ConvergenceResult:
         """Solve on ``mesh_factory(n)`` for every ``n`` in ``levels`` and
         record the errors.
 
@@ -391,7 +495,10 @@ class ManufacturedSolution:
             for key, value in self.errors(problem).items():
                 result.errors.setdefault(key, []).append(value)
             if level == "full":
-                print(f"  mesh {n}: element size {h:.6g}, {problem.num_active_dofs()} unknowns", flush=True)
+                print(
+                    f"  mesh {n}: element size {h:.6g}, {problem.num_active_dofs()} unknowns",
+                    flush=True,
+                )
         if level != "none":
             print(result.summary())
         return result

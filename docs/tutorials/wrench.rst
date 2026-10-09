@@ -80,8 +80,12 @@ part of the faces :math:`|z| = 2.5` mm between :math:`x = 120` and
 .. code-block:: python
 
    mm = 1.0e-3
-   mesh.add_sideset_by_predicate("jaws", lambda x, y, z: abs(abs(y) - 6.5 * mm) < 1e-6 and -15.76 * mm < x < -8.24 * mm)
-   mesh.add_sideset_by_predicate("grip", lambda x, y, z: abs(abs(z) - 2.5 * mm) < 1e-6 and 120 * mm < x < 145 * mm)
+   mesh.add_sideset_by_predicate(
+       "jaws", lambda x, y, z: abs(abs(y) - 6.5 * mm) < 1e-6 and -15.76 * mm < x < -8.24 * mm
+   )
+   mesh.add_sideset_by_predicate(
+       "grip", lambda x, y, z: abs(abs(z) - 2.5 * mm) < 1e-6 and 120 * mm < x < 145 * mm
+   )
 
 On ``wrench.msh`` the two predicates select exactly the 64 faces of
 ``jaws`` and the 392 faces of ``grip`` that the physical groups contain.  A
@@ -177,7 +181,13 @@ creates the three displacements :math:`u`, :math:`v` and :math:`w`:
 
 .. code-block:: python
 
-   solid = problem.add_physics("solid_mechanics", "solid", displacements=["u", "v", "w"], youngs_modulus=200.0e9, poissons_ratio=0.3)
+   solid = problem.add_physics(
+       "solid_mechanics",
+       "solid",
+       displacements=["u", "v", "w"],
+       youngs_modulus=200.0e9,
+       poissons_ratio=0.3,
+   )
 
 A boundary condition of the physics is defined by three choices: the side set
 it acts on, the type of condition, and its value, which for a vector quantity

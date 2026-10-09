@@ -7,7 +7,9 @@ a boundary value can be written as an expression::
     import dualmesh as dm
 
     top = dm.parsed_function("500*(1 - 10*x^2)")
-    problem.add_boundary_condition("Dirichlet_boundary_condition", variable="temperature", boundary="top", value=top)
+    problem.add_boundary_condition(
+        "Dirichlet_boundary_condition", variable="temperature", boundary="top", value=top
+    )
 
 or, more briefly, passed as the text itself, which is compiled the same way::
 

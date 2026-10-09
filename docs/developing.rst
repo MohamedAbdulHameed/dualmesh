@@ -93,8 +93,9 @@ special case.
    ``@register``, with the methods ``variables`` and ``_build``.
 7. **Results.**  A result provides ``summary()``, ``to_dict()``,
    ``write_json(path)`` and ``write_csv(path)``.
-8. **Python style.**  One statement on one line, however long (ruff with a
-   line length of 320), and comments on their own line.
+8. **Python style.**  ``ruff format`` with a line length of 100 characters,
+   a call with many inputs split into named pieces, and comments on their
+   own line.
 9. **Accuracy and speed.**  A new capability comes with a test against the
    equivalent object-level input where one exists, a verification case
    against a published or analytical result, an example script, a tutorial
@@ -180,7 +181,14 @@ derivatives:
            return -self.pre_exponential * dm.exp(-self.activation_energy / T)
 
 
-   problem.add_kernel(ArrheniusSource(variable="temperature", temperature_variable="temperature", pre_exponential=1.0e6, activation_energy=5000.0))
+   problem.add_kernel(
+       ArrheniusSource(
+           variable="temperature",
+           temperature_variable="temperature",
+           pre_exponential=1.0e6,
+           activation_energy=5000.0,
+       )
+   )
 
 Testing
 -------

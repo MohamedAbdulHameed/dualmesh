@@ -105,7 +105,10 @@ class _GaussianBase(Distribution):
         # Log of the normalising probability, accurate in the tails.
         if self._upper_tail:
             # Both bounds in the upper tail: use the survival functions.
-            self._logz = float(special.log_ndtr(-self._alpha) + np.log1p(-np.exp(special.log_ndtr(-self._beta) - special.log_ndtr(-self._alpha))))
+            self._logz = float(
+                special.log_ndtr(-self._alpha)
+                + np.log1p(-np.exp(special.log_ndtr(-self._beta) - special.log_ndtr(-self._alpha)))
+            )
         else:
             self._logz = math.log(self._z)
 

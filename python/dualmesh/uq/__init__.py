@@ -24,4 +24,18 @@ from .gaussian_process import GaussianProcess
 from .propagate import Runs, propagate, wilks_samples
 from .sobol import SobolIndices, sobol
 
-__all__ = ["Distribution", "GaussianProcess", "LogNormal", "LogUniform", "Normal", "Posterior", "Runs", "SobolIndices", "Uniform", "calibrate", "propagate", "sobol", "wilks_samples"]
+__all__ = [
+    "Distribution",
+    "GaussianProcess",
+    "LogNormal",
+    "LogUniform",
+    "Normal",
+    "Posterior",
+    "Runs",
+    "SobolIndices",
+    "Uniform",
+    "calibrate",
+    "propagate",
+    "sobol",
+    "wilks_samples",
+]

@@ -13,7 +13,12 @@ from __future__ import annotations
 import textwrap
 from pathlib import Path
 
-MODULE_TITLES = {"framework": "Framework", "heat_transfer": "Heat transfer", "solid_mechanics": "Solid mechanics", "fluids": "Viscous incompressible flow"}
+MODULE_TITLES = {
+    "framework": "Framework",
+    "heat_transfer": "Heat transfer",
+    "solid_mechanics": "Solid mechanics",
+    "fluids": "Viscous incompressible flow",
+}
 
 MODULE_INTROS = {
     "framework": """
@@ -54,7 +59,12 @@ MODULE_GROUPS = {
     "solid_mechanics": [
         (
             "Continuum elasticity",
-            {"linear_elastic_stress", "stress_divergence", "traction_boundary_condition", "pressure_boundary_condition"},
+            {
+                "linear_elastic_stress",
+                "stress_divergence",
+                "traction_boundary_condition",
+                "pressure_boundary_condition",
+            },
             """
 Small-strain linear elasticity in plane stress, plane strain, axisymmetry and
 three dimensions.  The stress is computed by a property object and consumed by one
@@ -65,7 +75,14 @@ without touching the equilibrium equations.
         ),
         (
             "Structural members: beams and plates",
-            {"beam_Euler_Bernoulli_mixed", "beam_Timoshenko_displacement", "beam_Timoshenko_mixed", "circular_plate_first_order", "circular_plate_classical_mixed", "plate_first_order"},
+            {
+                "beam_Euler_Bernoulli_mixed",
+                "beam_Timoshenko_displacement",
+                "beam_Timoshenko_mixed",
+                "circular_plate_first_order",
+                "circular_plate_classical_mixed",
+                "plate_first_order",
+            },
             """
 The reduced theories: a beam or a plate is an elastic body whose displacement
 is assumed to vary through the thickness in a prescribed way, and whose
@@ -89,11 +106,19 @@ def _category_title(category: str) -> str:
 
 
 CATEGORY_NOTES = {
-    "kernel": ("A **kernel** states one term of the governing equation of one variable, as a contribution to the flux :math:`\\mathbf{F}`, to the source :math:`S`, or to both, in the canonical conservation form :math:`-\\nabla\\cdot\\mathbf{F} + S = 0`.  Several kernels on the same variable are added together."),
-    "boundary_condition": ("An **integrated boundary condition** prescribes the secondary variable of the duality pair, that is, the normal flux :math:`n\\cdot\\mathbf{F}` on a side set.  It is integrated over the boundary, so it enters the equations of the control domains that touch that boundary."),
-    "nodal_boundary_condition": ("A **nodal boundary condition** prescribes the primary variable itself at the nodes of a boundary.  The equation of the prescribed degree of freedom is replaced, and its residual, evaluated at the converged solution, is the reaction."),
+    "kernel": (
+        "A **kernel** states one term of the governing equation of one variable, as a contribution to the flux :math:`\\mathbf{F}`, to the source :math:`S`, or to both, in the canonical conservation form :math:`-\\nabla\\cdot\\mathbf{F} + S = 0`.  Several kernels on the same variable are added together."
+    ),
+    "boundary_condition": (
+        "An **integrated boundary condition** prescribes the secondary variable of the duality pair, that is, the normal flux :math:`n\\cdot\\mathbf{F}` on a side set.  It is integrated over the boundary, so it enters the equations of the control domains that touch that boundary."
+    ),
+    "nodal_boundary_condition": (
+        "A **nodal boundary condition** prescribes the primary variable itself at the nodes of a boundary.  The equation of the prescribed degree of freedom is replaced, and its residual, evaluated at the converged solution, is the reaction."
+    ),
     "nodal_load": ("A **nodal load** is a concentrated source applied at a single node."),
-    "property": ("A **property** object computes named properties at every integration point, which kernels and boundary conditions then consume by name.  Properties may depend on position, time, and the solution, and any dependence on the solution is differentiated automatically."),
+    "property": (
+        "A **property** object computes named properties at every integration point, which kernels and boundary conditions then consume by name.  Properties may depend on position, time, and the solution, and any dependence on the solution is differentiated automatically."
+    ),
 }
 
 
@@ -112,18 +137,36 @@ def _escape_inline(text: str) -> str:
 
 
 def _wrap(text: str, width: int = 79) -> str:
-    return "\n".join(textwrap.fill(paragraph, width=width) if paragraph.strip() else "" for paragraph in text.strip().split("\n"))
+    return "\n".join(
+        textwrap.fill(paragraph, width=width) if paragraph.strip() else ""
+        for paragraph in text.strip().split("\n")
+    )
 
 
 def _parameter_table(rows: list[dict]) -> list[str]:
     if not rows:
         return ["None.", ""]
-    lines = [".. list-table::", "   :header-rows: 1", "   :widths: 20 14 12 54", "   :class: parameter-table", "", "   * - Name", "     - Type", "     - Default", "     - Description"]
+    lines = [
+        ".. list-table::",
+        "   :header-rows: 1",
+        "   :widths: 20 14 12 54",
+        "   :class: parameter-table",
+        "",
+        "   * - Name",
+        "     - Type",
+        "     - Default",
+        "     - Description",
+    ]
     for row in rows:
         default = row["default"]
         default = f"``{default}``" if default else "--"
         description = _escape_inline(row["description"].replace("\n", " ").strip())
-        lines += [f"   * - ``{row['name']}``", f"     - {row['type']}", f"     - {default}", f"     - {description}"]
+        lines += [
+            f"   * - ``{row['name']}``",
+            f"     - {row['type']}",
+            f"     - {default}",
+            f"     - {description}",
+        ]
     lines.append("")
     return lines
 
@@ -132,7 +175,9 @@ def write_syntax_reference(source_dir: Path, have_library: bool) -> None:
     out_dir = source_dir / "syntax"
     out_dir.mkdir(exist_ok=True)
     if not have_library:
-        (out_dir / "index.rst").write_text("Syntax reference\n================\n\nThe syntax reference is generated from the compiled library, which was not available when this copy of the documentation was built. Run ``dualmesh list`` and ``dualmesh describe <type>`` locally instead.\n")
+        (out_dir / "index.rst").write_text(
+            "Syntax reference\n================\n\nThe syntax reference is generated from the compiled library, which was not available when this copy of the documentation was built. Run ``dualmesh list`` and ``dualmesh describe <type>`` locally instead.\n"
+        )
         return
 
     import dualmesh as dm
@@ -141,7 +186,9 @@ def write_syntax_reference(source_dir: Path, have_library: bool) -> None:
     by_module: dict[str, list[str]] = {}
     for name in dm.registered_types():
         by_module.setdefault(dm.object_module(name), []).append(name)
-    ordered_modules = sorted(by_module, key=lambda m: list(MODULE_TITLES).index(m) if m in MODULE_TITLES else 99)
+    ordered_modules = sorted(
+        by_module, key=lambda m: list(MODULE_TITLES).index(m) if m in MODULE_TITLES else 99
+    )
 
     missing_examples = []
     written = set()
@@ -153,7 +200,19 @@ def write_syntax_reference(source_dir: Path, have_library: bool) -> None:
             parameters = dm._core.object_parameters(name)
             required = [p for p in parameters if p["required"]]
             optional = [p for p in parameters if not p["required"]]
-            lines = [f".. _syntax-{name}:", "", name, "=" * len(name), "", f"*{_category_title(category)}* in the *{MODULE_TITLES.get(module, module)}* module.", "", _wrap(_escape_inline(dm._core.object_description(name))), "", _wrap(CATEGORY_NOTES.get(category, "")), ""]
+            lines = [
+                f".. _syntax-{name}:",
+                "",
+                name,
+                "=" * len(name),
+                "",
+                f"*{_category_title(category)}* in the *{MODULE_TITLES.get(module, module)}* module.",
+                "",
+                _wrap(_escape_inline(dm._core.object_description(name))),
+                "",
+                _wrap(CATEGORY_NOTES.get(category, "")),
+                "",
+            ]
             if required:
                 lines += ["Required parameters", "-------------------", ""]
                 lines += _parameter_table(required)
@@ -181,12 +240,33 @@ def write_syntax_reference(source_dir: Path, have_library: bool) -> None:
             if f.name.startswith("_"):
                 continue
             missing = f.default is dataclasses.MISSING and f.default_factory is dataclasses.MISSING
-            default = "" if missing else repr(f.default if f.default is not dataclasses.MISSING else f.default_factory())
+            default = (
+                ""
+                if missing
+                else repr(
+                    f.default if f.default is not dataclasses.MISSING else f.default_factory()
+                )
+            )
             unit = f.metadata.get("unit", "")
-            row = dict(name=f.name, type=_type_name(f.type) + (f" ({unit})" if unit else ""), default=default, description=f.metadata.get("description", ""))
+            row = dict(
+                name=f.name,
+                type=_type_name(f.type) + (f" ({unit})" if unit else ""),
+                default=default,
+                description=f.metadata.get("description", ""),
+            )
             (required if missing else optional).append(row)
         doc = " ".join((cls.__doc__ or "").split("\n\n")[0].split())
-        lines = [f".. _syntax-{name}:", "", name, "=" * len(name), "", f"*{cls.category.capitalize()}* in the *{MODULE_TITLES.get(cls.module, cls.module)}* module.", "", _wrap(_escape_inline(doc)), ""]
+        lines = [
+            f".. _syntax-{name}:",
+            "",
+            name,
+            "=" * len(name),
+            "",
+            f"*{cls.category.capitalize()}* in the *{MODULE_TITLES.get(cls.module, cls.module)}* module.",
+            "",
+            _wrap(_escape_inline(doc)),
+            "",
+        ]
         if required:
             lines += ["Required parameters", "-------------------", ""]
             lines += _parameter_table(required)
@@ -253,7 +333,11 @@ conditions and extra terms are the objects listed further below.
         cls = physics_module._REGISTRY[name]
         doc = " ".join((cls.__doc__ or "").split())
         first = _escape_inline(doc.split(". ")[0].rstrip(".")) + "."
-        index += [f"   * - :doc:`{name} <{name}>`", f"     - {cls.category.capitalize()}", f"     - {first}"]
+        index += [
+            f"   * - :doc:`{name} <{name}>`",
+            f"     - {cls.category.capitalize()}",
+            f"     - {first}",
+        ]
     index += ["", "Objects by module", "-----------------", ""]
     for module in ordered_modules:
         title = MODULE_TITLES.get(module, module)
@@ -264,7 +348,10 @@ conditions and extra terms are the objects listed further below.
         groups = MODULE_GROUPS.get(module, [])
         grouped = set().union(*(members for _, members, _ in groups)) if groups else set()
         ungrouped = [n for n in sorted(by_module[module]) if n not in grouped]
-        sections = ([(None, ungrouped, None)] if ungrouped else []) + [(heading, sorted(n for n in by_module[module] if n in members), text) for heading, members, text in groups]
+        sections = ([(None, ungrouped, None)] if ungrouped else []) + [
+            (heading, sorted(n for n in by_module[module] if n in members), text)
+            for heading, members, text in groups
+        ]
         for heading, names, text in sections:
             if not names:
                 continue
@@ -272,11 +359,23 @@ conditions and extra terms are the objects listed further below.
                 index += [heading, '"' * len(heading), ""]
             if text:
                 index += [_wrap(text), ""]
-            index += [".. list-table::", "   :header-rows: 1", "   :widths: 28 22 50", "", "   * - Object", "     - Category", "     - Summary"]
+            index += [
+                ".. list-table::",
+                "   :header-rows: 1",
+                "   :widths: 28 22 50",
+                "",
+                "   * - Object",
+                "     - Category",
+                "     - Summary",
+            ]
             for name in names:
                 summary = _escape_inline(dm._core.object_description(name).replace("\n", " "))
                 first = summary.split(". ")[0].rstrip(".") + "."
-                index += [f"   * - :doc:`{name} <{name}>`", f"     - {_category_title(dm.object_category(name))}", f"     - {first}"]
+                index += [
+                    f"   * - :doc:`{name} <{name}>`",
+                    f"     - {_category_title(dm.object_category(name))}",
+                    f"     - {first}",
+                ]
             index += [""]
     index += [".. toctree::", "   :hidden:", "   :maxdepth: 1", ""]
     for name in physics_names:
@@ -293,4 +392,8 @@ conditions and extra terms are the objects listed further below.
             page.unlink()
 
     if missing_examples:
-        print("dualmesh docs: no usage example for " + ", ".join(missing_examples) + " (add one to docs/_syntax_examples.py)")
+        print(
+            "dualmesh docs: no usage example for "
+            + ", ".join(missing_examples)
+            + " (add one to docs/_syntax_examples.py)"
+        )

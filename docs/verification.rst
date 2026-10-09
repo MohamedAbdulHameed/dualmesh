@@ -265,7 +265,11 @@ A user-defined study requires only a few lines:
 
    study = mms.ManufacturedSolution({"u": "sin(pi*x)*cos(pi*y) + x*y"}, dimension=2)
    study.add_physics("coefficient_form_PDE", "diffusion", diffusion_coefficient="1 + 0.5*x*y")
-   result = study.convergence_study(lambda n: dm.generate_rectangle_mesh(0, 1, 0, 1, n, n, element_type="Tri6"), [4, 8, 16, 32], method="fem")
+   result = study.convergence_study(
+       lambda n: dm.generate_rectangle_mesh(0, 1, 0, 1, n, n, element_type="Tri6"),
+       [4, 8, 16, 32],
+       method="fem",
+   )
    print(result.table())  # errors and observed orders
 
 Neutron diffusion: the 2D IAEA PWR benchmark

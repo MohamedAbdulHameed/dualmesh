@@ -22,14 +22,41 @@ def _solve_result_tables(self) -> dict:
     """``newton``: one row per Newton iteration."""
     from .tables import Table
 
-    return {"newton": Table(["load_step", "load_factor", "iteration", "residual_norm", "step_norm"], None, [[r.load_step, r.load_factor, r.iteration, r.residual_norm, r.step_norm] for r in self.history], title="Newton iterations")}
+    return {
+        "newton": Table(
+            ["load_step", "load_factor", "iteration", "residual_norm", "step_norm"],
+            None,
+            [
+                [r.load_step, r.load_factor, r.iteration, r.residual_norm, r.step_norm]
+                for r in self.history
+            ],
+            title="Newton iterations",
+        )
+    }
 
 
 def _solve_result_to_dict(self) -> dict:
     """Whether the solve converged, its iteration counts and the history of
     its Newton iterations."""
-    history = [dict(load_step=r.load_step, load_factor=r.load_factor, iteration=r.iteration, residual_norm=r.residual_norm, step_norm=r.step_norm) for r in self.history]
-    return {"study": "solve", "converged": bool(self.converged), "total_iterations": int(self.total_iterations), "linear_iterations": int(self.linear_iterations), "time_steps": int(self.time_steps), "rejected_steps": int(self.rejected_steps), "history": history}
+    history = [
+        dict(
+            load_step=r.load_step,
+            load_factor=r.load_factor,
+            iteration=r.iteration,
+            residual_norm=r.residual_norm,
+            step_norm=r.step_norm,
+        )
+        for r in self.history
+    ]
+    return {
+        "study": "solve",
+        "converged": bool(self.converged),
+        "total_iterations": int(self.total_iterations),
+        "linear_iterations": int(self.linear_iterations),
+        "time_steps": int(self.time_steps),
+        "rejected_steps": int(self.rejected_steps),
+        "history": history,
+    }
 
 
 def _solve_result_summary(self) -> str:
@@ -113,14 +140,18 @@ def _solver_options(**kwargs) -> _core.SolverOptions:
     }
     for key, value in kwargs.items():
         if key == "verbose":
-            raise TypeError("Unknown solver option 'verbose'. The parameter report sets what a solve prints: report='full' (the default), 'summary' or 'none'.")
+            raise TypeError(
+                "Unknown solver option 'verbose'. The parameter report sets what a solve prints: report='full' (the default), 'summary' or 'none'."
+            )
         if key == "_progress":
             options.verbose = bool(value)
             continue
         if key not in known:
             close = difflib.get_close_matches(key, known, n=1)
             hint = f" Did you mean '{close[0]}'?" if close else ""
-            raise TypeError(f"Unknown solver option '{key}'.{hint} Known options: {', '.join(sorted(known))}.")
+            raise TypeError(
+                f"Unknown solver option '{key}'.{hint} Known options: {', '.join(sorted(known))}."
+            )
         if key == "petsc_options":
             value = petsc_option_string(value)
         setattr(options, key, value)
@@ -128,7 +159,14 @@ def _solver_options(**kwargs) -> _core.SolverOptions:
 
 
 #: The options of the linear solver of a distributed problem.
-_DISTRIBUTED_LINEAR = ("linear_solver", "preconditioner", "subdomain_solver", "linear_tolerance", "linear_max_iterations", "petsc_options")
+_DISTRIBUTED_LINEAR = (
+    "linear_solver",
+    "preconditioner",
+    "subdomain_solver",
+    "linear_tolerance",
+    "linear_max_iterations",
+    "petsc_options",
+)
 
 
 def _distributed_options(options: dict):
@@ -196,7 +234,16 @@ class Problem:
         of each subdomain solve.
     """
 
-    def __init__(self, mesh, method: str = "dmcdm", coordinates: str = "cartesian", boundary_gradient: str = "first_order", distributed: bool | None = None, partitioner: str = "graph", overlap: int = 1):
+    def __init__(
+        self,
+        mesh,
+        method: str = "dmcdm",
+        coordinates: str = "cartesian",
+        boundary_gradient: str = "first_order",
+        distributed: bool | None = None,
+        partitioner: str = "graph",
+        overlap: int = 1,
+    ):
         if distributed is None:
             distributed = _core.mpi_size() > 1
         self._distributed = None
@@ -273,7 +320,14 @@ class Problem:
         return list(self._problem.boundary_entities(boundary))
 
     # ---- definition ------------------------------------------------------
-    def add_variable(self, name: str, block: Sequence[str] = (), initial_condition=None, order: str = "mesh", unit: str = "") -> int:
+    def add_variable(
+        self,
+        name: str,
+        block: Sequence[str] = (),
+        initial_condition=None,
+        order: str = "mesh",
+        unit: str = "",
+    ) -> int:
         """Add a nodal unknown and return its index.
 
         ``unit`` is the SI unit of the variable, which the CSV and VTU files
@@ -318,7 +372,14 @@ class Problem:
     def _add(self, adder, object_or_type, name, kwargs):
         if isinstance(object_or_type, str):
             # A matrix (a list of rows of numbers) is passed row by row.
-            kwargs = {k: [float(x) for row in v for x in row] if isinstance(v, (list, tuple)) and v and all(isinstance(r, (list, tuple, np.ndarray)) for r in v) else v for k, v in kwargs.items()}
+            kwargs = {
+                k: [float(x) for row in v for x in row]
+                if isinstance(v, (list, tuple))
+                and v
+                and all(isinstance(r, (list, tuple, np.ndarray)) for r in v)
+                else v
+                for k, v in kwargs.items()
+            }
             return self._problem.add_object(object_or_type, name or "", **kwargs)
         if kwargs:
             raise TypeError("Extra parameters are not accepted when adding an object instance.")
@@ -337,7 +398,9 @@ class Problem:
         its boundary, so that a condition named after a side set acts on that
         side set::
 
-            problem.add_boundary_condition("Dirichlet_boundary_condition", "left", variable="u", value=0.0)
+            problem.add_boundary_condition(
+                "Dirichlet_boundary_condition", "left", variable="u", value=0.0
+            )
 
         Several conditions on one boundary need different names and an
         explicit ``boundary``."""
@@ -347,8 +410,12 @@ class Problem:
                 known = set(mesh.sideset_names()) | set(mesh.nodeset_names())
                 if name in known:
                     parameters["boundary"] = [name]
-                elif re.search(r"^\s+boundary \([^)]*required", _core.describe_object(condition), re.M):
-                    raise ValueError(f"Boundary condition '{name}': give 'boundary', or name the condition after a boundary of the mesh ({', '.join(sorted(known)) or 'none'}).")
+                elif re.search(
+                    r"^\s+boundary \([^)]*required", _core.describe_object(condition), re.M
+                ):
+                    raise ValueError(
+                        f"Boundary condition '{name}': give 'boundary', or name the condition after a boundary of the mesh ({', '.join(sorted(known)) or 'none'})."
+                    )
             category = _core.object_category(condition)
             if category == "nodal_boundary_condition":
                 return self._problem.add_object(condition, name or "", **parameters)
@@ -365,7 +432,13 @@ class Problem:
         a stress or the cross sections of a region), which the physics and
         the kernels read by name::
 
-            problem.add_property("constant_property", "copper", block=["bar"], property_names=["thermal_conductivity"], property_values=[400.0])
+            problem.add_property(
+                "constant_property",
+                "copper",
+                block=["bar"],
+                property_names=["thermal_conductivity"],
+                property_values=[400.0],
+            )
         """
         return self._add(self._problem.add_property, property_type, name, parameters)
 
@@ -383,14 +456,18 @@ class Problem:
         :meth:`~dualmesh.physics.Physics.add_kernel` add conditions and terms
         to its equations::
 
-            heat = problem.add_physics("heat_transfer", "heat", thermal_conductivity=20.0, heat_source=1.0e6)
+            heat = problem.add_physics(
+                "heat_transfer", "heat", thermal_conductivity=20.0, heat_source=1.0e6
+            )
             heat.add_boundary_condition("Dirichlet_boundary_condition", "left", value=40.0)
         """
         from . import physics as _physics
 
         name = name or physics
         if name in self._physics or name in self._couplings:
-            raise _physics.InputError(f"The problem already has a physics or coupling named '{name}'.")
+            raise _physics.InputError(
+                f"The problem already has a physics or coupling named '{name}'."
+            )
         instance = _physics.create(physics, name, parameters)
         if not isinstance(instance, _physics.Physics):
             raise _physics.InputError(f"'{physics}' is a coupling. Add it with add_coupling.")
@@ -403,18 +480,29 @@ class Problem:
         ``Boussinesq_buoyancy`` or ``heat_convection`` (``dualmesh list
         --category coupling``)::
 
-            problem.add_coupling("thermal_expansion", "expansion", heat_transfer="heat", solid_mechanics="solid", thermal_expansion_coefficient=1.2e-5, stress_free_temperature=293.15)
+            problem.add_coupling(
+                "thermal_expansion",
+                "expansion",
+                heat_transfer="heat",
+                solid_mechanics="solid",
+                thermal_expansion_coefficient=1.2e-5,
+                stress_free_temperature=293.15,
+            )
         """
         from . import physics as _physics
 
         name = name or coupling
         if name in self._physics or name in self._couplings:
-            raise _physics.InputError(f"The problem already has a physics or coupling named '{name}'.")
+            raise _physics.InputError(
+                f"The problem already has a physics or coupling named '{name}'."
+            )
         instance = _physics.create(coupling, name, parameters)
         if not isinstance(instance, _physics.Coupling):
             raise _physics.InputError(f"'{coupling}' is a physics. Add it with add_physics.")
         if any(p._built for p in self._physics.values()):
-            raise _physics.InputError(f"Coupling '{name}': add the couplings before the problem is solved or initialised.")
+            raise _physics.InputError(
+                f"Coupling '{name}': add the couplings before the problem is solved or initialised."
+            )
         instance._apply(self)
         self._couplings[name] = instance
         return instance
@@ -513,7 +601,10 @@ class Problem:
             print(header(study))
             print(self.summary(), flush=True)
         elif level == "summary":
-            print(f"dualmesh {study}: {self.num_active_dofs()} unknowns, method {self.method}", flush=True)
+            print(
+                f"dualmesh {study}: {self.num_active_dofs()} unknowns, method {self.method}",
+                flush=True,
+            )
 
     def _report_end(self, level: str, result, wall_time: float, files: Sequence[str] = ()) -> None:
         if level == "none":
@@ -537,18 +628,26 @@ class Problem:
         from .output import Output
 
         if not isinstance(output, Output):
-            raise InputError(f"The output of a solve is a dualmesh.Output group, not {type(output).__name__}.")
+            raise InputError(
+                f"The output of a solve is a dualmesh.Output group, not {type(output).__name__}."
+            )
         if steady and (output.times is not None or output.interval is not None):
-            raise InputError("Output: a steady solve writes the fields once, at the end. Remove times and interval.")
+            raise InputError(
+                "Output: a steady solve writes the fields once, at the end. Remove times and interval."
+            )
         if output.fields is not None:
             names = [self._problem.variable_name(i) for i in range(self._problem.num_variables)]
             for name in output.fields:
                 if name not in names:
                     close = difflib.get_close_matches(name, names, n=1)
                     hint = f" Did you mean '{close[0]}'?" if close else ""
-                    raise InputError(f"Output: the field '{name}' is not a variable.{hint} The variables are: {', '.join(names)}.")
+                    raise InputError(
+                        f"Output: the field '{name}' is not a variable.{hint} The variables are: {', '.join(names)}."
+                    )
         if self._distributed is not None and "csv" in output.formats:
-            raise InputError("Output: a distributed problem writes the vtu format only. Remove csv from formats.")
+            raise InputError(
+                "Output: a distributed problem writes the vtu format only. Remove csv from formats."
+            )
         return output
 
     def _write_fields(self, output, index: int | None = None) -> list[str]:
@@ -560,7 +659,11 @@ class Problem:
         if "vtu" in output.formats:
             path = output.path(suffix + ".vtu")
             self.write_vtu(path, fields=fields)
-            files.append(path[:-4] + ".pvtu" if self._distributed is not None and self.num_ranks > 1 else path)
+            files.append(
+                path[:-4] + ".pvtu"
+                if self._distributed is not None and self.num_ranks > 1
+                else path
+            )
         if "csv" in output.formats:
             path = output.path(suffix + ".csv")
             self.write_csv(path, variables=fields)
@@ -700,8 +803,15 @@ class Problem:
             if "csv" in output.formats:
                 # The library calls this writer at each output time, after
                 # the boundary values of the start are applied.
-                csv_output = Output(directory=output.directory, file_base=output.file_base, fields=output.fields, formats=("csv",))
-                self._problem.set_output_callback(lambda index: files.extend(self._write_fields(csv_output, index)))
+                csv_output = Output(
+                    directory=output.directory,
+                    file_base=output.file_base,
+                    fields=output.fields,
+                    formats=("csv",),
+                )
+                self._problem.set_output_callback(
+                    lambda index: files.extend(self._write_fields(csv_output, index))
+                )
         self._report_start(level, "transient solve")
         start = time.perf_counter()
         if self._postprocessors.postprocessors:
@@ -724,7 +834,15 @@ class Problem:
         self._report_end(level, result, time.perf_counter() - start, files)
         return result
 
-    def solve_eigenvalue(self, method: str = "krylov", tolerance: float = 1.0e-10, max_iterations: int = 2000, normalization: float = 1.0, report: str = "full", output=None):
+    def solve_eigenvalue(
+        self,
+        method: str = "krylov",
+        tolerance: float = 1.0e-10,
+        max_iterations: int = 2000,
+        normalization: float = 1.0,
+        report: str = "full",
+        output=None,
+    ):
         """Compute the effective multiplication factor and the fundamental
         mode of the neutron_diffusion physics of the problem (see
         :mod:`dualmesh.eigenvalue`).
@@ -754,8 +872,16 @@ class Problem:
             print(header("eigenvalue study"))
             print(self.summary())
         elif level == "summary":
-            print(f"dualmesh eigenvalue study: {self.num_active_dofs()} unknowns, method {self.method}, eigenvalue solver {method}")
-        result = solve_eigenvalue(self, method=method, tolerance=tolerance, max_iterations=max_iterations, normalization=normalization)
+            print(
+                f"dualmesh eigenvalue study: {self.num_active_dofs()} unknowns, method {self.method}, eigenvalue solver {method}"
+            )
+        result = solve_eigenvalue(
+            self,
+            method=method,
+            tolerance=tolerance,
+            max_iterations=max_iterations,
+            normalization=normalization,
+        )
         files = self._write_fields(output) if output is not None else []
         if level != "none":
             print(result.summary())
@@ -794,7 +920,9 @@ class Problem:
         from .postprocessors import create
 
         if self._distributed is not None:
-            raise ValueError("Post-processors are not available in a distributed problem yet. Compute the quantity from gathered_values, or run the problem on one process.")
+            raise ValueError(
+                "Post-processors are not available in a distributed problem yet. Compute the quantity from gathered_values, or run the problem on one process."
+            )
         pp = create(postprocessor_type, name, **parameters)
         self._postprocessors.add(pp)
         self._install_step_callback()
@@ -858,7 +986,9 @@ class Problem:
         the values, and the property objects see the new values at the next solve."""
         values = np.asarray(values, dtype=float).ravel()
         if len(values) != self._mesh.num_elements:
-            raise ValueError(f"Element field '{name}': {len(values)} values for {self._mesh.num_elements} elements.")
+            raise ValueError(
+                f"Element field '{name}': {len(values)} values for {self._mesh.num_elements} elements."
+            )
         self._problem.set_element_field(name, list(values))
 
     def element_field(self, name: str) -> np.ndarray:
@@ -914,7 +1044,9 @@ class Problem:
         distances = np.linalg.norm(points - point, axis=1)
         index = int(np.argmin(distances))
         if distances[index] > tolerance:
-            raise ValueError(f"No node within {tolerance} of {point.tolist()}; nearest is at {points[index].tolist()} (distance {distances[index]:.3e}).")
+            raise ValueError(
+                f"No node within {tolerance} of {point.tolist()}; nearest is at {points[index].tolist()} (distance {distances[index]:.3e})."
+            )
         return index
 
     def gradient_at_centroids(self, variable: str) -> np.ndarray:
@@ -945,7 +1077,9 @@ class Problem:
         """
         return np.asarray(self._problem.error_indicator(variable))
 
-    def error_norms(self, variable: str, exact, exact_gradient=None, quadrature_points: int = 0) -> tuple[float, float]:
+    def error_norms(
+        self, variable: str, exact, exact_gradient=None, quadrature_points: int = 0
+    ) -> tuple[float, float]:
         r"""The error of the computed field against a known exact solution.
 
         Returns ``(l2, h1_seminorm)``: the :math:`L^2` norm of
@@ -970,7 +1104,12 @@ class Problem:
         the error) and include the coordinate factor.  The sum runs on several
         threads unless one of the functions is a Python callable.
         """
-        l2, h1 = self._problem.error_norms(variable, _as_function(exact), None if exact_gradient is None else [_as_function(g) for g in exact_gradient], quadrature_points)
+        l2, h1 = self._problem.error_norms(
+            variable,
+            _as_function(exact),
+            None if exact_gradient is None else [_as_function(g) for g in exact_gradient],
+            quadrature_points,
+        )
         return float(l2), float(h1)
 
     def linear_system(self):
@@ -1028,7 +1167,9 @@ class Problem:
         return self._problem.boundary_flux_integral(kernel_name, boundary)
 
     # ---- output ----------------------------------------------------------
-    def write_vtu(self, filename: str, cell_properties: Sequence[str] = (), fields: Sequence[str] = ()) -> None:
+    def write_vtu(
+        self, filename: str, cell_properties: Sequence[str] = (), fields: Sequence[str] = ()
+    ) -> None:
         """Write a VTK unstructured grid (readable by ParaView and VisIt).
 
         ``fields`` are the variables that the file contains (default: all of
@@ -1065,12 +1206,20 @@ class Problem:
     def num_owned_dofs(self) -> int:
         """Degrees of freedom this process owns (all of them in a serial
         problem)."""
-        return self._distributed.num_owned_dofs() if self._distributed is not None else self.num_active_dofs()
+        return (
+            self._distributed.num_owned_dofs()
+            if self._distributed is not None
+            else self.num_active_dofs()
+        )
 
     @property
     def num_global_dofs(self) -> int:
         """Degrees of freedom of the whole problem."""
-        return self._distributed.num_global_dofs() if self._distributed is not None else self.num_active_dofs()
+        return (
+            self._distributed.num_global_dofs()
+            if self._distributed is not None
+            else self.num_active_dofs()
+        )
 
     def gathered_values(self, variable: str) -> np.ndarray:
         """Values of a variable at every node of the whole mesh, on every
@@ -1084,7 +1233,11 @@ class Problem:
 
     def partition_summary(self) -> str:
         """One line describing the partition of a distributed problem."""
-        return self._distributed.summary() if self._distributed is not None else "serial problem (one process)"
+        return (
+            self._distributed.summary()
+            if self._distributed is not None
+            else "serial problem (one process)"
+        )
 
     def write_mesh_file(self, filename: str, file_format: str | None = None) -> None:
         """Write the mesh and all nodal fields through meshio (Exodus, VTU, ...)."""
@@ -1104,12 +1257,17 @@ class Problem:
         ``variables`` selects the variables (default: all of them)."""
         from .tables import column_header
 
-        names = list(variables) or [self._problem.variable_name(i) for i in range(self._problem.num_variables)]
+        names = list(variables) or [
+            self._problem.variable_name(i) for i in range(self._problem.num_variables)
+        ]
         points = np.asarray(self.entity_points())
         dimension = self._mesh.dimension
         columns = [points[:, i] for i in range(dimension)]
         columns += [self.values(name) for name in names]
-        header = ",".join([column_header(axis, "m") for axis in ("x", "y", "z")[:dimension]] + [column_header(name, self.variable_unit(name)) for name in names])
+        header = ",".join(
+            [column_header(axis, "m") for axis in ("x", "y", "z")[:dimension]]
+            + [column_header(name, self.variable_unit(name)) for name in names]
+        )
         np.savetxt(filename, np.column_stack(columns), delimiter=",", header=header, comments="")
 
     def summary(self, parameters: bool = True) -> str:

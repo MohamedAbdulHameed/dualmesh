@@ -134,7 +134,9 @@ class _Process:
             starts.append(s)
         best = None
         for s in starts:
-            res = optimize.minimize(self._nll, s, jac=True, method="L-BFGS-B", bounds=bounds, options={"maxiter": 500})
+            res = optimize.minimize(
+                self._nll, s, jac=True, method="L-BFGS-B", bounds=bounds, options={"maxiter": 500}
+            )
             if best is None or res.fun < best.fun:
                 best = res
         theta = best.x
@@ -214,7 +216,15 @@ class GaussianProcess:
         Starting points of the likelihood maximisation.  Default 5.
     """
 
-    def __init__(self, kernel="matern52", trend="constant", nugget="fit", variance_kept=0.999, restarts=5, seed=0):
+    def __init__(
+        self,
+        kernel="matern52",
+        trend="constant",
+        nugget="fit",
+        variance_kept=0.999,
+        restarts=5,
+        seed=0,
+    ):
         if kernel not in KERNELS:
             raise ValueError(f"GaussianProcess: kernel must be one of {', '.join(KERNELS)}.")
         if trend not in ("constant", "linear"):
@@ -292,13 +302,19 @@ class GaussianProcess:
             from .distributions import LogNormal, LogUniform
 
             self.input_names = runs.names
-            self._log = np.array([isinstance(d, (LogNormal, LogUniform)) for d in runs.distributions.values()])
+            self._log = np.array(
+                [isinstance(d, (LogNormal, LogUniform)) for d in runs.distributions.values()]
+            )
             z = self._transform(runs.x[ok])
             self._lo = z.min(axis=0)
             self._span = np.where(z.max(axis=0) > self._lo, z.max(axis=0) - self._lo, 1.0)
             u = (z - self._lo) / self._span
             # One output predicts as an array, several as a dict.
-            flat = self._pack(next(iter(outs.values()))[ok]) if len(outs) == 1 else self._pack({k: v[ok] for k, v in outs.items()})
+            flat = (
+                self._pack(next(iter(outs.values()))[ok])
+                if len(outs) == 1
+                else self._pack({k: v[ok] for k, v in outs.items()})
+            )
             self.output_names = list(outs)
         else:
             if y is None:
@@ -335,7 +351,10 @@ class GaussianProcess:
             resid = z - scores @ self._V.T
             self._discarded = np.mean(resid * resid, axis=0)
         rng = np.random.default_rng(self.seed)
-        self._processes = [_Process(self.kernel, self.trend, self.nugget, self.restarts, rng).fit(u, scores[:, c]) for c in range(scores.shape[1])]
+        self._processes = [
+            _Process(self.kernel, self.trend, self.nugget, self.restarts, rng).fit(u, scores[:, c])
+            for c in range(scores.shape[1])
+        ]
         self._u_train = u
         self._flat_train = flat
         self._fitted = True
@@ -405,7 +424,11 @@ class GaussianProcess:
         flat = self._mu + z * self._sd
         if self._layout is None and self._yshape == ():
             return flat[..., 0]
-        return np.stack([self._unpack(f) for f in flat]) if self._layout is None else {k: np.stack([self._unpack(f)[k] for f in flat]) for k, _ in self._layout}
+        return (
+            np.stack([self._unpack(f) for f in flat])
+            if self._layout is None
+            else {k: np.stack([self._unpack(f)[k] for f in flat]) for k, _ in self._layout}
+        )
 
     # ---- diagnostics ---------------------------------------------------------------
     def leave_one_out(self) -> dict:
@@ -434,7 +457,9 @@ class GaussianProcess:
             with np.errstate(invalid="ignore", divide="ignore"):
                 q2 = np.where(sst > 0, 1.0 - sse / sst, np.nan)
                 zres = (y - pred) / np.sqrt(var)
-            self._loo = dict(prediction=pred, standard_deviation=np.sqrt(var), q2=q2, standardized_residuals=zres)
+            self._loo = dict(
+                prediction=pred, standard_deviation=np.sqrt(var), q2=q2, standardized_residuals=zres
+            )
         return self._loo
 
     @property

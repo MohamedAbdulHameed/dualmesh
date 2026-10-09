@@ -22,10 +22,19 @@ project = "dualmesh"
 copyright = "2026, Mohamed AbdulHameed"
 author = "Mohamed AbdulHameed"
 # The version has one source, pyproject.toml.
-release = re.search(r'^version\s*=\s*"([^"]+)"', (ROOT / "pyproject.toml").read_text(encoding="utf-8"), re.M).group(1)
+release = re.search(
+    r'^version\s*=\s*"([^"]+)"', (ROOT / "pyproject.toml").read_text(encoding="utf-8"), re.M
+).group(1)
 version = ".".join(release.split(".")[:2])
 
-extensions = ["sphinx.ext.autodoc", "sphinx.ext.napoleon", "sphinx.ext.viewcode", "sphinx.ext.mathjax", "sphinx.ext.intersphinx", "myst_parser"]
+extensions = [
+    "sphinx.ext.autodoc",
+    "sphinx.ext.napoleon",
+    "sphinx.ext.viewcode",
+    "sphinx.ext.mathjax",
+    "sphinx.ext.intersphinx",
+    "myst_parser",
+]
 
 templates_path = ["_templates"]
 exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
@@ -35,18 +44,30 @@ html_theme = "furo"
 html_static_path = ["_static"]
 html_title = "dualmesh"
 # "Edit this page" and "view source" links to the repository.
-html_theme_options = {"source_repository": "https://github.com/MohamedAbdulHameed/dualmesh/", "source_branch": "main", "source_directory": "docs/"}
+html_theme_options = {
+    "source_repository": "https://github.com/MohamedAbdulHameed/dualmesh/",
+    "source_branch": "main",
+    "source_directory": "docs/",
+}
 
 # Figures are numbered, so that the text can refer to them as "Figure n".
 numfig = True
-numfig_format = {"figure": "Figure %s", "table": "Table %s", "code-block": "Listing %s", "section": "Section %s"}
+numfig_format = {
+    "figure": "Figure %s",
+    "table": "Table %s",
+    "code-block": "Listing %s",
+    "section": "Section %s",
+}
 
 autodoc_member_order = "bysource"
 autodoc_typehints = "description"
 napoleon_google_docstring = True
 napoleon_numpy_docstring = True
 
-intersphinx_mapping = {"python": ("https://docs.python.org/3", None), "numpy": ("https://numpy.org/doc/stable", None)}
+intersphinx_mapping = {
+    "python": ("https://docs.python.org/3", None),
+    "numpy": ("https://numpy.org/doc/stable", None),
+}
 
 myst_enable_extensions = ["dollarmath", "amsmath", "colon_fence"]
 

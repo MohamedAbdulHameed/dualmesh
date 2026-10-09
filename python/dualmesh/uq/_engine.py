@@ -32,7 +32,9 @@ def check_inputs(inputs) -> dict:
         if not isinstance(name, str) or not name.isidentifier():
             raise ValueError(f"uq: input name {name!r} must be a valid keyword argument name.")
         if not isinstance(dist, Distribution):
-            raise TypeError(f"uq: input '{name}' must be a distribution (uq.Normal, uq.LogNormal, uq.Uniform or uq.LogUniform), not {type(dist).__name__}.")
+            raise TypeError(
+                f"uq: input '{name}' must be a distribution (uq.Normal, uq.LogNormal, uq.Uniform or uq.LogUniform), not {type(dist).__name__}."
+            )
     return dict(inputs)
 
 
@@ -146,7 +148,9 @@ class Store:
         with np.load(self.path, allow_pickle=False) as f:
             names = [str(s) for s in f["input_names"]]
             if names != self.names:
-                raise ValueError(f"uq: the store {self.path} holds the inputs {names}, not {self.names}. Use another file.")
+                raise ValueError(
+                    f"uq: the store {self.path} holds the inputs {names}, not {self.names}. Use another file."
+                )
             x = f["x"]
             ok = f["ok"]
             errors = [str(s) for s in f["errors"]]
@@ -172,7 +176,10 @@ class Store:
         stored = np.asarray(self.x)
         if stored.shape[1] != row.size:
             return None
-        close = np.all(np.abs(stored - row) <= STORE_TOLERANCE * np.maximum(np.abs(stored), np.abs(row)), axis=1)
+        close = np.all(
+            np.abs(stored - row) <= STORE_TOLERANCE * np.maximum(np.abs(stored), np.abs(row)),
+            axis=1,
+        )
         matches = np.flatnonzero(close)
         return int(matches[0]) if matches.size else None
 
@@ -193,7 +200,15 @@ class Store:
                 if out is not None:
                     a[i] = out[k]
             arrays["output:" + k] = a
-        payload = dict(input_names=np.array(self.names), x=np.array(self.x).reshape(len(self.x), len(self.names)), ok=np.array([o is not None for o in self.outputs], dtype=bool), errors=np.array([e or "" for e in self.errors]), seconds=np.array(self.seconds), output_names=np.array(list(shapes)), **arrays)
+        payload = dict(
+            input_names=np.array(self.names),
+            x=np.array(self.x).reshape(len(self.x), len(self.names)),
+            ok=np.array([o is not None for o in self.outputs], dtype=bool),
+            errors=np.array([e or "" for e in self.errors]),
+            seconds=np.array(self.seconds),
+            output_names=np.array(list(shapes)),
+            **arrays,
+        )
         self.path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=self.path.parent, suffix=".npz")
         os.close(fd)
@@ -214,13 +229,19 @@ def check_output_transform(transform, runs, where: str) -> dict:
         raise ValueError(f"{where}: output_transform is a dict of output name -> 'log'.")
     for name, kind in transform.items():
         if name not in runs.outputs:
-            raise ValueError(f"{where}: output_transform names the output '{name}', which the runs do not have. Outputs: {', '.join(runs.outputs)}.")
+            raise ValueError(
+                f"{where}: output_transform names the output '{name}', which the runs do not have. Outputs: {', '.join(runs.outputs)}."
+            )
         if kind not in OUTPUT_TRANSFORMS:
-            raise ValueError(f"{where}: unknown output transform '{kind}' of '{name}'. The transforms are: {', '.join(OUTPUT_TRANSFORMS)}.")
+            raise ValueError(
+                f"{where}: unknown output transform '{kind}' of '{name}'. The transforms are: {', '.join(OUTPUT_TRANSFORMS)}."
+            )
         values = np.asarray(runs.outputs[name], dtype=float)
         values = values[np.isfinite(values)]
         if values.size and values.min() <= 0.0:
-            raise ValueError(f"{where}: the log transform needs a positive output, and '{name}' has the value {values.min():.6g}.")
+            raise ValueError(
+                f"{where}: the log transform needs a positive output, and '{name}' has the value {values.min():.6g}."
+            )
     return dict(transform)
 
 
@@ -230,7 +251,10 @@ def transformed_runs(runs, transform: dict):
         return runs
     from .propagate import Runs
 
-    outputs = {name: (np.log(values) if transform.get(name) == "log" else values) for name, values in runs.outputs.items()}
+    outputs = {
+        name: (np.log(values) if transform.get(name) == "log" else values)
+        for name, values in runs.outputs.items()
+    }
     return Runs(runs.distributions, runs.x, runs.u, outputs, runs.failed, runs.method)
 
 
@@ -246,14 +270,22 @@ def surrogate_mean(gp, x, transform: dict) -> dict:
         return _as_dict(gp, gp.predict(x))
     mean, sd = gp.predict(x, return_standard_deviation=True)
     mean, sd = _as_dict(gp, mean), _as_dict(gp, sd)
-    return {name: (np.exp(mean[name] + 0.5 * sd[name] ** 2) if transform.get(name) == "log" else mean[name]) for name in mean}
+    return {
+        name: (
+            np.exp(mean[name] + 0.5 * sd[name] ** 2) if transform.get(name) == "log" else mean[name]
+        )
+        for name in mean
+    }
 
 
 def surrogate_sample(gp, x, size: int, seed, transform: dict) -> dict:
     """Random functions of the surrogate process at the inputs ``x``, for
     each output on its own scale: (size, n) or (size, n, m) arrays."""
     sample = _as_dict(gp, gp.sample(x, size, seed))
-    return {name: (np.exp(values) if transform.get(name) == "log" else values) for name, values in sample.items()}
+    return {
+        name: (np.exp(values) if transform.get(name) == "log" else values)
+        for name, values in sample.items()
+    }
 
 
 def study_header(level: str, study: str, inputs: dict, runs: int | None = None) -> None:
@@ -263,7 +295,9 @@ def study_header(level: str, study: str, inputs: dict, runs: int | None = None) 
     if level == "full":
         print(header(study))
         print("Uncertain inputs")
-        print(table([[name, repr(dist)] for name, dist in inputs.items()], ["input", "distribution"]))
+        print(
+            table([[name, repr(dist)] for name, dist in inputs.items()], ["input", "distribution"])
+        )
     if level in ("full", "summary"):
         count = "" if runs is None else f", {runs} runs of the model"
         print(f"dualmesh {study}: {len(inputs)} uncertain inputs{count}", flush=True)
@@ -308,7 +342,9 @@ def evaluate(model, names, x, processes=1, store=None, progress=False):
             processes = int(processes)
             threads = max(1, (os.cpu_count() or 1) // processes)
             ctx = mp.get_context("spawn")
-            with cf.ProcessPoolExecutor(processes, mp_context=ctx, initializer=_worker_init, initargs=(threads,)) as pool:
+            with cf.ProcessPoolExecutor(
+                processes, mp_context=ctx, initializer=_worker_init, initargs=(threads,)
+            ) as pool:
                 futures = {pool.submit(_call, model, kw): i for i, kw in zip(unique, kwargs)}
                 for fut in cf.as_completed(futures):
                     record(futures[fut], fut.result())
@@ -330,6 +366,8 @@ def evaluate(model, names, x, processes=1, store=None, progress=False):
             continue
         for k in shapes:
             if k not in out or out[k].shape != shapes[k]:
-                raise ValueError(f"uq: the model returned output '{k}' with different shapes in different runs; every run must return the same names and shapes.")
+                raise ValueError(
+                    f"uq: the model returned output '{k}' with different shapes in different runs; every run must return the same names and shapes."
+                )
             outputs[k][i] = out[k]
     return outputs, failed

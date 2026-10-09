@@ -13,7 +13,9 @@ import numpy as np
 import pytest
 from dualmesh.materials import gas, water
 
-KESTIN_FIT = Path(__file__).resolve().parents[2] / "verification" / "correlations" / "kestin1984_gas_fit.py"
+KESTIN_FIT = (
+    Path(__file__).resolve().parents[2] / "verification" / "correlations" / "kestin1984_gas_fit.py"
+)
 
 
 def kestin_tables():
@@ -60,25 +62,36 @@ def test_if97_saturation_and_transport():
 # ---------------------------------------------------------------------------
 # Gases
 # ---------------------------------------------------------------------------
-@pytest.mark.parametrize("name, deviation", [("helium", 5e-5), ("argon", 5.2e-4), ("krypton", 4.6e-4), ("xenon", 1.05e-2)])
+@pytest.mark.parametrize(
+    "name, deviation",
+    [("helium", 5e-5), ("argon", 5.2e-4), ("krypton", 4.6e-4), ("xenon", 1.05e-2)],
+)
 def test_the_noble_gases_reproduce_every_value_of_kestin_1984(name, deviation):
     """Tables 1, 3, 4 and 5 of Kestin et al. (1984), 200 K to 2,273 K, to the
     maximum deviation of the fit."""
     temperatures, conductivities = kestin_tables().data(name)
-    assert gas.thermal_conductivity({name: 1.0}, temperatures) == pytest.approx(conductivities, rel=deviation)
+    assert gas.thermal_conductivity({name: 1.0}, temperatures) == pytest.approx(
+        conductivities, rel=deviation
+    )
 
 
 def test_helium_against_kestin_1984_table_1():
     """156.66 mW/(m K) at 300 K and 429.84 mW/(m K) at 1000 C."""
     assert gas.thermal_conductivity({"helium": 1.0}, 300.0) * 1e3 == pytest.approx(156.66, rel=1e-4)
-    assert gas.thermal_conductivity({"helium": 1.0}, 1273.15) * 1e3 == pytest.approx(429.84, rel=1e-4)
+    assert gas.thermal_conductivity({"helium": 1.0}, 1273.15) * 1e3 == pytest.approx(
+        429.84, rel=1e-4
+    )
 
 
 def test_hydrogen_and_nitrogen_follow_the_matpro_power_laws():
     """k = A T^B, NUREG/CR-6150 Vol. 4 Table 13-2."""
     temperatures = np.array([300.0, 800.0, 1500.0])
-    assert gas.thermal_conductivity({"hydrogen": 1.0}, temperatures) == pytest.approx(1.097e-3 * temperatures**0.8785, rel=1e-14)
-    assert gas.thermal_conductivity({"nitrogen": 1.0}, temperatures) == pytest.approx(5.314e-4 * temperatures**0.6898, rel=1e-14)
+    assert gas.thermal_conductivity({"hydrogen": 1.0}, temperatures) == pytest.approx(
+        1.097e-3 * temperatures**0.8785, rel=1e-14
+    )
+    assert gas.thermal_conductivity({"nitrogen": 1.0}, temperatures) == pytest.approx(
+        5.314e-4 * temperatures**0.6898, rel=1e-14
+    )
 
 
 def test_a_mixture_is_normalized_and_lies_between_its_gases():
@@ -86,13 +99,23 @@ def test_a_mixture_is_normalized_and_lies_between_its_gases():
     and the conductivity of a helium-xenon mixture falls from that of helium
     to that of xenon as xenon is added."""
     temperature = 700.0
-    assert gas.thermal_conductivity({"helium": 2.0, "xenon": 2.0}, temperature) == pytest.approx(gas.thermal_conductivity({"helium": 0.5, "xenon": 0.5}, temperature), rel=1e-14)
-    assert gas.thermal_conductivity({"argon": 1.0, "xenon": 0.0}, temperature) == pytest.approx(gas.thermal_conductivity({"argon": 1.0}, temperature), rel=1e-14)
+    assert gas.thermal_conductivity({"helium": 2.0, "xenon": 2.0}, temperature) == pytest.approx(
+        gas.thermal_conductivity({"helium": 0.5, "xenon": 0.5}, temperature), rel=1e-14
+    )
+    assert gas.thermal_conductivity({"argon": 1.0, "xenon": 0.0}, temperature) == pytest.approx(
+        gas.thermal_conductivity({"argon": 1.0}, temperature), rel=1e-14
+    )
     fractions = np.linspace(0.0, 1.0, 11)
-    values = [gas.thermal_conductivity({"helium": 1.0 - x, "xenon": x}, temperature) for x in fractions]
+    values = [
+        gas.thermal_conductivity({"helium": 1.0 - x, "xenon": x}, temperature) for x in fractions
+    ]
     assert np.all(np.diff(values) < 0.0)
-    assert values[0] == pytest.approx(gas.thermal_conductivity({"helium": 1.0}, temperature), rel=1e-14)
-    assert values[-1] == pytest.approx(gas.thermal_conductivity({"xenon": 1.0}, temperature), rel=1e-14)
+    assert values[0] == pytest.approx(
+        gas.thermal_conductivity({"helium": 1.0}, temperature), rel=1e-14
+    )
+    assert values[-1] == pytest.approx(
+        gas.thermal_conductivity({"xenon": 1.0}, temperature), rel=1e-14
+    )
 
 
 def test_the_temperature_jump_distance_follows_kennard():
@@ -102,16 +125,37 @@ def test_the_temperature_jump_distance_follows_kennard():
     pressure rises and as the accommodation rises."""
     temperature, pressure, accommodation = 600.0, 2.0e6, 0.3
     conductivity = gas.thermal_conductivity({"helium": 1.0}, temperature)
-    expected = 0.013748 * (2.0 - accommodation) / accommodation * conductivity * np.sqrt(temperature) / pressure / np.sqrt(1.0 / 4.0026)
-    assert gas.temperature_jump_distance({"helium": 1.0}, temperature, pressure, accommodation) == pytest.approx(expected, rel=1e-14)
-    assert gas.temperature_jump_distance({"helium": 1.0}, temperature, 2 * pressure, accommodation) == pytest.approx(0.5 * expected, rel=1e-14)
+    expected = (
+        0.013748
+        * (2.0 - accommodation)
+        / accommodation
+        * conductivity
+        * np.sqrt(temperature)
+        / pressure
+        / np.sqrt(1.0 / 4.0026)
+    )
+    assert gas.temperature_jump_distance(
+        {"helium": 1.0}, temperature, pressure, accommodation
+    ) == pytest.approx(expected, rel=1e-14)
+    assert gas.temperature_jump_distance(
+        {"helium": 1.0}, temperature, 2 * pressure, accommodation
+    ) == pytest.approx(0.5 * expected, rel=1e-14)
     assert gas.temperature_jump_distance({"helium": 1.0}, temperature, pressure, 0.6) < expected
     # Without a coefficient, Ullman's helium fit 0.425 - 2.3e-4 T applies.
     fitted = 0.425 - 2.3e-4 * temperature
-    assert gas.temperature_jump_distance({"helium": 1.0}, temperature, pressure) == pytest.approx(expected * (2 - fitted) / fitted * accommodation / (2 - accommodation), rel=1e-14)
+    assert gas.temperature_jump_distance({"helium": 1.0}, temperature, pressure) == pytest.approx(
+        expected * (2 - fitted) / fitted * accommodation / (2 - accommodation), rel=1e-14
+    )
 
 
-@pytest.mark.parametrize("composition, message", [({"neon": 1.0}, "Unknown gas 'neon'"), ({"helium": 0.0}, "positive mole fraction"), ({"helium": 1.0, "argon": -0.1}, "must not be negative")])
+@pytest.mark.parametrize(
+    "composition, message",
+    [
+        ({"neon": 1.0}, "Unknown gas 'neon'"),
+        ({"helium": 0.0}, "positive mole fraction"),
+        ({"helium": 1.0, "argon": -0.1}, "must not be negative"),
+    ],
+)
 def test_an_invalid_composition_is_refused(composition, message):
     with pytest.raises(Exception, match=message):
         gas.thermal_conductivity(composition, 300.0)

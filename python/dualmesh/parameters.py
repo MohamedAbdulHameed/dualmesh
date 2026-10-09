@@ -40,7 +40,22 @@ import numpy as np
 
 from ._core import InputError
 
-__all__ = ["InputError", "InputResolution", "SubstitutedValueWarning", "When", "check_keywords", "describe", "describe_fields", "is_read", "keyword_checked", "parameter", "resolve_inputs", "substitute", "write_csv_rows", "write_json_numbers"]
+__all__ = [
+    "InputError",
+    "InputResolution",
+    "SubstitutedValueWarning",
+    "When",
+    "check_keywords",
+    "describe",
+    "describe_fields",
+    "is_read",
+    "keyword_checked",
+    "parameter",
+    "resolve_inputs",
+    "substitute",
+    "write_csv_rows",
+    "write_json_numbers",
+]
 
 
 class SubstitutedValueWarning(UserWarning):
@@ -66,7 +81,16 @@ class When:
         return bool(self.test(group, models))
 
 
-def parameter(default=dataclasses.MISSING, unit: str = "", description: str = "", *, read_when: When | None = None, required_when_read: bool = False, reference: str = "", **kwargs):
+def parameter(
+    default=dataclasses.MISSING,
+    unit: str = "",
+    description: str = "",
+    *,
+    read_when: When | None = None,
+    required_when_read: bool = False,
+    reference: str = "",
+    **kwargs,
+):
     """A dataclass field with a unit and a description.  For a default, the
     description ends with the reason for it.
 
@@ -77,13 +101,27 @@ def parameter(default=dataclasses.MISSING, unit: str = "", description: str = ""
     report prints beside the value."""
     if required_when_read and default is not None:
         raise ValueError("parameter: required_when_read needs the default None.")
-    metadata = {"unit": unit, "description": description, "read_when": read_when, "required_when_read": required_when_read, "reference": reference}
+    metadata = {
+        "unit": unit,
+        "description": description,
+        "read_when": read_when,
+        "required_when_read": required_when_read,
+        "reference": reference,
+    }
     if default is dataclasses.MISSING or "default_factory" in kwargs:
         return field(metadata=metadata, **kwargs)
     return field(default=default, metadata=metadata, **kwargs)
 
 
-def substitute(value, unit: str = "", description: str = "", *, source: str, effect: str, read_when: When | None = None):
+def substitute(
+    value,
+    unit: str = "",
+    description: str = "",
+    *,
+    source: str,
+    effect: str,
+    read_when: When | None = None,
+):
     """A dataclass field for the data of a case that has a typical value of
     its class of material.
 
@@ -95,7 +133,15 @@ def substitute(value, unit: str = "", description: str = "", *, source: str, eff
     in the result."""
     if not source or not effect:
         raise ValueError("substitute: give the source of the typical value and its effect.")
-    metadata = {"unit": unit, "description": description, "read_when": read_when, "required_when_read": False, "reference": source, "substitute": value, "effect": effect}
+    metadata = {
+        "unit": unit,
+        "description": description,
+        "read_when": read_when,
+        "required_when_read": False,
+        "reference": source,
+        "substitute": value,
+        "effect": effect,
+    }
     return field(default=None, metadata=metadata)
 
 
@@ -111,7 +157,9 @@ def check_keywords(where: str, cls, keywords) -> None:
         if key not in names:
             close = difflib.get_close_matches(key, names, n=1)
             hint = f" Did you mean '{close[0]}'?" if close else ""
-            raise InputError(f"{where}: unknown parameter '{key}'.{hint} Accepted parameters are: {' '.join(sorted(names))}")
+            raise InputError(
+                f"{where}: unknown parameter '{key}'.{hint} Accepted parameters are: {' '.join(sorted(names))}"
+            )
 
 
 def keyword_checked(cls):
@@ -125,8 +173,15 @@ def keyword_checked(cls):
         check_keywords(cls.__name__, cls, kwargs)
         given = set(kwargs) | set(_names(cls)[: len(args)])
         for f in dataclasses.fields(cls):
-            if f.default is dataclasses.MISSING and f.default_factory is dataclasses.MISSING and f.init and f.name not in given:
-                raise InputError(f"{cls.__name__}: missing required parameter '{f.name}' ({f.metadata.get('description', '')})")
+            if (
+                f.default is dataclasses.MISSING
+                and f.default_factory is dataclasses.MISSING
+                and f.init
+                and f.name not in given
+            ):
+                raise InputError(
+                    f"{cls.__name__}: missing required parameter '{f.name}' ({f.metadata.get('description', '')})"
+                )
         init(self, *args, **kwargs)
 
     cls.__init__ = checked_init
@@ -186,7 +241,11 @@ def _is_given(f, value) -> bool:
 def is_read(group, name_or_field, models) -> bool:
     """Whether an active model reads the parameter of ``group`` (a field or
     its name) for the resolved ``models`` (always when ``models`` is None)."""
-    f = name_or_field if isinstance(name_or_field, dataclasses.Field) else next(f for f in dataclasses.fields(group) if f.name == name_or_field)
+    f = (
+        name_or_field
+        if isinstance(name_or_field, dataclasses.Field)
+        else next(f for f in dataclasses.fields(group) if f.name == name_or_field)
+    )
     condition = f.metadata.get("read_when")
     return condition is None or condition(group, models)
 
@@ -196,7 +255,11 @@ def _value_text(value) -> str:
         return type(value).__name__
     if callable(value):
         return getattr(value, "__name__", "function")
-    if isinstance(value, (list, tuple)) and value and all(dataclasses.is_dataclass(v) for v in value):
+    if (
+        isinstance(value, (list, tuple))
+        and value
+        and all(dataclasses.is_dataclass(v) for v in value)
+    ):
         return "[" + ", ".join(str(getattr(v, "name", type(v).__name__)) for v in value) + "]"
     if isinstance(value, (list, tuple, np.ndarray)):
         return _sequence_text(value)
@@ -267,10 +330,16 @@ class InputResolution:
     def substituted_names(self, path: str) -> set:
         """The names of the substituted parameters of the group at ``path``."""
         prefix = path + "."
-        return {s.path[len(prefix) :] for s in self.substituted if s.path.startswith(prefix) and "." not in s.path[len(prefix) :]}
+        return {
+            s.path[len(prefix) :]
+            for s in self.substituted
+            if s.path.startswith(prefix) and "." not in s.path[len(prefix) :]
+        }
 
     def substituted_rows(self) -> list[list[str]]:
-        return [[s.path, _value_text(s.value), s.unit, s.source, s.effect] for s in self.substituted]
+        return [
+            [s.path, _value_text(s.value), s.unit, s.source, s.effect] for s in self.substituted
+        ]
 
     def unused_rows(self) -> list[list[str]]:
         return [[u.path, u.value, u.unit, f"read {u.condition}"] for u in self.unused]
@@ -280,8 +349,15 @@ class InputResolution:
         values, when there are any."""
         if not self.substituted:
             return
-        items = "; ".join(f"{s.path} = {_value_text(s.value)}{' ' + s.unit if s.unit else ''} ({s.source}; {s.effect})" for s in self.substituted)
-        warnings.warn(f"{where}: these values of the case were not given, and typical values are used: {items}. Give the values of the case.", SubstitutedValueWarning, stacklevel=stacklevel)
+        items = "; ".join(
+            f"{s.path} = {_value_text(s.value)}{' ' + s.unit if s.unit else ''} ({s.source}; {s.effect})"
+            for s in self.substituted
+        )
+        warnings.warn(
+            f"{where}: these values of the case were not given, and typical values are used: {items}. Give the values of the case.",
+            SubstitutedValueWarning,
+            stacklevel=stacklevel,
+        )
 
 
 def _resolve_group(path: str, group, models, resolution: InputResolution):
@@ -292,7 +368,14 @@ def _resolve_group(path: str, group, models, resolution: InputResolution):
         value = getattr(group, f.name)
         if not is_read(group, f, models):
             if _is_given(f, value):
-                resolution.unused.append(UnusedValue(f"{path}.{f.name}", _value_text(value), f.metadata.get("unit", ""), f.metadata["read_when"].text))
+                resolution.unused.append(
+                    UnusedValue(
+                        f"{path}.{f.name}",
+                        _value_text(value),
+                        f.metadata.get("unit", ""),
+                        f.metadata["read_when"].text,
+                    )
+                )
             continue
         if dataclasses.is_dataclass(value) and not isinstance(value, type):
             resolved = _resolve_group(f"{path}.{f.name}", value, models, resolution)
@@ -305,11 +388,21 @@ def _resolve_group(path: str, group, models, resolution: InputResolution):
             typical = f.metadata["substitute"]
             typical = typical(group) if callable(typical) else typical
             changes[f.name] = typical
-            resolution.substituted.append(Substitution(f"{path}.{f.name}", typical, f.metadata.get("unit", ""), f.metadata["reference"], f.metadata["effect"]))
+            resolution.substituted.append(
+                Substitution(
+                    f"{path}.{f.name}",
+                    typical,
+                    f.metadata.get("unit", ""),
+                    f.metadata["reference"],
+                    f.metadata["effect"],
+                )
+            )
         elif f.metadata.get("required_when_read"):
             condition = f.metadata.get("read_when")
             when = f", read {condition.text}" if condition is not None else ""
-            raise InputError(f"{type(group).__name__}: missing required parameter '{f.name}' ({f.metadata.get('description', '')}){when}.")
+            raise InputError(
+                f"{type(group).__name__}: missing required parameter '{f.name}' ({f.metadata.get('description', '')}){when}."
+            )
     # The copy is made through the constructor, so that the values set as
     # attributes after construction are validated too.
     return dataclasses.replace(group, **changes)
@@ -326,7 +419,9 @@ def resolve_inputs(groups, models=None) -> tuple[dict, InputResolution]:
     is ``required_when_read`` and read by an active model raises an
     :class:`InputError`."""
     resolution = InputResolution()
-    resolved = {path: _resolve_group(path, group, models, resolution) for path, group in groups.items()}
+    resolved = {
+        path: _resolve_group(path, group, models, resolution) for path, group in groups.items()
+    }
     return resolved, resolution
 
 
@@ -353,14 +448,31 @@ def describe_fields(cls) -> str:
         else:
             kind = f", read{when}" if when else ""
         unit_text = f", {unit}" if unit else ""
-        lines.append(f"  {f.name} ({_type_name(f.type)}{unit_text}{kind}): {f.metadata.get('description', '')}")
+        lines.append(
+            f"  {f.name} ({_type_name(f.type)}{unit_text}{kind}): {f.metadata.get('description', '')}"
+        )
     return "\n".join(lines)
 
 
 def _type_name(annotation) -> str:
-    text = annotation if isinstance(annotation, str) else getattr(annotation, "__name__", str(annotation))
-    text = text.replace(" | None", "").replace("Sequence[str]", "list of strings").replace("Sequence[float]", "list of reals").replace("Sequence[float | None]", "list of reals")
-    for word, name in (("float", "real"), ("str", "string"), ("bool", "boolean"), ("int", "integer"), ("dict", "dictionary")):
+    text = (
+        annotation
+        if isinstance(annotation, str)
+        else getattr(annotation, "__name__", str(annotation))
+    )
+    text = (
+        text.replace(" | None", "")
+        .replace("Sequence[str]", "list of strings")
+        .replace("Sequence[float]", "list of reals")
+        .replace("Sequence[float | None]", "list of reals")
+    )
+    for word, name in (
+        ("float", "real"),
+        ("str", "string"),
+        ("bool", "boolean"),
+        ("int", "integer"),
+        ("dict", "dictionary"),
+    ):
         text = re.sub(rf"\b{word}\b", name, text)
     return text.replace(" | ", " or ")
 

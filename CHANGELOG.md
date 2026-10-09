@@ -197,8 +197,8 @@ All notable changes to this project are documented here. The format follows
   `Taylor_Hood`.
 - `linear_solver="automatic"` iterates with algebraic multigrid where it
   used BiCGSTAB with ILU(0).
-- The Python code keeps every statement on one line (ruff line length 320,
-  no magic trailing comma).
+- The Python code is formatted by `ruff format` with a line length of 100
+  characters, which wraps a long call with one argument on each line.
 
 - **Property objects.** The objects that compute named properties at the
   integration points (conductivities, stresses, eigenstrains, cross

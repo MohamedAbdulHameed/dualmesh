@@ -77,7 +77,15 @@ property object of each region.  This property object declares
 .. code-block:: python
 
    neutrons = problem.add_physics("neutron_diffusion", "neutrons", groups=2)
-   problem.add_property("multigroup_cross_sections", "fuel", block=["fuel"], diffusion_coefficient=[0.015, 0.004], absorption_cross_section=[1.0, 8.0], scattering_cross_section=[[0.0, 2.0], [0.0, 0.0]], nu_fission_cross_section=[0.0, 13.5])
+   problem.add_property(
+       "multigroup_cross_sections",
+       "fuel",
+       block=["fuel"],
+       diffusion_coefficient=[0.015, 0.004],
+       absorption_cross_section=[1.0, 8.0],
+       scattering_cross_section=[[0.0, 2.0], [0.0, 0.0]],
+       nu_fission_cross_section=[0.0, 13.5],
+   )
    neutrons.add_boundary_condition("vacuum_boundary_condition", "outer")
    result = problem.solve_eigenvalue()
 
