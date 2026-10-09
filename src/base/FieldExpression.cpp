@@ -25,7 +25,9 @@ FieldExpressions::compile(const Problem & problem,
   const auto add = [&](const std::string & n, Argument a)
   {
     if (std::find(names.begin(), names.end(), n) != names.end())
-      throw InputError("'" + owner + "': the name '" + n + "' is used twice (a field, a function, a property or a constant). Rename one of them.");
+      throw InputError(
+          "'" + owner + "': the name '" + n +
+          "' is used twice (a field, a function, a property or a constant). Rename one of them.");
     names.push_back(n);
     candidates.push_back(std::move(a));
   };
@@ -50,7 +52,8 @@ FieldExpressions::compile(const Problem & problem,
     if (!registry.has(n))
       throw InputError("'" + owner + "': no property object declares the property '" + n + "'.");
     if (registry.components(n) != 1)
-      throw InputError("'" + owner + "': the property '" + n + "' has several components; only scalar properties can be used.");
+      throw InputError("'" + owner + "': the property '" + n +
+                       "' has several components; only scalar properties can be used.");
     add(n, {Argument::Property, registry.id(n), 0, 0.0, nullptr});
   }
   for (const auto & [n, value] : extra.constants)
@@ -66,7 +69,8 @@ FieldExpressions::compile(const Problem & problem,
         used.insert(static_cast<int>(k));
   }
   if (static_cast<int>(used.size()) > kMaxArguments)
-    throw InputError("'" + owner + "': the expressions use " + std::to_string(used.size()) + " names, and at most " + std::to_string(kMaxArguments) + " are allowed.");
+    throw InputError("'" + owner + "': the expressions use " + std::to_string(used.size()) +
+                     " names, and at most " + std::to_string(kMaxArguments) + " are allowed.");
   std::vector<std::string> used_names;
   _arguments.clear();
   _uses_fields = false;

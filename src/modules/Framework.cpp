@@ -372,12 +372,13 @@ CoupledForce::validParams()
                 "Coefficient c in the source S = -c v, as a constant or the name of a function. A "
                 "positive c makes the coupled variable v a source for this equation, and a "
                 "negative c makes it a sink.");
-  p.addOptional("coefficient_property",
-                ParameterKind::String,
-                std::string(""),
-                "Name of a property that multiplies 'coefficient' in c, for a "
-                "coefficient that differs between regions (e.g., a conductivity or a reaction rate). "
-                "Default none.");
+  p.addOptional(
+      "coefficient_property",
+      ParameterKind::String,
+      std::string(""),
+      "Name of a property that multiplies 'coefficient' in c, for a "
+      "coefficient that differs between regions (e.g., a conductivity or a reaction rate). "
+      "Default none.");
   return p;
 }
 
@@ -553,15 +554,16 @@ RobinBC::validParams()
   p.setClassDescription(
       "Mixed (Robin, convection) condition n . F = q0 - h (u - u_ambient), e.g. Newton's law "
       "of cooling.");
-  p.addOptional("transfer_coefficient",
-                ParameterKind::Function,
-                0.0,
-                "Transfer, or film, coefficient h in n . F = q0 - h (u - u_ambient). It "
-                "should be non-negative: a positive h drives u towards 'ambient_value', "
-                "whereas a negative one drives it away and makes the problem unstable. The "
-                "default 0 switches the transfer term off and leaves a pure Neumann "
-                "condition of strength 'flux'. "
-                "Like 'flux' and 'ambient_value', it is a constant, a registered function, or an expression of the fields, their gradients, x, y, z and t.");
+  p.addOptional(
+      "transfer_coefficient",
+      ParameterKind::Function,
+      0.0,
+      "Transfer, or film, coefficient h in n . F = q0 - h (u - u_ambient). It "
+      "should be non-negative: a positive h drives u towards 'ambient_value', "
+      "whereas a negative one drives it away and makes the problem unstable. The "
+      "default 0 switches the transfer term off and leaves a pure Neumann "
+      "condition of strength 'flux'. "
+      "Like 'flux' and 'ambient_value', it is a constant, a registered function, or an expression of the fields, their gradients, x, y, z and t.");
   p.addOptional("ambient_value",
                 ParameterKind::Function,
                 0.0,

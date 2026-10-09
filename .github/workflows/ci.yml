@@ -118,12 +118,13 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install tools
-        run: pip install ruff
+        run: pip install ruff==0.16.10
       - name: Ruff
         run: ruff check python tests examples
       - name: clang-format
         run: |
-          sudo apt-get update && sudo apt-get install -y clang-format
+          # One pinned version, so that the result does not depend on the runner image.
+          pip install clang-format==18.1.8
           find include src python/bindings tests/cpp -name '*.h' -o -name '*.cpp' \
             | xargs clang-format --dry-run --Werror
 

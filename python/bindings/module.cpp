@@ -1395,7 +1395,8 @@ PYBIND11_MODULE(_core, m)
           [](Problem & p, const std::vector<double> & x)
           {
             if (static_cast<Index>(x.size()) != p.solution().size())
-              throw InputError("set_solution: " + std::to_string(x.size()) + " values for " + std::to_string(p.solution().size()) + " unknowns.");
+              throw InputError("set_solution: " + std::to_string(x.size()) + " values for " +
+                               std::to_string(p.solution().size()) + " unknowns.");
             for (std::size_t i = 0; i < x.size(); ++i)
               p.solution()[static_cast<Index>(i)] = x[i];
           },

@@ -347,31 +347,35 @@ public:
   {
     InputParameters p = Kernel::validParams();
     p.setClassDescription(
-        std::string("A term of the equation of 'variable' in the general form div Gamma = f, whose flux Gamma and source f are expressions. ") +
+        std::string(
+            "A term of the equation of 'variable' in the general form div Gamma = f, whose flux Gamma and source f are expressions. ") +
         "The expressions may use every field of the problem by its name, the components of its gradient as grad_x(u), grad_y(u) and grad_z(u), the coordinates x, y and z, the time t, registered functions, properties and constants. " +
         "They are compiled once and differentiated automatically, so the Jacobian is exact and the assembly runs on every thread and every process. " +
         "In axisymmetric coordinates x is the radius and y the axial position, and the divergence includes the factor of the radius. " +
         kExpressionHelp);
-    p.addOptional("flux",
-                  ParameterKind::StringList,
-                  std::vector<std::string>{},
-                  "The flux Gamma of the equation, one expression for each space dimension of the mesh. For diffusion with a coefficient c, Gamma = -c grad u. Default none.");
+    p.addOptional(
+        "flux",
+        ParameterKind::StringList,
+        std::vector<std::string>{},
+        "The flux Gamma of the equation, one expression for each space dimension of the mesh. For diffusion with a coefficient c, Gamma = -c grad u. Default none.");
     p.addOptional("source",
                   ParameterKind::String,
                   std::string(""),
                   "The source f of the equation, an expression. Default none.");
-    p.addOptional("function_names",
-                  ParameterKind::StringList,
-                  std::vector<std::string>{},
-                  "Functions of position and time registered on the problem, each used by its name. Default none.");
+    p.addOptional(
+        "function_names",
+        ParameterKind::StringList,
+        std::vector<std::string>{},
+        "Functions of position and time registered on the problem, each used by its name. Default none.");
     p.addOptional("coupled_properties",
                   ParameterKind::StringList,
                   std::vector<std::string>{},
                   "Scalar properties of property objects, each used by its name. Default none.");
-    p.addOptional("constant_names",
-                  ParameterKind::StringList,
-                  std::vector<std::string>{},
-                  "Names of constants used in the expressions, matched by position with 'constant_values'. Default none.");
+    p.addOptional(
+        "constant_names",
+        ParameterKind::StringList,
+        std::vector<std::string>{},
+        "Names of constants used in the expressions, matched by position with 'constant_values'. Default none.");
     p.addOptional("constant_values",
                   ParameterKind::RealList,
                   std::vector<double>{},
@@ -386,7 +390,8 @@ public:
     if (_flux_text.empty() && _source_text.empty())
       throw InputError("'" + name() + "': give a 'flux', a 'source' or both.");
     if (p.getStringList("constant_names").size() != p.getRealList("constant_values").size())
-      throw InputError("'" + name() + "': 'constant_names' and 'constant_values' must have the same length.");
+      throw InputError("'" + name() +
+                       "': 'constant_names' and 'constant_values' must have the same length.");
   }
 
   bool hasFlux() const override { return !_flux_text.empty(); }
@@ -397,7 +402,9 @@ public:
     Kernel::initialSetup(problem);
     const int dim = problem.mesh().dimension();
     if (!_flux_text.empty() && static_cast<int>(_flux_text.size()) != dim)
-      throw InputError("'" + name() + "': the flux has " + std::to_string(_flux_text.size()) + " component(s), and the mesh has " + std::to_string(dim) + " dimension(s). Give one expression for each dimension.");
+      throw InputError("'" + name() + "': the flux has " + std::to_string(_flux_text.size()) +
+                       " component(s), and the mesh has " + std::to_string(dim) +
+                       " dimension(s). Give one expression for each dimension.");
     FieldExpressions::Names names;
     names.functions = _params.getStringList("function_names");
     names.properties = _params.getStringList("coupled_properties");
