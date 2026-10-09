@@ -1,0 +1,42 @@
+# build artefacts
+build/
+build-*/
+_build/
+dist/
+*.egg-info/
+*.so
+*.pyd
+*.dylib
+*.o
+*.a
+CMakeCache.txt
+CMakeFiles/
+
+# python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# results
+*.vtu
+*.pvtu
+*.pvd
+*.csv
+*.e
+*.exo
+!examples/**/*.csv
+!verification/**/*.csv
+
+# editors and systems
+.vscode/
+.idea/
+.DS_Store
+
+# OpenFOAM cases
+verification/openfoam/run/
+
+# generated when the documentation is built
+docs/syntax/

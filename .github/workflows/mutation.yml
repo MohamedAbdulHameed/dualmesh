@@ -1,0 +1,38 @@
+name: Mutation tests
+
+# Mutation testing changes the code in small ways (a sign, a constant, a
+# comparison) and runs the tests: a change that no test detects shows a weak
+# test. It is slow, so it runs once a week and on request.
+on:
+  schedule:
+    - cron: "41 2 * * 6"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mutmut:
+    name: Mutation tests of the Python physics, eigenvalue and uncertainty code
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          python -m pip install pybind11 numpy scipy sympy meshio pytest "mutmut<3"
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DDUALMESH_BUILD_TESTS=OFF -Dpybind11_DIR=$(python -c "import pybind11; print(pybind11.get_cmake_dir())")
+          cmake --build build -j
+      - name: Mutation tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}/python
+        run: |
+          mutmut run --paths-to-mutate python/dualmesh/physics.py,python/dualmesh/eigenvalue.py --runner "python -m pytest -x -q tests/python/test_physics.py tests/python/test_neutronics.py" || true
+          mutmut results | tee mutation-results.txt
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mutation-results
+          path: mutation-results.txt

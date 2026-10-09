@@ -1,0 +1,210 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# The jobs only read the repository.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cpp:
+    name: C++ (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DDUALMESH_BUILD_PYTHON=OFF
+      - name: Build
+        run: cmake --build build --config Release -j
+      - name: Test
+        run: ctest --test-dir build --build-config Release --output-on-failure
+
+  mpi:
+    name: MPI (1, 2, 3 and 4 processes)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install MPI and METIS
+        run: sudo apt-get update && sudo apt-get install -y libopenmpi-dev openmpi-bin libmetis-dev libeigen3-dev
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DDUALMESH_BUILD_PYTHON=OFF -DDUALMESH_ENABLE_MPI=ON
+      - name: Build
+        run: cmake --build build -j
+      - name: Distributed tests
+        run: |
+          for n in 1 2 3 4; do
+            mpirun --oversubscribe -n $n ./build/dualmesh_parallel_tests
+          done
+
+  petsc:
+    name: PETSc and MPI (Python, 1 to 4 processes)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - name: Install PETSc, MPI and METIS
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libpetsc-real-dev libopenmpi-dev openmpi-bin libmetis-dev libeigen3-dev pkg-config
+      - name: Install dualmesh with MPI and PETSc
+        run: |
+          pip install -C cmake.define.DUALMESH_ENABLE_MPI=ON -C cmake.define.DUALMESH_ENABLE_PETSC=ON .[all,test]
+          python -c "import dualmesh as dm; assert dm.have_petsc() and dm.have_mpi(); print(dm.petsc_version())"
+      - name: Serial PETSc tests
+        run: pytest -q tests/python/test_petsc.py tests/python/test_pressure_velocity.py
+      - name: Distributed tests
+        run: |
+          for n in 1 2 3 4; do
+            mpirun --oversubscribe -n $n python -m pytest -q -p no:cacheprovider tests/python/test_parallel.py
+          done
+
+  python:
+    name: Python ${{ matrix.python-version }} (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python-version: ["3.9", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install
+        run: pip install .[all,test]
+      - name: Verification suite
+        run: pytest -q
+      - name: Examples
+        run: |
+          python examples/cooling_fin.py
+          python examples/custom_kernel.py
+          python examples/functionally_graded_beam.py
+          python examples/transient_slab.py
+          python examples/natural_convection.py
+      - name: Command line
+        run: |
+          dualmesh --version
+          dualmesh list --module heat_transfer
+          dualmesh describe heat_conduction
+          dualmesh list --category physics
+          dualmesh describe solid_mechanics
+          dualmesh mesh examples/wrench/wrench.msh
+          cd examples && python bus_bar.py
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+      - name: Install tools
+        run: pip install ruff
+      - name: Ruff
+        run: ruff check python tests examples
+      - name: clang-format
+        run: |
+          sudo apt-get update && sudo apt-get install -y clang-format
+          find include src python/bindings tests/cpp -name '*.h' -o -name '*.cpp' \
+            | xargs clang-format --dry-run --Werror
+
+  docs:
+    name: Documentation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+      - name: Install
+        run: |
+          sudo apt-get update && sudo apt-get install -y libeigen3-dev
+          pip install .[docs,all]
+      - name: Build documentation
+        run: sphinx-build -b html docs docs/_build/html
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: documentation
+          path: docs/_build/html
+
+  sanitizers:
+    name: AddressSanitizer and UndefinedBehaviorSanitizer
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - name: Install the test dependencies
+        run: python -m pip install pybind11 numpy scipy sympy meshio pytest
+      - name: Configure with the sanitizers
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined" -Dpybind11_DIR=$(python -c "import pybind11; print(pybind11.get_cmake_dir())")
+      - name: Build
+        run: cmake --build build -j
+      - name: C++ tests
+        run: ctest --test-dir build --output-on-failure
+      - name: Python tests of the core, the physics and the neutronics
+        env:
+          ASAN_OPTIONS: detect_leaks=0
+          UBSAN_OPTIONS: print_stacktrace=1
+        run: |
+          export LD_PRELOAD=$(gcc -print-file-name=libasan.so):$(gcc -print-file-name=libubsan.so)
+          PYTHONPATH=$PWD/python python -m pytest tests/python/test_framework.py tests/python/test_physics.py tests/python/test_jacobian.py tests/python/test_neutronics.py tests/python/test_finite_volume.py -q
+
+  coverage:
+    name: Coverage of the C++ and the Python code
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - name: Install the test dependencies
+        run: python -m pip install pybind11 numpy scipy sympy meshio pytest pytest-cov gcovr
+      - name: Configure with coverage
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_FLAGS="--coverage" -Dpybind11_DIR=$(python -c "import pybind11; print(pybind11.get_cmake_dir())")
+      - name: Build
+        run: cmake --build build -j
+      - name: Tests
+        run: |
+          ctest --test-dir build --output-on-failure
+          PYTHONPATH=$PWD/python python -m pytest tests/python -q --cov=python/dualmesh --cov-report=xml:python-coverage.xml --cov-report=term
+      - name: C++ coverage report
+        run: gcovr --root . --filter src/ --filter include/ --xml cpp-coverage.xml --print-summary build
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: coverage
+          path: |
+            python-coverage.xml
+            cpp-coverage.xml
+
+  clang-tidy:
+    name: clang-tidy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install clang-tidy and Eigen
+        run: sudo apt-get update && sudo apt-get install -y clang-tidy libeigen3-dev
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DDUALMESH_BUILD_PYTHON=OFF
+      - name: clang-tidy on the library
+        run: run-clang-tidy -p build -quiet "src/.*\.cpp"

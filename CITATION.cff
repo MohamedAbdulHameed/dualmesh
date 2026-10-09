@@ -1,0 +1,36 @@
+cff-version: 1.2.0
+title: "dualmesh: a multiphysics framework for heat transfer, solid mechanics, fluid dynamics, neutron diffusion and general partial differential equations"
+message: "If you use this software, please cite it as below."
+type: software
+version: 0.2.0
+license: LGPL-2.1-or-later
+repository-code: "https://github.com/MohamedAbdulHameed/dualmesh"
+url: "https://dualmesh.readthedocs.io"
+abstract: >-
+  dualmesh is a multiphysics framework for heat transfer, solid mechanics,
+  fluid dynamics, neutron diffusion and general partial differential
+  equations. Coupled
+  problems are solved monolithically by Newton's method with exact Jacobians
+  from automatic differentiation. One keyword selects the discretization of a
+  problem: the Galerkin finite element method, the vertex-centered or
+  cell-centered finite volume method, or the dual mesh control domain method
+  (DMCDM). The library is written in C++17 with Python bindings. It is a
+  modular framework of physics, kernels, boundary conditions and property
+  objects, with uncertainty quantification. It is verified against analytical
+  solutions, published benchmarks and other codes.
+keywords:
+  - dual mesh control domain method
+  - finite element method
+  - finite volume method
+  - fluid dynamics
+  - solid mechanics
+  - heat transfer
+  - neutron diffusion
+  - partial differential equations
+  - uncertainty quantification
+  - multiphysics
+authors:
+  - family-names: AbdulHameed
+    given-names: Mohamed
+    orcid: "https://orcid.org/0009-0009-5882-3345"
+    affiliation: "Nuclear Innovation Centre, UNSW Sydney"
