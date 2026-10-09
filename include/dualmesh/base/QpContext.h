@@ -30,6 +30,8 @@ public:
   Point x{0, 0, 0};
   double time = 0.0;
   double dt = 0.0;
+  /// The value of the symbol eigenvalue of the expressions, set by an eigenvalue study (0 otherwise).
+  double eigenvalue = 0.0;
   Index element = -1;
   int block = 0;
   /// Outward unit normal (boundary integration points only).

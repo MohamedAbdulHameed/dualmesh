@@ -980,75 +980,83 @@ conductivity that differs between blocks comes from the property objects when
 _add(
     "coefficient_form_PDE",
     """
-The coefficient form writes a scalar equation that no other physics names,
+The coefficient form writes one or several equations by their coefficients.
+The equation of each field :math:`u` is
 
 .. math::
 
-   d_t \\frac{\\partial u}{\\partial t} + \\nabla \\cdot \\left( -c \\nabla u - \\boldsymbol{\\alpha} u \\right) + \\boldsymbol{\\beta} \\cdot \\nabla u + a u = f ,
+   d \\frac{\\partial u}{\\partial t} + \\nabla \\cdot \\left( -c \\nabla u - \\boldsymbol{\\alpha} u \\right) + \\boldsymbol{\\beta} \\cdot \\nabla u + a u = f ,
 
 where :math:`c` is the diffusion coefficient, :math:`\\boldsymbol{\\alpha}` the
 conservative flux convection coefficient, :math:`\\boldsymbol{\\beta}` the
 convection coefficient, :math:`a` the absorption coefficient, :math:`f` the
-source and :math:`d_t` the time derivative coefficient.  A steady
-advection-diffusion-reaction problem with a diffusion coefficient that
-depends on the solution reads:
+source and :math:`d` the time derivative coefficient.  A coefficient is a
+constant or an expression of the fields, their gradients, :math:`x`, :math:`y`,
+:math:`z` and :math:`t`.  An expression that depends on a field makes the
+equations nonlinear, and Newton's method receives its exact derivative.  A
+steady advection-diffusion-reaction problem of one field reads:
 
 .. code-block:: python
 
-   pde = problem.add_physics("coefficient_form_PDE", "transport", variable="c", diffusion_coefficient="1 + 0.5*c", convection_coefficient=[1.0, 0.5], absorption_coefficient=2.0, source="sin(pi*y)")
+   pde = problem.add_physics("coefficient_form_PDE", "transport", variables=["c"], diffusion_coefficient="1 + 0.5*c", convection_coefficient=[1.0, 0.5], absorption_coefficient=2.0, source="sin(pi*y)")
    pde.add_boundary_condition("Dirichlet_boundary_condition", "left", value=1.0)
    pde.add_boundary_condition("Neumann_boundary_condition", "right", flux=0.5)
 
-A diffusion or absorption coefficient that depends on the variable makes the
-equation nonlinear, and Newton's method receives its exact derivative.  A
-coefficient that depends on both the variable and the position is given as a
-``parsed_property`` with ``property_name="diffusion_coefficient"``, which the
-physics reads when ``diffusion_coefficient`` is not given.
+With several fields, every input is a dict keyed by the field of the
+equation.  A coefficient of an equation is one value, which acts on the field
+of that equation, or a dict field name -> value, which couples the equation to
+other fields.  In this example, the equation of :math:`u` has the absorption
+term :math:`2u - v`:
+
+.. code-block:: python
+
+   diffusion = {"u": 1.0, "v": "1 + u^2"}
+   absorption = {"u": {"u": 2.0, "v": -1.0}}
+   pde = problem.add_physics("coefficient_form_PDE", "system", variables=["u", "v"], diffusion_coefficient=diffusion, absorption_coefficient=absorption, source={"u": "sin(x)"})
 """,
 )
 
 _add(
-    "neutron_diffusion",
+    "general_form_PDE",
     """
-The ``neutron_diffusion`` physics solves the multigroup neutron diffusion
-equations.  It makes one flux variable for each energy group.  Use it with a
-``multigroup_cross_sections`` property object in each region of the core.
-This example calculates the effective multiplication factor of a bare
-two-group core of 1 m by 1 m:
+The general form writes a system of equations by the flux
+:math:`\\boldsymbol{\\Gamma}` and the source :math:`f` of each field,
+
+.. math::
+
+   d \\frac{\\partial u}{\\partial t} + \\nabla \\cdot \\boldsymbol{\\Gamma} = f ,
+
+where :math:`\\boldsymbol{\\Gamma}` and :math:`f` are expressions of all the fields,
+the components of their gradients (``grad_x(u)``, ``grad_y(u)`` and
+``grad_z(u)``), :math:`x`, :math:`y`, :math:`z`, :math:`t` and named constants.
+The expressions are compiled and differentiated automatically, so the
+Jacobian is exact and the assembly runs on every thread and every process.
+A p-Laplacian coupled to a second field reads:
 
 .. code-block:: python
 
-   mesh = dm.generate_rectangle_mesh(x_min=0.0, x_max=1.0, y_min=0.0, y_max=1.0, num_x_elements=20, num_y_elements=20)
-   problem = dm.Problem(mesh)
-   neutrons = problem.add_physics("neutron_diffusion", "neutrons", groups=2)
-   problem.add_property("multigroup_cross_sections", "fuel", diffusion_coefficient=[0.015, 0.004], absorption_cross_section=[1.0, 8.0], scattering_cross_section=[[0.0, 2.0], [0.0, 0.0]], nu_fission_cross_section=[0.0, 13.5])
-   neutrons.add_boundary_condition("vacuum_boundary_condition", "outer", boundary=["left", "right", "bottom", "top"])
-   result = problem.solve_eigenvalue()
-   print(result)
+   gradient = "(grad_x(u)^2 + grad_y(u)^2)"
+   flux = {"u": [f"-(1 + {gradient})*grad_x(u)", f"-(1 + {gradient})*grad_y(u)"], "v": ["-k*grad_x(v)", "-k*grad_y(v)"]}
+   source = {"u": "v - u^3", "v": "1"}
+   pde = problem.add_physics("general_form_PDE", "system", variables=["u", "v"], flux=flux, source=source, constants={"k": 2.0})
 
-The variables are ``neutron_flux_1`` and ``neutron_flux_2``.  Group 1 has the
-highest energy.  The parameter ``transverse_buckling`` adds the axial leakage
-of a two-dimensional model.  :ref:`theory-neutronics` gives the equations.
+The boundary flux :math:`-\\mathbf{n} \\cdot \\boldsymbol{\\Gamma}` is prescribed
+by ``Neumann_boundary_condition``, whose ``flux`` may also be an expression of
+the fields.
 """,
 )
 
 _add(
-    "multigroup_cross_sections",
+    "parsed_kernel",
     """
-The ``multigroup_cross_sections`` property object gives the group constants
-of one region to the ``neutron_diffusion`` physics.  Give one value for each
-group.  Give the scattering matrix as one row for each source group.  The
-units are SI: :math:`\\mathrm{m}` for the diffusion coefficients and
-:math:`\\mathrm{m}^{-1}` for the cross sections.  This example sets a fuel
-region and a reflector region:
+``parsed_kernel`` adds one term to the equation of ``variable`` in the general
+form :math:`\\nabla \\cdot \\boldsymbol{\\Gamma} = f`, with the flux and the source
+given as expressions of the fields and their gradients.  ``general_form_PDE``
+and ``coefficient_form_PDE`` generate it.  A nonlinear diffusion term:
 
 .. code-block:: python
 
-   problem.add_property("multigroup_cross_sections", "fuel", block=["fuel"], diffusion_coefficient=[0.015, 0.004], absorption_cross_section=[1.0, 8.0], scattering_cross_section=[[0.0, 2.0], [0.0, 0.0]], nu_fission_cross_section=[0.0, 13.5])
-   problem.add_property("multigroup_cross_sections", "reflector", block=["reflector"], diffusion_coefficient=[0.02, 0.003], absorption_cross_section=[0.0, 1.0], scattering_cross_section=[[0.0, 4.0], [0.0, 0.0]])
-
-The default fission spectrum puts all fission neutrons in group 1.  The
-parameter ``fission_spectrum`` gives another spectrum.  Its sum must be 1.
+   problem.add_kernel("parsed_kernel", "nonlinear_diffusion", variable="u", flux=["-(1 + u^2)*grad_x(u)", "-(1 + u^2)*grad_y(u)"], source="sin(x)")
 """,
 )
 

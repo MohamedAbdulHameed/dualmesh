@@ -38,7 +38,7 @@ def main(argv: list[str] | None = None) -> int:
         help="physics, coupling, kernel, boundary_condition, nodal_boundary_condition, nodal_load or property",
     )
     list_parser.add_argument(
-        "--module", help="framework, heat_transfer, solid_mechanics, fluids, neutronics, ..."
+        "--module", help="framework, heat_transfer, solid_mechanics, fluids, ..."
     )
 
     describe_parser = subparsers.add_parser(

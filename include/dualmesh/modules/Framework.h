@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 #pragma once
 
+#include "dualmesh/base/FieldExpression.h"
 #include "dualmesh/base/Kernel.h"
 #include "dualmesh/base/Property.h"
 
@@ -154,7 +155,7 @@ public:
   ADReal computeBoundaryFlux(const QpContext & ctx) const override;
 
 private:
-  FunctionPtr _q;
+  FieldCoefficient _q;
 };
 
 class RobinBC : public IntegratedBC
@@ -166,7 +167,7 @@ public:
   ADReal computeBoundaryFlux(const QpContext & ctx) const override;
 
 protected:
-  FunctionPtr _h, _uinf, _q;
+  FieldCoefficient _h, _uinf, _q;
 };
 
 class ConstantProperty : public Property

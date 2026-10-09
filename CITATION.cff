@@ -1,5 +1,5 @@
 cff-version: 1.2.0
-title: "dualmesh: a multiphysics framework for heat transfer, solid mechanics, fluid dynamics, neutron diffusion and general partial differential equations"
+title: "dualmesh: a multiphysics framework for heat transfer, solid mechanics, fluid dynamics and general partial differential equations"
 message: "If you use this software, please cite it as below."
 type: software
 version: 0.2.0
@@ -8,8 +8,7 @@ repository-code: "https://github.com/MohamedAbdulHameed/dualmesh"
 url: "https://dualmesh.readthedocs.io"
 abstract: >-
   dualmesh is a multiphysics framework for heat transfer, solid mechanics,
-  fluid dynamics, neutron diffusion and general partial differential
-  equations. Coupled
+  fluid dynamics and general partial differential equations. Coupled
   problems are solved monolithically by Newton's method with exact Jacobians
   from automatic differentiation. One keyword selects the discretization of a
   problem: the Galerkin finite element method, the vertex-centered or
@@ -25,7 +24,6 @@ keywords:
   - fluid dynamics
   - solid mechanics
   - heat transfer
-  - neutron diffusion
   - partial differential equations
   - uncertainty quantification
   - multiphysics

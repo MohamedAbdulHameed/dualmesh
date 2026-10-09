@@ -376,8 +376,8 @@ CoupledForce::validParams()
                 ParameterKind::String,
                 std::string(""),
                 "Name of a property that multiplies 'coefficient' in c, for a "
-                "coefficient that differs between regions (e.g., a scattering or fission "
-                "cross section). Default none.");
+                "coefficient that differs between regions (e.g., a conductivity or a reaction rate). "
+                "Default none.");
   return p;
 }
 
@@ -519,7 +519,8 @@ NeumannBC::validParams()
       "is an inflow of u into the body. This is the same convention as "
       "heat_flux_boundary_condition, whose 'heat_flux' is the heat entering the body. The default "
       "0 is the do-nothing condition, insulated for heat transfer and traction free for "
-      "elasticity.");
+      "elasticity. "
+      "It is a constant, a registered function, or an expression of the fields, their gradients (grad_x(u), grad_y(u), grad_z(u)), x, y, z and t, which is differentiated automatically.");
   p.addOptional("scale_with_load",
                 ParameterKind::Boolean,
                 true,
@@ -536,13 +537,13 @@ void
 NeumannBC::initialSetup(Problem & problem)
 {
   IntegratedBC::initialSetup(problem);
-  _q = getFunction(problem, "flux");
+  _q.setup(problem, _params, "flux", name());
 }
 
 ADReal
 NeumannBC::computeBoundaryFlux(const QpContext & ctx) const
 {
-  return ADReal(_q->value(ctx.x, ctx.time));
+  return _q.value(ctx);
 }
 
 InputParameters
@@ -559,7 +560,8 @@ RobinBC::validParams()
                 "should be non-negative: a positive h drives u towards 'ambient_value', "
                 "whereas a negative one drives it away and makes the problem unstable. The "
                 "default 0 switches the transfer term off and leaves a pure Neumann "
-                "condition of strength 'flux'.");
+                "condition of strength 'flux'. "
+                "Like 'flux' and 'ambient_value', it is a constant, a registered function, or an expression of the fields, their gradients, x, y, z and t.");
   p.addOptional("ambient_value",
                 ParameterKind::Function,
                 0.0,
@@ -582,16 +584,15 @@ void
 RobinBC::initialSetup(Problem & problem)
 {
   IntegratedBC::initialSetup(problem);
-  _h = getFunction(problem, "transfer_coefficient");
-  _uinf = getFunction(problem, "ambient_value");
-  _q = getFunction(problem, "flux");
+  _h.setup(problem, _params, "transfer_coefficient", name());
+  _uinf.setup(problem, _params, "ambient_value", name());
+  _q.setup(problem, _params, "flux", name());
 }
 
 ADReal
 RobinBC::computeBoundaryFlux(const QpContext & ctx) const
 {
-  return _q->value(ctx.x, ctx.time) -
-         _h->value(ctx.x, ctx.time) * (ctx.value(_var) - _uinf->value(ctx.x, ctx.time));
+  return _q.value(ctx) - _h.value(ctx) * (ctx.value(_var) - _uinf.value(ctx));
 }
 
 // ---------------------------------------------------------------------------

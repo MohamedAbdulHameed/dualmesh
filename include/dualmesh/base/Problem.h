@@ -264,11 +264,16 @@ public:
   std::shared_ptr<Mesh> meshPointer() const { return _mesh; }
   Method method() const { return _method; }
   CoordinateSystem coordinateSystem() const { return _coord; }
+  /// The value of the symbol eigenvalue that the expressions read; an eigenvalue study sets it.
+  void setEigenvalue(double value) { _eigenvalue = value; }
+  double eigenvalue() const { return _eigenvalue; }
   int numVariables() const { return static_cast<int>(_vars.size()); }
   const Variable & variable(int i) const { return _vars[i]; }
   int variableIndex(const std::string & name) const;
   bool hasVariable(const std::string & name) const;
   FunctionPtr function(const std::string & name) const;
+  /// Whether a function of this name is registered.
+  bool hasFunction(const std::string & name) const { return _functions.count(name) > 0; }
   /// True when the unknowns sit at cell centroids instead of mesh nodes.
   bool isCellCentered() const { return _method == Method::FiniteVolumeCell; }
   /// The cell-centred finite volume mesh (cell-centred methods only).
@@ -726,6 +731,7 @@ private:
   Vector _U;
   Vector _last_residual;
   double _time = 0.0;
+  double _eigenvalue = 0.0;
   std::function<void(double, Problem &)> _step_callback;
   std::function<void(int)> _output_callback;
   std::map<std::string, std::vector<double>> _element_fields;

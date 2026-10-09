@@ -8,6 +8,8 @@
 // way to add a correlation (a conductivity, a swelling law) without writing
 // C++, at the speed of compiled code.
 #include "dualmesh/base/Factory.h"
+#include "dualmesh/base/FieldExpression.h"
+#include "dualmesh/base/Kernel.h"
 #include "dualmesh/base/Problem.h"
 #include "dualmesh/base/Property.h"
 #include "dualmesh/core/ParsedFunction.h"
@@ -335,11 +337,109 @@ private:
   std::vector<double> _free_values;
 };
 
+// ---------------------------------------------------------------------------
+/// A term of an equation whose flux and source are expressions of the fields, their gradients,
+/// the position and the time.
+class ParsedKernel : public Kernel
+{
+public:
+  static InputParameters validParams()
+  {
+    InputParameters p = Kernel::validParams();
+    p.setClassDescription(
+        std::string("A term of the equation of 'variable' in the general form div Gamma = f, whose flux Gamma and source f are expressions. ") +
+        "The expressions may use every field of the problem by its name, the components of its gradient as grad_x(u), grad_y(u) and grad_z(u), the coordinates x, y and z, the time t, registered functions, properties and constants. " +
+        "They are compiled once and differentiated automatically, so the Jacobian is exact and the assembly runs on every thread and every process. " +
+        "In axisymmetric coordinates x is the radius and y the axial position, and the divergence includes the factor of the radius. " +
+        kExpressionHelp);
+    p.addOptional("flux",
+                  ParameterKind::StringList,
+                  std::vector<std::string>{},
+                  "The flux Gamma of the equation, one expression for each space dimension of the mesh. For diffusion with a coefficient c, Gamma = -c grad u. Default none.");
+    p.addOptional("source",
+                  ParameterKind::String,
+                  std::string(""),
+                  "The source f of the equation, an expression. Default none.");
+    p.addOptional("function_names",
+                  ParameterKind::StringList,
+                  std::vector<std::string>{},
+                  "Functions of position and time registered on the problem, each used by its name. Default none.");
+    p.addOptional("coupled_properties",
+                  ParameterKind::StringList,
+                  std::vector<std::string>{},
+                  "Scalar properties of property objects, each used by its name. Default none.");
+    p.addOptional("constant_names",
+                  ParameterKind::StringList,
+                  std::vector<std::string>{},
+                  "Names of constants used in the expressions, matched by position with 'constant_values'. Default none.");
+    p.addOptional("constant_values",
+                  ParameterKind::RealList,
+                  std::vector<double>{},
+                  "Values of the constants named in 'constant_names'. Default none.");
+    return p;
+  }
+
+  explicit ParsedKernel(const InputParameters & p) : Kernel(p)
+  {
+    _flux_text = p.getStringList("flux");
+    _source_text = p.getString("source");
+    if (_flux_text.empty() && _source_text.empty())
+      throw InputError("'" + name() + "': give a 'flux', a 'source' or both.");
+    if (p.getStringList("constant_names").size() != p.getRealList("constant_values").size())
+      throw InputError("'" + name() + "': 'constant_names' and 'constant_values' must have the same length.");
+  }
+
+  bool hasFlux() const override { return !_flux_text.empty(); }
+  bool hasSource() const override { return !_source_text.empty(); }
+
+  void initialSetup(Problem & problem) override
+  {
+    Kernel::initialSetup(problem);
+    const int dim = problem.mesh().dimension();
+    if (!_flux_text.empty() && static_cast<int>(_flux_text.size()) != dim)
+      throw InputError("'" + name() + "': the flux has " + std::to_string(_flux_text.size()) + " component(s), and the mesh has " + std::to_string(dim) + " dimension(s). Give one expression for each dimension.");
+    FieldExpressions::Names names;
+    names.functions = _params.getStringList("function_names");
+    names.properties = _params.getStringList("coupled_properties");
+    const auto constants = _params.getStringList("constant_names");
+    const auto values = _params.getRealList("constant_values");
+    for (std::size_t k = 0; k < constants.size(); ++k)
+      names.constants.emplace_back(constants[k], values[k]);
+    std::vector<std::string> texts = _flux_text;
+    if (!_source_text.empty())
+      texts.push_back(_source_text);
+    _expressions.compile(problem, texts, names, name());
+    _num_flux = _flux_text.size();
+  }
+
+  void computeFlux(const QpContext & ctx, ADVector3 & flux) const override
+  {
+    std::array<ADReal, FieldExpressions::kMaxArguments> args;
+    _expressions.arguments(ctx, args.data());
+    // The kernel flux F of -div F + S = 0 is -Gamma.
+    for (std::size_t c = 0; c < _num_flux; ++c)
+      flux[c] = -_expressions.value(c, args.data());
+  }
+
+  ADReal computeSource(const QpContext & ctx) const override
+  {
+    // The kernel source S of -div F + S = 0 is -f.
+    return -_expressions.value(_num_flux, ctx);
+  }
+
+private:
+  std::vector<std::string> _flux_text;
+  std::string _source_text;
+  FieldExpressions _expressions;
+  std::size_t _num_flux = 0;
+};
+
 void
 registerParsedObjects(Factory & f)
 {
   f.add<ParsedProperty>("parsed_property", ObjectCategory::Property, "framework");
   f.add<ParsedEigenstrain>("parsed_eigenstrain", ObjectCategory::Property, "solid_mechanics");
+  f.add<ParsedKernel>("parsed_kernel", ObjectCategory::Kernel, "framework");
 }
 
 } // namespace dualmesh

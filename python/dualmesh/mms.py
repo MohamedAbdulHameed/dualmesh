@@ -280,7 +280,7 @@ class ManufacturedSolution:
                 f"'{physics}' is a coupling. A manufactured solution takes physics only."
             )
         instance._resolve(self.coordinates, self.dimension)
-        missing = [v for v in instance.variables() if v not in self.fields]
+        missing = [v for v in instance.variable_names() if v not in self.fields]
         if missing:
             raise _physics.InputError(
                 f"{physics} '{name}': give the exact field of {', '.join(missing)} in 'fields'."
@@ -383,7 +383,9 @@ class ManufacturedSolution:
                     )
                 )
             physics = problem.add_physics(type_name, name, **parameters)
-            served |= physics._set_manufactured_source({v: forcing[v] for v in physics.variables()})
+            served |= physics._set_manufactured_source(
+                {v: forcing[v] for v in physics.variable_names()}
+            )
         pressures = self._pressures()
         boundaries = list(boundary) if boundary is not None else list(mesh.sideset_names())
         walls = [b for b in boundaries if b not in self.flux_boundaries]

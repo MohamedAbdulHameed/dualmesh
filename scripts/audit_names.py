@@ -107,11 +107,7 @@ def check_name(name: str, where: str) -> list[str]:
     """Findings for one parameter or type name."""
     findings = []
     words = _words(name)
-    for i, word in enumerate(words):
-        # nu_fission is the established name of the product of the number of
-        # neutrons per fission and the fission cross section.
-        if word == "nu" and i + 1 < len(words) and words[i + 1] == "fission":
-            continue
+    for word in words:
         if word in FORBIDDEN_WORDS:
             findings.append(
                 f"{where}: '{name}' abbreviates '{word}'. Write {FORBIDDEN_WORDS[word]}."

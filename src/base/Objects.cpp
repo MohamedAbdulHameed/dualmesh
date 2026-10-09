@@ -531,7 +531,6 @@ Factory::Factory()
   registerSolidMechanicsObjects(*this);
   registerFluidObjects(*this);
   registerParsedObjects(*this);
-  registerNeutronicsObjects(*this);
 }
 
 const Factory::Entry &

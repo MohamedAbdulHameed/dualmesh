@@ -14,6 +14,28 @@ All notable changes to this project are documented here. The format follows
   and `materials.gas` gives the thermal conductivity of helium, argon,
   krypton, xenon, hydrogen and nitrogen at low density and of their mixtures,
   and the temperature jump distance at a wall.
+- **General partial differential equations.** `general_form_PDE` solves a
+  system d du/dt + div Gamma = f whose flux Gamma and source f are
+  expressions of all the fields, the components of their gradients
+  (`grad_x(u)`, `grad_y(u)`, `grad_z(u)`), x, y, z, t and named constants.
+  The expressions are compiled and differentiated automatically, so the
+  Jacobian is exact and the assembly runs on every thread and every process
+  with every method. `parsed_kernel` is the object of one such term.
+- **Eigenvalue study of any problem.** `Problem.solve_eigenvalue` returns
+  the eigenvalues closest to `near` and their modes for every problem
+  without `neutron_diffusion`. Every field varies in time as
+  u_hat exp(-lambda t), so the time derivatives define the eigenvalue, and
+  the expressions may use the symbol `eigenvalue`, at most quadratically.
+  The operators come from exact assemblies, and shift-invert Arnoldi
+  iteration solves the linear or the companion quadratic problem. Complex
+  eigenvalues are reported with both parts.
+- `coefficient_form_PDE` solves systems: every input is a dict keyed by the
+  field of the equation, and a coefficient couples to other fields with a
+  dict field name -> value. Every coefficient and the source may be an
+  expression of the fields, their gradients and the position together.
+- The `flux` of `Neumann_boundary_condition` and the `flux`,
+  `transfer_coefficient` and `ambient_value` of `Robin_boundary_condition`
+  may be expressions of the fields and their gradients.
 - `gas_gap_heat_transfer` takes an `accommodation_coefficient`.
 - The parsed creep rate of `small_strain_stress` reads `grain_size`, which is
   required only when the expression uses it.
@@ -173,6 +195,11 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- `coefficient_form_PDE` takes `variables` (a list) in place of `variable`,
+  and `units` in place of `unit`. Without a diffusion coefficient, the
+  equation of a field u of a system reads the property
+  `diffusion_coefficient_u`.
+- The method `variables()` of a physics is renamed `variable_names()`.
 - `gas_gap_heat_transfer` takes the data of the surfaces from the case, with
   no default: the roughnesses, the emissivities and, with a
   `contact_penalty`, the Meyer hardness and the conductivities of the two
@@ -214,6 +241,14 @@ All notable changes to this project are documented here. The format follows
 
 ### Removed
 
+- The neutronics module: the `neutron_diffusion` physics, the
+  `multigroup_cross_sections` property object, the
+  `vacuum_boundary_condition` and `albedo_boundary_condition`, and the power
+  iteration of the k-eigenvalue study. Neutron diffusion is written with
+  `coefficient_form_PDE` and solved by the eigenvalue study of any problem:
+  `examples/reactor_criticality.py` and the tutorial on reactor criticality
+  show how. The IAEA 2D PWR benchmark written in this form gives the same
+  k_eff and fluxes as the removed module to round-off.
 - The solver option `verbose` and the `progress` parameter of the
   uncertainty studies (both replaced by `report`), and the `output_interval`
   and `output_file_base` parameters of `Problem.solve_transient` (replaced by

@@ -726,8 +726,8 @@ Neutronics
    edition, John Wiley & Sons, Hoboken, NJ, 2025.  DOI:
    10.1002/9781394283583.  The multigroup diffusion equations (Chapter 7),
    the boundary conditions and the bucklings of one-group theory (Chapter 5)
-   and the numerical solution and the source iteration (Chapter 6), in the
-   form :doc:`theory/neutronics` uses them.
+   and the transverse buckling (Chapter 6), in the form
+   :doc:`tutorials/criticality` uses them.
 
 .. [ANL7416] Argonne Code Center, *Argonne Code Center: Benchmark Problem
    Book*, ANL-7416, Supplement 2, Argonne National Laboratory, Argonne, IL,

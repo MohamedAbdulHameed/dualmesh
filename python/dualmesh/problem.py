@@ -836,32 +836,22 @@ class Problem:
 
     def solve_eigenvalue(
         self,
-        method: str = "krylov",
+        num_modes: int = 1,
+        near: float = 0.0,
         tolerance: float = 1.0e-10,
-        max_iterations: int = 2000,
-        normalization: float = 1.0,
         report: str = "full",
         output=None,
     ):
-        """Compute the effective multiplication factor and the fundamental
-        mode of the neutron_diffusion physics of the problem (see
-        :mod:`dualmesh.eigenvalue`).
+        """Compute eigenvalues and modes of the problem (see :mod:`dualmesh.modes`).
 
-        ``method`` is ``"krylov"`` (the Arnoldi method, the default, which
-        converges in far fewer operator applications than the power
-        iteration when the dominance ratio is close to one) or ``"power"``
-        (the power iteration).  ``tolerance`` is the relative tolerance on
-        the eigenvalue.  The fluxes are scaled so that the total production
-        of fission neutrons, the integral of the sum over the groups of
-        :math:`\\nu\\Sigma_{f,g} \\phi_g`, equals ``normalization``.  Returns
-        an :class:`~dualmesh.eigenvalue.EigenvalueResult`.
+        Every field varies in time as :math:`\\hat{u}\\, e^{-\\lambda t}`, so the time derivatives define the eigenvalue :math:`\\lambda`, and the expressions may also use the symbol ``eigenvalue``, at most quadratically.
+        The study returns the ``num_modes`` eigenvalues closest to ``near``, with their modes, in an :class:`~dualmesh.modes.EigenmodesResult`, and leaves the first mode in the solution.
+        ``tolerance`` is the relative tolerance of the Arnoldi iteration.
 
-        ``report`` sets what the study prints: ``"full"`` (the default: the
-        problem with every parameter, the defaults marked, and the result),
-        ``"summary"`` (one line that names the study, then the result) or
-        ``"none"``.  ``output`` is an :class:`~dualmesh.Output` group: the
-        study writes the fluxes once, at the end.  Default None: no file."""
-        from .eigenvalue import solve_eigenvalue
+        ``report`` sets what the study prints: ``"full"`` (the default: the problem with every parameter, the defaults marked, and the result), ``"summary"`` (one line that names the study, then the result) or ``"none"``.
+        ``output`` is an :class:`~dualmesh.Output` group: the study writes the first mode once, at the end.
+        Default None: no file."""
+        from .modes import solve_modes
 
         level = report_level(report, "Problem.solve_eigenvalue")
         output = self._check_output(output, steady=True)
@@ -873,15 +863,9 @@ class Problem:
             print(self.summary())
         elif level == "summary":
             print(
-                f"dualmesh eigenvalue study: {self.num_active_dofs()} unknowns, method {self.method}, eigenvalue solver {method}"
+                f"dualmesh eigenvalue study: {self.num_active_dofs()} unknowns, method {self.method}, shift-invert Arnoldi near {near:g}"
             )
-        result = solve_eigenvalue(
-            self,
-            method=method,
-            tolerance=tolerance,
-            max_iterations=max_iterations,
-            normalization=normalization,
-        )
+        result = solve_modes(self, num_modes=num_modes, near=near, tolerance=tolerance)
         files = self._write_fields(output) if output is not None else []
         if level != "none":
             print(result.summary())

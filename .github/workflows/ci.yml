@@ -168,7 +168,7 @@ jobs:
           UBSAN_OPTIONS: print_stacktrace=1
         run: |
           export LD_PRELOAD=$(gcc -print-file-name=libasan.so):$(gcc -print-file-name=libubsan.so)
-          PYTHONPATH=$PWD/python python -m pytest tests/python/test_framework.py tests/python/test_physics.py tests/python/test_jacobian.py tests/python/test_neutronics.py tests/python/test_finite_volume.py -q
+          PYTHONPATH=$PWD/python python -m pytest tests/python/test_framework.py tests/python/test_physics.py tests/python/test_jacobian.py tests/python/test_criticality.py tests/python/test_eigenvalue_study.py tests/python/test_finite_volume.py -q
 
   coverage:
     name: Coverage of the C++ and the Python code

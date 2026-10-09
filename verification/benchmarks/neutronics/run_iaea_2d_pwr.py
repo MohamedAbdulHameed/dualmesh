@@ -7,6 +7,8 @@ compositions, nine fully rodded assemblies (four of them in the quarter, two
 of them halved by the planes of symmetry) and a water reflector of 20 cm, in
 two-group diffusion theory with an axial buckling of 0.8e-4 /cm^2 in every
 region and group (Source Situation 11, Fig. 1, and problem 11-A2).  The
+diffusion equations are written with the generic coefficient_form_PDE and
+solved by the eigenvalue study of any problem.  The
 external boundary has no incoming current, which the benchmark states for
 diffusion codes as d phi_g / d n = -0.4692 phi_g / D_g, i.e., the
 extrapolation distance 2.1312 D_g.  The reference is the extrapolated
@@ -177,30 +179,55 @@ def core_mesh(divisions: int):
 
 
 def solve(method: str, divisions: int) -> dict:
+    """Two-group diffusion written with coefficient_form_PDE: the fast flux
+    phi1 and the thermal flux phi2, with the cross sections of every region
+    as properties on its block and the transverse buckling B^2 added to the
+    removal of each group as D_g B^2.  The fission source carries the symbol
+    eigenvalue, which is 1 / k.  The vacuum condition is the Robin condition
+    n . D grad phi = -phi / 2.1312."""
     mesh = core_mesh(divisions)
     problem = dm.Problem(mesh, method=method)
-    neutrons = problem.add_physics(
-        "neutron_diffusion", "neutrons", groups=2, transverse_buckling=AXIAL_BUCKLING / CM**2
-    )
+    buckling = AXIAL_BUCKLING / CM**2
+    properties = ["removal_1", "removal_2", "scattering_12", "nu_fission_2"]
     for name, (d1, d2, s12, a1, a2, nf2) in CONSTANTS.items():
+        d1, d2, s12, a1, a2, nf2 = d1 * CM, d2 * CM, s12 / CM, a1 / CM, a2 / CM, nf2 / CM
         problem.add_property(
-            "multigroup_cross_sections",
+            "constant_property",
             name,
             block=[name],
-            diffusion_coefficient=[d1 * CM, d2 * CM],
-            absorption_cross_section=[a1 / CM, a2 / CM],
-            scattering_cross_section=[[0.0, s12 / CM], [0.0, 0.0]],
-            nu_fission_cross_section=[0.0, nf2 / CM],
+            property_names=[
+                "diffusion_coefficient_phi1",
+                "diffusion_coefficient_phi2",
+                *properties,
+            ],
+            property_values=[d1, d2, a1 + s12 + d1 * buckling, a2 + d2 * buckling, s12, nf2],
         )
-    neutrons.add_boundary_condition(
-        "vacuum_boundary_condition", "outer", extrapolation_distance_ratio=2.1312
+    absorption = {
+        "phi1": "removal_1",
+        "phi2": {"phi2": "removal_2", "phi1": "-scattering_12"},
+    }
+    neutrons = problem.add_physics(
+        "coefficient_form_PDE",
+        "neutrons",
+        variables=["phi1", "phi2"],
+        absorption_coefficient=absorption,
+        source={"phi1": "eigenvalue*nu_fission_2*phi2"},
+        properties=properties,
     )
+    for flux in ("phi1", "phi2"):
+        neutrons.add_boundary_condition(
+            "Robin_boundary_condition",
+            f"vacuum_{flux}",
+            variable=flux,
+            boundary=["outer"],
+            transfer_coefficient=1.0 / 2.1312,
+        )
     start = time.perf_counter()
-    result = problem.solve_eigenvalue()
+    result = problem.solve_eigenvalue(num_modes=1, report="none")
     seconds = time.perf_counter() - start
     # Zone (assembly) averages of the thermal flux, from the element
     # integrals of the elements whose centres lie in the zone.
-    integrals = problem.element_integrals("neutron_flux_2")
+    integrals = problem.element_integrals("phi2")
     volumes = np.asarray(mesh.element_measures())
     centres = np.array([mesh.element_centroid(e) for e in range(mesh.num_elements)]) / CM
     flux = {}
@@ -213,7 +240,8 @@ def solve(method: str, divisions: int) -> dict:
         )
         if inside.any():
             flux[zone] = float(integrals[inside].sum() / volumes[inside].sum())
-    return dict(k=result.k_effective, seconds=seconds, unknowns=result.num_dofs, flux=flux)
+    k = 1.0 / float(result.eigenvalues[0])
+    return dict(k=k, seconds=seconds, unknowns=result.num_dofs, flux=flux)
 
 
 def assembly_powers(flux: dict) -> dict:

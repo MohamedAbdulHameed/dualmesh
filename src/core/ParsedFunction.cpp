@@ -253,6 +253,11 @@ private:
       const std::string name = _s.substr(start, _i - start);
       if (accept("("))
       {
+        if (name == "grad_x" || name == "grad_y" || name == "grad_z")
+        {
+          gradient(name);
+          return;
+        }
         call(name);
         return;
       }
@@ -280,6 +285,31 @@ private:
            (known.empty() ? std::string("none") : known) + ")");
     }
     fail("unexpected '" + std::string(1, c) + "'");
+  }
+
+  /// A gradient component, grad_x(u), grad_y(u) or grad_z(u), after its opening parenthesis.
+  /// It is the variable of the same name, "grad_x(u)", in the list of names.
+  void gradient(const std::string & component)
+  {
+    skip();
+    const std::size_t start = _i;
+    while (_i < _s.size() && (std::isalnum(static_cast<unsigned char>(_s[_i])) || _s[_i] == '_'))
+      ++_i;
+    const std::string field = _s.substr(start, _i - start);
+    if (field.empty())
+      fail(component + " takes the name of a field");
+    if (!accept(")"))
+      fail("missing ')' after " + component + "(" + field);
+    const std::string name = component + "(" + field + ")";
+    for (std::size_t k = 0; k < _names.size(); ++k)
+      if (name == _names[k])
+      {
+        emit(Op::Variable, static_cast<int>(k));
+        return;
+      }
+    _i = start;
+    fail("unknown gradient '" + name + "' ('" + field +
+         "' is not a field of the problem, or the component does not exist in its dimension)");
   }
 
   void call(const std::string & name)

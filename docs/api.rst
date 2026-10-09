@@ -65,6 +65,12 @@ Adaptive refinement
 .. autofunction:: dualmesh.mark_by_error_fraction
 .. autofunction:: dualmesh.mark_by_threshold
 
+Eigenvalue studies
+------------------
+
+.. automodule:: dualmesh.modes
+   :members: EigenmodesResult
+
 Manufactured solutions
 ----------------------
 

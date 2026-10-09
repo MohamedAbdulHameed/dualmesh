@@ -33,10 +33,10 @@ of the library is built, and it should be read before the others.
 
    heat_and_fluids
    solid_mechanics
-   neutronics
 
 .. toctree::
    :maxdepth: 2
    :caption: Studies
 
+   eigenvalues
    uncertainty

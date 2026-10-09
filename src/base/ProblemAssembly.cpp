@@ -122,6 +122,7 @@ Problem::assemble(const Vector & U, const AssemblyOptions & opts, Vector & R, Sp
     s.ctx.dim = dim;
     s.ctx.time = _time;
     s.ctx.dt = opts.dt;
+    s.ctx.eigenvalue = _eigenvalue;
     s.ctx.load_factor = opts.load_factor;
     s.ctx.mode = opts.mode;
     if (want_jac)

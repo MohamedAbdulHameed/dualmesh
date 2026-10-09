@@ -272,8 +272,8 @@ A user-defined study requires only a few lines:
    )
    print(result.table())  # errors and observed orders
 
-Neutron diffusion: the 2D IAEA PWR benchmark
---------------------------------------------
+Reactor criticality: the 2D IAEA PWR benchmark
+----------------------------------------------
 
 The two-dimensional IAEA PWR benchmark is a quarter of a PWR core
 ([ANL7416]_, problem 11-A2).  The core has 177 fuel assemblies of
@@ -283,9 +283,11 @@ The model is two-group diffusion theory with an axial buckling of
 :math:`0.8 \times 10^{-4}\ \mathrm{cm}^{-2}` in all regions and groups.
 The outer boundary has no incoming current, which the benchmark gives as
 :math:`\partial \phi_g / \partial n = -0.4692\, \phi_g / D_g`.  The script
-``verification/benchmarks/neutronics/run_iaea_2d_pwr.py`` uses the
-``vacuum_boundary_condition`` with ``extrapolation_distance_ratio=2.1312``
-for this condition.  The reference is the extrapolated finite-difference
+``verification/benchmarks/neutronics/run_iaea_2d_pwr.py`` writes the
+two-group equations with ``coefficient_form_PDE`` (see
+:ref:`tutorial-criticality`), and this condition as a
+``Robin_boundary_condition`` with the transfer coefficient
+:math:`1/2.1312`.  The reference is the extrapolated finite-difference
 solution of problem 11-A2-1: :math:`k_\mathrm{eff} = 1.02959` (Table 1) and
 the zone average thermal fluxes (Table 3).  The assembly powers follow from
 these fluxes and are normalised to a core average of one.

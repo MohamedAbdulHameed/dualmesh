@@ -1,10 +1,9 @@
 # dualmesh
 
-**A multiphysics framework for heat transfer, solid mechanics, fluid dynamics, neutron diffusion and general partial differential equations, with the dual mesh control domain method available as one of the discretization options.**
+**A multiphysics framework for heat transfer, solid mechanics, fluid dynamics and general partial differential equations, with the dual mesh control domain method available as one of the discretization options.**
 
 `dualmesh` is a multiphysics framework for **heat transfer**, **solid
-mechanics**, **fluid dynamics**, **neutron diffusion** and **general partial
-differential equations**. A problem consists of any number of fields (for example
+mechanics**, **fluid dynamics** and **general partial differential equations**. A problem consists of any number of fields (for example
 temperatures, displacements, velocities, or quantities defined by the user),
 each governed by a
 conservation law written as a sum of named terms. Every term may depend on
@@ -102,13 +101,14 @@ kernels to be discretized by every method.
   formulation with a recovered pressure, by a stabilized equal-order
   pressure-velocity formulation (PSPG and SUPG), or with Taylor-Hood
   elements, and buoyancy in the Boussinesq approximation.
-- **Neutron diffusion**: multigroup diffusion with any number of groups,
-  scattering between all groups, vacuum and albedo boundary conditions, and
-  the effective multiplication factor and fundamental mode from
-  `Problem.solve_eigenvalue()`, verified against the two-dimensional IAEA PWR benchmark.
-- **Equations by their coefficients**: the `coefficient_form_PDE` physics
-  for a scalar equation with diffusion, convection, absorption and source
-  coefficients.
+- **General partial differential equations**: `general_form_PDE` for
+  systems whose fluxes and sources are expressions of all the fields and
+  their gradients, and `coefficient_form_PDE` for systems written by their
+  diffusion, convection, absorption and source coefficients. The expressions
+  are compiled and differentiated automatically, so the Jacobian is exact
+  and the assembly runs on every thread and every process. The eigenvalue
+  study of any problem gives its eigenvalues and modes, for example the
+  criticality of a reactor in `examples/reactor_criticality.py`.
 - **Framework objects**: diffusion, anisotropic diffusion, reaction,
   advection, body force, time derivative, coupled force, Dirichlet, Neumann
   and Robin conditions, point sources, constant, function and parsed properties, and expressions

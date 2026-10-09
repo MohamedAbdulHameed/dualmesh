@@ -1197,6 +1197,47 @@ PYBIND11_MODULE(_core, m)
              py::array_t<double> values(J.nonZeros(), J.valuePtr());
              return py::make_tuple(residual, values, indices, indptr);
            })
+      .def(
+          "_operator",
+          [](Problem & p, bool steady_terms, bool time_kernels, double eigenvalue)
+          {
+            // The Jacobian of the chosen terms at the current solution, with the symbol eigenvalue
+            // at the given value and the time kernels at a time step of 1, so that a time kernel
+            // c (u - u_old) / dt contributes c.
+            // The rows of the prescribed degrees of freedom are not replaced: the caller removes them.
+            Vector R;
+            SparseMatrix J;
+            std::vector<char> constrained;
+            {
+              py::gil_scoped_release release;
+              p.initialize();
+              const double saved = p.eigenvalue();
+              p.setEigenvalue(eigenvalue);
+              Problem::AssemblyOptions options;
+              Vector lagged = p.solution();
+              Vector old = Vector::Zero(p.solution().size());
+              options.lagged = &lagged;
+              options.old = &old;
+              options.dt = 1.0;
+              options.include_steady_terms = steady_terms;
+              options.include_time_kernels = time_kernels;
+              p.assemble(p.solution(), options, R, &J);
+              p.setEigenvalue(saved);
+              J.makeCompressed();
+              constrained = p.constrainedDofs();
+            }
+            const auto n = J.rows();
+            py::array_t<int> indptr(n + 1, J.outerIndexPtr());
+            py::array_t<int> indices(J.nonZeros(), J.innerIndexPtr());
+            py::array_t<double> values(J.nonZeros(), J.valuePtr());
+            py::array_t<bool> mask(n);
+            for (Index i = 0; i < n; ++i)
+              mask.mutable_at(i) = constrained[i] != 0;
+            return py::make_tuple(values, indices, indptr, mask);
+          },
+          py::arg("steady_terms"),
+          py::arg("time_kernels"),
+          py::arg("eigenvalue"))
       .def("is_cell_centered", &Problem::isCellCentered)
       .def("set_num_threads", &Problem::setNumThreads, py::arg("num_threads"))
       .def("num_threads", &Problem::numThreads)
@@ -1349,6 +1390,16 @@ PYBIND11_MODULE(_core, m)
       .def("solution",
            [](const Problem & p)
            { return py::array_t<double>(p.solution().size(), p.solution().data()); })
+      .def(
+          "set_solution",
+          [](Problem & p, const std::vector<double> & x)
+          {
+            if (static_cast<Index>(x.size()) != p.solution().size())
+              throw InputError("set_solution: " + std::to_string(x.size()) + " values for " + std::to_string(p.solution().size()) + " unknowns.");
+            for (std::size_t i = 0; i < x.size(); ++i)
+              p.solution()[static_cast<Index>(i)] = x[i];
+          },
+          py::arg("values"))
       .def("apply_initial_conditions", &Problem::applyInitialConditions)
       .def("solve_steady", &Problem::solveSteady, py::arg("options") = SolverOptions())
       .def("solve_transient",

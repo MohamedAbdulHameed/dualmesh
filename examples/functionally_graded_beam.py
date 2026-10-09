@@ -35,7 +35,7 @@ def solve(model, power_law_index, num_elements=16):
         shear_stiffness=stiffness.shear,
         transverse_load=LOAD,
     )
-    third = beam.variables()[2]
+    third = beam.variable_names()[2]
     problem.add_boundary_condition(
         "Dirichlet_boundary_condition",
         "pin_axial",

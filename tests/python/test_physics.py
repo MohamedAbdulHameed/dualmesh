@@ -184,7 +184,7 @@ def test_solid_mechanics_default_names_and_formulations():
     problem = dm.Problem(beam_mesh(), method="fem")
     solid = problem.add_physics("solid_mechanics", "solid", youngs_modulus=1.0, poissons_ratio=0.3)
     assert solid.formulation == "three_dimensional"
-    assert solid.variables() == ["displacement_x", "displacement_y", "displacement_z"]
+    assert solid.variable_names() == ["displacement_x", "displacement_y", "displacement_z"]
     axisymmetric = dm.Problem(
         dm.generate_rectangle_mesh(1.0, 2.0, 0.0, 1.0, 2, 2), coordinates="axisymmetric"
     )
@@ -192,7 +192,7 @@ def test_solid_mechanics_default_names_and_formulations():
         "solid_mechanics", "solid", youngs_modulus=1.0, poissons_ratio=0.3
     )
     assert solid.formulation == "axisymmetric"
-    assert solid.variables() == ["displacement_r", "displacement_z"]
+    assert solid.variable_names() == ["displacement_r", "displacement_z"]
     with pytest.raises(ValueError, match="plane_stress.*plane_strain"):
         dm.Problem(dm.generate_rectangle_mesh(0, 1, 0, 1, 2, 2)).add_physics(
             "solid_mechanics", youngs_modulus=1.0, poissons_ratio=0.3
@@ -412,7 +412,7 @@ def test_coefficient_form_pde_equals_the_objects(method):
     pde = physics.add_physics(
         "coefficient_form_PDE",
         "transport",
-        variable="c",
+        variables=["c"],
         diffusion_coefficient="1 + 0.5*x",
         convection_coefficient=[1.0, 0.5],
         conservative_flux_convection_coefficient=[-0.2, 0.1],
@@ -485,14 +485,155 @@ def test_coefficient_form_pde_transient_and_tensor_and_material():
     assert largest_difference(material, constant, ["u"]) < 1e-13
 
 
-def test_coefficient_form_pde_refuses_ambiguous_coefficients():
+def _coefficient_against_general(method, coefficient, general):
+    """Solve the same equations given in coefficient form and in general form."""
+    values = []
+    for kind, parameters in (("coefficient_form_PDE", coefficient), ("general_form_PDE", general)):
+        problem = dm.Problem(unit_square(5), method=method)
+        physics = problem.add_physics(kind, "pde", **parameters)
+        for variable in physics.variable_names():
+            problem.add_boundary_condition(
+                "Dirichlet_boundary_condition",
+                f"left_{variable}",
+                variable=variable,
+                boundary=["left"],
+                value=1.0,
+            )
+        problem.solve(report="none")
+        values.append(np.concatenate([problem.values(v) for v in physics.variable_names()]))
+    return values
+
+
+@pytest.mark.parametrize("method", ["fem", "dmcdm", "hfvm", "zfvm"])
+def test_coefficients_of_the_variable_and_of_position_together(method):
+    """A coefficient may depend on the field and on x together, and the source on the field."""
+    coefficient, general = _coefficient_against_general(
+        method,
+        dict(diffusion_coefficient="1 + u*x", source="1 - 0.1*u^2"),
+        dict(
+            variables=["u"],
+            flux={"u": ["-(1 + u*x)*grad_x(u)", "-(1 + u*x)*grad_y(u)"]},
+            source={"u": "1 - 0.1*u^2"},
+        ),
+    )
+    assert np.abs(coefficient - general).max() < 1e-12
+
+
+@pytest.mark.parametrize("method", ["fem", "dmcdm", "hfvm", "zfvm"])
+def test_a_coupled_system_in_coefficient_form_is_its_general_form(method):
+    coefficient, general = _coefficient_against_general(
+        method,
+        dict(
+            variables=["u", "v"],
+            diffusion_coefficient={
+                "u": {"u": [1.0, "1 + v^2"], "v": [0.0, 0.2, 0.1, 0.0]},
+                "v": {"v": "1 + u^2", "u": 0.5},
+            },
+            absorption_coefficient={"u": {"u": 2.0, "v": -1.0}},
+            convection_coefficient={"v": {"u": [0.3, "v"]}},
+            conservative_flux_convection_coefficient={"u": {"u": [0.2, -0.1], "v": ["0.1*u", 0.0]}},
+            source={"u": "sin(x) - 0.1*v^2", "v": "k*y"},
+            constants={"k": 3.0},
+        ),
+        dict(
+            variables=["u", "v"],
+            flux={
+                "u": [
+                    "-grad_x(u) - 0.2*grad_y(v) - 0.2*u - 0.1*u*v",
+                    "-(1 + v^2)*grad_y(u) - 0.1*grad_x(v) + 0.1*u",
+                ],
+                "v": [
+                    "-(1 + u^2)*grad_x(v) - 0.5*grad_x(u)",
+                    "-(1 + u^2)*grad_y(v) - 0.5*grad_y(u)",
+                ],
+            },
+            source={"u": "sin(x) - 0.1*v^2 - 2*u + v", "v": "k*y - 0.3*grad_x(u) - v*grad_y(u)"},
+            constants={"k": 3.0},
+        ),
+    )
+    assert np.abs(coefficient - general).max() < 1e-10 * np.abs(general).max()
+
+
+def test_a_coupled_system_in_coefficient_form_converges():
+    from dualmesh import mms
+    from test_mms import check, square_family
+
+    study = mms.ManufacturedSolution(
+        {"u": "1 + sin(x)*cos(y)", "v": "x**2 + x*y + 0.5"}, dimension=2
+    )
+    study.add_physics(
+        "coefficient_form_PDE",
+        "system",
+        variables=["u", "v"],
+        diffusion_coefficient={"u": "1 + 0.5*v", "v": {"v": "1 + u^2", "u": 0.5}},
+        absorption_coefficient={"u": {"v": -1.0}},
+        convection_coefficient={"v": {"u": [0.3, "v"]}},
+        source={"u": "sin(x)"},
+    )
+    for method in ("fem", "dmcdm"):
+        result = study.convergence_study(
+            square_family("Quad4"), [4, 8, 16, 32], method=method, report="none"
+        )
+        check(result, "u", method, "Quad4")
+        check(result, "v", method, "Quad4")
+
+
+def test_each_equation_of_a_system_reads_its_own_diffusion_property():
+    problem = dm.Problem(unit_square(4), method="fem")
+    problem.add_property(
+        "constant_property",
+        "medium",
+        property_names=["diffusion_coefficient_u", "diffusion_coefficient_v"],
+        property_values=[2.0, 0.5],
+    )
+    pde = problem.add_physics(
+        "coefficient_form_PDE", "pde", variables=["u", "v"], source={"u": 1.0, "v": 1.0}
+    )
+    for variable in ("u", "v"):
+        pde.add_boundary_condition(
+            "Dirichlet_boundary_condition",
+            f"left_{variable}",
+            variable=variable,
+            boundary=["left"],
+            value=0.0,
+        )
+    problem.solve(report="none")
+    # The same source with four times the diffusion coefficient: a quarter of the solution.
+    assert problem.values("u") == pytest.approx(0.25 * np.asarray(problem.values("v")), rel=1e-10)
+
+
+@pytest.mark.parametrize(
+    "parameters, message",
+    [
+        ({"variables": []}, "give the names of the fields"),
+        ({"variables": ["u", "u"]}, "every name in 'variables' must be different"),
+        (
+            {"variables": ["u", "v"], "diffusion_coefficient": 1.0},
+            "give the diffusion_coefficient as a dict keyed by the field",
+        ),
+        (
+            {"diffusion_coefficient": {"w": 1.0}},
+            "the diffusion_coefficient names w, which is not in 'variables'",
+        ),
+        (
+            {"absorption_coefficient": {"u": {"w": 1.0}}},
+            "couples to w, which is not in 'variables'",
+        ),
+        ({"source": {"u": {"u": 1.0}}}, "the source takes one value for each equation"),
+        ({"difusion_coefficient": 1.0}, "Did you mean 'diffusion_coefficient'"),
+    ],
+)
+def test_coefficient_form_pde_refuses_wrong_inputs(parameters, message):
     problem = dm.Problem(unit_square(2))
-    with pytest.raises(ValueError, match="parsed_property"):
-        problem.add_physics("coefficient_form_PDE", "pde", diffusion_coefficient="1 + u*x")
-    with pytest.raises(ValueError, match="absorption_coefficient"):
-        problem.add_physics("coefficient_form_PDE", "pde", source="u**2")
-    with pytest.raises(ValueError, match="Did you mean 'diffusion_coefficient'"):
-        problem.add_physics("coefficient_form_PDE", "pde", difusion_coefficient=1.0)
+    with pytest.raises(ValueError, match=message):
+        problem.add_physics("coefficient_form_PDE", "pde", **parameters)
+
+
+def test_a_diffusion_tensor_of_the_wrong_size_is_refused():
+    problem = dm.Problem(unit_square(2))
+    problem.add_physics("coefficient_form_PDE", "pde", diffusion_coefficient=[1.0, 2.0, 3.0])
+    with pytest.raises(ValueError, match="has 3 values; give 2 .the diagonal. or 4"):
+        problem.initialize()
 
 
 def test_describe_and_list_include_the_physics_and_couplings():

@@ -481,25 +481,28 @@ def test_the_eigenvalue_of_a_reflected_slab_converges_at_second_order_with_zfvm(
     for n in (20, 40, 80, 160):
         mesh = _two_block_line(n)
         problem = dm.Problem(mesh, method="zfvm")
-        neutrons = problem.add_physics("neutron_diffusion", "neutrons", groups=1)
-        problem.add_property(
-            "multigroup_cross_sections",
-            "fuel",
-            block=["inner"],
-            diffusion_coefficient=[0.01],
-            absorption_cross_section=[2.0],
-            nu_fission_cross_section=[3.0],
-        )
-        problem.add_property(
-            "multigroup_cross_sections",
-            "reflector",
-            block=["outer"],
-            diffusion_coefficient=[0.03],
-            absorption_cross_section=[0.5],
+        for name, block, values in (
+            ("fuel", "inner", [0.01, 2.0, 3.0]),
+            ("reflector", "outer", [0.03, 0.5, 0.0]),
+        ):
+            problem.add_property(
+                "constant_property",
+                name,
+                block=[block],
+                property_names=["diffusion_coefficient", "absorption", "nu_fission"],
+                property_values=values,
+            )
+        neutrons = problem.add_physics(
+            "coefficient_form_PDE",
+            "neutrons",
+            variables=["phi"],
+            absorption_coefficient="absorption",
+            source="eigenvalue*nu_fission*phi",
+            properties=["absorption", "nu_fission"],
         )
         neutrons.add_boundary_condition(
             "Dirichlet_boundary_condition", "ends", boundary=["left", "right"], value=0.0
         )
-        ks.append(problem.solve_eigenvalue().k_effective)
+        ks.append(1.0 / float(problem.solve_eigenvalue(report="none").eigenvalues[0]))
     differences = np.abs(np.diff(ks))
     assert differences[1] / differences[2] > 3.5, ks

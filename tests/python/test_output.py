@@ -247,15 +247,18 @@ def test_a_variable_of_the_object_level_has_a_unit_only_when_one_is_given(tmp_pa
 
 
 def test_an_eigenvalue_study_writes_its_fluxes(tmp_path, capsys):
+    """One-group criticality of a slab written with coefficient_form_PDE: the
+    symbol eigenvalue is 1 / k, and k = 3 / (2 + 0.01 pi^2)."""
     mesh = dm.generate_line_mesh(start=0.0, end=1.0, num_elements=20)
     problem = dm.Problem(mesh)
-    neutrons = problem.add_physics("neutron_diffusion", "neutrons", groups=1)
-    problem.add_property(
-        "multigroup_cross_sections",
-        "core",
-        diffusion_coefficient=[0.01],
-        absorption_cross_section=[2.0],
-        nu_fission_cross_section=[3.0],
+    neutrons = problem.add_physics(
+        "coefficient_form_PDE",
+        "neutrons",
+        variables=["phi"],
+        diffusion_coefficient=0.01,
+        absorption_coefficient=2.0,
+        source="eigenvalue*3.0*phi",
+        units="1/(m^2 s)",
     )
     neutrons.add_boundary_condition(
         "Dirichlet_boundary_condition", "zero_flux", boundary=mesh.sideset_names(), value=0.0
@@ -265,6 +268,7 @@ def test_an_eigenvalue_study_writes_its_fluxes(tmp_path, capsys):
     )
     assert capsys.readouterr().out == ""
     header, rows = read_csv(tmp_path / "slab.csv")
-    assert header == ["x (m)", "neutron_flux_1 (1/(m^2 s))"]
-    assert rows[:, 1] == pytest.approx(problem.values("neutron_flux_1"), rel=1e-11)
-    assert result.k_effective == pytest.approx(3.0 / (2.0 + 0.01 * np.pi**2), rel=1e-3)
+    assert header == ["x (m)", "phi (1/(m^2 s))"]
+    assert rows[:, 1] == pytest.approx(problem.values("phi"), rel=1e-11)
+    k = 1.0 / float(result.eigenvalues[0])
+    assert k == pytest.approx(3.0 / (2.0 + 0.01 * np.pi**2), rel=1e-3)

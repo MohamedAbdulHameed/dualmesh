@@ -114,9 +114,14 @@ couplings refer to.  The physics available are:
      - Heat conduction with a heat source and a heat capacity,
        :math:`\rho c_p \partial T / \partial t - \nabla \cdot (k \nabla T) = q`.
    * - ``coefficient_form_PDE``
-     - A scalar equation written by its coefficients,
-       :math:`d_t \partial u / \partial t + \nabla \cdot (-c \nabla u - \boldsymbol{\alpha} u) + \boldsymbol{\beta} \cdot \nabla u + a u = f`,
-       for an equation that no other physics names.
+     - One or several equations written by their coefficients,
+       :math:`d \partial u / \partial t + \nabla \cdot (-c \nabla u - \boldsymbol{\alpha} u) + \boldsymbol{\beta} \cdot \nabla u + a u = f`,
+       for equations that no other physics names.
+   * - ``general_form_PDE``
+     - A system of equations
+       :math:`d \partial u / \partial t + \nabla \cdot \boldsymbol{\Gamma} = f`
+       whose flux :math:`\boldsymbol{\Gamma}` and source :math:`f` are
+       expressions of the fields and their gradients.
    * - ``solid_mechanics``
      - Linear elasticity at small strain in plane stress, plane strain,
        axisymmetric or three-dimensional form.

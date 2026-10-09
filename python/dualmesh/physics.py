@@ -34,7 +34,7 @@ physics (``thermal_expansion`` or ``nonisothermal_flow``) is added with
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import ClassVar
 
@@ -44,7 +44,6 @@ __all__ = [
     "Beam",
     "CircularPlate",
     "CoefficientFormPDE",
-    "NeutronDiffusion",
     "Coupling",
     "NonisothermalFlow",
     "HeatTransfer",
@@ -137,7 +136,7 @@ class Physics:
 
     name: str = ""
 
-    def variables(self) -> list[str]:
+    def variable_names(self) -> list[str]:
         raise NotImplementedError
 
     # ---- set up by Problem.add_physics ---------------------------------
@@ -146,7 +145,7 @@ class Physics:
         self._built = False
         self._coupled: dict = {}
         order = self._variable_order()
-        for variable in self.variables():
+        for variable in self.variable_names():
             try:
                 problem.variable_index(variable)
             except ValueError:
@@ -197,7 +196,7 @@ class Physics:
         where = f"{self.type_name} '{self.name}', boundary condition '{name}'"
         if "boundary" not in parameters:
             parameters["boundary"] = [name]
-        variables = self.variables()
+        variables = self.variable_names()
         object_name = self._object_name(name)
         if condition in ("fixed_constraint", "symmetry_boundary_condition") and self.vector:
             parameters.setdefault("displacements", variables[: self._dimension()])
@@ -259,7 +258,7 @@ class Physics:
         """Add a term of the object reference to the equations of this
         physics.  The variable is filled in for a physics with one variable,
         and must be given for one with several."""
-        variables = self.variables()
+        variables = self.variable_names()
         if "variable" not in parameters:
             if len(variables) != 1:
                 raise InputError(
@@ -269,7 +268,7 @@ class Physics:
         return self._problem.add_kernel(kernel, self._object_name(name or kernel), **parameters)
 
     def _dimension(self) -> int:
-        return len(self.variables())
+        return len(self.variable_names())
 
     def _restriction(self) -> dict:
         block = list(getattr(self, "block", ()))
@@ -395,7 +394,7 @@ class HeatTransfer(Physics):
                 "heat_transfer: give both density and specific_heat for the heat capacity term, or neither."
             )
 
-    def variables(self) -> list[str]:
+    def variable_names(self) -> list[str]:
         return [self.temperature]
 
     def _variable_units(self) -> dict:
@@ -472,403 +471,569 @@ def _uses(expression, name: str) -> tuple[bool, bool]:
     return name in symbols, bool(symbols & {"x", "y", "z", "t"})
 
 
+_FIELD_NAME = r"[A-Za-z_][A-Za-z0-9_]*"
+
+
+def _number(value) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _text_uses_fields(text, fields) -> bool:
+    """Whether an expression uses one of the names ``fields`` (the fields, the
+    properties and the symbol eigenvalue), or a gradient, so that it needs a
+    parsed_kernel."""
+    import re
+
+    if _number(text):
+        return False
+    names = set(re.findall(_FIELD_NAME, str(text)))
+    special = ("grad_x", "grad_y", "grad_z", "eigenvalue")
+    return bool(names & set(fields)) or any(n in names for n in special)
+
+
+def _add_term(flux: list, component: int, text: str) -> None:
+    """Add a term to one component of a flux written as text."""
+    flux[component] = f"{flux[component]} + ({text})" if flux[component] != "0" else f"({text})"
+
+
 @register
 @dataclass
 class CoefficientFormPDE(Physics):
-    """A scalar partial differential equation written by its coefficients:
-    d_t du/dt + div(-c grad u - alpha u) + beta . grad u + a u = f. The
-    diffusion and absorption coefficients may be expressions of the variable
-    itself, which makes the equation nonlinear."""
+    """One or several partial differential equations written by their coefficients. The equation of each field u is d du/dt + div(-c grad u - alpha u) + beta . grad u + a u = f. A coefficient of an equation is one value, which acts on the field of that equation, or a dict field name -> value, which couples the equation to other fields. A value is a constant, or an expression of the fields, their gradients (grad_x(u), grad_y(u), grad_z(u)), x, y, z, t and named constants, which may make the equations nonlinear. With one field, every input may be given as a plain value; with several, every input is a dict keyed by the field of the equation."""
 
     type_name: ClassVar[str] = "coefficient_form_PDE"
     module: ClassVar[str] = "framework"
 
-    variable: str = parameter("u", description="Name of the dependent variable u. Default u.")
-    unit: str = parameter(
-        "",
-        description="The SI unit of u, which the output files write with its values. Default none, for a dimensionless u.",
+    variables: Sequence[str] = parameter(
+        ("u",), description="Names of the dependent variables, one equation each. Default ['u']."
     )
-    diffusion_coefficient: float | str | Sequence[float] | None = parameter(
+    diffusion_coefficient: object = parameter(
         None,
-        description="Diffusion coefficient c: a constant, an expression of (x, y, z, t), an expression of the variable (e.g., '1 + 0.5*u'), or a constant tensor given as one value per dimension (its diagonal) or as dimension squared values row by row. Default: the property diffusion_coefficient of the property objects of the problem. Give 0 for an equation without diffusion.",
+        description="Diffusion coefficient c of each equation: a constant, an expression, or a constant tensor given as one value per dimension (its diagonal) or as dimension squared values row by row. Default: the property diffusion_coefficient (with one field) or diffusion_coefficient_<field> (with several) of the property objects of the problem. Give 0 for an equation without diffusion.",
     )
-    absorption_coefficient: float | str | None = parameter(
-        None,
-        description="Absorption coefficient a of the term a u: a constant, an expression of (x, y, z, t), or an expression of the variable. Default none.",
+    absorption_coefficient: object = parameter(
+        None, description="Absorption coefficient a of the term a u of each equation. Default none."
     )
-    source: float | str | None = parameter(
-        None,
-        description="Source term f: a constant or an expression of (x, y, z, t). Default none.",
+    source: object = parameter(
+        None, description="Source f of each equation, a constant or an expression. Default none."
     )
-    time_derivative_coefficient: float | str | None = parameter(
+    time_derivative_coefficient: object = parameter(
         None,
-        description="Coefficient d_t of the time derivative du/dt: a constant or an expression of (x, y, z, t). Default none: the equation is steady.",
+        description="Coefficient d of du/dt of each equation: a constant or an expression of (x, y, z, t). Default none: the equation is steady.",
     )
-    convection_coefficient: Sequence[float] | None = parameter(
+    convection_coefficient: object = parameter(
         None,
-        description="Constant convection vector beta of the term beta . grad u, one value per dimension. Default none.",
+        description="Convection vector beta of the term beta . grad u, one value per dimension, of each equation. Default none.",
     )
-    conservative_flux_convection_coefficient: Sequence[float] | None = parameter(
+    conservative_flux_convection_coefficient: object = parameter(
         None,
-        description="Constant vector alpha of the conservative flux -alpha u, one value per dimension. Default none.",
+        description="Vector alpha of the conservative flux -alpha u, one value per dimension, of each equation. Default none.",
     )
-    initial_condition: float | str | None = parameter(
+    constants: Mapping[str, float] = parameter(
+        default_factory=dict,
+        description="Named constants that the expressions use: name -> value. Default none.",
+    )
+    properties: Sequence[str] = parameter(
+        (),
+        description="Scalar properties of the property objects of the problem that the expressions use, each by its name. A property object on each block gives coefficients that differ between regions. Default none.",
+    )
+    units: object = parameter(
         None,
-        description="Initial value of the variable, a constant or the name of a function. Default 0.",
+        description="The SI unit of each field, which the output files write with its values. Default: dimensionless fields.",
+    )
+    initial_condition: object = parameter(
+        None,
+        description="Initial value of each field, a constant or the name of a function. Default 0.",
     )
     block: Sequence[str] = parameter(
-        (), description="Blocks where the equation holds. Default: every block."
+        (), description="Blocks where the equations hold. Default: every block."
+    )
+
+    _COEFFICIENTS: ClassVar[tuple] = (
+        "diffusion_coefficient",
+        "absorption_coefficient",
+        "convection_coefficient",
+        "conservative_flux_convection_coefficient",
+    )
+    _PER_EQUATION: ClassVar[tuple] = (
+        "source",
+        "time_derivative_coefficient",
+        "units",
+        "initial_condition",
     )
 
     def __post_init__(self):
-        for key in ("diffusion_coefficient", "absorption_coefficient"):
-            nonlinear, spatial = _uses(getattr(self, key), self.variable)
-            if nonlinear and spatial:
+        fields = list(self.variables)
+        if not fields:
+            raise InputError("coefficient_form_PDE: give the names of the fields in 'variables'.")
+        if len(set(fields)) != len(fields):
+            raise InputError("coefficient_form_PDE: every name in 'variables' must be different.")
+        clash = sorted(set(self.constants) & set(fields))
+        if clash:
+            raise InputError(
+                f"coefficient_form_PDE: the constant(s) {', '.join(clash)} have the name of a field. Rename them."
+            )
+        for key in self._COEFFICIENTS + self._PER_EQUATION:
+            value = getattr(self, key)
+            if value is None:
+                continue
+            if not isinstance(value, Mapping):
+                if len(fields) > 1:
+                    raise InputError(
+                        f"coefficient_form_PDE: with several fields, give the {key} as a dict keyed by the field of each equation, for example {{'{fields[0]}': ...}}."
+                    )
+                continue
+            unknown = sorted(set(value) - set(fields))
+            if unknown:
                 raise InputError(
-                    f"coefficient_form_PDE: the {key} '{getattr(self, key)}' depends on both the variable and x, y, z or t. Give such a coefficient as a parsed_property of the variable and of functions of position, with property_name '{key}', and leave the {key} of the physics unset."
+                    f"coefficient_form_PDE: the {key} names {', '.join(unknown)}, which is not in 'variables' ({', '.join(fields)})."
                 )
-        for key in ("source", "time_derivative_coefficient"):
-            if _uses(getattr(self, key), self.variable)[0]:
+            if key in self._COEFFICIENTS:
+                for equation, entry in value.items():
+                    if isinstance(entry, Mapping):
+                        unknown = sorted(set(entry) - set(fields))
+                        if unknown:
+                            raise InputError(
+                                f"coefficient_form_PDE: the {key} of the equation of {equation} couples to {', '.join(unknown)}, which is not in 'variables'."
+                            )
+            elif any(isinstance(entry, Mapping) for entry in value.values()):
                 raise InputError(
-                    f"coefficient_form_PDE: the {key} must not depend on the variable. Write a dependence on u in the absorption_coefficient."
+                    f"coefficient_form_PDE: the {key} takes one value for each equation, not a dict of fields."
                 )
 
-    def variables(self) -> list[str]:
-        return [self.variable]
+    def variable_names(self) -> list[str]:
+        return list(self.variables)
+
+    # ---- the inputs, per equation -----------------------------------------
+    def _per_equation(self, key: str, field: str):
+        value = getattr(self, key)
+        if value is None:
+            return None
+        if isinstance(value, Mapping):
+            value = value.get(field)
+        if key in ("units", "initial_condition"):
+            return value
+        return self._with_constants(value)
+
+    def _with_constants(self, value):
+        """``value`` with every named constant replaced by its number, in a
+        text, a list or a dict of them."""
+        import re
+
+        if isinstance(value, str) and self.constants:
+            for name, number in self.constants.items():
+                value = re.sub(rf"\b{re.escape(name)}\b", f"({float(number)!r})", value)
+            return value
+        if isinstance(value, (list, tuple)):
+            return [self._with_constants(v) for v in value]
+        if isinstance(value, Mapping):
+            return {k: self._with_constants(v) for k, v in value.items()}
+        return value
+
+    def _couplings(self, key: str, field: str) -> dict:
+        """The terms of coefficient ``key`` in the equation of ``field``:
+        coupled field -> value."""
+        entry = self._per_equation(key, field)
+        if entry is None:
+            return {}
+        if isinstance(entry, Mapping):
+            return dict(entry)
+        return {field: entry}
+
+    def _property_parameters(self) -> dict:
+        return {"coupled_properties": list(self.properties)} if self.properties else {}
 
     def _variable_units(self) -> dict:
-        return {self.variable: self.unit}
+        return {f: self._per_equation("units", f) or "" for f in self.variable_names()}
 
     def _initial_condition(self, variable: str):
-        return self.initial_condition
+        return self._per_equation("initial_condition", variable)
 
-    def _vector(self, value, dimension):
-        value = [float(v) for v in value]
-        return value + [0.0] * (3 - len(value))
+    def _diffusion_property(self, field: str) -> str:
+        return (
+            "diffusion_coefficient"
+            if len(self.variable_names()) == 1
+            else f"diffusion_coefficient_{field}"
+        )
 
+    def _tensor(self, value, dimension: int, field: str):
+        """A diffusion tensor as dimension x dimension entries."""
+        n = len(value)
+        if n == dimension:
+            return [
+                [value[i] if i == j else 0.0 for j in range(dimension)] for i in range(dimension)
+            ]
+        if n == dimension * dimension:
+            return [[value[i * dimension + j] for j in range(dimension)] for i in range(dimension)]
+        raise InputError(
+            f"coefficient_form_PDE '{self.name}': the diffusion tensor of the equation of {field} has {n} values; give {dimension} (the diagonal) or {dimension * dimension} (row by row)."
+        )
+
+    def _vector(self, value, dimension: int, key: str, field: str):
+        value = list(value)
+        if len(value) != dimension:
+            raise InputError(
+                f"coefficient_form_PDE '{self.name}': the {key} of the equation of {field} needs {dimension} values, one per dimension."
+            )
+        return value
+
+    # ---- the equations ----------------------------------------------------
     def _build(self, problem) -> None:
-        u, restrict = self.variable, self._restriction()
-        c = self.diffusion_coefficient
-        if c is None:
-            problem.add_kernel(
-                "diffusion",
-                self._object_name("diffusion"),
-                variable=u,
-                diffusivity_property="diffusion_coefficient",
-                **restrict,
-            )
-        elif isinstance(c, (list, tuple)):
-            problem.add_kernel(
-                "anisotropic_diffusion",
-                self._object_name("diffusion"),
-                variable=u,
-                diffusivity_tensor=[float(v) for v in c],
-                **restrict,
-            )
-        elif _uses(c, u)[0]:
-            problem.add_property(
-                "parsed_property",
-                self._object_name("diffusion_coefficient"),
-                property_name=self._object_name("diffusion_coefficient"),
-                expression=c,
-                coupled_variables=[u],
-                **restrict,
-            )
-            problem.add_kernel(
-                "diffusion",
-                self._object_name("diffusion"),
-                variable=u,
-                diffusivity_property=self._object_name("diffusion_coefficient"),
-                **restrict,
-            )
-        elif c != 0.0:
-            problem.add_kernel(
-                "diffusion", self._object_name("diffusion"), variable=u, diffusivity=c, **restrict
-            )
-        a = self.absorption_coefficient
-        if a is not None and _uses(a, u)[0]:
-            problem.add_property(
-                "parsed_property",
-                self._object_name("absorption_coefficient"),
-                property_name=self._object_name("absorption_coefficient"),
-                expression=a,
-                coupled_variables=[u],
-                **restrict,
-            )
-            problem.add_kernel(
-                "reaction",
-                self._object_name("absorption"),
-                variable=u,
-                coefficient_property=self._object_name("absorption_coefficient"),
-                **restrict,
-            )
-        elif a is not None and a != 0.0:
-            problem.add_kernel(
-                "reaction", self._object_name("absorption"), variable=u, coefficient=a, **restrict
-            )
-        if self.convection_coefficient is not None:
-            problem.add_kernel(
-                "advection",
-                self._object_name("convection"),
-                variable=u,
-                velocity=self._vector(self.convection_coefficient, 3),
-                advection_form="non_conservative",
-                **restrict,
-            )
-        if self.conservative_flux_convection_coefficient is not None:
-            problem.add_kernel(
-                "advection",
-                self._object_name("conservative_convection"),
-                variable=u,
-                velocity=[
-                    -v for v in self._vector(self.conservative_flux_convection_coefficient, 3)
-                ],
-                advection_form="conservative",
-                **restrict,
-            )
-        if self.source is not None and self.source != 0.0:
-            problem.add_kernel(
-                "body_force",
-                self._object_name("source"),
-                variable=u,
-                value=self.source,
-                scale_with_load=False,
-                **restrict,
-            )
-        if self.time_derivative_coefficient is not None and self.time_derivative_coefficient != 0.0:
-            problem.add_kernel(
-                "time_derivative",
-                self._object_name("time_derivative"),
-                variable=u,
-                coefficient=self.time_derivative_coefficient,
-                **restrict,
-            )
+        dimension = problem.mesh.dimension
+        restrict = self._restriction()
+        fields = self.variable_names()
+        # Names that need a parsed_kernel: the fields and the properties.
+        names = fields + list(self.properties)
+        axes = "xyz"[:dimension]
+        for u in fields:
+            flux = ["0"] * dimension
+            source = []
+            dedicated = 0
+            # Diffusion: Gamma = -c grad u.
+            diffusion = self._couplings("diffusion_coefficient", u)
+            if not diffusion:
+                problem.add_kernel(
+                    "diffusion",
+                    self._object_name(f"{u}_diffusion"),
+                    variable=u,
+                    diffusivity_property=self._diffusion_property(u),
+                    **restrict,
+                )
+                dedicated += 1
+            for v, c in diffusion.items():
+                if isinstance(c, (list, tuple)):
+                    tensor = self._tensor(c, dimension, u)
+                    if v == u and all(_number(e) for row in tensor for e in row):
+                        problem.add_kernel(
+                            "anisotropic_diffusion",
+                            self._object_name(f"{u}_diffusion"),
+                            variable=u,
+                            diffusivity_tensor=[float(e) for row in tensor for e in row],
+                            **restrict,
+                        )
+                        dedicated += 1
+                        continue
+                    for i in range(dimension):
+                        _add_term(
+                            flux,
+                            i,
+                            " + ".join(
+                                f"-({tensor[i][j]})*grad_{axes[j]}({v})" for j in range(dimension)
+                            ),
+                        )
+                elif v == u and not _text_uses_fields(c, names):
+                    if c != 0.0:
+                        problem.add_kernel(
+                            "diffusion",
+                            self._object_name(f"{u}_diffusion"),
+                            variable=u,
+                            diffusivity=c,
+                            **restrict,
+                        )
+                        dedicated += 1
+                else:
+                    for i in range(dimension):
+                        _add_term(flux, i, f"-({c})*grad_{axes[i]}({v})")
+            # Conservative convection: Gamma = -alpha u.
+            for v, alpha in self._couplings("conservative_flux_convection_coefficient", u).items():
+                alpha = self._vector(
+                    alpha, dimension, "conservative_flux_convection_coefficient", u
+                )
+                if v == u and all(_number(a) for a in alpha):
+                    problem.add_kernel(
+                        "advection",
+                        self._object_name(f"{u}_conservative_convection"),
+                        variable=u,
+                        velocity=[-float(a) for a in alpha] + [0.0] * (3 - dimension),
+                        advection_form="conservative",
+                        **restrict,
+                    )
+                    dedicated += 1
+                else:
+                    for i in range(dimension):
+                        _add_term(flux, i, f"-({alpha[i]})*{v}")
+            # Convection: f gets -beta . grad u.
+            for v, beta in self._couplings("convection_coefficient", u).items():
+                beta = self._vector(beta, dimension, "convection_coefficient", u)
+                if v == u and all(_number(b) for b in beta):
+                    problem.add_kernel(
+                        "advection",
+                        self._object_name(f"{u}_convection"),
+                        variable=u,
+                        velocity=[float(b) for b in beta] + [0.0] * (3 - dimension),
+                        advection_form="non_conservative",
+                        **restrict,
+                    )
+                    dedicated += 1
+                else:
+                    source.append(
+                        " - ".join(
+                            [""] + [f"({beta[i]})*grad_{axes[i]}({v})" for i in range(dimension)]
+                        ).strip()
+                    )
+            # Absorption: f gets -a u.
+            for v, a in self._couplings("absorption_coefficient", u).items():
+                if v == u and not _text_uses_fields(a, names):
+                    if a != 0.0:
+                        problem.add_kernel(
+                            "reaction",
+                            self._object_name(f"{u}_absorption"),
+                            variable=u,
+                            coefficient=a,
+                            **restrict,
+                        )
+                        dedicated += 1
+                else:
+                    source.append(f"-({a})*{v}")
+            # Source f.
+            f = self._per_equation("source", u)
+            if f is not None and f != 0.0:
+                if _text_uses_fields(f, names):
+                    source.append(f"({f})")
+                else:
+                    problem.add_kernel(
+                        "body_force",
+                        self._object_name(f"{u}_source"),
+                        variable=u,
+                        value=f,
+                        scale_with_load=False,
+                        **restrict,
+                    )
+                    dedicated += 1
+            parsed_flux = flux if any(c != "0" for c in flux) else []
+            if parsed_flux or source:
+                problem.add_kernel(
+                    "parsed_kernel",
+                    self._object_name(u),
+                    variable=u,
+                    flux=parsed_flux,
+                    source=" + ".join(source) if source else "",
+                    **self._property_parameters(),
+                    **restrict,
+                )
+            d = self._per_equation("time_derivative_coefficient", u)
+            if d is not None and d != 0.0:
+                if _text_uses_fields(d, names):
+                    raise InputError(
+                        f"coefficient_form_PDE '{self.name}': the time_derivative_coefficient of the equation of {u} must not depend on the fields or the properties. Give a constant or an expression of x, y, z and t."
+                    )
+                problem.add_kernel(
+                    "time_derivative",
+                    self._object_name(f"{u}_time_derivative"),
+                    variable=u,
+                    coefficient=d,
+                    **restrict,
+                )
 
     def _manufactured_terms(self, fields, coordinates, dimension):
-        from .mms import _symbols
-
-        sympy_u = fields[self.variable]
-        grad = _gradient(sympy_u)
+        x, y, z, t = _symbols_of_mms()
+        axes = (x, y, z)
+        names = self.variable_names()
+        terms = {}
 
         def value(expression):
-            return (
-                _sympy_expression(expression).subs(_sympy_expression(self.variable), sympy_u)
-                if isinstance(expression, str)
-                else _sympy_expression(expression)
-            )
+            return _general_form_expression(expression, fields, self.constants)
 
-        c = self.diffusion_coefficient
-        if c is None:
-            raise InputError(
-                f"coefficient_form_PDE '{self.name}': a manufactured solution needs the diffusion_coefficient of the physics."
-            )
-        if isinstance(c, (list, tuple)):
-            n = len(c)
-            if n == dimension:
-                K = [[float(c[i]) if i == j else 0.0 for j in range(3)] for i in range(3)]
-            elif n == dimension * dimension:
-                K = [
-                    [
-                        float(c[i * dimension + j]) if i < dimension and j < dimension else 0.0
-                        for j in range(3)
-                    ]
-                    for i in range(3)
-                ]
-            else:
+        for u in names:
+            flux = [0, 0, 0]
+            source = 0
+            diffusion = self._couplings("diffusion_coefficient", u)
+            if not diffusion:
                 raise InputError(
-                    f"coefficient_form_PDE '{self.name}': give {dimension} or {dimension * dimension} values of the diffusion tensor."
+                    f"coefficient_form_PDE '{self.name}': a manufactured solution needs the diffusion_coefficient of the equation of {u}."
                 )
-            flux = [sum(K[i][j] * grad[j] for j in range(dimension)) for i in range(3)]
-        else:
-            flux = [value(c) * g for g in grad]
-        source = 0
-        if self.conservative_flux_convection_coefficient is not None:
-            alpha = self._vector(self.conservative_flux_convection_coefficient, 3)
-            flux = [f + alpha[d] * sympy_u for d, f in enumerate(flux)]
-        if self.convection_coefficient is not None:
-            beta = self._vector(self.convection_coefficient, 3)
-            source += sum(beta[d] * grad[d] for d in range(3))
-        if self.absorption_coefficient is not None:
-            source += value(self.absorption_coefficient) * sympy_u
-        if self.source is not None:
-            source -= value(self.source)
-        if self.time_derivative_coefficient is not None:
-            source += value(self.time_derivative_coefficient) * sympy_u.diff(_symbols()[3])
-        return {self.variable: (flux, source)}
+            for v, c in diffusion.items():
+                grad = [fields[v].diff(a) for a in axes]
+                if isinstance(c, (list, tuple)):
+                    tensor = self._tensor(c, dimension, u)
+                    for i in range(dimension):
+                        flux[i] += sum(value(tensor[i][j]) * grad[j] for j in range(dimension))
+                else:
+                    for i in range(dimension):
+                        flux[i] += value(c) * grad[i]
+            for v, alpha in self._couplings("conservative_flux_convection_coefficient", u).items():
+                for i in range(dimension):
+                    flux[i] += value(alpha[i]) * fields[v]
+            for v, beta in self._couplings("convection_coefficient", u).items():
+                source += sum(value(beta[i]) * fields[v].diff(axes[i]) for i in range(dimension))
+            for v, a in self._couplings("absorption_coefficient", u).items():
+                source += value(a) * fields[v]
+            f = self._per_equation("source", u)
+            if f is not None:
+                source -= value(f)
+            d = self._per_equation("time_derivative_coefficient", u)
+            if d is not None:
+                source += _sympy_expression(d) * fields[u].diff(t)
+            terms[u] = (flux, source)
+        return terms
 
 
-# ---------------------------------------------------------------------------
-# Neutron diffusion
-# ---------------------------------------------------------------------------
+_GRADIENT = r"grad_([xyz])\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)"
+
+
+def _general_form_expression(text, fields: dict, constants: dict):
+    """A flux or source expression of general_form_PDE as SymPy, with every
+    field replaced by its exact solution and every grad_x(u), grad_y(u) and
+    grad_z(u) by the derivative of that solution."""
+    import re
+
+    x, y, z, _t = _symbols_of_mms()
+    axes = {"x": x, "y": y, "z": z}
+    placeholders = {}
+
+    def replace(match):
+        name = f"_gradient_{match.group(1)}_{match.group(2)}"
+        placeholders[name] = (match.group(1), match.group(2))
+        return name
+
+    expression = _sympy_expression(re.sub(_GRADIENT, replace, str(text)))
+    substitutions = {}
+    for name, (axis, field) in placeholders.items():
+        if field not in fields:
+            raise InputError(
+                f"general_form_PDE: grad_{axis}({field}) names '{field}', which is not a field."
+            )
+        substitutions[_sympy_expression(name)] = fields[field].diff(axes[axis])
+    for field, exact in fields.items():
+        substitutions[_sympy_expression(field)] = exact
+    for constant, value in constants.items():
+        substitutions[_sympy_expression(constant)] = value
+    return expression.subs(substitutions)
+
+
+def _symbols_of_mms():
+    from .mms import _symbols
+
+    return _symbols()
+
+
 @register
 @dataclass
-class NeutronDiffusion(Physics):
-    """The steady multigroup neutron diffusion equations of a reactor,
-    -div(D_g grad phi_g) + Sigma_R,g phi_g - sum_h Sigma_s,h->g phi_h = (chi_g / k) sum_h nu Sigma_f,h phi_h, with one flux per energy group. The cross sections of every region are read from a multigroup_cross_sections property on its blocks, and Problem.solve_eigenvalue computes the effective multiplication factor k and the fundamental mode."""
+class GeneralFormPDE(Physics):
+    """A system of partial differential equations in general form: for every field u, d du/dt + div Gamma = f, where the flux Gamma and the source f are expressions of all the fields, the components of their gradients (grad_x(u), grad_y(u), grad_z(u)), the coordinates x, y, z, the time t and named constants. The expressions are compiled and differentiated automatically, so Newton's method has the exact Jacobian, and the assembly runs on every thread and every process with every method."""
 
-    type_name: ClassVar[str] = "neutron_diffusion"
-    module: ClassVar[str] = "neutronics"
-    vector: ClassVar[bool] = True
+    type_name: ClassVar[str] = "general_form_PDE"
+    module: ClassVar[str] = "framework"
 
-    groups: int = parameter(
-        description="Number of energy groups G, numbered from 1, the group of highest energy."
+    variables: Sequence[str] = parameter(
+        description="Names of the dependent variables, one equation each. Required."
     )
-    fluxes: Sequence[str] | None = parameter(
-        None,
-        description="Names of the scalar flux variables, one per group. Default neutron_flux_1, ..., neutron_flux_G.",
+    flux: Mapping[str, Sequence[str | float]] = parameter(
+        default_factory=dict,
+        description="The flux Gamma of each equation: field name -> one expression for each space dimension. For diffusion with a coefficient c, Gamma = -c grad u, for example ['-c*grad_x(u)', '-c*grad_y(u)']. Default: no flux.",
     )
-    transverse_buckling: float = parameter(
-        0.0,
-        unit="1/m^2",
-        description="Buckling B^2 of the directions that the mesh does not represent, which adds the leakage D_g B^2 phi_g to every group (e.g., the axial buckling of a two-dimensional core). Default 0: the mesh represents every direction.",
+    source: Mapping[str, str | float] = parameter(
+        default_factory=dict,
+        description="The source f of each equation: field name -> expression. Default: no source.",
+    )
+    time_derivative_coefficient: Mapping[str, str | float] = parameter(
+        default_factory=dict,
+        description="The coefficient d of du/dt in each equation: field name -> a constant or the name of a function of (x, y, z, t). Default: no time derivative, so the equation is steady.",
+    )
+    constants: Mapping[str, float] = parameter(
+        default_factory=dict,
+        description="Named constants that the expressions use: name -> value. Default none.",
+    )
+    properties: Sequence[str] = parameter(
+        (),
+        description="Scalar properties of the property objects of the problem that the expressions use, each by its name. A property object on each block gives coefficients that differ between regions. Default none.",
+    )
+    units: Mapping[str, str] = parameter(
+        default_factory=dict,
+        description="The SI unit of each field, which the output files write with its values: field name -> unit. Default: dimensionless fields.",
+    )
+    initial_condition: Mapping[str, str | float] = parameter(
+        default_factory=dict,
+        description="The initial value of each field: field name -> a constant or the name of a function. Default 0.",
     )
     block: Sequence[str] = parameter(
         (), description="Blocks where the equations hold. Default: every block."
     )
 
     def __post_init__(self):
-        if int(self.groups) < 1:
-            raise InputError("neutron_diffusion: give at least one energy group.")
-        self.groups = int(self.groups)
-        if self.fluxes is not None and len(self.fluxes) != self.groups:
-            raise InputError(
-                f"neutron_diffusion: give one flux name per group ({self.groups}), not {len(self.fluxes)}."
-            )
-        if self.transverse_buckling < 0.0:
-            raise InputError("neutron_diffusion: the transverse buckling must not be negative.")
-
-    def variables(self) -> list[str]:
-        if self.fluxes is not None:
-            return list(self.fluxes)
-        return [f"neutron_flux_{g}" for g in range(1, self.groups + 1)]
-
-    def _variable_units(self) -> dict:
-        return dict.fromkeys(self.variables(), "1/(m^2 s)")
-
-    def _dimension(self) -> int:
-        return self.groups
-
-    def _scale_name(self) -> str:
-        return self._object_name("fission_scale")
-
-    def _attach(self, problem) -> None:
-        super()._attach(problem)
-        from . import _core
-
-        # The factor on the fission source: 1 for a calculation with a fixed
-        # source, and switched by the eigenvalue study to separate the loss
-        # and the fission operators.
-        self._fission_scale = _core.SettableFunction(1.0)
-        problem.add_function(self._scale_name(), self._fission_scale)
-
-    def add_boundary_condition(self, condition: str, name: str, **parameters):
-        """Add a boundary condition to every group.  Besides the conditions
-        of the object reference (e.g., ``Dirichlet_boundary_condition`` with
-        ``value=0.0`` for a zero flux), the neutron conditions are
-
-        * ``vacuum_boundary_condition``: no neutron enters through the
-          boundary.  The current leaving is :math:`\\phi_g / r`, i.e.,
-          :math:`-D_g\\, \\partial \\phi_g / \\partial n = \\phi_g / r`, where
-          :math:`r D_g` is the distance beyond the boundary at which the
-          linearly extrapolated flux vanishes.  The default ratio
-          ``extrapolation_distance_ratio=2`` is the condition of zero incoming
-          partial current of diffusion theory, and 2.1312, i.e., the distance
-          :math:`0.7104\\, \\lambda_{tr}` of transport theory, gives
-          :math:`\\partial \\phi_g / \\partial n = -0.4692\\, \\phi_g / D_g`.
-        * ``albedo_boundary_condition``: the incoming partial current is the
-          fraction ``albedo`` of the outgoing one, which gives
-          :math:`-D_g\\, \\partial \\phi_g / \\partial n = \\phi_g (1 - \\alpha) / (2 (1 + \\alpha))`.
-
-        A boundary without a condition reflects the neutrons (zero net
-        current), which is the condition of a plane of symmetry."""
-        if condition in ("vacuum_boundary_condition", "albedo_boundary_condition"):
-            if condition == "vacuum_boundary_condition":
-                unknown = set(parameters) - {"extrapolation_distance_ratio", "boundary"}
-                ratio = float(parameters.pop("extrapolation_distance_ratio", 2.0))
-                if ratio <= 0.0:
-                    raise InputError(
-                        f"neutron_diffusion '{self.name}', boundary condition '{name}': the extrapolation_distance_ratio must be positive."
-                    )
-                transfer = 1.0 / ratio
-            else:
-                unknown = set(parameters) - {"albedo", "boundary"}
-                if "albedo" not in parameters:
-                    raise InputError(
-                        f"neutron_diffusion '{self.name}', boundary condition '{name}': give the albedo, the ratio of the incoming to the outgoing partial current."
-                    )
-                albedo = float(parameters.pop("albedo"))
-                if not 0.0 <= albedo < 1.0:
-                    raise InputError(
-                        f"neutron_diffusion '{self.name}', boundary condition '{name}': the albedo must lie in [0, 1)."
-                    )
-                transfer = (1.0 - albedo) / (2.0 * (1.0 + albedo))
+        fields = list(self.variables)
+        if not fields:
+            raise InputError("general_form_PDE: give the names of the fields in 'variables'.")
+        if len(set(fields)) != len(fields):
+            raise InputError("general_form_PDE: every name in 'variables' must be different.")
+        for key in ("flux", "source", "time_derivative_coefficient", "units", "initial_condition"):
+            unknown = sorted(set(getattr(self, key)) - set(fields))
             if unknown:
                 raise InputError(
-                    f"neutron_diffusion '{self.name}', boundary condition '{name}': unknown parameter '{sorted(unknown)[0]}'."
+                    f"general_form_PDE: the {key} names {', '.join(unknown)}, which is not in 'variables' ({', '.join(fields)})."
                 )
-            parameters.setdefault("boundary", [name])
-            return self._problem.add_boundary_condition(
-                "Robin_boundary_condition",
-                self._object_name(name),
-                variables=self.variables(),
-                transfer_coefficient=transfer,
-                ambient_value=0.0,
-                **parameters,
+        silent = [
+            f
+            for f in fields
+            if f not in self.flux
+            and f not in self.source
+            and f not in self.time_derivative_coefficient
+        ]
+        if silent:
+            raise InputError(
+                f"general_form_PDE: the field(s) {', '.join(silent)} have no flux, source or time derivative, so their equations are empty."
             )
-        if condition == "Dirichlet_boundary_condition" and isinstance(
-            parameters.get("value"), (int, float)
-        ):
-            parameters.setdefault("boundary", [name])
-            return self._problem.add_boundary_condition(
-                condition, self._object_name(name), variables=self.variables(), **parameters
-            )
-        return super().add_boundary_condition(condition, name, **parameters)
+
+    def variable_names(self) -> list[str]:
+        return list(self.variables)
+
+    def _variable_units(self) -> dict:
+        return dict(self.units)
+
+    def _initial_condition(self, variable: str):
+        return self.initial_condition.get(variable)
+
+    def _constant_parameters(self) -> dict:
+        if not self.constants:
+            return {}
+        return {
+            "constant_names": list(self.constants),
+            "constant_values": [float(v) for v in self.constants.values()],
+        }
 
     def _build(self, problem) -> None:
-        fluxes, restrict = self.variables(), self._restriction()
-        for g, flux in enumerate(fluxes, start=1):
-            problem.add_kernel(
-                "diffusion",
-                self._object_name(f"leakage_{g}"),
-                variable=flux,
-                diffusivity_property=f"diffusion_coefficient_{g}",
-                **restrict,
-            )
-            problem.add_kernel(
-                "reaction",
-                self._object_name(f"removal_{g}"),
-                variable=flux,
-                coefficient_property=f"removal_cross_section_{g}",
-                **restrict,
-            )
-            if self.transverse_buckling > 0.0:
+        restrict = self._restriction()
+        for field in self.variables:
+            flux = [str(component) for component in self.flux.get(field, ())]
+            source = self.source.get(field)
+            if flux or source is not None:
                 problem.add_kernel(
-                    "reaction",
-                    self._object_name(f"transverse_leakage_{g}"),
-                    variable=flux,
-                    coefficient=float(self.transverse_buckling),
-                    coefficient_property=f"diffusion_coefficient_{g}",
+                    "parsed_kernel",
+                    self._object_name(field),
+                    variable=field,
+                    flux=flux,
+                    source="" if source is None else str(source),
+                    **self._constant_parameters(),
+                    **({"coupled_properties": list(self.properties)} if self.properties else {}),
                     **restrict,
                 )
-            for h, source in enumerate(fluxes, start=1):
-                if h != g:
-                    problem.add_kernel(
-                        "coupled_force",
-                        self._object_name(f"scattering_{h}_to_{g}"),
-                        variable=flux,
-                        coupled_variable=source,
-                        coefficient_property=f"scattering_cross_section_{h}_to_{g}",
-                        **restrict,
-                    )
+            coefficient = self.time_derivative_coefficient.get(field)
+            if coefficient is not None and coefficient != 0.0:
                 problem.add_kernel(
-                    "coupled_force",
-                    self._object_name(f"fission_{h}_to_{g}"),
-                    variable=flux,
-                    coupled_variable=source,
-                    coefficient=self._scale_name(),
-                    coefficient_property=f"fission_production_{h}_to_{g}",
+                    "time_derivative",
+                    self._object_name(f"{field}_time_derivative"),
+                    variable=field,
+                    coefficient=coefficient,
                     **restrict,
                 )
+
+    def _manufactured_terms(self, fields, coordinates, dimension):
+        _x, _y, _z, t = _symbols_of_mms()
+        terms = {}
+        for field in self.variables:
+            flux = [
+                -_general_form_expression(c, fields, self.constants)
+                for c in self.flux.get(field, ())
+            ]
+            flux += [0] * (3 - len(flux))
+            source = 0
+            if field in self.source:
+                source -= _general_form_expression(self.source[field], fields, self.constants)
+            coefficient = self.time_derivative_coefficient.get(field)
+            if coefficient is not None:
+                source += _sympy_expression(coefficient) * fields[field].diff(t)
+            terms[field] = (flux, source)
+        return terms
 
 
 # ---------------------------------------------------------------------------
@@ -952,7 +1117,7 @@ class SolidMechanics(Physics):
             )
         super()._attach(problem)
 
-    def variables(self) -> list[str]:
+    def variable_names(self) -> list[str]:
         if self.displacements is not None:
             return list(self.displacements)
         if self.formulation == "axisymmetric":
@@ -962,10 +1127,10 @@ class SolidMechanics(Physics):
         ]
 
     def _variable_units(self) -> dict:
-        return dict.fromkeys(self.variables(), "m")
+        return dict.fromkeys(self.variable_names(), "m")
 
     def _build(self, problem) -> None:
-        names, restrict = self.variables(), self._restriction()
+        names, restrict = self.variable_names(), self._restriction()
         expansion = self._coupled.get("thermal_expansion")
         if self.youngs_modulus is not None:
             material = dict(
@@ -1042,7 +1207,7 @@ class SolidMechanics(Physics):
             )
         x = _symbols()[0]
         E, nu, f = float(self.youngs_modulus), float(self.poissons_ratio), self.formulation
-        names = self.variables()
+        names = self.variable_names()
         u = [fields[d] for d in names] + [0] * (3 - len(names))
         ux, uy, uz = u
         if f == "axisymmetric":
@@ -1211,7 +1376,7 @@ class IncompressibleFlow(Physics):
     def _pressure_formulation(self) -> bool:
         return self.formulation in ("pressure", "Taylor_Hood")
 
-    def variables(self) -> list[str]:
+    def variable_names(self) -> list[str]:
         return list(self.velocities) + ([self.pressure] if self._pressure_formulation else [])
 
     def _variable_units(self) -> dict:
@@ -1507,7 +1672,7 @@ class Beam(Physics):
         if self.model not in BEAM_MODELS:
             raise InputError(f"beam: unknown model '{self.model}'. Use {', '.join(BEAM_MODELS)}.")
 
-    def variables(self) -> list[str]:
+    def variable_names(self) -> list[str]:
         third = (
             self.rotation if self.model == "beam_Timoshenko_displacement" else self.bending_moment
         )
@@ -1523,7 +1688,7 @@ class Beam(Physics):
 
     def _build(self, problem) -> None:
         displacement_model = self.model == "beam_Timoshenko_displacement"
-        variables = self.variables()
+        variables = self.variable_names()
         mapping = dict(
             axial_displacement=self.axial_displacement,
             transverse_displacement=self.transverse_displacement,
@@ -1579,7 +1744,7 @@ class Plate(Physics):
     )
     block: Sequence[str] = parameter((), description="Blocks of the plate. Default: every block.")
 
-    def variables(self) -> list[str]:
+    def variable_names(self) -> list[str]:
         return (
             list(self.in_plane_displacements)
             + [self.transverse_displacement]
@@ -1603,7 +1768,7 @@ class Plate(Physics):
             rotations=list(self.rotations),
             **self._restriction(),
         )
-        for variable in self.variables():
+        for variable in self.variable_names():
             problem.add_kernel(
                 "plate_first_order",
                 self._object_name(f"bending_{variable}"),
@@ -1683,7 +1848,7 @@ class CircularPlate(Physics):
             )
         super()._attach(problem)
 
-    def variables(self) -> list[str]:
+    def variable_names(self) -> list[str]:
         third = self.bending_moment if self.theory == "classical" else self.rotation
         return [self.radial_displacement, self.transverse_displacement, third]
 
@@ -1696,7 +1861,7 @@ class CircularPlate(Physics):
         }
 
     def _build(self, problem) -> None:
-        variables = self.variables()
+        variables = self.variable_names()
         if self.theory == "classical":
             mapping = dict(
                 radial_displacement=variables[0],
