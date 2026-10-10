@@ -501,9 +501,10 @@ Problem::setGhostElements(Index first)
     _cells = std::make_shared<CellMesh>(*_mesh);
   // The nodes added with the ghost elements take their initial values; the values of the other nodes are kept.
   const int nv = numVariables();
-  const Index old_size = _U.size();
+  const Eigen::Index old_size = _U.size();
   Vector U = Vector::Zero(numEntities() * nv);
-  U.head(std::min(old_size, U.size())) = _U.head(std::min(old_size, U.size()));
+  const Eigen::Index kept = std::min<Eigen::Index>(old_size, U.size());
+  U.head(kept) = _U.head(kept);
   for (const auto & v : _vars)
     if (v.initial_condition)
       for (Index n = old_size / std::max(nv, 1); n < numEntities(); ++n)
