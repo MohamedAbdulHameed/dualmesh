@@ -332,3 +332,29 @@ def test_point_dirichlet_fixes_the_nearest_entity():
     nearest = int(np.argmin(np.hypot(points[:, 0] - 0.5, points[:, 1] - 0.25)))
     assert problem.values("u")[nearest] == pytest.approx(2.0)
     assert np.allclose(problem.values("u"), 2.0)
+
+
+@pytest.mark.parametrize("method", METHODS)
+@pytest.mark.parametrize("coordinates", ["cartesian", "axisymmetric"])
+def test_the_laplacian_form_of_the_viscous_term_converges(method, coordinates):
+    """viscous_form="laplacian" changes the natural boundary condition to the do-nothing outflow mu dv/dn - p n = 0, which the manufactured traction on the outflow side follows, and keeps the order of every method."""
+    fields, outflow = (
+        (CARTESIAN, {"right": (1.0, 0.0)})
+        if coordinates == "cartesian"
+        else (AXISYMMETRIC, {"top": (0.0, 1.0)})
+    )
+    study = _flow_study(
+        fields,
+        ["u", "v"],
+        2,
+        coordinates=coordinates,
+        outflow=outflow,
+        density=1.0,
+        viscous_form="laplacian",
+    )
+    meshes = (
+        _square
+        if coordinates == "cartesian"
+        else (lambda n: dm.generate_rectangle_mesh(0.0, 1.0, 0.0, 1.0, n, n))
+    )
+    _check(study.convergence_study(meshes, [8, 16, 32], method=method, report="none"), "u")

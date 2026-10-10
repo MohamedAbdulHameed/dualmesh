@@ -139,16 +139,46 @@ which format:
    ``csv`` (one row for each node, or for each cell and boundary face of the
    cell-centred method), or both.
 
+``checkpoint_interval``
+   A transient study writes a checkpoint every this many accepted steps, and
+   after its last step, to ``<file_base>.chk`` in the directory.  The file is
+   replaced each time, and a study stopped while it writes keeps the previous
+   checkpoint.  See below.
+
 A transient study numbers its files ``slab_00000.vtu``, ``slab_00001.vtu``
 and so on, and writes the ParaView collection ``slab.pvd``, which lists the
 time of each file. ParaView opens the collection as one time series.
+
+Checkpoints and restarts
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+A checkpoint holds what a transient run needs to continue: the time, the next
+step size and the number of steps taken, the solution, the history of the
+material (the creep strain of every integration point, for instance) and the
+history of the post-processors.  A run continues from it with ``restart``:
+
+.. code-block:: python
+
+   output = dm.Output(directory="results", file_base="plate", checkpoint_interval=50)
+   problem.solve_transient(end_time=1e6, time_step=1e3, output=output)
+
+   # Later, in a new process (on any number of processes):
+   problem.solve_transient(end_time=2e6, time_step=1e3, restart="results/plate.chk")
+
+``start_time`` stays the start of the original run, so that the output times
+and the file numbers continue those of the original run.  The checkpoint is a
+file in PETSc's binary format, written and read in parallel, with every field
+in the order of the global node numbers and the history by global element, so
+that it does not depend on the partition: a run checkpointed on 64 processes
+continues on 128.  Checkpoints need a build with PETSc, which a build with MPI
+always has.
 
 Units
 ~~~~~
 
 Each physics gives the SI unit of each variable that it makes: ``K`` for a
 temperature, ``m`` for a displacement, ``rad`` for a rotation, ``m/s`` for a
-velocity, ``Pa`` for a pressure and ``1/(m^2 s)`` for a neutron flux. The CSV
+velocity and ``Pa`` for a pressure. The CSV
 files name each column with its unit, and the VTU files give the unit in the
 ``units`` attribute of each data array. A variable that you add with
 :meth:`~dualmesh.Problem.add_variable` has a unit only when you give one:
@@ -283,7 +313,7 @@ therefore
 
 .. math::
 
-   Q_I = \int_{\partial CD_I \cap \partial \Omega} \mathbf{F} \cdot \mathbf{n} \, dS ,
+   Q_I = \int_{\partial \Omega_I \cap \partial \Omega} \mathbf{F} \cdot \mathbf{n} \,\mathrm{d}S ,
 
 i.e., a flux through a known area, computed as part of the method.  This is the
 property that Reddy emphasises in [Reddy2024]_: the secondary variables (heat

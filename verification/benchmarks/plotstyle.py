@@ -18,11 +18,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import matplotlib
-
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt  # noqa: E402
-import numpy as np  # noqa: E402
+import numpy as np
 
 # Colours of the reference categorical palette: dualmesh in slot 1, a second
 # dualmesh series in slot 2, measurements and closed form values in slot 3,
@@ -36,6 +32,15 @@ REFERENCE_GREY = "#a3a29c"
 GRID = "#e4e3df"
 SPINE = "#c3c2b7"
 
+# One colour and one marker per discretization, the same in every benchmark.
+METHOD_STYLE = {
+    "dmcdm": (DUALMESH, "o"),
+    "fem": (SECOND, "s"),
+    "hfvm": ("#8a5cd6", "^"),
+    "zfvm": ("#c99a1e", "D"),
+    "fem, Taylor-Hood": (MUTED, "v"),
+}
+
 FIGSIZE = (6.4, 4.2)
 DPI = 200
 TITLE_SIZE = 13
@@ -44,9 +49,22 @@ TICK_SIZE = 11
 LEGEND_SIZE = 10.5
 
 
+def _pyplot():
+    """matplotlib.pyplot on the file backend.
+
+    It is imported only when a figure is drawn, so that a script imported for its computation does not need matplotlib.
+    """
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    return plt
+
+
 def new_figure(figsize=FIGSIZE):
     """One figure with one axes."""
-    fig, ax = plt.subplots(figsize=figsize)
+    fig, ax = _pyplot().subplots(figsize=figsize)
     return fig, ax
 
 
@@ -88,7 +106,7 @@ def legend_below(ax, ncol=2, offset=0.17, **kwargs):
 def save(fig, path):
     """Save at 200 dpi with a tight bounding box and close the figure."""
     fig.savefig(path, dpi=DPI, bbox_inches="tight", facecolor="white")
-    plt.close(fig)
+    _pyplot().close(fig)
     print(f"wrote {path}")
 
 

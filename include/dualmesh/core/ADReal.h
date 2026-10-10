@@ -6,7 +6,6 @@
 // respect to the local (element) degrees of freedom.  Residual objects are
 // written once in terms of ADReal, and the element Jacobian needed by
 // Newton's method is obtained exactly, without hand-coded derivatives.
-// This mirrors the "AD" objects of the MOOSE framework.
 #pragma once
 
 #include <algorithm>

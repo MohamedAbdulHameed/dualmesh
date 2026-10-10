@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 //
-// Object registry and factory (MOOSE "registerMooseObject" equivalent).
+// Object registry and factory: every object type is registered by name, and created by name with validated parameters.
 #pragma once
 
 #include "dualmesh/base/Object.h"
@@ -20,7 +20,8 @@ enum class ObjectCategory
   BoundaryCondition,
   NodalBC,
   NodalLoad,
-  Property
+  Property,
+  Constraint
 };
 
 std::string categoryName(ObjectCategory c);

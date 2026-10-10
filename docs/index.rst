@@ -25,14 +25,14 @@ described in physical terms: *physics* such as ``heat_transfer``,
 ``solid_mechanics`` and ``incompressible_flow``, their boundary conditions,
 and *couplings* such as ``thermal_expansion``.  Each physics generates the
 *kernels*, *property objects* and *boundary conditions* of its equations, which
-follow the object model of MOOSE [MOOSE2025]_ and are registered objects with
-validated and self-documenting parameters.  An equation without a physics is
+are registered objects with validated and self-documenting parameters.  An equation without a physics is
 written with these objects directly.  Meshes are generated
 by the library or read from standard file formats.  The solvers (Newton's
 method with exact derivatives, direct iteration, load stepping, adaptive time
 integration, and threaded and distributed linear algebra) are shared by every
 physics.  :doc:`scope` describes the coverage of the framework and compares
-it with MOOSE and COMSOL Multiphysics.
+it with the codes whose capabilities it measures itself against: MOOSE, COMSOL
+Multiphysics, OpenFOAM, and Nek5000 and nekRS.
 
 A two-dimensional bus bar with internal heat generation, fixed temperatures on
 two sides and convection on the top (Example 5.4.3 of Reddy's book) reads:
@@ -72,12 +72,12 @@ domain, without a weight function:
 
 .. math::
 
-   \int_{CD_I} \left[ -\nabla \cdot \mathbf{F} + S \right] \, dV = 0
+   \int_{\Omega_I} \left[ -\nabla \cdot \mathbf{F} + S \right] \,\mathrm{d}V = 0
    \quad \Longrightarrow \quad
-   -\oint_{\partial CD_I} \mathbf{F} \cdot \mathbf{n} \, dS
-   + \int_{CD_I} S \, dV = 0,
+   -\oint_{\partial \Omega_I} \mathbf{F} \cdot \mathbf{n} \,\mathrm{d}S
+   + \int_{\Omega_I} S \,\mathrm{d}V = 0,
 
-where :math:`CD_I` is the control domain of node :math:`I`,
+where :math:`\Omega_I` is the control domain of node :math:`I`,
 :math:`\mathbf{F}` is the flux, :math:`S` is the source and :math:`\mathbf{n}`
 is the outward unit normal.  The secondary variables (fluxes, forces and
 moments) appear on the interfaces of the control domains, as in the finite
@@ -148,10 +148,11 @@ and load stepping.
 marking rules, and conforming longest-edge bisection.
 
 **Linear algebra.**  A direct solver where a factorisation is inexpensive and a
-preconditioned Krylov solver otherwise, chosen automatically, and a
-distributed solver with a two-level overlapping Schwarz preconditioner whose
-iteration count does not grow with the number of processes.  PETSc can be
-used for the linear and nonlinear solvers.
+preconditioned Krylov solver otherwise, chosen automatically.  Distributed
+problems exchange the values at shared nodes through PETSc's star forests or
+through gslib, the gather-scatter of Nek5000, and are solved by PETSc, by
+default with the algebraic multigrid of hypre, whose iteration count does not
+grow with the number of processes.
 
 **Parallel execution.**  Threaded assembly within a process and a
 distributed solver across processes.
@@ -190,6 +191,7 @@ Contents
 
    theory/index
    verification
+   benchmarks/index
    openfoam
 
 .. toctree::

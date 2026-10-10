@@ -254,6 +254,34 @@ object.
 )
 
 _add(
+    "periodic_boundary_condition",
+    """
+``periodic_boundary_condition`` joins two opposite boundaries, so that every
+node of the secondary boundary takes the value of the primary node it faces.
+It models one cell of a structure that repeats, such as a channel of a heat
+exchanger or a unit cell of a composite.  The translation, from a primary
+node to its secondary node, is the vector between the centroids of the two
+boundaries unless it is given, and the meshes of the two boundaries must match
+node by node after it:
+
+.. code-block:: python
+
+   # Periodic in x on the unit square: the right edge repeats the left edge.
+   problem.add_boundary_condition("periodic_boundary_condition", "periodic_x", primary="left", secondary="right")
+
+   # Periodic in y as well; the corner nodes are then joined in both directions.
+   problem.add_boundary_condition("periodic_boundary_condition", "periodic_y", primary="bottom", secondary="top")
+
+   # Only the velocity is periodic, in a channel two metres long.
+   problem.add_boundary_condition("periodic_boundary_condition", "channel", primary="inlet", secondary="outlet", variables=["u", "v"], translation=[2.0, 0.0])
+
+A value prescribed on the secondary boundary must also be prescribed on the
+primary one.  The condition works with ``fem``, ``hfvm`` and ``dmcdm``, in
+serial and in parallel.
+""",
+)
+
+_add(
     "point_source",
     """
 ``point_source`` applies a concentrated load or a point source of heat at one or

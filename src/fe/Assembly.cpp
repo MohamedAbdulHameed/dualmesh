@@ -129,6 +129,8 @@ mapCornerShape(const Element & el, MappedPoint & mp)
   const auto & linear = ReferenceElement::get(elementCornerType(el.type));
   const int num_corners = linear.numNodes();
   const int dim = linear.dimension();
+  if (dim < 1 || dim > 3)
+    throw std::logic_error("An element must have one, two or three dimensions.");
   Point dNr[kMaxElementNodes];
   double N[kMaxElementNodes];
   linear.shape(mp.xi, N, dNr);
@@ -319,6 +321,22 @@ elementMeasure(const Mesh & mesh, Index e)
   for (const auto & p : ref.elementPatches())
     m += patchMeasure(mesh, el, p);
   return m;
+}
+
+double
+elementSize(const Mesh & mesh, Index e)
+{
+  const ElementType type = mesh.element(e).type;
+  const ElementType corner = mesh.element(e).cornerType();
+  double factor = 1.0;
+  if (corner == ElementType::Tri3 || corner == ElementType::Wedge6)
+    factor = 2.0;
+  else if (corner == ElementType::Tet4 || corner == ElementType::Pyramid5)
+    factor = 6.0;
+  double h = std::pow(factor * elementMeasure(mesh, e), 1.0 / mesh.dimension());
+  if (elementIsQuadratic(type))
+    h *= 0.5;
+  return h;
 }
 
 double

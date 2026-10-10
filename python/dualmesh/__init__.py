@@ -88,7 +88,7 @@ from .objects import (
 )
 from .output import Output
 from .parallel import (
-    have_metis,
+    have_gslib,
     have_mpi,
     have_petsc,
     is_root,
@@ -133,7 +133,7 @@ __all__ = [
     "generate_box_mesh",
     "generate_line_mesh",
     "generate_rectangle_mesh",
-    "have_metis",
+    "have_gslib",
     "have_mpi",
     "have_petsc",
     "petsc_version",
@@ -185,7 +185,7 @@ def describe(object_type: str) -> str:
 def list_objects(category: str | None = None, module: str | None = None) -> list[str]:
     """List the registered types, optionally filtered by category
     (``physics``, ``coupling``, ``kernel``, ``boundary_condition``,
-    ``nodal_boundary_condition``, ``nodal_load`` or ``property``) or by
+    ``nodal_boundary_condition``, ``nodal_load``, ``property`` or ``constraint``) or by
     module."""
     categories = {object_category(name) for name in registered_types()} | {"physics", "coupling"}
     if category is not None and category not in categories:

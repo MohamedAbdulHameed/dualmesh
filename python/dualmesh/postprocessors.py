@@ -12,9 +12,8 @@ steady solve and after every accepted time step of a transient one::
     problem.postprocessor_table()  # the history, as aligned text
     problem.write_postprocessor_csv("out.csv")
 
-The names follow the MOOSE post-processors they correspond to where one
-exists (``point_value``, ``nodal_extreme_value``); the others say what they
-compute.
+Every name says what the post-processor computes (``point_value``,
+``nodal_extreme_value``).
 """
 
 from __future__ import annotations
@@ -86,8 +85,7 @@ class NodalExtremeValue(Postprocessor):
             )
 
     def compute(self, problem) -> float:
-        values = np.asarray(problem.values(self.variable))
-        return float(values.max() if self.value_type == "max" else values.min())
+        return float(problem.nodal_extreme(self.variable, self.value_type))
 
 
 @dataclass
@@ -193,6 +191,28 @@ class PostprocessorHistory:
         names = [pp.name for pp in self.postprocessors]
         rows = [[t] + [self.values[n][i] for n in names] for i, t in enumerate(self.time)]
         return table(rows, ["time"] + names)
+
+    def write_json(self, filename: str) -> None:
+        """The history as JSON, which load_json reads back when a run restarts from a checkpoint."""
+        import json
+
+        with open(filename, "w") as f:
+            json.dump({"time": self.time, "values": self.values}, f)
+
+    def load_json(self, filename: str) -> None:
+        """Continue the history written by write_json, for the post-processors of this problem."""
+        import json
+
+        with open(filename) as f:
+            saved = json.load(f)
+        self.time = [float(t) for t in saved["time"]]
+        for name in self.values:
+            values = saved["values"].get(name)
+            self.values[name] = (
+                [float(v) for v in values]
+                if values is not None
+                else [float("nan")] * len(self.time)
+            )
 
     def write_csv(self, filename: str) -> None:
         """One row per evaluation, headed by the column names and, on a second

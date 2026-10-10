@@ -19,8 +19,7 @@ others.
 
 A *multiphysics framework* is software in which such a system can be written
 down term by term, with no term knowing in advance which others it will be
-combined with, and solved.  dualmesh is one in the following precise sense,
-which is the sense of MOOSE [MOOSE2025]_:
+combined with, and solved.  dualmesh is one in the following precise sense:
 
 1. **Any number of fields.**  A problem declares its variables by name, and
    each is governed by a conservation law in the canonical form
@@ -81,6 +80,9 @@ What is in place
      - Steady and transient incompressible Navier-Stokes flow by the penalty
        method, by a stabilized equal-order pressure-velocity formulation
        (PSPG and SUPG) or with Taylor-Hood elements, and Boussinesq buoyancy.
+       Transient flow monolithically or by the projection splitting of
+       Nek5000 and nekRS (finite element, dual mesh control domain and
+       vertex-centered finite volume methods).
    * - General equations
      - Systems of any number of fields in general form (flux and source as
        expressions of the fields and their gradients) and in coefficient
@@ -105,9 +107,10 @@ What is in place
    * - Linear solvers
      - Sparse LU, and BiCGSTAB, GMRES and CG with ILU(0), ILUT, Jacobi or
        smoothed aggregation algebraic multigrid preconditioning, chosen
-       automatically.  A saddle point solver for flow.  A distributed solver
-       with a two-level overlapping Schwarz preconditioner, and PETSc as an
-       option at build time.
+       automatically.  A saddle point solver for flow.  PETSc for distributed
+       problems (required by a build with MPI) and as an option in serial.
+   * - Gather-scatter
+     - PETSc's star forests or gslib (Nek5000), chosen per problem.
    * - Parallelism
      - OpenMP threads in assembly, and MPI across processes.
    * - Meshes
@@ -120,19 +123,22 @@ What is in place
      - Python API, command-line tools for the object reference and the side
        sets of a mesh file.
 
-How far it is from MOOSE and COMSOL
------------------------------------
+How far it is from MOOSE, COMSOL, OpenFOAM and Nek5000
+------------------------------------------------------
 
-The comparison below is between dualmesh and MOOSE [MOOSE2025]_, an open-source
-framework built on libMesh [libMesh2006]_ and PETSc, and COMSOL Multiphysics, a
-commercial package.  Its purpose is to state the differences plainly, so that a
-reader can judge whether dualmesh suits a given problem.
+The comparison below is between dualmesh and the codes whose capabilities it
+measures itself against.  MOOSE [MOOSE2025]_ is an open-source framework built
+on libMesh [libMesh2006]_ and PETSc, and COMSOL Multiphysics a commercial
+package.  OpenFOAM [OpenFOAM1998]_ is the open-source finite volume code of
+computational fluid dynamics, and Nek5000 and its successor nekRS
+[Fischer2021]_ are the spectral element codes of incompressible flow at scale.  Its purpose is to
+state the differences plainly, so that a reader can judge whether dualmesh
+suits a given problem.
 
-**Where dualmesh is of the same kind.**  The architecture is the one MOOSE
-uses: registered objects with validated parameters, a canonical residual form,
-monolithic coupling, and Jacobians by automatic differentiation.  A coupled
-problem is set up in dualmesh as it would be in MOOSE, by listing variables,
-kernels, property objects and boundary conditions.
+**Where dualmesh is of the same kind.**  Like MOOSE, dualmesh has registered
+objects with validated parameters, a canonical residual form, monolithic
+coupling, and Jacobians by automatic differentiation, and a coupled problem is
+set up by listing variables, kernels, property objects and boundary conditions.
 
 **Where dualmesh offers something the others do not.**  dualmesh provides the
 dual mesh control domain method, and it solves one problem description by four
@@ -150,13 +156,18 @@ much each limitation restricts the problems that can be solved:
    such a model is written in general form, without the dedicated objects,
    material models and verified defaults of those codes.
 
-2. **Scale.**  MOOSE distributes the mesh as well as the unknowns, and solves
-   through PETSc with algebraic multigrid, field-split and scalable direct
-   solvers, and it runs on very large parallel machines.  dualmesh replicates
-   the mesh on every process.  Its iteration counts do not grow with the
-   number of processes, but its memory and its setup time do, and the
-   cell-centred method and the gap conditions are not distributed.  It suits
-   workstations and small clusters.
+2. **Scale.**  dualmesh distributes the mesh with PETSc's DMPlex (PT-Scotch or
+   ParMETIS partitions it) and solves through PETSc with algebraic multigrid
+   (hypre BoomerAMG), field split and the parallel direct solver MUMPS; the
+   values at shared nodes are exchanged through PETSc's star forests or gslib.
+   Its multigrid iteration count stays flat from one to four processes, the
+   largest count run so far, and the projection time integration of a flow
+   keeps 65 to 78 % parallel efficiency at 16 000 nodes per process on four
+   processes of a laptop.  Scaling studies on large machines are still to be
+   done, where MOOSE, OpenFOAM and Nek5000 have been run for years (Nek5000 to
+   millions of processes, at 2 000 to 4 000 points per process).  The whole mesh is still read or
+   generated by the first process, and a Python script builds it on every
+   process.
 
 3. **Coupling across meshes and time scales.**  Every field of a dualmesh
    problem is defined on one mesh and advances with one time step.  MOOSE's
@@ -164,16 +175,26 @@ much each limitation restricts the problems that can be solved:
    with transfers between them, and COMSOL couples physics on different domains
    and dimensions.
 
-4. **Time integration and analysis types.**  dualmesh has the :math:`\theta`
-   family only, with no second-order backward differences and no scheme for
-   second time derivatives, and no frequency-domain or optimisation solvers.
+4. **Computational fluid dynamics.**  dualmesh solves laminar incompressible
+   flow, steady or transient, monolithically or by the projection splitting of
+   Nek5000, and natural convection.  OpenFOAM offers RANS and LES turbulence
+   models with wall functions, upwind-biased and limited convection schemes,
+   compressible and multiphase solvers and moving meshes, and Nek5000 and nekRS
+   offer high-order spectral elements, LES and runs on GPUs.  dualmesh has no
+   turbulence model yet, and it stabilizes convection by streamline upwinding
+   only.
 
-5. **Contact.**  The contact of dualmesh is frictionless and pairs the two
+5. **Time integration and analysis types.**  dualmesh has the :math:`\theta`
+   family, and the backward differences of order 1 to 3 in the projection
+   integration of a flow only, with no scheme for second time derivatives, and
+   no frequency-domain or optimisation solvers.
+
+6. **Contact.**  The contact of dualmesh is frictionless and pairs the two
    surfaces at their closest points, which converges at first order when
    their meshes do not match.  MOOSE and COMSOL offer friction and mortar
    methods.
 
-6. **Geometry and user interface.**  COMSOL provides CAD, meshing and a
+7. **Geometry and user interface.**  COMSOL provides CAD, meshing and a
    graphical interface, and MOOSE provides input-file syntax checking and a
    graphical front end.  dualmesh generates simple meshes itself and reads
    everything else (for instance from Gmsh) through meshio, and is driven from
@@ -183,6 +204,7 @@ In summary, dualmesh is a multiphysics framework in its architecture and in the
 way problems are coupled and solved, and every capability is verified against
 analytical solutions, manufactured solutions or published reference results.
 It covers a far narrower range of physics, and it does not yet run very
-large parallel problems.  Items 1 and 2 would most extend its capabilities:
-dedicated models for plasticity, turbulence and phase field, and a
-distributed mesh with a scalable solver path through PETSc.
+large parallel problems.  Items 1, 2 and 4 would most extend its capabilities:
+dedicated models for plasticity, turbulence and phase field, scaling studies
+on large machines, and the convection schemes and turbulence models of
+computational fluid dynamics.

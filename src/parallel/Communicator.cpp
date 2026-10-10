@@ -4,7 +4,6 @@
 
 #include <cstdlib>
 #include <numeric>
-#include <type_traits>
 
 #ifdef DUALMESH_HAVE_MPI
 #include <mpi.h>
@@ -106,6 +105,20 @@ Communicator::max(double value) const
   return value;
 }
 
+double
+Communicator::min(double value) const
+{
+#ifdef DUALMESH_HAVE_MPI
+  if (_size > 1)
+  {
+    double out = 0;
+    MPI_Allreduce(&value, &out, 1, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
+    return out;
+  }
+#endif
+  return value;
+}
+
 Index
 Communicator::sum(Index value) const
 {
@@ -114,6 +127,34 @@ Communicator::sum(Index value) const
   {
     long in = value, out = 0;
     MPI_Allreduce(&in, &out, 1, MPI_LONG, MPI_SUM, MPI_COMM_WORLD);
+    return static_cast<Index>(out);
+  }
+#endif
+  return value;
+}
+
+Index
+Communicator::max(Index value) const
+{
+#ifdef DUALMESH_HAVE_MPI
+  if (_size > 1)
+  {
+    long in = value, out = 0;
+    MPI_Allreduce(&in, &out, 1, MPI_LONG, MPI_MAX, MPI_COMM_WORLD);
+    return static_cast<Index>(out);
+  }
+#endif
+  return value;
+}
+
+Index
+Communicator::min(Index value) const
+{
+#ifdef DUALMESH_HAVE_MPI
+  if (_size > 1)
+  {
+    long in = value, out = 0;
+    MPI_Allreduce(&in, &out, 1, MPI_LONG, MPI_MIN, MPI_COMM_WORLD);
     return static_cast<Index>(out);
   }
 #endif
@@ -175,6 +216,63 @@ Communicator::barrier() const
 #endif
 }
 
+void
+Communicator::broadcast(std::vector<Index> & values) const
+{
+#ifdef DUALMESH_HAVE_MPI
+  if (_size > 1)
+  {
+    long size = static_cast<long>(values.size());
+    MPI_Bcast(&size, 1, MPI_LONG, 0, MPI_COMM_WORLD);
+    values.resize(static_cast<std::size_t>(size));
+    if (size > 0)
+      MPI_Bcast(values.data(), static_cast<int>(size), MPI_LONG, 0, MPI_COMM_WORLD);
+  }
+#else
+  (void) values;
+#endif
+}
+
+namespace
+{
+#ifdef DUALMESH_HAVE_MPI
+template <typename T>
+std::vector<T>
+allGatherVector(int size, const std::vector<T> & values, MPI_Datatype type)
+{
+  std::vector<int> counts(size), offsets(size, 0);
+  const int mine = static_cast<int>(values.size());
+  MPI_Allgather(&mine, 1, MPI_INT, counts.data(), 1, MPI_INT, MPI_COMM_WORLD);
+  for (int r = 1; r < size; ++r)
+    offsets[r] = offsets[r - 1] + counts[r - 1];
+  std::vector<T> out(static_cast<std::size_t>(offsets.back() + counts.back()));
+  MPI_Allgatherv(
+      values.data(), mine, type, out.data(), counts.data(), offsets.data(), type, MPI_COMM_WORLD);
+  return out;
+}
+#endif
+} // namespace
+
+std::vector<Index>
+Communicator::allGather(const std::vector<Index> & values) const
+{
+#ifdef DUALMESH_HAVE_MPI
+  if (_size > 1)
+    return allGatherVector(_size, values, MPI_LONG);
+#endif
+  return values;
+}
+
+std::vector<double>
+Communicator::allGather(const std::vector<double> & values) const
+{
+#ifdef DUALMESH_HAVE_MPI
+  if (_size > 1)
+    return allGatherVector(_size, values, MPI_DOUBLE);
+#endif
+  return values;
+}
+
 std::vector<Index>
 Communicator::allGather(Index value) const
 {
@@ -190,70 +288,6 @@ Communicator::allGather(Index value) const
   }
 #endif
   return out;
-}
-
-namespace
-{
-#ifdef DUALMESH_HAVE_MPI
-template <typename T>
-void
-exchangeImpl(int size,
-             const std::vector<std::vector<T>> & send,
-             std::vector<std::vector<T>> & recv,
-             MPI_Datatype type)
-{
-  std::vector<int> send_sizes(size, 0), recv_sizes(size, 0);
-  for (int r = 0; r < size; ++r)
-    send_sizes[r] = static_cast<int>(send[r].size());
-  MPI_Alltoall(send_sizes.data(), 1, MPI_INT, recv_sizes.data(), 1, MPI_INT, MPI_COMM_WORLD);
-  recv.assign(size, {});
-  std::vector<MPI_Request> requests;
-  for (int r = 0; r < size; ++r)
-    if (recv_sizes[r] > 0)
-    {
-      recv[r].resize(recv_sizes[r]);
-      requests.emplace_back();
-      MPI_Irecv(recv[r].data(), recv_sizes[r], type, r, 17, MPI_COMM_WORLD, &requests.back());
-    }
-  for (int r = 0; r < size; ++r)
-    if (send_sizes[r] > 0)
-    {
-      requests.emplace_back();
-      MPI_Isend(send[r].data(), send_sizes[r], type, r, 17, MPI_COMM_WORLD, &requests.back());
-    }
-  if (!requests.empty())
-    MPI_Waitall(static_cast<int>(requests.size()), requests.data(), MPI_STATUSES_IGNORE);
-}
-#endif
-} // namespace
-
-void
-Communicator::exchange(const std::vector<std::vector<double>> & send,
-                       std::vector<std::vector<double>> & recv) const
-{
-#ifdef DUALMESH_HAVE_MPI
-  if (_size > 1)
-  {
-    exchangeImpl(_size, send, recv, MPI_DOUBLE);
-    return;
-  }
-#endif
-  recv = send;
-}
-
-void
-Communicator::exchange(const std::vector<std::vector<Index>> & send,
-                       std::vector<std::vector<Index>> & recv) const
-{
-#ifdef DUALMESH_HAVE_MPI
-  if (_size > 1)
-  {
-    static_assert(std::is_same<Index, long>::value, "Index must be long to match MPI_LONG");
-    exchangeImpl(_size, send, recv, MPI_LONG);
-    return;
-  }
-#endif
-  recv = send;
 }
 
 } // namespace dualmesh

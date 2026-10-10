@@ -40,7 +40,10 @@ public:
 
   double sum(double value) const;
   double max(double value) const;
+  double min(double value) const;
   Index sum(Index value) const;
+  Index max(Index value) const;
+  Index min(Index value) const;
   /// Sum @p values elementwise across all ranks, in place.
   void sumInPlace(std::vector<double> & values) const;
   /// Elementwise minimum across all ranks, in place.
@@ -49,12 +52,12 @@ public:
   bool any(bool value) const;
   void barrier() const;
 
-  /// Send @p send[r] to rank r and receive rank r's message into @p recv[r].
-  /// The sizes are exchanged first, so the caller does not need to know them.
-  void exchange(const std::vector<std::vector<double>> & send,
-                std::vector<std::vector<double>> & recv) const;
-  void exchange(const std::vector<std::vector<Index>> & send,
-                std::vector<std::vector<Index>> & recv) const;
+  /// Give every rank the root's @p values (the other ranks' values are replaced).
+  void broadcast(std::vector<Index> & values) const;
+
+  /// Every rank's @p values, one after the other in rank order, on every rank.
+  std::vector<Index> allGather(const std::vector<Index> & values) const;
+  std::vector<double> allGather(const std::vector<double> & values) const;
 
   /// Gather one value from every rank onto every rank.
   std::vector<Index> allGather(Index value) const;

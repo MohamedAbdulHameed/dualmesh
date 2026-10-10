@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 """Expressions given as text, turned into functions of (x, y, z, t).
 
-This is the counterpart of MOOSE's ParsedFunction.  A coefficient, a source or
-a boundary value can be written as an expression::
+A coefficient, a source or a boundary value can be written as an expression::
 
     import dualmesh as dm
 

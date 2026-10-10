@@ -15,7 +15,7 @@ import dualmesh as dm
 import numpy as np
 import pytest
 
-PARTITIONERS = ["recursive_coordinate_bisection", "graph"] + (["metis"] if dm.have_metis() else [])
+PARTITIONERS = list(dm._core.available_partitioners())
 
 
 @pytest.mark.parametrize("method", PARTITIONERS)
@@ -33,21 +33,10 @@ def test_partition_is_complete_and_balanced(method, num_parts, element_type):
     assert partition["edge_cut"] > 0
 
 
-def test_metis_cuts_less_than_the_graph_partitioner():
-    """On an unstructured mesh METIS cuts fewer faces than the built-in
-    graph partitioner.  It does not beat recursive coordinate bisection on a
-    structured grid, where bisection is already close to optimal."""
-    if not dm.have_metis():
-        pytest.skip("this build has no METIS")
-    mesh = dm.generate_rectangle_mesh(0.0, 1.0, 0.0, 1.0, 20, 20, element_type="Tri3")
-    cuts = {m: dm.partition_mesh(mesh, 4, m)["edge_cut"] for m in PARTITIONERS}
-    assert cuts["metis"] < cuts["graph"]
-
-
 def test_sub_mesh_keeps_the_boundary_and_covers_every_node():
     mesh = dm.generate_rectangle_mesh(0.0, 1.0, 0.0, 1.0, 8, 8)
-    partition = dm.partition_mesh(mesh, 4, "graph")
-    parts = np.asarray(partition["element_part"])
+    # Any division of the elements will do: element e goes to part e mod 4.
+    parts = np.arange(mesh.num_elements) % 4
     covered = np.zeros(mesh.num_nodes, dtype=bool)
     total_sides = 0
     for p in range(4):
@@ -87,36 +76,40 @@ def conduction_problem(problem):
     )
 
 
-@pytest.mark.parametrize("method", ["dmcdm", "fem", "hfvm"])
+@pytest.mark.parametrize("method", ["dmcdm", "fem", "hfvm", "zfvm"])
 @pytest.mark.parametrize(
-    "preconditioner, overlap, subdomain_solver",
+    "solver",
     [
-        ("jacobi", 0, "ilu"),
-        ("additive_schwarz", 0, "ilu"),
-        ("additive_schwarz", 1, "lu"),
-        ("two_level_schwarz", 1, "ilu"),
-        ("two_level_schwarz", 2, "lu"),
+        {},
+        {"linear_solver": "lu"},
+        {
+            "linear_solver": "petsc",
+            "petsc_options": "-ksp_type gmres -pc_type asm -sub_pc_type ilu",
+        },
+        {"linear_solver": "petsc", "petsc_options": "-ksp_type gmres -pc_type gamg"},
     ],
+    ids=["automatic", "lu", "schwarz", "gamg"],
 )
-def test_distributed_path_reproduces_the_serial_answer(
-    method, preconditioner, overlap, subdomain_solver
-):
+@pytest.mark.parametrize("gather_scatter", ["petsc", "gslib"])
+def test_distributed_path_reproduces_the_serial_answer(method, solver, gather_scatter):
+    if gather_scatter == "gslib" and not dm.have_gslib():
+        pytest.skip("built without gslib")
     mesh = dm.generate_rectangle_mesh(0.0, 1.0, 0.0, 1.0, 12, 12)
 
-    serial = dm.Problem(mesh, method=method)
+    # Under mpirun a problem is distributed by default, so the reference is made serial explicitly.
+    serial = dm.Problem(mesh, method=method, distributed=False)
     conduction_problem(serial)
     serial.solve()
     expected = serial.values("temperature")
 
-    distributed = dm.Problem(mesh, method=method, distributed=True, overlap=overlap)
+    distributed = dm.Problem(mesh, method=method, distributed=True, gather_scatter=gather_scatter)
     conduction_problem(distributed)
-    distributed.solve(
-        preconditioner=preconditioner, subdomain_solver=subdomain_solver, linear_tolerance=1e-13
-    )
+    distributed.solve(linear_tolerance=1e-13, **solver)
     got = np.asarray(distributed.gathered_values("temperature"))
     assert got == pytest.approx(expected, abs=1e-8)
     assert distributed.num_ranks == dm.num_ranks()
-    assert distributed.num_global_dofs == mesh.num_nodes
+    # The unknowns of zfvm sit at the cells and the boundary faces, those of the other methods at the nodes.
+    assert distributed.num_global_dofs == len(expected)
 
 
 def test_distributed_transient_reproduces_the_serial_answer():
@@ -137,7 +130,7 @@ def test_distributed_transient_reproduces_the_serial_answer():
             value=0.0,
         )
 
-    serial = dm.Problem(mesh)
+    serial = dm.Problem(mesh, distributed=False)
     define(serial)
     serial.solve_transient(end_time=0.02, time_step=0.002, implicitness=0.5)
     expected = serial.values("temperature")
@@ -162,7 +155,7 @@ def test_threading_does_not_change_the_answer(method):
     results = {}
     for threads in (1, 4):
         mesh = dm.generate_rectangle_mesh(0.0 if method != "zfvm" else 0.0, 1.0, 0.0, 1.0, 40, 40)
-        problem = dm.Problem(mesh, method=method)
+        problem = dm.Problem(mesh, method=method, distributed=False)
         conduction_problem(problem)
         problem.set_num_threads(threads)
         problem.solve()
@@ -174,7 +167,7 @@ def test_threading_is_disabled_for_python_objects():
     """A function written in Python needs the interpreter lock, so the assembly
     must fall back to one thread."""
     mesh = dm.generate_rectangle_mesh(0.0, 1.0, 0.0, 1.0, 40, 40)
-    problem = dm.Problem(mesh)
+    problem = dm.Problem(mesh, distributed=False)
     problem.add_variable("u")
     problem.add_kernel("diffusion", "diffusion", variable="u")
     problem.add_function("source", lambda x, y, z, t: np.sin(x))
@@ -194,7 +187,7 @@ def test_threading_is_disabled_for_python_objects():
 
 def test_number_of_threads_is_reported():
     mesh = dm.generate_rectangle_mesh(0.0, 1.0, 0.0, 1.0, 40, 40)
-    problem = dm.Problem(mesh)
+    problem = dm.Problem(mesh, distributed=False)
     conduction_problem(problem)
     problem.set_num_threads(3)
     problem.solve()
@@ -203,53 +196,32 @@ def test_number_of_threads_is_reported():
     assert 1 <= problem.effective_threads() <= 3
 
 
-def test_the_default_preconditioner_is_two_level_schwarz_with_overlap():
-    """Restricted additive Schwarz on subdomains that overlap by one layer of
-    elements, with a coarse level, is the default: its iteration count stays
-    flat as ranks are added (the multi-rank check is in
-    dualmesh_parallel_tests) and it is several times lower than Jacobi's.
+def test_the_default_linear_solver_is_petsc_automatic():
+    """A distributed problem is solved by PETSc, by default with the automatic choice (empty petsc_options).
     The C++ options struct and the Python defaults must agree."""
-    import inspect
-
     from dualmesh.problem import _distributed_options
 
     options = dm._core.DistributedOptions()
     linear, _ = _distributed_options({})
-    signature = inspect.signature(dm.Problem.__init__).parameters
-    assert options.preconditioner == linear.preconditioner == "two_level_schwarz"
-    assert options.overlap == signature["overlap"].default == 1
-    assert options.subdomain_solver == linear.subdomain_solver == "ilu"
-    assert options.linear_solver == linear.linear_solver == "bicgstab"
+    assert options.petsc_options == linear.petsc_options == ""
+    lu, _ = _distributed_options({"linear_solver": "lu"})
+    assert "mumps" in lu.petsc_options
 
 
-def test_bad_schwarz_options_are_reported():
+@pytest.mark.parametrize(
+    "solver",
+    [{"preconditioner": "ilu"}, {"gmres_restart": 30}, {"linear_solver": "gmres"}],
+)
+def test_a_distributed_problem_takes_its_linear_solver_settings_from_petsc_options(solver):
+    """PETSc solves a distributed problem, so the settings of the serial linear solvers are refused with a message that names petsc_options."""
     mesh = dm.generate_rectangle_mesh(0.0, 1.0, 0.0, 1.0, 4, 4)
-    with pytest.raises(ValueError, match="overlap"):
-        dm.Problem(mesh, distributed=True, overlap=-1)
     distributed = dm.Problem(mesh, distributed=True)
     conduction_problem(distributed)
-    with pytest.raises(ValueError, match="Unknown subdomain solver"):
-        distributed.solve(subdomain_solver="multigrid")
+    with pytest.raises(ValueError, match="petsc"):
+        distributed.solve(**solver)
 
 
-def test_the_cell_centred_finite_volume_method_is_refused_by_the_distributed_solver():
-    """The distributed decomposition identifies a degree of freedom by the mesh
-    node it sits on.  The cell-centred method puts its unknowns at cell and
-    boundary face centroids instead, so the ownership mask, the exchange of
-    shared values and the inner product do not apply to it, and it would also
-    need a layer of ghost cells across each partition boundary.  Rather than
-    return a wrong answer, the constructor refuses, and the message says which
-    methods to use instead."""
-    mesh = dm.generate_rectangle_mesh(
-        x_min=0.0, x_max=1.0, y_min=0.0, y_max=1.0, num_x_elements=4, num_y_elements=4
-    )
-    with pytest.raises(Exception, match="cell-centred finite volume"):
-        dm.Problem(mesh, method="zfvm", distributed=True)
-    # The three node-based methods are accepted.
-    for method in ("dmcdm", "fem", "hfvm"):
-        dm.Problem(mesh, method=method, distributed=True)
-
-
+@pytest.mark.skipif(not dm.have_petsc(), reason="built without PETSc")
 def test_a_linear_solve_that_cannot_converge_says_what_to_try():
     """When the distributed iteration cannot reach the tolerance, the error
     must name the number of iterations and the residual reached and say what
@@ -268,8 +240,13 @@ def test_a_linear_solve_that_cannot_converge_says_what_to_try():
         boundary=mesh.sideset_names(),
         value=0.0,
     )
-    with pytest.raises(RuntimeError, match="did not converge in 2 iterations"):
-        problem.solve(preconditioner="jacobi", linear_tolerance=1e-14, linear_max_iterations=2)
+    with pytest.raises(RuntimeError, match="did not converge.*Adjust petsc_options"):
+        problem.solve(
+            linear_solver="petsc",
+            petsc_options="-ksp_type gmres -pc_type jacobi",
+            linear_tolerance=1e-14,
+            linear_max_iterations=2,
+        )
 
 
 @pytest.mark.parametrize("method", ["dmcdm", "fem", "hfvm"])
@@ -306,7 +283,7 @@ def test_distributed_pressure_velocity_flow_reproduces_the_serial_answer(method,
             )
 
     mesh = dm.generate_rectangle_mesh(0.0, 1.0, 0.0, 1.0, 16, 16)
-    serial = dm.Problem(mesh, method=method)
+    serial = dm.Problem(mesh, method=method, distributed=False)
     define(serial)
     serial.solve()
     distributed = dm.Problem(mesh, method=method, distributed=True)
@@ -354,7 +331,7 @@ def test_distributed_petsc_reproduces_the_serial_answer(method, options):
             )
 
     mesh = dm.generate_rectangle_mesh(0.0, 1.0, 0.0, 1.0, 16, 16)
-    serial = dm.Problem(mesh, method=method)
+    serial = dm.Problem(mesh, method=method, distributed=False)
     define(serial)
     serial.solve(linear_solver="lu")
     distributed = dm.Problem(mesh, method=method, distributed=True)
@@ -391,7 +368,7 @@ def _taylor_hood_cavity(problem):
         )
 
 
-_TAYLOR_HOOD_SOLVERS = [{"subdomain_solver": "lu"}] + (
+_TAYLOR_HOOD_SOLVERS = [{}] + (
     [
         {"linear_solver": "petsc"},
         {
@@ -415,7 +392,7 @@ def test_distributed_taylor_hood_reproduces_the_serial_answer(options):
     the globally nearest corner node, and the solution agrees with the serial
     one on any number of ranks."""
     mesh = dm.generate_rectangle_mesh(0.0, 1.0, 0.0, 1.0, 8, 8, element_type="Quad9")
-    serial = dm.Problem(mesh, method="fem")
+    serial = dm.Problem(mesh, method="fem", distributed=False)
     _taylor_hood_cavity(serial)
     serial.solve()
     distributed = dm.Problem(mesh, method="fem", distributed=True)
@@ -426,12 +403,179 @@ def test_distributed_taylor_hood_reproduces_the_serial_answer(options):
         assert got == pytest.approx(serial.values(variable), abs=1e-8)
 
 
-@pytest.mark.parametrize(
-    "options", [{}, {"preconditioner": "jacobi"}], ids=["incomplete_lu", "jacobi"]
-)
-def test_distributed_taylor_hood_refuses_preconditioners_that_divide_by_zero(options):
-    mesh = dm.generate_rectangle_mesh(0.0, 1.0, 0.0, 1.0, 4, 4, element_type="Quad9")
-    distributed = dm.Problem(mesh, method="fem", distributed=True)
-    _taylor_hood_cavity(distributed)
-    with pytest.raises(ValueError, match="subdomain_solver = 'lu'"):
-        distributed.solve(**options)
+def test_an_unknown_gather_scatter_is_refused():
+    mesh = dm.generate_rectangle_mesh(0.0, 1.0, 0.0, 1.0, 4, 4)
+    with pytest.raises(ValueError, match="'petsc' or 'gslib'"):
+        dm.Problem(mesh, distributed=True, gather_scatter="crystal")
+
+
+@pytest.mark.parametrize("method", ["dmcdm", "fem", "hfvm"])
+@pytest.mark.parametrize("gather_scatter", ["petsc", "gslib"])
+def test_distributed_periodic_boundaries_reproduce_the_serial_answer(method, gather_scatter):
+    """A domain periodic in both directions, whose periodic node pairs lie on different processes."""
+    if gather_scatter == "gslib" and not dm.have_gslib():
+        pytest.skip("built without gslib")
+
+    def define(problem):
+        problem.add_variable("u")
+        problem.add_kernel("diffusion", "diffusion", variable="u")
+        problem.add_kernel("reaction", "reaction", variable="u")
+        problem.add_kernel(
+            "body_force", "source", variable="u", value="1 + cos(2*pi*x + 0.3)*sin(2*pi*y)"
+        )
+        problem.add_boundary_condition(
+            "periodic_boundary_condition", "periodic_x", primary="left", secondary="right"
+        )
+        problem.add_boundary_condition(
+            "periodic_boundary_condition", "periodic_y", primary="bottom", secondary="top"
+        )
+
+    mesh = dm.generate_rectangle_mesh(0.0, 1.0, 0.0, 1.0, 12, 10)
+    serial = dm.Problem(mesh, method=method, distributed=False)
+    define(serial)
+    serial.solve(report="none")
+    distributed = dm.Problem(mesh, method=method, distributed=True, gather_scatter=gather_scatter)
+    define(distributed)
+    distributed.solve(linear_tolerance=1e-13, report="none")
+    got = np.asarray(distributed.gathered_values("u"))
+    assert got == pytest.approx(serial.values("u"), abs=1e-8)
+
+
+@pytest.mark.parametrize("method", ["dmcdm", "fem", "hfvm"])
+def test_distributed_postprocessors_equal_the_serial_ones(method):
+    """Every post-processor type gives the same value on any number of processes: integrals and fluxes are summed over the processes, extremes are reduced, and a point value comes from the process whose elements contain the point."""
+
+    def build(distributed):
+        mesh = dm.generate_rectangle_mesh(0.0, 1.0, 0.0, 1.0, 12, 12)
+        problem = dm.Problem(mesh, method=method, distributed=distributed)
+        conduction_problem(problem)
+        problem.add_postprocessor("variable_integral", "integral", variable="temperature")
+        problem.add_postprocessor("variable_average", "average", variable="temperature")
+        problem.add_postprocessor(
+            "point_value", "inside", variable="temperature", point=[0.31, 0.67]
+        )
+        problem.add_postprocessor(
+            "point_value", "on_a_node", variable="temperature", point=[0.5, 0.5]
+        )
+        problem.add_postprocessor("nodal_extreme_value", "hottest", variable="temperature")
+        problem.add_postprocessor(
+            "nodal_extreme_value", "coldest", variable="temperature", value_type="min"
+        )
+        problem.add_postprocessor(
+            "total_reaction", "heat_out", variable="temperature", boundary="left"
+        )
+        problem.solve(linear_tolerance=1e-13, report="none")
+        return {k: v[-1] for k, v in problem.postprocessor_values().items()}
+
+    serial, distributed = build(False), build(True)
+    for name, value in serial.items():
+        assert distributed[name] == pytest.approx(value, rel=1e-9, abs=1e-9), name
+
+
+def _creep_block(distributed):
+    """A block pulled at a constant stress that creeps at A sigma^n exp(-Q/T): its creep strain lives in the history of the material."""
+    A, n, Q, T, stress = 1e-30, 3.0, 2000.0, 700.0, 50e6
+    mesh = dm.generate_box_mesh(0, 1e-3, 0, 1e-3, 0, 2e-3, 2, 2, 4)
+    p = dm.Problem(mesh, distributed=distributed)
+    for v in ("temperature", "ux", "uy", "uz"):
+        p.add_variable(v)
+    p.add_kernel("diffusion", "conduction", variable="temperature")
+    p.add_boundary_condition(
+        "Dirichlet_boundary_condition",
+        "T",
+        variable="temperature",
+        boundary=list(mesh.sideset_names()),
+        value=T,
+    )
+    p.add_property(
+        "small_strain_stress",
+        "stress",
+        displacements=["ux", "uy", "uz"],
+        formulation="three_dimensional",
+        youngs_modulus=1e11,
+        poissons_ratio=0.3,
+        creep_model="parsed",
+        creep_rate="A * von_mises_stress^n * exp(-Q / temperature)",
+        creep_constant_names=["A", "n", "Q"],
+        creep_constant_values=[A, n, Q],
+        temperature="temperature",
+    )
+    for i, v in enumerate(("ux", "uy", "uz")):
+        p.add_kernel("stress_divergence", f"equilibrium_{v}", variable=v, component=i)
+    for v, side in (("ux", "left"), ("uy", "bottom"), ("uz", "back")):
+        p.add_boundary_condition(
+            "Dirichlet_boundary_condition", f"hold_{v}", variable=v, boundary=[side], value=0.0
+        )
+    p.add_boundary_condition(
+        "traction_boundary_condition", "pull", variable="uz", boundary=["front"], traction=stress
+    )
+    p.add_postprocessor("nodal_extreme_value", "stretch", variable="uz")
+    p.solve(report="none")
+    return p
+
+
+@pytest.mark.skipif(not dm._core.have_checkpoints(), reason="checkpoints need PETSc")
+@pytest.mark.parametrize("distributed", [False, True])
+def test_a_restarted_creep_run_ends_where_an_uninterrupted_one_ends(distributed):
+    """The checkpoint holds the solution, the history of the material (the creep strain) and the history of the post-processors, so the restarted run continues exactly."""
+    import pathlib
+    import shutil
+
+    # Under mpirun every process runs its own serial problem, so each writes its own checkpoint; a distributed problem writes one for all.
+    owner = "all" if distributed else str(dm.parallel.rank())
+    directory = pathlib.Path(f"dualmesh_checkpoint_test_{owner}")
+    directory.mkdir(exist_ok=True)
+
+    def values(problem):
+        if problem.is_distributed:
+            return np.asarray(problem.gathered_values("uz"))
+        return np.asarray(problem.values("uz"))
+
+    whole = _creep_block(distributed)
+    whole.solve_transient(end_time=1e6, time_step=1e5, report="none")
+    stopped = _creep_block(distributed)
+    stopped.solve_transient(
+        end_time=5e5,
+        time_step=1e5,
+        report="none",
+        output=dm.Output(directory=str(directory), file_base="creep", checkpoint_interval=2),
+    )
+    restarted = _creep_block(distributed)
+    result = restarted.solve_transient(
+        end_time=1e6, time_step=1e5, report="none", restart=str(directory / "creep.chk")
+    )
+    assert result.time_steps == 5
+    assert values(restarted) == pytest.approx(values(whole), rel=1e-10, abs=1e-18)
+    expected = whole.postprocessor_values()
+    got = restarted.postprocessor_values()
+    assert got["time"] == pytest.approx(expected["time"])
+    assert got["stretch"] == pytest.approx(expected["stretch"], rel=1e-10)
+    # The creep strain is in the history: without it the restarted run would end elsewhere.
+    assert values(whole).max() > 1.05 * values(_creep_block(distributed)).max()
+    if not distributed or restarted.rank == 0:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+@pytest.mark.parametrize("method", ["fem", "dmcdm", "hfvm"])
+def test_a_distributed_gap_condition_reproduces_the_serial_answer(method):
+    """Heat crosses a gap between two bodies whose meshes do not match, and the bodies lie on different processes: every process that holds the primary side reads the secondary elements it pairs with as ghost elements."""
+    from test_gaps import CONDUCTANCE, conduction_problem, two_slabs
+
+    def solve(distributed):
+        mesh = two_slabs(2, 8, inner_num_y=3, outer_num_y=5)
+        problem = conduction_problem(mesh, method, distributed=distributed)
+        problem.add_boundary_condition(
+            "gap_heat_transfer",
+            "gap",
+            variable="temperature",
+            boundary=["primary"],
+            secondary_boundary=["secondary"],
+            gap_conductance=CONDUCTANCE,
+        )
+        problem.solve(report="none", linear_tolerance=1e-13)
+        if problem.is_distributed:
+            return np.asarray(problem.gathered_values("temperature"))
+        return np.asarray(problem.values("temperature"))
+
+    serial, distributed = solve(False), solve(True)
+    assert distributed == pytest.approx(serial, rel=1e-9)

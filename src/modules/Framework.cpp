@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 //
-// Generic framework objects (MOOSE "framework" equivalents): diffusion,
+// Generic framework objects: diffusion,
 // reaction, body force, advection, time derivative, standard boundary
 // conditions, point sources, and constant and function properties.
 #include "dualmesh/modules/Framework.h"
@@ -9,7 +9,10 @@
 #include "dualmesh/base/Problem.h"
 #include "dualmesh/base/Property.h"
 
+#include <array>
+#include <cmath>
 #include <limits>
+#include <map>
 
 namespace dualmesh
 {
@@ -482,7 +485,7 @@ PointDirichletBC::initialSetup(Problem & problem)
   double best_distance = std::numeric_limits<double>::infinity();
   for (Index i = 0; i < problem.numEntities(); ++i)
   {
-    if (!carries.empty() && !carries[i])
+    if ((!carries.empty() && !carries[i]) || !problem.integratedEntity(i))
       continue;
     const double d = norm(problem.entityPoint(i) - x);
     if (d < best_distance)
@@ -727,6 +730,149 @@ FunctionProperty::computeProperties(QpContext & ctx) const
 }
 
 // ---------------------------------------------------------------------------
+// ---- periodic boundary condition --------------------------------------------------------
+InputParameters
+PeriodicBC::validParams()
+{
+  InputParameters p = Constraint::validParams();
+  p.setClassDescription(
+      "Periodic boundary condition: the field on the secondary boundary is the field on the "
+      "primary boundary, carried over by a translation. Every node of the secondary boundary "
+      "is joined to the node of the primary boundary at the translated position, and the two "
+      "act as one unknown whose equation collects both, so that its control domain wraps around "
+      "the domain. A node that is periodic in two directions (a corner) is joined to one primary. "
+      "The meshes of the two boundaries must match node by node after the translation. Works "
+      "with fem, hfvm and dmcdm.");
+  p.addRequired("primary", ParameterKind::String, "The side set or node set whose nodes are kept.");
+  p.addRequired("secondary",
+                ParameterKind::String,
+                "The side set or node set whose nodes become copies of the primary nodes.");
+  p.addOptional("variables",
+                ParameterKind::StringList,
+                std::vector<std::string>{},
+                "The variables that are periodic. Default: every variable of the problem.");
+  p.addOptional("translation",
+                ParameterKind::RealList,
+                std::vector<double>{},
+                "The vector from a primary node to its secondary node (x, y and z components). "
+                "Default: the vector between the centroids of the two boundaries.");
+  return p;
+}
+
+PeriodicBC::PeriodicBC(const InputParameters & p) : Constraint(p) {}
+
+std::vector<int>
+PeriodicBC::periodicVariables(const Problem & problem) const
+{
+  std::vector<int> vars;
+  const auto names = _params.getStringList("variables");
+  if (names.empty())
+    for (int v = 0; v < problem.numVariables(); ++v)
+      vars.push_back(v);
+  else
+    for (const auto & v : names)
+      vars.push_back(problem.variableIndex(v));
+  return vars;
+}
+
+std::vector<Index>
+PeriodicBC::match(const std::vector<Point> & primary, const std::vector<Point> & secondary) const
+{
+  if (primary.size() != secondary.size())
+    throw InputError("'" + name() + "': the primary boundary has " +
+                     std::to_string(primary.size()) + " nodes and the secondary " +
+                     std::to_string(secondary.size()) +
+                     "; periodic boundaries must match node by node.");
+  std::vector<Index> out;
+  if (primary.empty())
+    return out;
+  const auto centroid = [](const std::vector<Point> & points)
+  {
+    Point c{0, 0, 0};
+    for (const Point & x : points)
+      c = c + x;
+    return (1.0 / static_cast<double>(points.size())) * c;
+  };
+  Point shift = centroid(secondary) - centroid(primary);
+  const auto given = _params.getRealList("translation");
+  if (!given.empty())
+  {
+    if (given.size() > 3)
+      throw InputError("'" + name() + "': translation has at most three components.");
+    shift = {0, 0, 0};
+    for (std::size_t k = 0; k < given.size(); ++k)
+      shift[k] = given[k];
+  }
+  // A node matches when it lies within a millionth of the size of the boundary of the translated position.
+  Point lo = primary.front(), hi = lo;
+  for (const Point & x : primary)
+    for (int k = 0; k < 3; ++k)
+    {
+      lo[k] = std::min(lo[k], x[k]);
+      hi[k] = std::max(hi[k], x[k]);
+    }
+  const double size = std::max(std::sqrt(dot(hi - lo, hi - lo)), std::sqrt(dot(shift, shift)));
+  const double tolerance = 1e-6 * (size > 0 ? size : 1.0);
+  // The primary points in a grid of cells of the tolerance; a match lies in the cell of the translated position or in a neighboring one.
+  using Key = std::array<long long, 3>;
+  std::map<Key, std::vector<Index>> grid;
+  const auto key = [&](const Point & x)
+  {
+    return Key{std::llround(x[0] / tolerance),
+               std::llround(x[1] / tolerance),
+               std::llround(x[2] / tolerance)};
+  };
+  for (std::size_t i = 0; i < primary.size(); ++i)
+    grid[key(primary[i])].push_back(static_cast<Index>(i));
+  out.reserve(secondary.size());
+  for (const Point & x : secondary)
+  {
+    const Point target = x - shift;
+    const Key k = key(target);
+    Index found = -1;
+    for (long long i = -1; i <= 1 && found < 0; ++i)
+      for (long long j = -1; j <= 1 && found < 0; ++j)
+        for (long long l = -1; l <= 1 && found < 0; ++l)
+        {
+          const auto it = grid.find({k[0] + i, k[1] + j, k[2] + l});
+          if (it == grid.end())
+            continue;
+          for (Index n : it->second)
+          {
+            const Point d = primary[n] - target;
+            if (std::sqrt(dot(d, d)) <= tolerance)
+              found = n;
+          }
+        }
+    if (found < 0)
+      throw InputError("'" + name() + "': the secondary node at (" + std::to_string(x[0]) + ", " +
+                       std::to_string(x[1]) + ", " + std::to_string(x[2]) +
+                       ") has no primary node at the translated position; the meshes of the two "
+                       "boundaries must match node by node.");
+    out.push_back(found);
+  }
+  return out;
+}
+
+void
+PeriodicBC::initialSetup(Problem & problem)
+{
+  Constraint::initialSetup(problem);
+  _pairs.clear();
+  const auto primary = problem.boundaryEntities(primaryBoundary());
+  const auto secondary = problem.boundaryEntities(secondaryBoundary());
+  std::vector<Point> primary_points, secondary_points;
+  for (Index n : primary)
+    primary_points.push_back(problem.entityPoint(n));
+  for (Index n : secondary)
+    secondary_points.push_back(problem.entityPoint(n));
+  const auto matched = match(primary_points, secondary_points);
+  const auto vars = periodicVariables(problem);
+  for (std::size_t k = 0; k < secondary.size(); ++k)
+    for (int v : vars)
+      _pairs.push_back({problem.dof(secondary[k], v), problem.dof(primary[matched[k]], v)});
+}
+
 void
 registerFrameworkObjects(Factory & f)
 {
@@ -743,6 +889,7 @@ registerFrameworkObjects(Factory & f)
   f.add<NeumannBC>("Neumann_boundary_condition", ObjectCategory::BoundaryCondition, m);
   f.add<RobinBC>("Robin_boundary_condition", ObjectCategory::BoundaryCondition, m);
   f.add<NodalLoad>("point_source", ObjectCategory::NodalLoad, m);
+  f.add<PeriodicBC>("periodic_boundary_condition", ObjectCategory::Constraint, m);
   f.add<ConstantProperty>("constant_property", ObjectCategory::Property, m);
   f.add<PropertyScaling>("property_scaling", ObjectCategory::Property, m);
   f.add<FunctionProperty>("function_property", ObjectCategory::Property, m);

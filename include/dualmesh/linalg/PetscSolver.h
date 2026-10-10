@@ -30,6 +30,7 @@
 #include <Eigen/Core>
 #include <Eigen/SparseCore>
 
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -51,6 +52,8 @@ std::string version();
 /// (the Communicator starts it).  Called by the solve functions.
 void initialize();
 
+/// Throw an error naming @p what when @p code, the result of a PETSc call, is not zero.
+void check(int code, const char * what);
 /// Finalize PETSc if this library initialized it.  Must run before MPI is
 /// finalized; Communicator::finalize() calls it.
 void finalize();
@@ -87,6 +90,12 @@ struct Settings
   /// "-fieldsplit_0_pc_type hypre" for algebraic multigrid on the momentum
   /// block.
   const SaddlePointBlocks * saddle_point = nullptr;
+  /// LinearSolver only: the number of earlier solutions kept to start each solve from their best combination (the projection of Fischer 1998).
+  /// The solutions are kept orthonormal in the energy norm of the matrix, so that the start is the combination closest to the solution in that norm, and the Krylov method computes only the remainder.
+  /// Zero solves from the given guess instead.
+  int projection_vectors = 0;
+  /// Whether the matrix is symmetric positive definite: the projection then uses its energy norm, and otherwise the norm of the residual.
+  bool symmetric = true;
 };
 
 /// Solve A x = b on one process.
@@ -98,6 +107,32 @@ struct GlobalEntry
   Index row;
   Index col;
   double value;
+};
+
+/// A linear system whose matrix is set up once and solved for many right-hand sides, as the substeps of a time step are: the preconditioner (the hierarchy of algebraic multigrid) is built at the first solve and kept.
+/// The matrix is given as solveDistributed takes it, and this process owns the global rows [first_row, first_row + num_owned).
+/// With @p distributed false, the system belongs to this process alone (first_row is zero and num_owned the global size).
+/// Without PETSc, a system of one process is factored once with Eigen's sparse LU.
+class LinearSolver
+{
+public:
+  LinearSolver(bool distributed,
+               Index global_size,
+               Index first_row,
+               Index num_owned,
+               const std::vector<GlobalEntry> & entries,
+               const Settings & settings);
+  ~LinearSolver();
+  LinearSolver(const LinearSolver &) = delete;
+  LinearSolver & operator=(const LinearSolver &) = delete;
+  /// Replace the values of the matrix, given in the order and at the positions of the entries it was made from; the structure, the Krylov method and its options are kept, and the preconditioner is rebuilt at the next solve.
+  void setValues(const std::vector<double> & values);
+  /// Solve for the owned part of x, starting from @p guess (the owned part of a first approximation) when it is given and no earlier solutions are projected.
+  Vector solve(const Vector & b_owned, const Vector * guess, Result & result) const;
+
+private:
+  struct Impl;
+  std::unique_ptr<Impl> _impl;
 };
 
 /// Solve a distributed system.  This process owns the global rows

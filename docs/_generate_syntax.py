@@ -68,9 +68,9 @@ MODULE_GROUPS = {
             """
 Small-strain linear elasticity in plane stress, plane strain, axisymmetry and
 three dimensions.  The stress is computed by a property object and consumed by one
-equilibrium kernel per displacement component, which is the same separation
-MOOSE uses and which makes it straightforward to replace the constitutive model
-without touching the equilibrium equations.
+equilibrium kernel per displacement component, a separation that makes it
+straightforward to replace the constitutive model without touching the
+equilibrium equations.
 """,
         ),
         (
@@ -118,6 +118,9 @@ CATEGORY_NOTES = {
     "nodal_load": ("A **nodal load** is a concentrated source applied at a single node."),
     "property": (
         "A **property** object computes named properties at every integration point, which kernels and boundary conditions then consume by name.  Properties may depend on position, time, and the solution, and any dependence on the solution is differentiated automatically."
+    ),
+    "constraint": (
+        "A **constraint** makes degrees of freedom copies of others.  A dependent degree of freedom takes the value of its primary, and its equation is added to the primary's, so that the two act as one unknown whose control domain is the union of theirs; the Jacobian becomes :math:`P^{\\mathsf{T}} J P`."
     ),
 }
 
@@ -288,7 +291,7 @@ def write_syntax_reference(source_dir: Path, have_library: bool) -> None:
         _wrap(
             """
 Every piece of physics in dualmesh is a named object with a declared,
-validated, self-documenting set of parameters, in the same way as MOOSE.  An
+validated, self-documenting set of parameters.  An
 object is created by name and configured by keyword arguments:
 """
         ),

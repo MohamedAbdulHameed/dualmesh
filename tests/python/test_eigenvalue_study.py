@@ -1,6 +1,5 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
-"""The eigenvalue study of any problem (Problem.solve_eigenvalue without
-neutron_diffusion).
+"""The eigenvalue study of any problem (Problem.solve_eigenvalue).
 
 Every field varies in time as u_hat exp(-lambda t), and the expressions may
 use the symbol eigenvalue. The checks have exact answers:

@@ -130,6 +130,14 @@ The linear solver
 almost every problem, and the others are provided for control and for
 comparison.
 
+A distributed problem (one run on several MPI processes) is solved by PETSc.
+Its ``"automatic"`` takes GMRES with the algebraic multigrid of hypre
+(BoomerAMG), and the parallel direct solver MUMPS when multigrid does not
+converge or the system has a zero pressure block; ``"lu"`` takes MUMPS, and
+``petsc_options`` gives any other Krylov method and preconditioner of PETSc
+(see :doc:`/theory/parallel`).  The options below that are not PETSc's apply to
+problems on one process.
+
 ``"automatic"``
    The default.  It factorises the system directly where the factorisation is
    inexpensive and iterates otherwise.  The iteration is the conjugate
@@ -480,8 +488,7 @@ Choosing the time step
 
 ``"iteration"``
    The step is chosen from the number of nonlinear iterations that the last
-   step needed, in the manner of MOOSE's ``IterationAdaptiveDT``
-   [MOOSE2025]_.  A step that converged in fewer than
+   step needed.  A step that converged in fewer than
    ``optimal_iterations - iteration_window`` nonlinear iterations is followed
    by a longer one, and a step that needed more than
    ``optimal_iterations + iteration_window`` is followed by a shorter one.  It
@@ -489,6 +496,12 @@ Choosing the time step
    *effort* and leaves the error uncontrolled, so it suits a nonlinear problem
    whose difficulty varies through the run and is unsuitable when accuracy is
    the concern.
+
+``"cfl"``
+   The step is chosen to keep the Courant number
+   :math:`\Delta t \max_e |\mathbf{v}| / h_e` at ``courant_number`` (default
+   0.5), as Nek5000 and nekRS choose their steps.  It applies to a flow advanced
+   by the projection time integration (see `Transient flow`_ below).
 
 ``growth_factor`` (default 2.0) limits the growth of the step in one update,
 and ``min_time_step`` and ``max_time_step`` set its lower and upper bounds.
@@ -561,6 +574,60 @@ step itself.
    )
 
    print(result.converged, result.rejected_steps, len(result.step_history))
+
+Transient flow
+--------------
+
+``incompressible_flow`` advances a transient flow in one of two ways, chosen by
+``time_integration``.  ``"monolithic"``, the default, solves the velocity and the
+pressure together at every step, with the :math:`\theta` method above.
+``"projection"`` is the splitting of Nek5000 and nekRS: every step solves a
+pressure Poisson equation, by the conjugate gradient method with algebraic
+multigrid, and then one Helmholtz equation per velocity component, by the
+conjugate gradient method with a Jacobi preconditioner, with the backward
+difference and the extrapolation of order ``time_order`` (1, 2 or 3, default 2).
+It needs ``formulation="pressure"`` and one of the node methods (``fem``,
+``dmcdm`` or ``hfvm``), runs in
+serial and in parallel, and suits long transients at moderate Courant numbers,
+where each of its steps costs a fraction of a monolithic step.  The theory and
+the verification are in :doc:`../theory/heat_and_fluids`.
+
+The example advances the decaying Taylor-Green vortex in a periodic box, at a
+Courant number of one half:
+
+.. code-block:: python
+
+   import dualmesh as dm
+   import numpy as np
+
+   mesh = dm.generate_rectangle_mesh(0.0, 2 * np.pi, 0.0, 2 * np.pi, 64, 64)
+   problem = dm.Problem(mesh, method="fem")
+   problem.add_physics(
+       "incompressible_flow",
+       "flow",
+       velocities=["u", "v"],
+       density=1.0,
+       dynamic_viscosity=0.01,
+       formulation="pressure",
+       time_integration="projection",
+   )
+   problem.add_boundary_condition(
+       "periodic_boundary_condition", "periodic_x", primary="left", secondary="right"
+   )
+   problem.add_boundary_condition(
+       "periodic_boundary_condition", "periodic_y", primary="bottom", secondary="top"
+   )
+   problem.initialize()
+   x, y = np.asarray(mesh.points())[:, 0], np.asarray(mesh.points())[:, 1]
+   problem.set_values("u", -np.cos(x) * np.sin(y))
+   problem.set_values("v", np.sin(x) * np.cos(y))
+   result = problem.solve_transient(
+       end_time=10.0, time_step=0.01, time_stepper="cfl", courant_number=0.5
+   )
+
+The pressure of an enclosed flow is determined up to a constant.  The projection
+time integration fixes it at one node, and ``pressure_pin_point`` chooses the
+point instead.
 
 When a solve fails
 ------------------

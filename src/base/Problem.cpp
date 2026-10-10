@@ -164,7 +164,7 @@ Problem::addVariable(const std::string & name,
   _U = U;
   for (Index n = 0; n < numEntities(); ++n)
     _U[dof(n, v.index)] = v.initial_condition->value(entityPoint(n), _time);
-  interpolateFirstOrderVariables(_U);
+  updateDependentDofs(_U);
   return v.index;
 }
 
@@ -184,6 +184,15 @@ Problem::buildOrderLayout()
   for (int v = 0; v < nv; ++v)
     if (!_mixed_order || _vars[v].order == VariableOrder::Mesh)
       _full_order_rank[v] = _num_full_order++;
+}
+
+void
+Problem::updateDependentDofs(Vector & U) const
+{
+  interpolateFirstOrderVariables(U);
+  for (std::size_t d = 0; d < _primary_of.size(); ++d)
+    if (_primary_of[d] >= 0)
+      U[static_cast<Index>(d)] = U[_primary_of[d]];
 }
 
 void
@@ -342,6 +351,9 @@ Problem::addObject(const std::string & type, const std::string & name_in, InputP
   case ObjectCategory::Property:
     addProperty(std::static_pointer_cast<Property>(obj));
     break;
+  case ObjectCategory::Constraint:
+    addConstraint(std::static_pointer_cast<Constraint>(obj));
+    break;
   }
   return obj;
 }
@@ -450,6 +462,135 @@ Problem::addNodalLoad(std::shared_ptr<NodalLoad> load)
   _loads.push_back(std::move(load));
   _initialized = false;
 }
+
+bool
+Problem::integratesFace(const CellFace & f) const
+{
+  const Index integrated = numIntegratedElements();
+  const bool owner = f.owner < integrated;
+  if (f.neighbor < 0)
+    return owner;
+  const bool neighbor = f.neighbor < integrated;
+  if (owner == neighbor)
+    return owner;
+  if (_global_element_numbers.empty())
+    throw std::logic_error("Problem: a face between an integrated cell and a ghost cell needs the "
+                           "global numbers of the elements.");
+  const Index here = _global_element_numbers[owner ? f.owner : f.neighbor];
+  const Index there = _global_element_numbers[owner ? f.neighbor : f.owner];
+  return here < there;
+}
+
+bool
+Problem::integratedEntity(Index i) const
+{
+  if (!_cells)
+    return true;
+  const Index integrated = numIntegratedElements();
+  if (_cells->isCell(i))
+    return i < integrated;
+  return _cells->faces()[_cells->faceOfBoundaryEntity(i)].owner < integrated;
+}
+
+void
+Problem::setGhostElements(Index first)
+{
+  _num_integrated_elements = first;
+  // The cells of elements added to the mesh since the problem was made.
+  if (_cells && _cells->numCells() != _mesh->numElements())
+    _cells = std::make_shared<CellMesh>(*_mesh);
+  // The nodes added with the ghost elements take their initial values; the values of the other nodes are kept.
+  const int nv = numVariables();
+  const Index old_size = _U.size();
+  Vector U = Vector::Zero(numEntities() * nv);
+  U.head(std::min(old_size, U.size())) = _U.head(std::min(old_size, U.size()));
+  for (const auto & v : _vars)
+    if (v.initial_condition)
+      for (Index n = old_size / std::max(nv, 1); n < numEntities(); ++n)
+        U[dof(n, v.index)] = v.initial_condition->value(entityPoint(n), _time);
+  _U = U;
+  _initialized = false;
+}
+
+void
+Problem::addInterfaceCandidates(const std::string & sideset, const std::vector<Side> & sides)
+{
+  auto & list = _interface_candidates[sideset];
+  list.insert(list.end(), sides.begin(), sides.end());
+  _initialized = false;
+}
+
+void
+Problem::addConstraint(std::shared_ptr<Constraint> constraint)
+{
+  registerName(_by_name, constraint);
+  _constraints.push_back(std::move(constraint));
+  _initialized = false;
+}
+
+void
+Problem::buildConstraints()
+{
+  _primary_of.clear();
+  if (_constraints.empty())
+    return;
+  if (_cells)
+    throw InputError("'" + _constraints.front()->name() +
+                     "': the cell-centered finite volume method (zfvm) has its unknowns at cells, "
+                     "and constraints join nodes; use fem, hfvm or dmcdm.");
+  if (_constraints_outside)
+    return;
+  // Every pair joins two degrees of freedom into one unknown (a union-find), so that a node joined in several directions, such as a corner of a doubly periodic domain, ends in one group.
+  const Index n = numDofs();
+  std::vector<Index> parent(static_cast<std::size_t>(n));
+  for (Index d = 0; d < n; ++d)
+    parent[d] = d;
+  const auto root = [&](Index d)
+  {
+    while (parent[d] != d)
+      d = parent[d] = parent[parent[d]];
+    return d;
+  };
+  std::vector<char> dependent(static_cast<std::size_t>(n), 0);
+  for (const auto & c : _constraints)
+  {
+    c->initialSetup(*this);
+    for (const auto & [secondary, primary] : c->pairs())
+    {
+      dependent[secondary] = 1;
+      const Index a = root(secondary), b = root(primary);
+      if (a != b)
+        parent[std::max(a, b)] = std::min(a, b);
+    }
+  }
+  // Each group is represented by its first member that is a primary only; a group whose every member is a secondary was joined in a loop.
+  std::vector<Index> representative(static_cast<std::size_t>(n), -1);
+  for (Index d = 0; d < n; ++d)
+    if (!dependent[d] && representative[root(d)] < 0)
+      representative[root(d)] = d;
+  _primary_of.assign(static_cast<std::size_t>(n), -1);
+  for (Index d = 0; d < n; ++d)
+  {
+    const Index r = root(d);
+    if (r == d && parent[d] == d && !dependent[d])
+      continue;
+    if (representative[r] < 0)
+      throw InputError("The constraints make a node a copy of itself through a loop; one node of "
+                       "each loop must stay a primary.");
+    if (representative[r] != d)
+      _primary_of[d] = representative[r];
+  }
+  // A dependent degree of freedom has no equation of its own, so it cannot carry a prescribed value that its primary does not have.
+  std::vector<char> prescribed(static_cast<std::size_t>(n), 0);
+  for (const auto & bc : _nbcs)
+    for (Index node : bc->nodes())
+      prescribed[dof(node, bc->variable())] = 1;
+  for (Index d = 0; d < n; ++d)
+    if (_primary_of[d] >= 0 && prescribed[d] && !prescribed[_primary_of[d]])
+      throw InputError("A node that a constraint makes a copy of another carries a prescribed "
+                       "value that its primary node does not; prescribe the value on both "
+                       "boundaries, or on neither.");
+}
 void
 Problem::addProperty(std::shared_ptr<Property> m)
 {
@@ -529,6 +670,7 @@ Problem::initialize()
     b->initialSetup(*this);
   for (auto & l : _loads)
     l->initialSetup(*this);
+  buildConstraints();
   // Check that required properties exist.
   for (auto & k : _kernels)
     for (const auto & p : k->requiredProperties())
@@ -657,7 +799,7 @@ Problem::applyInitialConditions()
   for (const auto & v : _vars)
     for (Index n = 0; n < numEntities(); ++n)
       _U[dof(n, v.index)] = v.initial_condition->value(entityPoint(n), _time);
-  interpolateFirstOrderVariables(_U);
+  updateDependentDofs(_U);
 }
 
 std::vector<double>
@@ -678,7 +820,7 @@ Problem::setValues(const std::string & var, const std::vector<double> & vals)
     throw InputError("setValues: expected one value per degree of freedom entity.");
   for (Index n = 0; n < numEntities(); ++n)
     _U[dof(n, v)] = vals[n];
-  interpolateFirstOrderVariables(_U);
+  updateDependentDofs(_U);
 }
 
 void

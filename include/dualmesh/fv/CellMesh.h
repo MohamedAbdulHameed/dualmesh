@@ -73,6 +73,8 @@ public:
   std::vector<Index> boundaryEntities(const Mesh & mesh, const std::string & name) const;
   /// Faces of a side set.
   std::vector<int> boundaryFaceIndices(const Mesh & mesh, const std::string & name) const;
+  /// Index into faces() of the face of side @p side (element, local side).
+  int faceOfSide(const Side & side) const { return _side_to_face.at({side.first, side.second}); }
 
 private:
   Index _num_cells = 0;

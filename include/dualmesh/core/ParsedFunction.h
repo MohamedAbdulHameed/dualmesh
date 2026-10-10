@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 //
 // A function of (x, y, z, t) given as text, compiled once and evaluated in
-// C++.  This is the counterpart of MOOSE's ParsedFunction.
+// C++.
 //
 // Why compile it here rather than evaluate it in Python?  A coefficient, a
 // source or a boundary value is evaluated at every quadrature point of every

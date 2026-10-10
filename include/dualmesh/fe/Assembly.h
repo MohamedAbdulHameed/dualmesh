@@ -115,6 +115,9 @@ simplexQuadrature(int dim, int degree, std::vector<Point> & points, std::vector<
 /// Measure (length/area/volume) of element e.
 double elementMeasure(const Mesh & mesh, Index e);
 
+/// The size h of element e for the stabilization parameters: the length of the side of a cube of the element's measure, corrected for simplices, prisms and pyramids so that the generators' elements of a grid of spacing h all get h, and halved for a quadratic element, whose interpolation resolves half the element.
+double elementSize(const Mesh & mesh, Index e);
+
 /// Measure (length in two dimensions, area in three) of a boundary side,
 /// integrated with the isoparametric map, so that a curved quadratic side is
 /// measured exactly.  In axisymmetric and spherical coordinates the measure

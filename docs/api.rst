@@ -50,7 +50,8 @@ Parallel execution
 
 .. autofunction:: dualmesh.partition_mesh
 .. autofunction:: dualmesh.have_mpi
-.. autofunction:: dualmesh.have_metis
+.. autofunction:: dualmesh.have_petsc
+.. autofunction:: dualmesh.have_gslib
 .. autofunction:: dualmesh.is_root
 .. autofunction:: dualmesh.num_ranks
 

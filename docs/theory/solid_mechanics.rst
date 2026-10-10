@@ -506,7 +506,7 @@ the node's control domain lying on the boundary,
 
 .. math::
 
-   Q_I = \int_{\partial CD_I \cap \partial\Omega} h\, t_i \,\mathrm{d}S ,
+   Q_I = \int_{\partial \Omega_I \cap \partial\Omega} h\, t_i \,\mathrm{d}S ,
 
 which is the force the support transmits to the body at that node, positive
 along the positive direction of the variable's axis.  This is what

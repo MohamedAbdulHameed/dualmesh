@@ -761,7 +761,6 @@ def test_a_distributed_problem_takes_the_same_physics():
     assert np.asarray(distributed.gathered_values("temperature")) == pytest.approx(
         serial.values("temperature"), abs=1e-8
     )
-    with pytest.raises(ValueError, match="not available in a distributed problem"):
-        distributed.add_postprocessor(
-            "nodal_extreme_value", "hottest", variable="temperature", value_type="max"
-        )
+    assert distributed.nodal_extreme("temperature", "max") == pytest.approx(
+        serial.nodal_extreme("temperature", "max"), abs=1e-8
+    )

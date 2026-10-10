@@ -8,6 +8,91 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **The projection time integration of incompressible flow**
+  (`incompressible_flow(time_integration="projection", time_order=k)`), the
+  splitting of Nek5000 and nekRS: BDFk and EXTk with coefficients for
+  variable steps, a pressure Poisson equation with the curl-curl boundary
+  term, solved by the conjugate gradient method with BoomerAMG from the
+  projection of the earlier pressures, and Helmholtz equations for the
+  velocity, solved by the conjugate gradient method with a Jacobi
+  preconditioner. For equal-order elements the weight of the divergence in
+  the pressure equation is capped by the stabilization parameter of the
+  pressure-velocity formulation, which keeps the accuracy at small steps.
+  The finite element, dual mesh control domain and vertex-centered finite
+  volume methods, serial and distributed, with periodic boundaries.
+  Checked at second order in space on the Taylor-Green vortex, at the order
+  of the backward difference in time on an exactly represented flow, and
+  against the serial run on one to four processes.
+- **A Courant number step controller**: `solve_transient(time_stepper="cfl",
+  courant_number=0.5)`.
+- **Reactions of the projection time integration**: the forces on boundaries
+  with a prescribed velocity, from its momentum equations at every step, so
+  that `total_reaction` gives drag and lift.
+- **The Laplacian form of the viscous term**: `incompressible_flow(viscous_form=
+  "laplacian")`, whose natural boundary condition is the do-nothing outflow of
+  the DFG benchmarks and of Nek5000.
+- **Benchmarks** (docs/benchmarks, one page each, with their scripts in
+  verification/benchmarks): F1, the DFG flow around a cylinder at Re = 20
+  (drag within 0.009 % with equal-order elements, every printed digit with
+  Taylor-Hood); F2, the DFG vortex shedding at Re = 100 with the projection
+  time integration on four processes (drag, lift and Strouhal number within
+  0.5 %); F4, the Kovasznay flow (every method at its order); F5, the
+  lid-driven cavity at Re = 1000 against Erturk et al. (2005).
+- **A scaling study of the projection time integration**
+  (`verification/benchmarks/scaling/run_projection_scaling.py`): strong and
+  weak scaling of every node method on one to four processes, in the measures
+  of Nek5000 and nekRS.
+- A nonlinear solve whose residual or Jacobian is no longer finite stops with a
+  message that names divergence or a non-finite property, rather than failing
+  in the linear solver.
+- **Transient monolithic flow**: `incompressible_flow` adds the inertia
+  rho dv/dt, which a transient solve includes and a steady solve leaves out.
+- `dualmesh_benchmark projection` times the steps of the projection time
+  integration on any number of processes.
+- **The cell-centered finite volume method in distributed problems**: every
+  part holds two layers of ghost cells, sent by PETSc's DMPlexDistribute, and
+  every face is integrated by one process. Cells and boundary faces are
+  numbered in the order of the elements, so checkpoints do not depend on the
+  partition. Checked against the serial solution at every cell and boundary
+  face on one to six processes, with the serial number of Newton iterations,
+  across a gap, and through a restart on another partition.
+- **Gap conditions in distributed problems**: an interface condition pairs
+  its primary and secondary sides across processes; a process that holds a
+  primary side reads the secondary elements it lacks as ghost elements, which
+  it does not integrate. Checked for `gap_heat_transfer` between non-matching
+  meshes on one to six processes.
+- **Checkpoints and restarts**: `dm.Output(checkpoint_interval=...)` writes
+  the time, the step, the solution, the history of the material and the
+  history of the post-processors to one file in PETSc's binary format, in
+  the order of the global numbers, and `solve_transient(restart=...)`
+  continues the run on any number of processes. A run restarted on another
+  partition ends where an uninterrupted run ends, to round-off.
+- In distributed transient runs, the history of the material is committed
+  at every step and the post-processors and the step callback are evaluated
+  at every step, as in serial runs.
+- **Post-processors and reactions in distributed problems**: every
+  post-processor type and `total_reaction` give the serial value on any
+  number of processes.
+- **Periodic boundary conditions** (`periodic_boundary_condition`, a new
+  category of objects, the constraints): the field on a secondary boundary is
+  the field on a primary boundary carried over by a translation, for every
+  node-based method, in one, two or three directions, serially and on any
+  number of processes. Every method converges at second order on manufactured
+  solutions periodic in one direction and in two.
+- **A distributed core built on PETSc, in which no process needs the whole
+  mesh.** A build with MPI now requires PETSc. The values at nodes that
+  several processes hold are exchanged through PETSc's star forests (PetscSF),
+  which find the owner of every node from the global node numbers alone. The
+  distributed solver takes the part of the mesh of each process; a whole mesh
+  is read on the first process only, and PETSc's DMPlex partitions it
+  (PT-Scotch or ParMETIS) and moves every element, of any type, to its
+  process. `partition_mesh` uses the same partitioners. The exchanges of
+  shared values go through PETSc's star forests or through gslib, the
+  gather-scatter library of Nek5000, chosen with `gather_scatter`. The boundary node sets are completed across processes,
+  and the areas of the side sets are summed over them. The linear systems are
+  one distributed PETSc matrix, solved by default with GMRES and hypre
+  BoomerAMG (15 iterations on one to four processes for a 48 x 48 Poisson
+  problem) and by MUMPS when multigrid fails or the system is a saddle point.
 - **`dualmesh.materials`**: functions of the state that return material
   properties in SI units. `materials.water` gives compressed liquid water
   (IAPWS-IF97 region 1, with the IAPWS viscosity and thermal conductivity),
@@ -15,20 +100,22 @@ All notable changes to this project are documented here. The format follows
   krypton, xenon, hydrogen and nitrogen at low density and of their mixtures,
   and the temperature jump distance at a wall.
 - **General partial differential equations.** `general_form_PDE` solves a
-  system d du/dt + div Gamma = f whose flux Gamma and source f are
+  system $`d \, \partial u / \partial t + \nabla \cdot \boldsymbol{\Gamma} = f`$ whose flux $`\boldsymbol{\Gamma}`$ and source $f$ are
   expressions of all the fields, the components of their gradients
   (`grad_x(u)`, `grad_y(u)`, `grad_z(u)`), x, y, z, t and named constants.
   The expressions are compiled and differentiated automatically, so the
   Jacobian is exact and the assembly runs on every thread and every process
   with every method. `parsed_kernel` is the object of one such term.
 - **Eigenvalue study of any problem.** `Problem.solve_eigenvalue` returns
-  the eigenvalues closest to `near` and their modes for every problem
-  without `neutron_diffusion`. Every field varies in time as
+  the eigenvalues closest to `near` and their modes for every problem.
+  Every field varies in time as
   u_hat exp(-lambda t), so the time derivatives define the eigenvalue, and
   the expressions may use the symbol `eigenvalue`, at most quadratically.
   The operators come from exact assemblies, and shift-invert Arnoldi
   iteration solves the linear or the companion quadratic problem. Complex
-  eigenvalues are reported with both parts.
+  eigenvalues are reported with both parts. `examples/reactor_criticality.py`
+  and the tutorial on reactor criticality write multigroup neutron diffusion
+  with `coefficient_form_PDE` and solve the IAEA 2D PWR benchmark this way.
 - `coefficient_form_PDE` solves systems: every input is a dict keyed by the
   field of the equation, and a coefficient couples to other fields with a
   dict field name -> value. Every coefficient and the source may be an
@@ -82,21 +169,6 @@ All notable changes to this project are documented here. The format follows
   the Boussinesq buoyancy). `dualmesh list --category physics` and
   `dualmesh describe <physics>` document them, and the syntax reference has a
   page for each.
-- **Neutronics.** The physics `neutron_diffusion` solves the multigroup
-  neutron diffusion equations with any number of groups, scattering between
-  all groups, a transverse buckling, and the boundary conditions
-  `vacuum_boundary_condition` (no incoming current, with the extrapolation
-  distance as a ratio of the diffusion coefficient) and
-  `albedo_boundary_condition`. The property object `multigroup_cross_sections`
-  gives the cross sections of a region. `Problem.solve_eigenvalue()` computes
-  the effective multiplication factor and the fundamental mode by the Arnoldi
-  method or the power iteration, and reports the volume, the average fluxes
-  and the fission neutron production of each region. Verified against the
-  analytical one- and two-group solutions of bare slabs, cylinders and
-  spheres, and against the 2D IAEA PWR benchmark (ANL-7416 Suppl. 2, problem
-  11-A2): with 32 x 32 elements per assembly, k_eff is within 1.3 pcm and
-  the assembly powers are within 0.34 % of the reference, with all four
-  methods.
 - `Problem.element_integrals(variable)` and `Problem.element_volumes()`, and
   `Mesh.block_names()`.
 - **Tables.** `dm.Table` is the one form of every tabular result: it prints
@@ -107,11 +179,11 @@ All notable changes to this project are documented here. The format follows
 - A finite-difference check of the Jacobian (`tests/python/test_jacobian.py`)
   and, in the continuous integration, builds with AddressSanitizer and
   UndefinedBehaviorSanitizer, coverage reports, clang-tidy, CodeQL, a weekly
-  mutation test, Dependabot, actions pinned to commit hashes, read-only job
+  mutation test, actions pinned to commit hashes, read-only job
   permissions and a software bill of materials of each release. The release
   script refuses a workflow with an action that is not pinned to a commit.
 - **`coefficient_form_PDE`**: a physics for a scalar equation written by its
-  coefficients, d_t du/dt + div(-c grad u - alpha u) + beta . grad u + a u = f,
+  coefficients, $`d \, \partial u / \partial t + \nabla \cdot (-c \nabla u - \boldsymbol{\alpha} u) + \boldsymbol{\beta} \cdot \nabla u + a u = f`$,
   with a diffusion coefficient that is a constant, an expression of position
   and time or of the variable, a constant tensor, or the property
   `diffusion_coefficient`, and an absorption coefficient that may depend on
@@ -135,9 +207,9 @@ All notable changes to this project are documented here. The format follows
 - **`symmetry_boundary_condition`**: a plane of symmetry, on which the
   displacement (or velocity) normal to the plane is zero.
 - **Distributed problems in `Problem`**: a `Problem` run under `mpirun` on
-  several processes splits itself among them (`distributed`, `partitioner`
-  and `overlap` of the constructor), and its `solve` and `solve_transient`
-  take the distributed linear solver options. `rank`, `num_ranks`,
+  several processes splits itself among them (`distributed` and
+  `partitioner` of the constructor), and its `solve` and `solve_transient`
+  solve it with PETSc. `rank`, `num_ranks`,
   `num_owned_dofs`, `num_global_dofs` and `gathered_values` describe a
   distributed problem.
 - **Keyword checks**: a misspelled parameter of a physics, a coupling or an
@@ -207,8 +279,9 @@ All notable changes to this project are documented here. The format follows
 - The author of the software is Mohamed AbdulHameed, with his ORCID iD, in
   `CITATION.cff`, `pyproject.toml` and the documentation.
 - The citation is the software alone (`CITATION.cff`, the README and the
-  documentation). Its abstract covers neutron diffusion, general partial
-  differential equations and uncertainty quantification.
+  documentation). Its abstract covers heat transfer, solid mechanics, fluid
+  dynamics, general partial differential equations and uncertainty
+  quantification.
 - A boundary condition given no `boundary` acts on the side set or node set
   whose name equals the name of the condition, so that
   `add_boundary_condition("Dirichlet_boundary_condition", "left", ...)` needs
@@ -241,14 +314,6 @@ All notable changes to this project are documented here. The format follows
 
 ### Removed
 
-- The neutronics module: the `neutron_diffusion` physics, the
-  `multigroup_cross_sections` property object, the
-  `vacuum_boundary_condition` and `albedo_boundary_condition`, and the power
-  iteration of the k-eigenvalue study. Neutron diffusion is written with
-  `coefficient_form_PDE` and solved by the eigenvalue study of any problem:
-  `examples/reactor_criticality.py` and the tutorial on reactor criticality
-  show how. The IAEA 2D PWR benchmark written in this form gives the same
-  k_eff and fluxes as the removed module to round-off.
 - The solver option `verbose` and the `progress` parameter of the
   uncertainty studies (both replaced by `report`), and the `output_interval`
   and `output_file_base` parameters of `Problem.solve_transient` (replaced by
@@ -443,14 +508,6 @@ four discretisations of one problem description.
   `physics.add_boussinesq_buoyancy`. The natural convection benchmark of de
   Vahl Davis is reproduced to within 0.2 % in the Nusselt number
   (`examples/natural_convection.py`).
-- **Overlapping Schwarz**: the distributed preconditioners now work on
-  subdomains that overlap by `overlap` layers of elements (default 1), with
-  fully assembled subdomain matrices exchanged between ranks, an exact or
-  incomplete subdomain solve (`subdomain_solver`), and the two levels combined
-  multiplicatively. The iteration count of the default preconditioner is
-  independent of the number of processes: 23 to 25 iterations from 1 to 16
-  ranks on a 48 by 48 Poisson problem. With `linear_solver="cg"` the
-  symmetric (classical) forms are used.
 - **Automatic linear solver** (`linear_solver="automatic"`, the new default):
   a direct factorisation where it is cheap and BiCGSTAB with a new ILU(0)
   preconditioner where it is expensive, with a switch to the direct solver if
@@ -479,8 +536,6 @@ four discretisations of one problem description.
 - **The structural module is merged into solid mechanics.** Beams and plates
   are the reduced theories of solid mechanics and are now registered in the
   `solid_mechanics` module, next to continuum elasticity.
-- **The default distributed preconditioner is `two_level_schwarz` with an
-  overlap of one element layer** (it was `jacobi`).
 - **The cell-centred finite volume method has an exact Jacobian**: the
   non-orthogonal correction, which was lagged, is differentiated through the
   least-squares stencils, so that Newton's method converges quadratically on
@@ -503,9 +558,6 @@ four discretisations of one problem description.
 - **The theta-method evaluated the old part of the residual at the new
   time**, so the Crank-Nicolson scheme lost its second-order accuracy whenever
   a coefficient or a source depends on time (serial and distributed).
-- **The Schwarz preconditioners factorised each rank's partial local
-  matrix**, which caused them to stop converging at eight ranks. They now
-  factorise the fully assembled subdomain matrix.
 - **The penalty formulation of incompressible flow locked on the
   vertex-centred finite volume method**, because the two-point gradient
   correction was applied to the reduced-integration term. The correction is
@@ -524,7 +576,6 @@ four discretisations of one problem description.
   assembly.**
 - **The distributed solver returned a wrong answer for the cell-centred
   finite volume method** and now refuses that method.
-- **The distributed BiCGSTAB detects near-breakdown and restarts.**
 - When the extension had not been built in place, the Python test suite
   imported the source tree. It now imports the installed package.
 
@@ -546,7 +597,7 @@ book.
 
 #### Added
 
-- **Framework**: the canonical conservation form `-div F + S = 0`, and the
+- **Framework**: the canonical conservation form $`-\nabla \cdot \mathbf{F} + S = 0`$, and the
   median dual mesh for `Edge2`, `Tri3`, `Quad4`, `Tet4` and `Hex8`. Assembly
   for the dual mesh control domain method and for the Galerkin finite element
   method uses the same kernels. Forward-mode automatic differentiation

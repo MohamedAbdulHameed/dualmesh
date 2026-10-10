@@ -64,7 +64,7 @@ resolveVelocities(Problem & problem, const std::vector<std::string> & names, int
   return out;
 }
 
-/// Viscous stress of a Newtonian fluid: mu (grad v + grad v^T).
+/// Viscous stress of a Newtonian fluid: mu (grad v + grad v^T), or its Laplacian form mu grad v.
 class ViscousStress : public Kernel
 {
 public:
@@ -95,11 +95,23 @@ public:
                   "function of (x, y, z, t). Because it is evaluated from position and time only, "
                   "this kernel describes a Newtonian fluid. A shear-rate dependent viscosity "
                   "requires a user-written property object and kernel.");
+    p.addOptional("form",
+                  ParameterKind::String,
+                  std::string("stress"),
+                  "stress (the default: F_i = mu (grad u_i + (grad u)_i), whose natural boundary "
+                  "condition is a zero traction, sigma n = 0) or laplacian (F_i = mu grad u_i, the "
+                  "same equations for a constant viscosity and an incompressible flow, whose "
+                  "natural boundary condition is the do-nothing outflow mu du/dn - p n = 0 of the "
+                  "DFG benchmarks, Nek5000 and the projection time integration).");
     return p;
   }
   explicit ViscousStress(const InputParameters & p)
       : Kernel(p), _component(static_cast<int>(p.getInt("component")))
   {
+    const std::string form = p.getString("form");
+    if (form != "stress" && form != "laplacian")
+      throw InputError("'" + name() + "': form is stress or laplacian, not '" + form + "'.");
+    _laplacian = form == "laplacian";
   }
   void initialSetup(Problem & problem) override
   {
@@ -118,22 +130,25 @@ public:
     const double mu = _mu->value(ctx.x, ctx.time);
     const auto & gi = ctx.gradient(_v[_component]);
     for (int d = 0; d < ctx.dim; ++d)
-      F[d] = mu * (gi[d] + ctx.gradient(_v[d])[_component]);
+      F[d] = _laplacian ? mu * gi[d] : mu * (gi[d] + ctx.gradient(_v[d])[_component]);
   }
   // In axisymmetric coordinates (r, z) without swirl, the radial equation
   // carries the hoop stress: -(div sigma)_r = -div_rz(sigma_r.) + sigma_tt / r,
-  // and the viscous part of sigma_tt is 2 mu u_r / r.
+  // and the viscous part of sigma_tt is 2 mu u_r / r.  The radial component of
+  // the vector Laplacian carries - u_r / r^2 instead, so the Laplacian form has
+  // the source mu u_r / r^2.
   ADReal computeSource(const QpContext & ctx) const override
   {
     const double r = ctx.x[0];
     if (r == 0.0)
       return ADReal(0.0);
-    return (2.0 * _mu->value(ctx.x, ctx.time) / (r * r)) * ctx.value(_v[0]);
+    return ((_laplacian ? 1.0 : 2.0) * _mu->value(ctx.x, ctx.time) / (r * r)) * ctx.value(_v[0]);
   }
 
 private:
   int _component;
   bool _hoop = false;
+  bool _laplacian = false;
   std::vector<int> _v;
   FunctionPtr _mu;
 };
@@ -499,25 +514,10 @@ public:
                        "': a 'temperature' was given for the buoyancy "
                        "force but no 'gravity'.");
 
-    // Element sizes: the length of the side of a cube of the element's volume,
-    // corrected for simplices, prisms and pyramids so that the generators'
-    // elements of a grid of spacing h all get h.
     const auto & mesh = problem.mesh();
     _h.resize(mesh.numElements());
     for (Index e = 0; e < mesh.numElements(); ++e)
-    {
-      const ElementType type = mesh.element(e).type;
-      const ElementType corner = mesh.element(e).cornerType();
-      double factor = 1.0;
-      if (corner == ElementType::Tri3 || corner == ElementType::Wedge6)
-        factor = 2.0;
-      else if (corner == ElementType::Tet4 || corner == ElementType::Pyramid5)
-        factor = 6.0;
-      double h = std::pow(factor * elementMeasure(mesh, e), 1.0 / dim);
-      if (elementIsQuadratic(type))
-        h *= 0.5;
-      _h[e] = h;
-    }
+      _h[e] = elementSize(mesh, e);
   }
 
   int dimension() const { return static_cast<int>(_v.size()); }

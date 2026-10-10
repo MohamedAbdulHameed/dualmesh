@@ -220,14 +220,19 @@ Distributed-memory execution
 The decomposition
 ^^^^^^^^^^^^^^^^^
 
-A distributed run begins by partitioning the elements: every element of the
-global mesh is assigned to exactly one rank.  Rank :math:`r` then extracts the
-sub-mesh made of its own elements together with *every node those elements
+Every element of the mesh belongs to exactly one rank.  Rank :math:`r` holds
+the sub-mesh made of its own elements together with *every node those elements
 touch*, which includes nodes on the partition boundary that other ranks also
-hold.  Nodes are renumbered locally and the rank remembers the global index of
-each of its local nodes.  Blocks are preserved and side sets are restricted to
-the sides that remain on the rank.  A side set that is empty on a rank is still
-created, so a boundary condition naming it remains valid everywhere.  On that
+hold.  Nodes are numbered locally and the rank keeps the global index of each
+of its local nodes.  Blocks are preserved and side sets are restricted to the
+sides that the rank holds.  A side set that is empty on a rank is still
+created, so a boundary condition naming it remains valid everywhere.  No rank
+needs the whole mesh.  When a whole mesh is given, the first rank alone
+partitions it and sends every rank its part, with the global node numbering of
+the whole mesh.  A node of a side set that a rank holds without holding a side
+of it (a triangle can touch the boundary with one vertex) is added to the
+rank's node set of that boundary by one exchange, so that a value prescribed on
+the boundary reaches every rank that holds one of its nodes.  On that
 sub-mesh the rank builds an ordinary :class:`~dualmesh.Problem`, and the user
 defines exactly the same variables, kernels, property objects and boundary conditions
 on it as in a serial run.  Every discretisation, every physics module and the
@@ -256,12 +261,39 @@ for the nodes it shares with rank :math:`s` to rank :math:`s`, receives theirs,
 and adds.  The two sides agree on the order of the shared nodes by sorting them
 by global node index, which requires no communication.
 
+Every such exchange goes through one gather-scatter layer.  A rank gives the
+global index of each of its nodes and nothing else, and the layer finds which
+ranks hold each index, which of them owns it (the smallest), and how to combine
+their values.  Two libraries can do this, chosen with the ``gather_scatter``
+argument of :class:`~dualmesh.Problem`, as the discretization is chosen with
+``method``; the answer is the same with either.
+
+``"petsc"``
+   PETSc's star forests (PetscSF) [PETSc2023]_.  At setup, each index has a
+   *home* rank in an even layout of the indices, and a minimum reduction there
+   over the pairs (rank, local index) of every copy finds the owner, which every
+   copy is then told.  The copies that a rank does not own become the leaves of
+   a star forest whose roots are the owners' copies, and a sum is a reduction
+   from the leaves to the roots followed by a broadcast back.  The same star
+   forests carry PETSc's own distributed vectors and matrices.
+
+``"gslib"``
+   gslib, the gather-scatter library of Nek5000 and nekRS [gslib]_ [Fischer2021]_,
+   built with dualmesh.  At setup it times three ways of exchanging the values,
+   pairwise messages between the ranks that share nodes, a crystal router that
+   needs :math:`\log_2 P` messages per rank, and an all-reduce, and keeps the
+   fastest for the mesh and the machine at hand.  Nek5000 and nekRS do all
+   their communication through it.
+
+Which one is faster depends on the number of ranks, on the pattern of shared
+nodes and on the network; the scaling studies compare them.
+
 Node ownership
 ^^^^^^^^^^^^^^
 
 Several ranks may hold the same node, but exactly one **owns** it.  The owner is
-the smallest rank index among those that touch the node, a rule every rank
-evaluates identically from the partition without any communication.  Ownership
+the smallest rank index among those that touch the node, which the setup of the
+gather-scatter gives every rank that holds the node.  Ownership
 settles three things.
 
 It settles counting: the number of degrees of freedom of the whole problem is
@@ -297,239 +329,63 @@ point-source solution agreeing with the serial one to
 The distributed linear solver
 -----------------------------
 
-Matrix-free Krylov iteration
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+One distributed matrix
+^^^^^^^^^^^^^^^^^^^^^^
 
-The global matrix :math:`J` is never assembled.  A distributed sparse matrix
-would require a global numbering of its entries and a redistribution of rows,
-and neither is necessary, because :eq:`ranksum` already gives the matrix-vector
-product.  If :math:`x` is consistent, then
+The global Jacobian is one distributed PETSc matrix [PETSc2023]_.  Every rank's
+owned degrees of freedom are numbered contiguously, rank after rank, and a
+shared degree of freedom takes its owner's number, which one owner-copy
+exchange distributes.  Each rank then lists the entries of its local matrix,
+the contributions of its own elements, in that global numbering, and PETSc's
+coordinate-format assembly sends each entry to the rank that owns its row and
+adds repeated positions.  By :eq:`ranksum` the sum over ranks of the element
+contributions is exactly the global Jacobian.  The only care needed is with the
+rows of prescribed degrees of freedom, which every rank holding such a node has
+replaced by a row of the identity: they are entered once, by the owner, so that
+the diagonal entry is 1 for any number of ranks sharing the node.  The
+right-hand side contributes its owned entries, and the owned entries of the
+solution are copied back to the other ranks that hold them.
 
-.. math::
-   :label: matvec
+The Krylov method and the preconditioner
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-   J x = \left( \sum_r J_r \right) x = \sum_r \left( J_r x \right) ,
-
-so each rank multiplies by its own local matrix and the partial results are made
-consistent by a single exchange with the neighbouring ranks.  The product is
-exact, no global numbering is needed, the communication is
-confined to the partition boundary, and the local matrices are the same Eigen
-sparse matrices a serial run would build.
-
-A Krylov method needs only :eq:`matvec` and the inner product :eq:`dotproduct`,
-so both solvers are implemented directly on top of them.  The default is
-BiCGSTAB [VanDerVorst1992]_, which converges for a general, non-symmetric matrix
-and is the right default here because the dual mesh and finite volume methods do
-not produce a symmetric matrix.  The alternative is the conjugate gradient
-method [HestenesStiefel1952]_, which costs about half as much per iteration but
-requires a symmetric positive definite matrix.  Of the available
-discretisations, only the Galerkin finite element method produces such a
-matrix.  Selecting ``"cg"`` with a non-symmetric matrix produces a failure to
-converge, and the error message states this cause explicitly.
-
-The preconditioner
-^^^^^^^^^^^^^^^^^^
-
-Krylov iteration counts on an unpreconditioned elliptic system grow with the
-mesh size, so a preconditioner :math:`M^{-1} \approx J^{-1}` is essential.
-Three are offered.
-
-**Jacobi** takes :math:`M` to be the diagonal of the global matrix.  The
-diagonal is a vector, so it is formed by taking each rank's local diagonal and
-making it consistent with one exchange.  Applying :math:`M^{-1}` is then an
-elementwise division needing no communication at all.  It needs no
-factorisation, it is cheap per iteration, and it is the same operator however
-the mesh is divided, but it converges slowly: its iteration count grows like
-the number of elements across the mesh.
-
-**Restricted additive Schwarz** is a domain decomposition method: solve the
-problem approximately on each of a set of overlapping subdomains and combine the
-corrections.
-
-*The subdomains.*  Rank :math:`r` holds the elements the partitioner gave it.
-Its Schwarz subdomain :math:`\Omega_r^\delta` is those elements extended by
-:math:`\delta` layers of its neighbours' elements, where :math:`\delta` is the
-``overlap`` option (default 1): one layer adds every element that touches a node
-of the rank's own elements, and each further layer repeats the step.  Every rank
-holds the whole mesh and the whole partition, so each grows its own subdomain
-without communicating.  The nodes of :math:`\Omega_r^\delta` that no element of
-rank :math:`r` touches are its *ghost* nodes.
-
-*The subdomain matrix.*  Write :math:`R_r` for the restriction of a global
-vector to the degrees of freedom of :math:`\Omega_r^\delta`.  The subdomain
-matrix is the global matrix restricted to the subdomain,
-
-.. math::
-   :label: subdomainmatrix
-
-   A_r = R_r J R_r^{\mathsf{T}} ,
-
-and every one of its rows must be the *fully assembled* row of :math:`J`.  No
-rank holds such rows on its own: by :eq:`ranksum` the entry :math:`J_{ij}` is
-the sum of the entries :math:`(J_s)_{ij}` of every rank :math:`s` whose elements
-touch both nodes.  So at setup every rank tells each neighbour which of the
-neighbour's nodes lie in its subdomain, and whenever the matrix changes (once
-per Newton iteration) each rank sends every neighbour the entries of its local
-matrix between those nodes, identified by global degree of freedom, and the
-receiver adds them to its own.  The result is exactly :eq:`subdomainmatrix`.
-The local matrix :math:`J_r` alone is insufficient: at a node on the partition
-boundary it holds only the rank's own share of the row, a Neumann-like
-approximation to the true row, and a Schwarz preconditioner built from it
-without overlap stops converging at about eight ranks.
-
-*The subdomain solve.*  :math:`A_r^{-1}` is replaced by an incomplete LU
-factorisation without fill, ILU(0) [Saad2003]_ (``subdomain_solver = "ilu"``,
-the default), or computed exactly by a sparse LU factorisation (``"lu"``).
-
-*The restriction.*  Classical additive Schwarz would add every subdomain's
-whole correction, :math:`M^{-1} = \sum_r R_r^{\mathsf{T}} A_r^{-1} R_r`, and
-so add two or more corrections wherever subdomains overlap.  The **restricted**
-variant of Cai and Sarkis [CaiSarkis1999]_ keeps each subdomain's correction
-only on the degrees of freedom the rank owns:
-
-.. math::
-   :label: ras
-
-   M_{\text{RAS}}^{-1} = \sum_r \tilde{R}_r^{\mathsf{T}} A_r^{-1} R_r ,
-
-where :math:`\tilde{R}_r` restricts to the owned degrees of freedom, so the
-:math:`\tilde{R}_r^{\mathsf{T}}` form a partition of unity and the corrections
-tile the domain.  Applying :eq:`ras` takes one exchange to fetch the residual
-at the ghost nodes from their owners, the local solve, and one exchange to make
-the result consistent.
-
-**Two-level Schwarz** (``"two_level_schwarz"``, the default) adds a coarse
-correction.  A coarse level is needed because of a property of one-level
-methods that no choice of subdomain solver can fix.  One application of
-:eq:`ras` moves information only from a subdomain to its neighbours, so
-information from one end of the domain reaches the other only after as many
-iterations as there are subdomains across it.  For an elliptic problem, whose
-solution at any point depends on the data everywhere, the iteration count of a
-one-level method therefore grows with the number of subdomains.  A coarse level
-supplies the missing global transport by solving a small problem posed on the
-whole domain.  The theory is due to Dryja and Widlund [DryjaWidlund1994]_ and is
-set out in full by Toselli and Widlund [ToselliWidlund2005]_: with a suitable
-coarse space and an overlap proportional to the subdomain size, the condition
-number of the preconditioned operator is bounded independently of the number of
-subdomains.
-
-The coarse space is Nicolaides' [Nicolaides1987]_: one basis function per
-subdomain and variable, equal to one on the degrees of freedom the subdomain
-owns and zero elsewhere.  Degrees of freedom whose equation has been replaced
-by the identity (prescribed values, or no kernel acting on them) are left out,
-because those rows would add to the coarse matrix an identity that has nothing
-to do with the operator.  Writing :math:`Z` for the matrix of basis vectors,
-the coarse matrix :math:`A_0 = Z^{\mathsf{T}} J Z` is dense and of size
-:math:`(n_{\text{ranks}} \, n_{\text{var}})^2`.  Each rank accumulates the
-contributions of its local entries, one reduction sums them, and the inverse of
-:math:`A_0` is formed once per Newton iteration.  With
-:math:`Q = Z A_0^{-1} Z^{\mathsf{T}}` the coarse correction and
-:math:`P = I - J Q`, the two levels are combined multiplicatively, coarse first:
-
-.. math::
-   :label: adef1
-
-   M^{-1} = M_{\text{RAS}}^{-1} P + Q ,
-   \qquad\text{that is}\qquad
-   z_0 = Q r , \quad z = z_0 + M_{\text{RAS}}^{-1} (r - J z_0) .
-
-This is the operator Tang, Nabben, Vuik and Erlangga call A-DEF1
-[Tang2009]_.  The additive combination of the two corrections,
-:math:`M_{\text{RAS}}^{-1} + Q` (their AD), was measured to perform *worse* than
-the one-level method: the restricted local corrections already carry the
-smooth part of the error that the coarse correction adds again, so the sum
-over-corrects.
-:eq:`adef1` costs one more matrix-vector product per application, which is small
-next to the subdomain solves.
-
-**The conjugate gradient method** needs a symmetric positive definite
-preconditioner, and the restricted form :eq:`ras` is not symmetric, nor is
-:eq:`adef1`.  With ``linear_solver = "cg"`` the Schwarz options are therefore
-applied in their classical form, :math:`\sum_r R_r^{\mathsf{T}} A_r^{-1} R_r`
-(each ghost part of a correction is sent back to the owner and added), and the
-coarse level additively, :math:`M^{-1} + Q`.  For a symmetric matrix both the
-exact and the ILU(0) subdomain solves are symmetric, so the whole operator is.
-The classical form is known to be the weaker of the two [CaiSarkis1999]_, and
-the measurements below agree.
+PETSc solves the system, so every one of its Krylov methods and
+preconditioners is available through ``petsc_options``.  The default,
+``linear_solver="automatic"``, makes the choice that the serial automatic
+solver makes.  It takes GMRES preconditioned by the algebraic multigrid
+BoomerAMG of hypre [FalgoutYang2002]_, whose iteration count does not grow with the
+mesh or with the number of ranks.  When that does not converge within 500
+iterations, or when the system has a zero pressure block (the Taylor-Hood
+element), on which multigrid cannot act, it takes the parallel direct solver
+MUMPS [Amestoy2001]_.  ``linear_solver="lu"`` takes MUMPS directly.  Any other
+choice is a PETSc option string, for example ``"-ksp_type gmres -pc_type asm
+-sub_pc_type ilu"`` for restricted additive Schwarz with incomplete subdomain
+solves [CaiSarkis1999]_, ``"-ksp_type cg -pc_type gamg"`` for the conjugate
+gradient method with PETSc's smoothed aggregation multigrid on the symmetric
+matrix of the finite element method, or a field split for a saddle point
+problem.
 
 Measured iteration counts
 ^^^^^^^^^^^^^^^^^^^^^^^^^
 
-The figures below are for the Poisson problem :math:`-\nabla^2 u = 1` on the
-unit square with :math:`u = 0` on the boundary, :math:`48 \times 48` ``Quad4``
-elements (2401 unknowns), the dual mesh control domain method, the graph
-partitioner and BiCGSTAB to a relative tolerance of :math:`10^{-10}`.  One
-BiCGSTAB iteration applies the preconditioner twice.  The problem is held fixed
-while ranks are added, so this measures how well each preconditioner tolerates
-a finer decomposition.
-
-.. table:: BiCGSTAB iterations, 48 by 48 mesh, increasing rank count
-
-   ==========================================  ======  ==  ==  ==  ==
-   Preconditioner (overlap, subdomain solver)  1       2   4   8   16
-   ==========================================  ======  ==  ==  ==  ==
-   ``jacobi``                                  50      49  49  50  49
-   ``additive_schwarz`` (1, ilu)               24      26  29  33  33
-   ``additive_schwarz`` (1, lu)                1       9   13  17  17
-   ``two_level_schwarz`` (0, ilu)              24      32  29  30  36
-   ``two_level_schwarz`` (1, ilu), default     24      25  23  25  24
-   ``two_level_schwarz`` (2, ilu)              24      24  26  25  27
-   ``two_level_schwarz`` (1, lu)               1       11  13  15  16
-   ==========================================  ======  ==  ==  ==  ==
-
-On a :math:`128 \times 128` mesh (16 641 unknowns) the default takes 66, 60 and
-64 iterations on one, four and sixteen ranks.  Without the coarse level the
-counts are 66, 76 and 86, and Jacobi takes 137, 131 and 132.  In three
-dimensions, on a :math:`24^3` ``Hex8`` mesh (15 625 unknowns), the default takes
-15, 16 and 14 iterations on one, four and eight ranks and Jacobi 26 on each.
-
-Three things follow.  First, the default's iteration count is flat in the
-number of ranks, which is the property that makes adding ranks worthwhile: on
-the :math:`48 \times 48` problem it is between 23 and 25 from one rank to
-sixteen.  Second, one layer of overlap is essential: without overlap the
-two-level count increases (24 to 36), and a second layer gives no further
-reduction here.  Third, the exact subdomain solve roughly halves the iteration
-count in two dimensions.  It is not the default because the cost of an exact
-factorisation of a three-dimensional subdomain grows much faster than the
-subdomain (see :ref:`the choice of linear solver <linear-solver-choice>`).
-
-With ``linear_solver = "cg"`` on the finite element discretisation of the same
-problem, Jacobi takes 69 iterations on any number of ranks, and the classical
-one- and two-level Schwarz forms take 38 on one rank and 64 to 73 on four and
-eight.  For a symmetric problem on many ranks BiCGSTAB with the default is
-therefore the better choice, despite its two preconditioner applications per
-iteration.
+On the Poisson problem :math:`-\nabla^2 u = 1` on the unit square with
+:math:`u = 0` on the boundary, :math:`48 \times 48` ``Quad4`` elements (2401
+unknowns) and the dual mesh control domain method, the automatic choice
+(GMRES with BoomerAMG, relative tolerance :math:`10^{-10}`) takes 15 iterations
+on one, two, three and four ranks.  On the finite element discretization of the
+conduction problem of the test suite (:math:`16 \times 16` ``Quad4``), the
+conjugate gradient method takes 49 iterations with Jacobi, 9 with BoomerAMG and
+12 with GAMG, on one to four ranks alike.  Runs on more ranks belong to the
+scaling studies, which run on a cluster.
 
 These tests are part of the suite: ``dualmesh_parallel_tests``, launched with
-``mpirun``, checks that every preconditioner, overlap and subdomain solver
-reproduces the serial solution (to :math:`10^{-8}`, measured at
-:math:`10^{-13}`), including a two-variable elasticity problem, and that the
-default's iteration count on the :math:`48 \times 48` problem stays below 45
-on whatever number of ranks it is run.
-
-Assembling one distributed matrix for PETSc
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-With ``linear_solver = "petsc"`` the matrix-free iteration above is replaced
-by one distributed PETSc matrix [PETSc2023]_.  Every rank's owned degrees of
-freedom are numbered contiguously, rank after rank, and a shared degree of
-freedom takes its owner's number, which one call to the owner-copy exchange
-distributes.  Each rank then lists the entries of its local matrix, the
-contributions of its own elements, in that global numbering, and PETSc's
-coordinate-format assembly sends each entry to the rank that owns its row and
-adds repeated positions.  The sum over ranks of the element contributions is
-exactly the global Jacobian, as in the matrix-free product.  The only care
-needed is with the rows of prescribed degrees of freedom, which every rank
-holding such a node has replaced by a row of the identity: they are entered
-once, by the owner, so that the diagonal entry is 1 for any number of ranks
-sharing the node.  The right-hand side contributes its owned entries, and the
-owned entries of the solution are copied back to the other ranks that hold
-them.
-
-The tests check that PETSc's parallel direct solver (MUMPS [Amestoy2001]_,
-the default) and an overlapping additive Schwarz iteration reproduce the
-serial solution of the pressure-velocity cavity to :math:`10^{-8}` on one to
-four ranks, for the three node-based methods.
+``mpirun``, checks that the automatic choice, additive Schwarz with incomplete
+and exact subdomain solves, GAMG and MUMPS reproduce the serial solution (to
+:math:`10^{-8}`, measured at about :math:`10^{-12}`), including a two-variable
+elasticity problem, and that the automatic choice takes at most 20 iterations
+on the :math:`48 \times 48` problem on whatever number of ranks it is run.  The
+Python tests check the pressure-velocity cavity and the Taylor-Hood cavity in
+the same way.
 
 Partitioning
 ------------
@@ -537,70 +393,76 @@ Partitioning
 How the elements are split among the ranks decides both the load balance (how
 evenly the work is shared) and the communication volume, measured by the
 *edge cut*, the number of mesh faces whose two elements lie in different parts.
-Three partitioners are available through
-:func:`~dualmesh.partition_mesh` and through the ``partitioner``
-argument of :class:`~dualmesh.Problem`.
+The partitioners are PETSc's [PETSc2023]_, chosen with the ``partitioner``
+argument of :class:`~dualmesh.Problem` and available alone through
+:func:`~dualmesh.partition_mesh`.
 
-**Recursive coordinate bisection** is purely geometric.  It computes the
-centroid of every element, finds the longest axis of the bounding box of those
-centroids, splits the set in half along that axis in proportions matching the
-number of parts each half must produce, and recurses.  It needs no connectivity
-information, it is fast, and it is deterministic.  Its parts are rectangular
-boxes, which is close to optimal on a structured grid and wasteful on an
-unstructured mesh whose features do not line up with the axes.  The idea is
-Berger and Bokhari's [BergerBokhari1987]_.
+PETSc's unstructured mesh, DMPlex, receives the corner nodes of every element as
+the cone of a cell, so that every element type, the quadratic ones included, is
+partitioned by its corners, and it builds the graph of the elements that share a
+face.  ``"ptscotch"`` (PT-Scotch [Chevalier2008]_) and ``"parmetis"``
+(ParMETIS, the parallel form of the multilevel :math:`k`-way algorithm of
+Karypis and Kumar [KarypisKumar1998]_) divide that graph so as to cut few faces;
+``"simple"`` takes contiguous blocks of elements in their order.
+``"automatic"``, the default, takes PT-Scotch, else ParMETIS.  The root rank
+holds the whole mesh, and ``DMPlexDistribute`` moves every element, with its
+nodes, coordinates, block, sides and node sets, to the rank of its part, where
+the rank rebuilds the mesh it holds.
 
-**Graph growing** uses the mesh topology.  It builds the element adjacency
-graph, in which two elements are neighbours when they share a whole face, and
-grows each part outward from a seed element through that graph until the part
-reaches its quota.  The seed of each new part is chosen to be an unassigned
-element with few unassigned neighbours (a corner of the remaining region), so
-that the parts start from the edge of the remaining region.  Parts produced this
-way are connected and follow the mesh connectivity, independently of the
-coordinate axes, and any
-element left over from a disconnected piece joins the smallest part.  This is
-the default of :class:`~dualmesh.Problem`.
-
-**METIS** calls the multilevel :math:`k`-way algorithm of Karypis and Kumar
-[KarypisKumar1998]_ on the same element adjacency graph.  It coarsens the graph
-by contracting edges, partitions the small coarse graph, and refines the
-partition as it uncoarsens, which finds cuts a single-pass method cannot.  It is
-available only when the library was built against METIS, reported by
-:func:`~dualmesh.have_metis`.  Requesting it in a build without METIS prints a
-warning and falls back to graph growing.  METIS is the partitioner libMesh
-[libMesh2006]_, and therefore MOOSE [MOOSE2025]_, uses.
-
-The effect of the choice is modest, and it depends on the mesh.  On a
-structured :math:`20 \times 20` grid of ``Quad4`` elements, coordinate bisection
-cuts 40 faces into four parts, METIS cuts 42 and graph growing cuts 76.  The
-geometric method gives the smallest cut, because its rectangular parts match a
-structured grid exactly.  On a triangulation of the same square into 800
-``Tri3`` elements, coordinate bisection cuts 40, METIS 48 and graph growing 73.
-All three give parts of nearly equal size in every case measured.  The test
-suite requires no part to exceed the average by more than a quarter, and none
-does.  Use the default graph partitioner unless partition quality measurably
-degrades the performance of a run, prefer coordinate bisection on structured or
-nearly structured meshes,
-and build with METIS for large unstructured meshes, where the multilevel
-algorithm's advantage grows with the problem size.
+On a structured :math:`20 \times 20` grid of ``Quad4`` elements, PT-Scotch cuts
+40 faces into four parts, ParMETIS 46 and contiguous blocks 60; on a
+triangulation of the same square into 800 ``Tri3`` elements the cuts are 40, 48
+and 60.  PT-Scotch and contiguous blocks give parts of equal size, and ParMETIS
+parts within 5 %.  The test suite requires no part to exceed the average by more
+than a quarter, and checks that a mesh of every element type, ``Tri6``,
+``Quad9``, ``Quad8``, ``Hex8``, ``Tet4``, ``Tet10``, ``Hex27`` and ``Hex20``,
+arrives whole: its numbering, its coordinates, and every element and side on
+exactly one rank.
 
 What runs in parallel, and what does not
 ----------------------------------------
 
-**The global mesh is replicated on every rank.**  Each rank reads the whole mesh
-at construction and then keeps only its own sub-mesh, but the whole mesh exists
-in memory on every rank while that happens.  The degrees of freedom are
-distributed, while the whole mesh is transiently replicated.  This bounds the
-problem size by the memory of a single rank, and it is the first limit reached
-on a very large mesh.
+**A Python script still builds the whole mesh on every rank.**  The distributed
+solver needs only each rank's part, and a whole mesh given to it is read on the
+first rank alone, which partitions it and sends the parts.  But a script that
+calls a mesh generator or reads a mesh file runs on every rank, so the whole
+mesh is built on every rank before the solver discards it.  Until the
+generators and the readers build only each rank's part, this bounds the
+problem size by the memory of a single rank.  The partitioning also runs on the
+first rank alone.
 
-**The cell-centred finite volume method does not run on more than one rank.**
-Its unknowns are located at cell centroids and at boundary faces, whereas the
-distributed bookkeeping (the ownership mask, the shared-entity exchange and the
-ownership-weighted inner product) is written in terms of mesh nodes.  On a
-single rank every exchange is a no-op and the method appears to work.  On two
-or more ranks the exchanges address the wrong entities and the solve fails.
-Use ``dmcdm``, ``fem`` or ``hfvm`` for distributed runs.
+**The cell-centered finite volume method runs with two layers of ghost
+cells.**  Its unknowns sit at the cells and at the faces of the boundary of the
+domain, and it integrates over the faces.  The flux through a face between two
+parts needs the reconstructed gradients of the cells on both sides, and the
+gradient of a cell comes from all its neighbors, so every part also holds the
+cells of other parts up to two layers away, which PETSc's ``DMPlexDistribute``
+sends with the part (its overlap).  A cell is numbered by its element and a
+boundary face after all cells, in the order of the elements, so that the
+numbering does not depend on the partition; the gather-scatter then works on
+cells and faces as it works on nodes.  Every face is integrated by one process,
+the one whose cell on it has the smaller global number, and the pieces of the
+residual and of the Jacobian at the cells that several processes hold are
+added as at shared nodes, so the Jacobian is the serial one and Newton's method
+takes the serial number of iterations.  A gap condition pairs across processes
+as for the other methods.  The test suite checks every cell and boundary face
+against the serial solution on one to six processes, on triangles, on
+distorted quadrilaterals (where one layer of ghost cells is not enough and
+gives differences of :math:`10^{-5}`), on tetrahedra, with a nonlinear
+diffusivity, across a gap, and through a checkpoint and a restart on another
+partition.
+
+**Gap conditions pair across processes.**  A gap condition pairs every
+integration point of its primary side with the closest point of its secondary
+side, which may belong to another process.  Every process shares the elements
+of its secondary sides, and a process that holds primary sides keeps the
+secondary elements it lacks as *ghost elements*: it reads their nodes and
+values, but does not integrate them, so that each element is still integrated
+once.  The secondary side's share of the flux is added at the ghost nodes and
+reaches their owners through the gather-scatter, and the Jacobian couples the
+two sides through the global numbering.  The test suite checks the solution
+across a gap between non-matching meshes on two bodies held by different
+processes against the serial one on one to six processes.
 
 **Adaptive refinement is not distributed.**  The refinement described in
 :doc:`adaptivity` operates on a whole mesh in one process.  There is no
@@ -617,6 +479,15 @@ makes no attempt to parallelise.  The measured assembly speedup on two cores is
 between 1.24 and 1.55 (see the table above), and what fraction of a whole solve that represents
 depends entirely on how expensive the linear solve is for the problem at hand.
 
+**Post-processors and reactions run on every process.**  Every element and
+every boundary side belongs to one process, so an integral, an average, a
+boundary flux or a reaction is the sum of what each process computes over its
+own elements, sides and owned nodes, reduced over the processes; a nodal
+extreme is the extreme over the processes; and a point value is taken from the
+process whose elements contain the point (the average of those that do, when
+the point lies on a partition boundary).  The test suite checks every
+post-processor type against the serial value on one to four processes.
+
 **Gathering the solution does not scale.**
 :meth:`~dualmesh.Problem.gathered_values` builds a vector of the
 global size on every rank.  It is intended for testing and for small problems.
@@ -626,13 +497,12 @@ per rank plus a ``.pvtu`` index that ParaView and VisIt open as a single data
 set.
 
 **The distributed answer does not depend on the decomposition.**  This property
-is verified numerically.  On four ranks, for
-each of ``dmcdm``, ``fem`` and ``hfvm``, for both the coordinate-bisection and
-graph partitioners and for both the Jacobi and additive Schwarz
-preconditioners, the distributed steady conduction solution agrees with the
-serial one node by node to between :math:`3.9 \times 10^{-13}` and
-:math:`3.3 \times 10^{-12}`.  These differences are at the level of the linear
-solver's tolerance, so no effect of the decomposition is detectable.  A
-transient solve over ten steps agrees to
-:math:`2.6 \times 10^{-15}`, and the point-source case to
-:math:`1.0 \times 10^{-14}`.
+is verified numerically.  On four ranks, for each of ``dmcdm``, ``fem`` and
+``hfvm``, for every partitioner of the build (PT-Scotch, ParMETIS and contiguous blocks) and for the
+automatic choice, additive Schwarz, GAMG and MUMPS, the distributed steady
+conduction solution agrees with the serial one node by node to between
+:math:`2 \times 10^{-14}` and :math:`3 \times 10^{-12}`.  These differences are
+at the level of the linear solver's tolerance, so no effect of the
+decomposition is detectable.  A transient solve over ten steps agrees to
+:math:`2.0 \times 10^{-15}`, and the point-source case to
+:math:`5.8 \times 10^{-15}`.

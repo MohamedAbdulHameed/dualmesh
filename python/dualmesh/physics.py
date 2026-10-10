@@ -348,7 +348,7 @@ class Coupling:
 @dataclass
 class HeatTransfer(Physics):
     """Heat conduction in a solid or a fluid at rest, with an optional heat
-    source and heat capacity: rho c_p dT/dt - div(k grad T) = q. The
+    source and heat capacity: ρ c_p ∂T/∂t − ∇·(k ∇T) = q. The
     conductivity is a constant, the name of a function, or, when it is not
     given, the property thermal_conductivity of the property objects of
     the problem."""
@@ -499,7 +499,7 @@ def _add_term(flux: list, component: int, text: str) -> None:
 @register
 @dataclass
 class CoefficientFormPDE(Physics):
-    """One or several partial differential equations written by their coefficients. The equation of each field u is d du/dt + div(-c grad u - alpha u) + beta . grad u + a u = f. A coefficient of an equation is one value, which acts on the field of that equation, or a dict field name -> value, which couples the equation to other fields. A value is a constant, or an expression of the fields, their gradients (grad_x(u), grad_y(u), grad_z(u)), x, y, z, t and named constants, which may make the equations nonlinear. With one field, every input may be given as a plain value; with several, every input is a dict keyed by the field of the equation."""
+    """One or several partial differential equations written by their coefficients. The equation of each field u is d ∂u/∂t + ∇·(−c ∇u − α u) + β·∇u + a u = f. A coefficient of an equation is one value, which acts on the field of that equation, or a dict field name -> value, which couples the equation to other fields. A value is a constant, or an expression of the fields, their gradients (grad_x(u), grad_y(u), grad_z(u)), x, y, z, t and named constants, which may make the equations nonlinear. With one field, every input may be given as a plain value; with several, every input is a dict keyed by the field of the equation."""
 
     type_name: ClassVar[str] = "coefficient_form_PDE"
     module: ClassVar[str] = "framework"
@@ -519,7 +519,7 @@ class CoefficientFormPDE(Physics):
     )
     time_derivative_coefficient: object = parameter(
         None,
-        description="Coefficient d of du/dt of each equation: a constant or an expression of (x, y, z, t). Default none: the equation is steady.",
+        description="Coefficient d of ∂u/∂t of each equation: a constant or an expression of (x, y, z, t). Default none: the equation is steady.",
     )
     convection_coefficient: object = parameter(
         None,
@@ -910,7 +910,7 @@ def _symbols_of_mms():
 @register
 @dataclass
 class GeneralFormPDE(Physics):
-    """A system of partial differential equations in general form: for every field u, d du/dt + div Gamma = f, where the flux Gamma and the source f are expressions of all the fields, the components of their gradients (grad_x(u), grad_y(u), grad_z(u)), the coordinates x, y, z, the time t and named constants. The expressions are compiled and differentiated automatically, so Newton's method has the exact Jacobian, and the assembly runs on every thread and every process with every method."""
+    """A system of partial differential equations in general form: for every field u, d ∂u/∂t + ∇·Γ = f, where the flux Γ and the source f are expressions of all the fields, the components of their gradients (grad_x(u), grad_y(u), grad_z(u)), the coordinates x, y, z, the time t and named constants. The expressions are compiled and differentiated automatically, so Newton's method has the exact Jacobian, and the assembly runs on every thread and every process with every method."""
 
     type_name: ClassVar[str] = "general_form_PDE"
     module: ClassVar[str] = "framework"
@@ -920,7 +920,7 @@ class GeneralFormPDE(Physics):
     )
     flux: Mapping[str, Sequence[str | float]] = parameter(
         default_factory=dict,
-        description="The flux Gamma of each equation: field name -> one expression for each space dimension. For diffusion with a coefficient c, Gamma = -c grad u, for example ['-c*grad_x(u)', '-c*grad_y(u)']. Default: no flux.",
+        description="The flux Γ of each equation: field name -> one expression for each space dimension. For diffusion with a coefficient c, Γ = −c ∇u, for example ['-c*grad_x(u)', '-c*grad_y(u)']. Default: no flux.",
     )
     source: Mapping[str, str | float] = parameter(
         default_factory=dict,
@@ -928,7 +928,7 @@ class GeneralFormPDE(Physics):
     )
     time_derivative_coefficient: Mapping[str, str | float] = parameter(
         default_factory=dict,
-        description="The coefficient d of du/dt in each equation: field name -> a constant or the name of a function of (x, y, z, t). Default: no time derivative, so the equation is steady.",
+        description="The coefficient d of ∂u/∂t in each equation: field name -> a constant or the name of a function of (x, y, z, t). Default: no time derivative, so the equation is steady.",
     )
     constants: Mapping[str, float] = parameter(
         default_factory=dict,
@@ -1045,7 +1045,7 @@ FORMULATIONS = ("plane_stress", "plane_strain", "axisymmetric", "three_dimension
 @register
 @dataclass
 class SolidMechanics(Physics):
-    """Linear elasticity of an isotropic solid at small strain: div(sigma) + f
+    """Linear elasticity of an isotropic solid at small strain: ∇·σ + f
     = 0. The formulation is three_dimensional on a three-dimensional mesh and
     axisymmetric in axisymmetric coordinates, and is given on a
     two-dimensional Cartesian mesh (plane_stress or plane_strain)."""
@@ -1281,6 +1281,7 @@ class SolidMechanics(Physics):
 # Incompressible flow
 # ---------------------------------------------------------------------------
 FLOW_FORMULATIONS = ("penalty", "pressure", "Taylor_Hood")
+FLOW_TIME_INTEGRATIONS = ("monolithic", "projection")
 
 
 def _is_quadratic_mesh(mesh) -> bool:
@@ -1292,7 +1293,7 @@ def _is_quadratic_mesh(mesh) -> bool:
 @dataclass
 class IncompressibleFlow(Physics):
     r"""The steady or transient flow of an incompressible Newtonian fluid:
-    rho (v . grad) v = -grad p + mu div(grad v) + f, div v = 0. The penalty
+    ρ (v·∇)v = −∇p + μ Δv + f, ∇·v = 0. The penalty
     formulation eliminates the pressure, the pressure formulation keeps it
     with equal-order interpolation and stabilisation, and the Taylor_Hood
     formulation keeps it with a quadratic velocity and a linear pressure."""
@@ -1321,7 +1322,7 @@ class IncompressibleFlow(Physics):
     )
     penalty_parameter: float = parameter(
         1.0e8,
-        description="Penalty parameter gamma of the penalty formulation, p = -gamma div v. Default 1e8, large enough for the velocity to be divergence-free to about 1e-8 of its gradient in non-dimensional problems.",
+        description="Penalty parameter gamma of the penalty formulation, p = −γ ∇·v. Default 1e8, large enough for the velocity to be divergence-free to about 1e-8 of its gradient in non-dimensional problems.",
     )
     pressure: str = parameter(
         "pressure",
@@ -1350,8 +1351,39 @@ class IncompressibleFlow(Physics):
         description="Side sets where the mass equation of the pressure formulations takes the flow through the boundary. Default: every side set.",
     )
     block: Sequence[str] = parameter((), description="Blocks of the fluid. Default: every block.")
+    viscous_form: str = parameter(
+        "stress",
+        description="The form of the viscous term: stress (the default: mu (grad v + grad v^T), whose natural boundary condition is a zero traction) or laplacian (mu grad v, the same equations for a constant viscosity, whose natural boundary condition is the do-nothing outflow mu dv/dn - p n = 0 of the DFG benchmarks and of Nek5000). The projection time integration always takes the laplacian form.",
+    )
+    time_integration: str = parameter(
+        "monolithic",
+        description="How a transient solve advances the flow: monolithic (the default: Newton's method on the velocity and the pressure together, with the theta method of solve_transient) or projection (the splitting of Nek5000 and nekRS: a pressure Poisson equation, then one Helmholtz equation per velocity component, with BDFk and EXTk of order time_order). The projection needs formulation='pressure' and method 'fem', 'dmcdm' or 'hfvm'.",
+    )
+    time_order: int = parameter(
+        2,
+        description="The order k of the backward difference (BDFk) and of the extrapolation of the advection (EXTk) of the projection time integration: 1, 2 or 3. Default 2. The first steps take the orders below it.",
+    )
 
     def __post_init__(self):
+        if self.viscous_form not in ("stress", "laplacian"):
+            raise InputError(
+                f"incompressible_flow: viscous_form is stress or laplacian, not '{self.viscous_form}'."
+            )
+        if self.time_integration not in FLOW_TIME_INTEGRATIONS:
+            raise InputError(
+                f"incompressible_flow: unknown time_integration '{self.time_integration}'. Use {', '.join(FLOW_TIME_INTEGRATIONS)}."
+            )
+        if self.time_integration == "projection":
+            if self.formulation != "pressure":
+                raise InputError(
+                    "incompressible_flow: the projection time integration needs formulation='pressure'."
+                )
+            if self.time_order not in (1, 2, 3):
+                raise InputError("incompressible_flow: time_order is 1, 2 or 3.")
+            if not self.density > 0:
+                raise InputError(
+                    "incompressible_flow: the projection time integration needs a positive density; a flow without inertia (Stokes flow) has no time derivative to integrate."
+                )
         if self.formulation not in FLOW_FORMULATIONS:
             raise InputError(
                 f"incompressible_flow: unknown formulation '{self.formulation}'. Use {', '.join(FLOW_FORMULATIONS)}."
@@ -1402,6 +1434,7 @@ class IncompressibleFlow(Physics):
 
     def _build(self, problem) -> None:
         velocities, restrict = list(self.velocities), self._restriction()
+        existing = set(problem._problem.object_names())
         taylor_hood = self.formulation == "Taylor_Hood"
         stabilization = (
             False if taylor_hood else (True if self.stabilization is None else self.stabilization)
@@ -1439,6 +1472,7 @@ class IncompressibleFlow(Physics):
                 component=component,
                 velocities=velocities,
                 dynamic_viscosity=self.dynamic_viscosity,
+                form=self.viscous_form,
                 **restrict,
             )
             if self._pressure_formulation:
@@ -1488,6 +1522,15 @@ class IncompressibleFlow(Physics):
                     value=force[component],
                     **restrict,
                 )
+            # The inertia rho dv/dt of a transient solve; a steady solve leaves it out.
+            if self.density:
+                problem.add_kernel(
+                    "time_derivative",
+                    self._object_name(f"time_derivative_{variable}"),
+                    variable=variable,
+                    coefficient=self.density,
+                    **restrict,
+                )
         if self._pressure_formulation:
             problem.add_kernel(
                 "mass_conservation",
@@ -1526,6 +1569,21 @@ class IncompressibleFlow(Physics):
                 penalty_parameter=self.penalty_parameter,
                 **restrict,
             )
+        if self.time_integration == "projection":
+            from . import _core
+            from .problem import _as_function
+
+            settings = _core.ProjectionSettings()
+            settings.velocities = velocities
+            settings.pressure = self.pressure
+            settings.density = self.density
+            settings.dynamic_viscosity = self.dynamic_viscosity
+            settings.order = self.time_order
+            settings.set_body_force([None if f == 0.0 else _as_function(f) for f in force])
+            settings.own_objects = [n for n in problem._problem.object_names() if n not in existing]
+            self._projection = _core.attach_projection(
+                problem._problem, problem._distributed, settings
+            )
 
     def _manufactured_terms(self, fields, coordinates, dimension):
         from .mms import _symbols
@@ -1540,13 +1598,17 @@ class IncompressibleFlow(Physics):
         mu, rho = float(self.dynamic_viscosity), float(self.density)
         grads = [_gradient(c) for c in u]
         out = {}
+        laplacian = self.viscous_form == "laplacian"
         for i, v in enumerate(self.velocities):
-            flux = [mu * (grads[i][d] + grads[d][i]) for d in range(dimension)]
+            flux = [
+                mu * grads[i][d] if laplacian else mu * (grads[i][d] + grads[d][i])
+                for d in range(dimension)
+            ]
             flux[i] = flux[i] - p
             flux += [0] * (3 - dimension)
             source = rho * sum(u[d] * grads[i][d] for d in range(dimension))
             if coordinates == "axisymmetric" and i == 0:
-                source = source + (2 * mu * u[0] / x - p) / x
+                source = source + ((1 if laplacian else 2) * mu * u[0] / x - p) / x
             out[v] = (flux, source)
         out[self.pressure] = ([-c for c in u] + [0] * (3 - dimension), 0)
         return out

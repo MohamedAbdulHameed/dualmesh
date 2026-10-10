@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 //
-// InputParameters: a typed, documented parameter dictionary, in the spirit of
-// MOOSE's InputParameters.  Every registered object declares the parameters it
+// InputParameters: a typed, documented parameter dictionary.
+// Every registered object declares the parameters it
 // accepts (with a description and, optionally, a default value).  Unknown or
 // missing required parameters are reported with a clear error message.
 #pragma once

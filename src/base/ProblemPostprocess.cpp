@@ -84,7 +84,7 @@ Problem::gradientAtCentroids(const std::string & var) const
     return cellGradients(_U)[v];
   std::vector<Point> out;
   MappedPoint mp;
-  for (Index e = 0; e < _mesh->numElements(); ++e)
+  for (Index e = 0; e < numIntegratedElements(); ++e)
   {
     const auto & el = _mesh->element(e);
     mapPoint(*_mesh, el, ReferenceElement::get(el.type).centroid(), mp);
@@ -118,7 +118,7 @@ Problem::errorIndicator(const std::string & var) const
   // The weight of an element at a node is the measure of the part of the
   // element that belongs to that node's control domain, which is the natural
   // weight here because it is exactly the volume the node is responsible for.
-  for (Index e = 0; e < _mesh->numElements(); ++e)
+  for (Index e = 0; e < numIntegratedElements(); ++e)
   {
     const auto & el = _mesh->element(e);
     buildElementPoints(*_mesh, e, true, PointSet::Volume, rule, points);
@@ -147,7 +147,7 @@ Problem::errorIndicator(const std::string & var) const
 
   // Pass two: the norm of the difference, element by element.
   std::vector<double> out(_mesh->numElements(), 0.0);
-  for (Index e = 0; e < _mesh->numElements(); ++e)
+  for (Index e = 0; e < numIntegratedElements(); ++e)
   {
     const auto & el = _mesh->element(e);
     buildElementPoints(*_mesh, e, false, PointSet::Volume, rule, points);
@@ -206,7 +206,7 @@ Problem::errorNorms(const std::string & var,
   if (concurrent)
     nthreads = std::max(1, _num_threads > 0 ? _num_threads : omp_get_max_threads());
 #endif
-  const Index ne = _mesh->numElements();
+  const Index ne = numIntegratedElements();
   if (ne < 64)
     nthreads = 1;
 
@@ -300,7 +300,7 @@ Problem::propertyAtCentroids(const std::string & property) const
   std::vector<std::vector<Point>> cg;
   if (_cells)
     cg = cellGradients(_U);
-  for (Index e = 0; e < _mesh->numElements(); ++e)
+  for (Index e = 0; e < numIntegratedElements(); ++e)
   {
     const auto & el = _mesh->element(e);
     if (_cells)
@@ -344,7 +344,7 @@ Problem::kernelFluxAtCentroids(const std::string & kernel) const
   std::vector<std::vector<Point>> cg;
   if (_cells)
     cg = cellGradients(_U);
-  for (Index e = 0; e < _mesh->numElements(); ++e)
+  for (Index e = 0; e < numIntegratedElements(); ++e)
   {
     const auto & el = _mesh->element(e);
     if (_cells)
@@ -387,7 +387,7 @@ Problem::integrate(const std::string & var) const
       total += _U[dof(c, v)] * _cells->cellVolume(c) * coordFactor(_cells->entityPoint(c));
     return total;
   }
-  for (Index e = 0; e < _mesh->numElements(); ++e)
+  for (Index e = 0; e < numIntegratedElements(); ++e)
   {
     const auto & el = _mesh->element(e);
     buildElementPoints(*_mesh, e, false, PointSet::Volume, g, pts);
@@ -419,7 +419,7 @@ Problem::elementIntegrals(const std::string & var) const
   g.points = 3;
   MappedPoint mp;
   std::vector<IntegrationPoint> pts;
-  for (Index e = 0; e < _mesh->numElements(); ++e)
+  for (Index e = 0; e < numIntegratedElements(); ++e)
   {
     const auto & el = _mesh->element(e);
     buildElementPoints(*_mesh, e, false, PointSet::Volume, g, pts);
@@ -556,11 +556,12 @@ Problem::writeVTU(const std::string & filename,
   if (!f)
     throw InputError("Cannot open '" + filename + "' for writing.");
   const auto & m = *_mesh;
+  // The ghost elements of a distributed run belong to another process's file.
+  const Index ne = numIntegratedElements();
   f << std::setprecision(12);
   f << "<?xml version=\"1.0\"?>\n<VTKFile type=\"UnstructuredGrid\" version=\"0.1\" "
        "byte_order=\"LittleEndian\">\n<UnstructuredGrid>\n";
-  f << "<Piece NumberOfPoints=\"" << m.numNodes() << "\" NumberOfCells=\"" << m.numElements()
-    << "\">\n";
+  f << "<Piece NumberOfPoints=\"" << m.numNodes() << "\" NumberOfCells=\"" << ne << "\">\n";
   f << "<PointData>\n";
   if (!_cells)
     for (const auto & v : _vars)
@@ -582,13 +583,13 @@ Problem::writeVTU(const std::string & filename,
         continue;
       f << "<DataArray type=\"Float64\" Name=\"" << v.name << "\"" << unit(v)
         << " format=\"ascii\">\n";
-      for (Index c = 0; c < m.numElements(); ++c)
+      for (Index c = 0; c < ne; ++c)
         f << _U[dof(c, v.index)] << "\n";
       f << "</DataArray>\n";
     }
   f << "<DataArray type=\"Int32\" Name=\"block\" format=\"ascii\">\n";
-  for (const auto & el : m.elements())
-    f << el.block << "\n";
+  for (Index e = 0; e < ne; ++e)
+    f << m.element(e).block << "\n";
   f << "</DataArray>\n";
   for (const auto & prop : cell_properties)
   {
@@ -596,9 +597,9 @@ Problem::writeVTU(const std::string & filename,
     const int nc = vals.empty() ? 1 : static_cast<int>(vals[0].size());
     f << "<DataArray type=\"Float64\" Name=\"" << prop << "\" NumberOfComponents=\"" << nc
       << "\" format=\"ascii\">\n";
-    for (const auto & row : vals)
+    for (Index e = 0; e < ne && e < static_cast<Index>(vals.size()); ++e)
     {
-      for (double x : row)
+      for (double x : vals[e])
         f << x << " ";
       f << "\n";
     }
@@ -610,22 +611,23 @@ Problem::writeVTU(const std::string & filename,
     f << p[0] << " " << p[1] << " " << p[2] << "\n";
   f << "</DataArray>\n</Points>\n<Cells>\n";
   f << "<DataArray type=\"Int64\" Name=\"connectivity\" format=\"ascii\">\n";
-  for (const auto & el : m.elements())
+  for (Index e = 0; e < ne; ++e)
   {
+    const auto & el = m.element(e);
     for (int k : vtkNodeOrder(el.type))
       f << el.nodes[k] << " ";
     f << "\n";
   }
   f << "</DataArray>\n<DataArray type=\"Int64\" Name=\"offsets\" format=\"ascii\">\n";
   Index off = 0;
-  for (const auto & el : m.elements())
+  for (Index e = 0; e < ne; ++e)
   {
-    off += el.numNodes();
+    off += m.element(e).numNodes();
     f << off << "\n";
   }
   f << "</DataArray>\n<DataArray type=\"UInt8\" Name=\"types\" format=\"ascii\">\n";
-  for (const auto & el : m.elements())
-    f << vtkCellType(el.type) << "\n";
+  for (Index e = 0; e < ne; ++e)
+    f << vtkCellType(m.element(e).type) << "\n";
   f << "</DataArray>\n</Cells>\n</Piece>\n</UnstructuredGrid>\n</VTKFile>\n";
 }
 

@@ -167,4 +167,18 @@ protected:
   FunctionPtr _value;
 };
 
+/// A condition that makes degrees of freedom copies of others.
+/// A dependent degree of freedom takes the value of its primary, and its equation is added to the primary's, so the two act as one unknown whose control domain is the union of theirs.
+class Constraint : public Object
+{
+public:
+  explicit Constraint(const InputParameters & params) : Object(params) {}
+  static InputParameters validParams() { return Object::validParams(); }
+  /// The pairs (dependent degree of freedom, primary degree of freedom), found by initialSetup.
+  const std::vector<std::pair<Index, Index>> & pairs() const { return _pairs; }
+
+protected:
+  std::vector<std::pair<Index, Index>> _pairs;
+};
+
 } // namespace dualmesh

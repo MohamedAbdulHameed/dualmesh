@@ -16,15 +16,15 @@ itself, or when any object of the problem is written in Python, because calling
 back into the interpreter requires the global interpreter lock.
 
 **Processes (distributed memory).** A :class:`dualmesh.Problem` that runs on
-more than one MPI process splits the elements of the mesh among the ranks.  Each rank builds the sub-mesh of its
-own elements, defines exactly the same variables, kernels, materials and
-boundary conditions on it as a serial run would, and assembles only its own
-element integrals.  Because every element belongs to exactly one rank, the sum
-of the local residuals is the global residual.  A node on a partition boundary
-collects a piece of its control domain from every rank that touches it, and one
-exchange with the neighbouring ranks adds the pieces together.  The Krylov
-solver never forms a distributed matrix: it multiplies by each rank's local
-matrix and adds the results across the partition boundary, which is exact.
+more than one MPI process splits the elements of the mesh among the ranks.  Each
+rank holds the sub-mesh of its own elements, defines exactly the same variables,
+kernels, materials and boundary conditions on it as a serial run would, and
+assembles only its own element integrals.  Because every element belongs to
+exactly one rank, the sum of the local residuals is the global residual.  A node
+on a partition boundary collects a piece of its control domain from every rank
+that touches it, and PETSc's star forests add the pieces together.  The
+Jacobian is one distributed PETSc matrix, which PETSc solves, by default with
+GMRES and the algebraic multigrid of hypre.
 
 Run a distributed script with ``mpirun``::
 
@@ -65,19 +65,15 @@ def have_petsc() -> bool:
     return _core.have_petsc()
 
 
+def have_gslib() -> bool:
+    """Whether the extension was built with gslib, the gather-scatter of Nek5000, which ``gather_scatter="gslib"`` needs.
+    A build with MPI has it unless configured with ``-DDUALMESH_ENABLE_GSLIB=OFF``."""
+    return _core.have_gslib()
+
+
 def petsc_version() -> str:
     """PETSc's version, ``"major.minor.subminor"``, or ``""`` without PETSc."""
     return _core.petsc_version()
-
-
-def have_metis() -> bool:
-    """Whether the extension was built against METIS.
-
-    METIS usually cuts fewer faces than the built-in partitioners on
-    unstructured meshes.  It is the partitioner libMesh, and therefore MOOSE,
-    uses.
-    """
-    return _core.have_metis()
 
 
 def rank() -> int:
@@ -95,8 +91,8 @@ def is_root() -> bool:
     return _core.mpi_rank() == 0
 
 
-def partition_mesh(mesh, num_parts: int, method: str = "recursive_coordinate_bisection") -> dict:
-    """Split a mesh into ``num_parts`` groups of elements.
+def partition_mesh(mesh, num_parts: int, method: str = "automatic") -> dict:
+    """Split a mesh into ``num_parts`` groups of elements with a partitioner of PETSc, the one a distributed problem uses.
 
     Parameters
     ----------
@@ -105,14 +101,10 @@ def partition_mesh(mesh, num_parts: int, method: str = "recursive_coordinate_bis
     num_parts:
         How many parts to make.  It must not exceed the number of elements.
     method:
-        ``"recursive_coordinate_bisection"`` repeatedly halves the set of
-        element centroids along its longest axis.  It is fast and deterministic
-        and needs no connectivity, but it cuts more faces than necessary on an
-        unstructured mesh.  ``"graph"`` grows each part outward from a seed
-        element through the face connectivity, so the parts follow the mesh
-        topology.  ``"metis"`` calls METIS on the dual graph of the mesh and
-        normally gives the smallest cut.  It falls back to ``"graph"`` when the
-        extension was built without METIS.
+        ``"ptscotch"`` (PT-Scotch) and ``"parmetis"`` (ParMETIS) divide the graph of the elements that share a face so as to cut few faces.
+        ``"simple"`` takes contiguous blocks of elements in their order.
+        ``"automatic"`` (the default) takes PT-Scotch, else ParMETIS.
+        It needs a build with PETSc (:func:`have_petsc`).
 
     Returns
     -------

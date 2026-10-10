@@ -111,8 +111,8 @@ def slab_temperature(x, primary_temperature, secondary_temperature, gap_end=B):
     return np.where(x <= 0.5 * (A + gap_end), inner, outer)
 
 
-def conduction_problem(mesh, method, coordinates="cartesian"):
-    problem = dm.Problem(mesh, method=method, coordinates=coordinates)
+def conduction_problem(mesh, method, coordinates="cartesian", distributed=False):
+    problem = dm.Problem(mesh, method=method, coordinates=coordinates, distributed=distributed)
     problem.add_variable("temperature", initial_condition=T_COOL)
     problem.add_kernel(
         "heat_conduction",
@@ -270,24 +270,6 @@ def test_a_given_conductance_in_a_cylinder_converges_at_second_order(method):
             SOURCE * np.pi * A**2, rel=1e-10
         )
     assert convergence_rates(errors).min() > 1.7
-
-
-def test_interface_conditions_are_refused_by_the_distributed_solver():
-    problem = dm.Problem(two_slabs(2, 2, 2, 2), method="fem", distributed=True)
-    problem.add_variable("temperature")
-    problem.add_kernel(
-        "heat_conduction", "conduction", variable="temperature", thermal_conductivity=1.0
-    )
-    problem.add_boundary_condition(
-        "gap_heat_transfer",
-        "gap",
-        variable="temperature",
-        boundary=["primary"],
-        secondary_boundary=["secondary"],
-        gap_conductance=1e4,
-    )
-    with pytest.raises(Exception, match="does not support"):
-        problem.solve()
 
 
 # ---------------------------------------------------------------------------

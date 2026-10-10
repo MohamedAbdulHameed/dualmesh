@@ -184,9 +184,9 @@ in which the convergence theory of every method is stated,
 
 .. math::
 
-   \lVert e \rVert_{L^2} = \Bigl( \int_\Omega e^2 \, dV \Bigr)^{1/2} ,
+   \lVert e \rVert_{L^2} = \Bigl( \int_\Omega e^2 \,\mathrm{d}V \Bigr)^{1/2} ,
    \qquad
-   \lvert e \rvert_{H^1} = \Bigl( \int_\Omega \lvert \nabla e \rvert^2 \, dV \Bigr)^{1/2} ,
+   \lvert e \rvert_{H^1} = \Bigl( \int_\Omega \lvert \nabla e \rvert^2 \,\mathrm{d}V \Bigr)^{1/2} ,
 
 where :math:`u_h` is the field each method represents: the element
 interpolation of the nodal values for the node-based methods, and the linear

@@ -10,14 +10,7 @@
 // which is the rank that stores the node's degrees of freedom in the global
 // vectors.
 //
-// Three partitioners are available.  "recursive_coordinate_bisection" is
-// geometric: it repeatedly splits the set of element centroids in half along
-// its longest axis.  It is fast, deterministic, and needs no connectivity, but
-// it cuts more faces than necessary on unstructured meshes.  "graph" grows
-// each part outward from a seed element through the face connectivity, which
-// respects the actual mesh topology.  "metis" calls the METIS library on the
-// dual graph of the mesh, which is what libMesh (and therefore MOOSE) uses;
-// it is available only when the library was built with METIS.
+// The partitioners are PETSc's (PetscPartitioner): PT-Scotch and ParMETIS divide the graph of the elements that share a face so as to cut few faces, and "simple" takes contiguous blocks of elements.
 #pragma once
 
 #include "dualmesh/mesh/Mesh.h"
@@ -50,16 +43,13 @@ struct MeshPartition
   std::pair<Index, Index> partSizes() const;
 };
 
-/// Partition @p mesh into @p num_parts parts.
-/// @param method "recursive_coordinate_bisection" (the default), "graph", or
-///        "metis"; "metis" falls back to "graph" with a warning when the
-///        library was built without METIS.
-MeshPartition partitionMesh(const Mesh & mesh,
-                            int num_parts,
-                            const std::string & method = "recursive_coordinate_bisection");
+/// Partition @p mesh into @p num_parts parts with a partitioner of PETSc: "ptscotch" (PT-Scotch), "parmetis" (ParMETIS), "simple" (contiguous blocks of elements), or "automatic" (PT-Scotch, else ParMETIS).
+/// It needs a build with PETSc.
+MeshPartition
+partitionMesh(const Mesh & mesh, int num_parts, const std::string & method = "automatic");
 
-/// Whether the library was built against METIS.
-bool haveMetis();
+/// The partitioners of this build: none without PETSc.
+std::vector<std::string> availablePartitioners();
 
 /// The element adjacency (dual) graph: for every element, the elements that
 /// share a whole face with it.

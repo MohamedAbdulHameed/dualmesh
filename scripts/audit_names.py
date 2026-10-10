@@ -95,7 +95,8 @@ FORBIDDEN_WORDS = {
     "materials": "properties",
 }
 
-UNICODE = re.compile(r"[°²³µ×‐-―←-⇿∀-⋿Ͱ-Ͽ]")
+# Unit symbols, dashes and arrows have written forms; Greek letters and mathematical operators (∂, ∇, −, Γ) may appear in an equation printed to the terminal.
+UNICODE = re.compile(r"[°²³µ×‐-―←-⇿]")
 DASH = re.compile(r"\s--\s|—|–")
 
 

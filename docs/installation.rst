@@ -69,21 +69,28 @@ without installing it.
 Optional: MPI and PETSc
 -----------------------
 
-The distributed solver needs MPI, and ``linear_solver="petsc"`` needs PETSc,
-which is itself built on MPI.  Both are switched on at build time.  On Debian
-or Ubuntu the packages are ``libopenmpi-dev`` and ``libpetsc-real-dev``.
-PETSc is located with ``pkg-config``, so a PETSc built from source is found by
-adding ``$PETSC_DIR/$PETSC_ARCH/lib/pkgconfig`` to ``PKG_CONFIG_PATH``.  PETSc
-and dualmesh must use the same MPI.
+The distributed solver needs MPI and PETSc: it communicates through PETSc's
+star forests and solves with PETSc's Krylov methods and preconditioners, so a
+build with MPI always uses PETSc.  A serial build may use PETSc too, for
+``linear_solver="petsc"``.  With conda the packages are ``openmpi`` and
+``petsc`` from conda-forge (PETSc there includes hypre and MUMPS); on Debian or
+Ubuntu they are ``libopenmpi-dev`` and ``libpetsc-real-dev``.  PETSc is located
+with ``pkg-config``, so a PETSc built from source is found by adding
+``$PETSC_DIR/$PETSC_ARCH/lib/pkgconfig`` to ``PKG_CONFIG_PATH``.  PETSc and
+dualmesh must use the same MPI.  conda-forge has no PETSc for Windows, so a
+distributed build on Windows runs under WSL.  A build with MPI also downloads
+gslib, the gather-scatter library of Nek5000 (release 1.0.9, checked against
+its SHA-256 sum), and builds it with ``make`` and the MPI C compiler, so that
+``gather_scatter="gslib"`` is available next to ``gather_scatter="petsc"``;
+``-DDUALMESH_ENABLE_GSLIB=OFF`` leaves it out.
 
 .. code-block:: console
 
-   pip install -C cmake.define.DUALMESH_ENABLE_MPI=ON \
-               -C cmake.define.DUALMESH_ENABLE_PETSC=ON .[all]
+   pip install -C cmake.define.DUALMESH_ENABLE_MPI=ON .[all]
    python -c "import dualmesh as dm; print(dm.have_mpi(), dm.have_petsc(), dm.petsc_version())"
 
-or, for the C++ library alone, ``-DDUALMESH_ENABLE_MPI=ON
--DDUALMESH_ENABLE_PETSC=ON`` on the ``cmake`` command line.
+or, for the C++ library alone, ``-DDUALMESH_ENABLE_MPI=ON`` on the ``cmake``
+command line.  A serial build with PETSc adds ``-DDUALMESH_ENABLE_PETSC=ON``.
 
 Running the tests
 -----------------

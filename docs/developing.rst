@@ -203,8 +203,8 @@ Testing
 Style
 -----
 
-C++ follows the MOOSE conventions (two-space indentation, ``_member``
-variables, ``camelCase`` functions, ``PascalCase`` types), and Python follows
+C++ uses two-space indentation, ``_member`` variables, ``camelCase``
+functions and ``PascalCase`` types, and Python follows
 PEP 8 with descriptive, unabbreviated parameter names.  ``.clang-format`` and
 the ``ruff`` configuration in ``pyproject.toml`` encode both.
 Formatting is checked in continuous integration by clang-format **18** (the

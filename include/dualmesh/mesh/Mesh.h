@@ -170,7 +170,7 @@ private:
   mutable std::vector<char> _boundary_nodes;
 };
 
-// ---- mesh generators (MOOSE "GeneratedMesh" equivalents) -------------------
+// ---- mesh generators -------------------------------------------------------
 
 /// 1D mesh through the given, increasing node coordinates.
 /// Side sets: "left", "right".

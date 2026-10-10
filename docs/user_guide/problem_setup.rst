@@ -79,7 +79,7 @@ cell, which makes it exact for a quadratic normal profile and noticeably more
 accurate on a coarse mesh.  The two are compared in
 :doc:`/theory/finite_volume`.
 
-``distributed``, ``partitioner`` and ``overlap`` concern a problem split among
+``distributed`` and ``partitioner`` concern a problem split among
 MPI processes.  A script run with ``mpirun -n 4 python script.py`` splits the
 problem among the four processes, and the same script runs serially with
 ``python script.py`` (see :doc:`/theory/parallel`).
@@ -273,8 +273,8 @@ The four kinds of object
 ------------------------
 
 Everything else about a problem is added as a named, registered *object* with
-validated parameters, a design taken from MOOSE [MOOSE2025]_ [MOOSE2020]_.
-There are four kinds, and they differ in the part of the residual to which they
+validated parameters.
+There are six kinds, and they differ in the part of the residual to which they
 contribute.
 
 A **kernel** contributes a volume term.  Every equation is written in the
@@ -314,6 +314,31 @@ carries the dependence through into the Jacobian without additional code.
 
 A **nodal load** applies a concentrated force or flux at a single node,
 identified either by node number or by the coordinates of the nearest node.
+
+A **constraint** joins degrees of freedom.  ``periodic_boundary_condition``
+makes the field on a secondary boundary equal to the field on a primary
+boundary, carried over by a translation:
+
+.. code-block:: python
+
+   problem.add_boundary_condition(
+       "periodic_boundary_condition", "periodic_x", primary="left", secondary="right"
+   )
+
+Every node :math:`s` of the secondary boundary is joined to the node :math:`p`
+of the primary boundary at :math:`\mathbf{x}_s - \mathbf{t}`, where
+:math:`\mathbf{t}` is the translation (by default the vector between the
+centroids of the two boundaries, or the ``translation`` given).  The two act as
+one unknown: the equation of :math:`s` is added to that of :math:`p`, so that
+the control domain of the joined node is the union of the two half domains,
+and the Jacobian becomes :math:`P^{\mathsf{T}} J P`, where :math:`P` maps the
+unknowns onto the nodes and keeps a symmetric matrix symmetric.  A corner of a
+domain periodic in two directions is joined to a single primary node.  The two
+boundaries must match node by node after the translation, and a value
+prescribed on a secondary node must also be prescribed on its primary.  The
+condition works with ``fem``, ``hfvm`` and ``dmcdm``, serially and on any
+number of processes; on a manufactured solution periodic in one direction and
+in two, every method converges at second order.
 
 .. code-block:: python
 

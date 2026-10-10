@@ -124,8 +124,8 @@ applying the divergence theorem gives the discrete equation of that node:
 .. math::
    :label: dmcdm
 
-   R_I = -\oint_{\partial CD_I} \mathbf{F}\cdot\mathbf{n} \, \mathrm{d}S
-         + \int_{CD_I} S \, \mathrm{d}V = 0 .
+   R_I = -\oint_{\partial \Omega_I} \mathbf{F}\cdot\mathbf{n} \, \mathrm{d}S
+         + \int_{\Omega_I} S \, \mathrm{d}V = 0 .
 
 There is no weight function: the balance law is enforced exactly as it is
 written, which is the finite volume idea.  The fluxes and the sources are
@@ -150,7 +150,7 @@ a bilinear form.  The element loop serves only to visit the sub-cells.
 Boundary control domains and secondary variables
 ------------------------------------------------
 
-Part of the boundary :math:`\partial CD_I` of a boundary node's control domain
+Part of the boundary :math:`\partial \Omega_I` of a boundary node's control domain
 lies on :math:`\partial\Omega`.  Two cases arise.
 
 *Natural (Neumann, Robin) boundary:* the secondary variable is known, so
@@ -166,9 +166,9 @@ variable, i.e., the *reaction*
 
 .. math::
 
-   Q_I = \int_{\partial CD_I \cap \partial\Omega} q_n \, \mathrm{d}S
-       = -\oint_{\partial CD_I \setminus \partial\Omega} \mathbf{F}\cdot\mathbf{n}\,\mathrm{d}S
-         + \int_{CD_I} S\,\mathrm{d}V ,
+   Q_I = \int_{\partial \Omega_I \cap \partial\Omega} q_n \, \mathrm{d}S
+       = -\oint_{\partial \Omega_I \setminus \partial\Omega} \mathbf{F}\cdot\mathbf{n}\,\mathrm{d}S
+         + \int_{\Omega_I} S\,\mathrm{d}V ,
 
 which :meth:`dualmesh.Problem.reactions` returns node by node and
 :meth:`dualmesh.Problem.total_reaction` returns summed over a boundary.  This

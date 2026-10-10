@@ -350,6 +350,8 @@ NodalLoad::initialSetup(Problem & problem)
     double bd = std::numeric_limits<double>::infinity();
     for (Index n = 0; n < problem.numEntities(); ++n)
     {
+      if (!problem.integratedEntity(n))
+        continue;
       const double d = norm(problem.entityPoint(n) - p);
       if (d < bd)
       {
@@ -513,6 +515,8 @@ categoryName(ObjectCategory c)
     return "nodal_load";
   case ObjectCategory::Property:
     return "property";
+  case ObjectCategory::Constraint:
+    return "constraint";
   }
   return "Unknown";
 }

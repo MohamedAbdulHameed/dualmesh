@@ -199,4 +199,22 @@ private:
   std::vector<int> _ids;
 };
 
+/// Periodic boundary condition: every node of the secondary boundary is the node of the primary boundary that a translation maps it onto.
+class PeriodicBC : public Constraint
+{
+public:
+  explicit PeriodicBC(const InputParameters & p);
+  static InputParameters validParams();
+  void initialSetup(Problem & problem) override;
+
+  std::string primaryBoundary() const { return _params.getString("primary"); }
+  std::string secondaryBoundary() const { return _params.getString("secondary"); }
+  /// The periodic variables: every variable of @p problem unless the parameter variables names some.
+  std::vector<int> periodicVariables(const Problem & problem) const;
+  /// For every point of @p secondary, the index of the point of @p primary that the translation maps it onto.
+  /// The translation is the parameter, or else the vector between the centroids of the two point sets; a point without a match is an InputError.
+  std::vector<Index> match(const std::vector<Point> & primary,
+                           const std::vector<Point> & secondary) const;
+};
+
 } // namespace dualmesh

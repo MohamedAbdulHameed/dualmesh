@@ -392,19 +392,6 @@ Solvers
    "Generalized nested dissection", *SIAM Journal on Numerical Analysis*,
    16(2):346–358, 1979.  DOI: 10.1137/0716027.
 
-.. [Nicolaides1987] R. A. Nicolaides, "Deflation of conjugate gradients with
-   applications to boundary value problems", *SIAM Journal on Numerical
-   Analysis*, 24(2):355–365, 1987.  DOI: 10.1137/0724027.  The coarse space
-   of one constant per subdomain used by the two-level Schwarz
-   preconditioner.
-
-.. [Tang2009] J. M. Tang, R. Nabben, C. Vuik and Y. A. Erlangga, "Comparison
-   of two-level preconditioners derived from deflation, domain decomposition
-   and multigrid methods", *Journal of Scientific Computing*, 39(3):340–370,
-   2009.  DOI: 10.1007/s10915-009-9272-6.  Their operator A-DEF1,
-   :math:`M^{-1}P + Q`, is how the two levels of the Schwarz preconditioner
-   are combined.
-
 .. [Demmel1999] J. W. Demmel, S. C. Eisenstat, J. R. Gilbert, X. S. Li and
    J. W. H. Liu, "A supernodal approach to sparse partial pivoting", *SIAM
    Journal on Matrix Analysis and Applications*, 20(3):720–755, 1999.
@@ -415,30 +402,19 @@ Solvers
 .. [CaiSarkis1999] X.-C. Cai and M. Sarkis, "A restricted additive Schwarz
    preconditioner for general sparse linear systems", *SIAM Journal on
    Scientific Computing*, 21(2):792–797, 1999.
-   DOI: 10.1137/S106482759732678X.  The subdomain preconditioner of the
-   distributed solver.
-
-.. [DryjaWidlund1994] M. Dryja and O. B. Widlund, "Domain decomposition
-   algorithms with small overlap", *SIAM Journal on Scientific Computing*,
-   15(3):604–620, 1994.  DOI: 10.1137/0915040.  The two-level additive Schwarz
-   method with a coarse space.
-
-.. [ToselliWidlund2005] A. Toselli and O. Widlund, *Domain Decomposition
-   Methods: Algorithms and Theory*, Springer Series in Computational
-   Mathematics, volume 34, Springer, Berlin, 2005, ISBN 978-3-540-20696-5.
-   DOI: 10.1007/b137868.  The analysis that explains why a coarse level is
-   needed for the iteration count to stay bounded as ranks are added.
+   DOI: 10.1137/S106482759732678X.  Restricted additive Schwarz, one of
+   PETSc's preconditioners (``-pc_type asm``).
 
 .. [KarypisKumar1998] G. Karypis and V. Kumar, "A fast and high quality
    multilevel scheme for partitioning irregular graphs", *SIAM Journal on
    Scientific Computing*, 20(1):359–392, 1998.
-   DOI: 10.1137/S1064827595287997.  METIS partitions the mesh when the library
-   is available at build time.
+   DOI: 10.1137/S1064827595287997.  The multilevel algorithm of METIS, which
+   ParMETIS, one of PETSc's partitioners, carries out in parallel.
 
-.. [BergerBokhari1987] M. J. Berger and S. H. Bokhari, "A partitioning strategy
-   for nonuniform problems on multiprocessors", *IEEE Transactions on
-   Computers*, C-36(5):570–580, 1987.  DOI: 10.1109/TC.1987.1676942.  Recursive
-   coordinate bisection, the built-in partitioner used when METIS is absent.
+.. [Chevalier2008] C. Chevalier and F. Pellegrini, "PT-Scotch: a tool for
+   efficient parallel graph ordering", *Parallel Computing*, 34(6–8):318–331,
+   2008.  DOI: 10.1016/j.parco.2007.12.001.  PT-Scotch, the default partitioner
+   of the distributed solver, through PETSc.
 
 Time integration and adaptivity
 -------------------------------
@@ -650,6 +626,41 @@ Software that dualmesh builds on, or learns from
 .. [Eigen] G. Guennebaud, B. Jacob and others, *Eigen*, 2010,
    https://libeigen.gitlab.io.  The linear algebra library.
 
+.. [gslib] *gslib: Gather-scatter library*, release 1.0.9, 2024,
+   https://github.com/Nek5000/gslib.  The gather-scatter of Nek5000 and nekRS,
+   one of the two gather-scatter libraries of the distributed solver.
+
+.. [Erturk2005] E. Erturk, T. C. Corke and C. Gokcol, "Numerical solutions of
+   2-D steady incompressible driven cavity flow at high Reynolds numbers",
+   International Journal for Numerical Methods in Fluids 48 (2005) 747-774.
+   DOI: 10.1002/fld.953.  Read in the version of arXiv:cs/0411047; Tables 6
+   and 7 give the centerline velocities used in :doc:`benchmarks/cavity`.
+
+.. [SchaeferTurek1996] M. Schäfer, S. Turek, F. Durst, E. Krause and
+   R. Rannacher, "Benchmark computations of laminar flow around a cylinder", in
+   E. H. Hirschel (ed.), *Flow Simulation with High-Performance Computers II*,
+   Notes on Numerical Fluid Mechanics 52, Vieweg, 1996, pp. 547-566.
+   DOI: 10.1007/978-3-322-89849-4_39.  The reference values of the benchmarks
+   2D-1 and 2D-2 used in :doc:`benchmarks/dfg_steady` and
+   :doc:`benchmarks/dfg_unsteady` are those of the FEATFLOW benchmark pages,
+   https://wwwold.mathematik.tu-dortmund.de/~featflow/en/benchmarks/cfdbenchmarking/flow.html.
+
+.. [Kovasznay1948] L. I. G. Kovasznay, "Laminar flow behind a two-dimensional
+   grid", Mathematical Proceedings of the Cambridge Philosophical Society 44
+   (1948) 58-62.  DOI: 10.1017/S0305004100023999.
+
+.. [Fischer1998] P. F. Fischer, "Projection techniques for iterative solution of
+   Ax = b with successive right-hand sides", Computer Methods in Applied
+   Mechanics and Engineering 163 (1998) 193-204.
+   DOI: 10.1016/S0045-7825(98)00012-7.
+
+.. [Fischer2021] P. Fischer, S. Kerkemeier, M. Min, Y.-H. Lan, M. Phillips,
+   T. Rathnayake, E. Merzari, A. Tomboulides, A. Karakus, N. Chalmers and
+   T. Warburton, "NekRS, a GPU-accelerated spectral element Navier-Stokes
+   solver", arXiv:2104.05829, 2021.  DOI: 10.48550/arXiv.2104.05829.  Section
+   3.2 describes gslib and its choice between pairwise exchanges, a crystal
+   router and an all-reduce.
+
 .. [pybind11] W. Jakob, J. Rhinelander and D. Moldovan, *pybind11: Seamless
    operability between C++11 and Python*, 2017,
    https://github.com/pybind/pybind11.  The citation the project asks for in
@@ -674,13 +685,6 @@ Software that dualmesh builds on, or learns from
    and property objects with validated and self-documenting parameters, assembled
    into one monolithic and fully coupled system with an automatically
    differentiated Jacobian.
-
-.. [MOOSE2020] C. J. Permann, D. R. Gaston, D. Andrš, R. W. Carlsen, F. Kong,
-   A. D. Lindsay, J. M. Miller, J. W. Peterson, A. E. Slaughter, R. H. Stogner
-   and R. C. Martineau, "MOOSE: enabling massively parallel multiphysics
-   simulation", *SoftwareX*, 11:100430, 2020.
-   DOI: 10.1016/j.softx.2020.100430.  The previous framework paper, which
-   [MOOSE2025]_ supersedes.
 
 .. [MOOSE2009] D. Gaston, C. Newman, G. Hansen and D. Lebrun-Grandié, "MOOSE: a
    parallel computational framework for coupled systems of nonlinear

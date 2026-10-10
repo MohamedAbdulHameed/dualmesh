@@ -62,6 +62,10 @@ class Output:
     fields: Sequence[str] | None = parameter(
         None, description="Variables that the files contain. Default None: all the variables."
     )
+    checkpoint_interval: int | None = parameter(
+        None,
+        description="A transient study writes a checkpoint every this many accepted steps, and after its last step, to the file of the name with the extension .chk (one file, replaced each time), from which solve_transient(restart=...) continues the run on any number of processes. Default None: no checkpoint.",
+    )
     formats: Sequence[str] = parameter(
         ("vtu",),
         description="File formats: vtu (a VTK unstructured grid, for ParaView and VisIt) and csv (one row for each node or cell, with the units in the header). Default vtu, which keeps the mesh with the fields.",
@@ -74,6 +78,13 @@ class Output:
             )
         if self.interval is not None and not self.interval > 0.0:
             raise InputError(f"Output: interval must be positive, not {self.interval}.")
+        if self.checkpoint_interval is not None and (
+            int(self.checkpoint_interval) != self.checkpoint_interval
+            or self.checkpoint_interval < 1
+        ):
+            raise InputError(
+                f"Output: checkpoint_interval is a number of steps, a positive integer, not {self.checkpoint_interval}."
+            )
         if self.times is not None:
             times = np.asarray(self.times, dtype=float).ravel()
             if times.size == 0 or np.any(np.diff(times) <= 0.0):

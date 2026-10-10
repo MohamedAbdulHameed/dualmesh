@@ -2,7 +2,8 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # A branch ci/<name> runs the whole CI without a pull request.
+    branches: [main, "ci/**"]
   pull_request:
   workflow_dispatch:
 
@@ -37,10 +38,14 @@ jobs:
   mpi:
     name: MPI (1, 2, 3 and 4 processes)
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        # On failure, the end of the output becomes an annotation that can be read without signing in.
+        shell: bash .github/scripts/run-step.sh {0}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - name: Install MPI and METIS
-        run: sudo apt-get update && sudo apt-get install -y libopenmpi-dev openmpi-bin libmetis-dev libeigen3-dev
+      - name: Install MPI and PETSc
+        run: sudo apt-get update && sudo apt-get install -y libopenmpi-dev openmpi-bin libpetsc-real-dev pkg-config libeigen3-dev
       - name: Configure
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DDUALMESH_BUILD_PYTHON=OFF -DDUALMESH_ENABLE_MPI=ON
       - name: Build
@@ -54,15 +59,19 @@ jobs:
   petsc:
     name: PETSc and MPI (Python, 1 to 4 processes)
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        # On failure, the end of the output becomes an annotation that can be read without signing in.
+        shell: bash .github/scripts/run-step.sh {0}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
-      - name: Install PETSc, MPI and METIS
+      - name: Install PETSc and MPI
         run: |
           sudo apt-get update
-          sudo apt-get install -y libpetsc-real-dev libopenmpi-dev openmpi-bin libmetis-dev libeigen3-dev pkg-config
+          sudo apt-get install -y libpetsc-real-dev libopenmpi-dev openmpi-bin libeigen3-dev pkg-config
       - name: Install dualmesh with MPI and PETSc
         run: |
           pip install -C cmake.define.DUALMESH_ENABLE_MPI=ON -C cmake.define.DUALMESH_ENABLE_PETSC=ON .[all,test]
@@ -83,6 +92,10 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
         python-version: ["3.9", "3.11", "3.12"]
+    defaults:
+      run:
+        # On failure, the end of the output becomes an annotation that can be read without signing in.
+        shell: bash .github/scripts/run-step.sh {0}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
@@ -150,6 +163,10 @@ jobs:
   sanitizers:
     name: AddressSanitizer and UndefinedBehaviorSanitizer
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        # On failure, the end of the output becomes an annotation that can be read without signing in.
+        shell: bash .github/scripts/run-step.sh {0}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
@@ -174,6 +191,10 @@ jobs:
   coverage:
     name: Coverage of the C++ and the Python code
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        # On failure, the end of the output becomes an annotation that can be read without signing in.
+        shell: bash .github/scripts/run-step.sh {0}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
@@ -201,11 +222,22 @@ jobs:
   clang-tidy:
     name: clang-tidy
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        # On failure, the end of the output becomes an annotation that can be read without signing in.
+        shell: bash .github/scripts/run-step.sh {0}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - name: Install clang-tidy and Eigen
-        run: sudo apt-get update && sudo apt-get install -y clang-tidy libeigen3-dev
+      - name: Install clang-tidy, Eigen and clang's OpenMP headers
+        run: sudo apt-get update && sudo apt-get install -y clang-tidy libeigen3-dev libomp-dev
       - name: Configure
         run: cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DDUALMESH_BUILD_PYTHON=OFF
       - name: clang-tidy on the library
-        run: run-clang-tidy -p build -quiet "src/.*\.cpp"
+        run: |
+          status=0
+          run-clang-tidy -p build -quiet "src/.*\.cpp" > tidy.log 2>&1 || status=$?
+          cat tidy.log
+          # The errors, then the number of warnings of each check, at the end of the output, where the annotation of a failure shows them.
+          grep -E "error: " tidy.log | sort -u | head -40 || true
+          grep -oE "warning: .*\[[a-z0-9.-]+\]$" tidy.log | sort -u | grep -oE "\[[a-z0-9.-]+\]$" | sort | uniq -c | sort -rn || true
+          exit $status

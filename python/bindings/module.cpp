@@ -16,7 +16,11 @@
 #include "dualmesh/materials/Gases.h"
 #include "dualmesh/mesh/Adapt.h"
 #include "dualmesh/modules/Framework.h"
+#include "dualmesh/modules/Projection.h"
+#include "dualmesh/parallel/Checkpoint.h"
 #include "dualmesh/parallel/DistributedProblem.h"
+#include "dualmesh/parallel/GatherScatter.h"
+#include "dualmesh/parallel/Partition.h"
 
 #include <array>
 #include <cstdio>
@@ -967,6 +971,7 @@ PYBIND11_MODULE(_core, m)
       .def_readwrite("output_file_base", &TransientOptions::output_file_base)
       .def_readwrite("output_fields", &TransientOptions::output_fields)
       .def_readwrite("time_stepper", &TransientOptions::time_stepper)
+      .def_readwrite("courant_number", &TransientOptions::courant_number)
       .def_readwrite("dt_min", &TransientOptions::dt_min)
       .def_readwrite("dt_max", &TransientOptions::dt_max)
       .def_readwrite("growth_factor", &TransientOptions::growth_factor)
@@ -974,7 +979,21 @@ PYBIND11_MODULE(_core, m)
       .def_readwrite("error_tolerance", &TransientOptions::error_tolerance)
       .def_readwrite("optimal_iterations", &TransientOptions::optimal_iterations)
       .def_readwrite("iteration_window", &TransientOptions::iteration_window)
-      .def_readwrite("max_rejected_steps", &TransientOptions::max_rejected_steps);
+      .def_readwrite("max_rejected_steps", &TransientOptions::max_rejected_steps)
+      .def_readwrite("checkpoint_file", &TransientOptions::checkpoint_file)
+      .def_readwrite("checkpoint_interval", &TransientOptions::checkpoint_interval)
+      .def_readwrite("restart_file", &TransientOptions::restart_file);
+  m.def(
+      "checkpoint_time",
+      [](const std::string & file, bool distributed)
+      {
+        const auto point = checkpointTime(file, distributed);
+        return py::make_tuple(point.time, point.dt, point.step);
+      },
+      py::arg("file"),
+      py::arg("distributed"),
+      "The time, the step size and the number of steps that a checkpoint records.");
+  m.def("have_checkpoints", &checkpointsAvailable, "Whether this build writes checkpoints.");
 
   py::class_<IterationRecord>(m, "IterationRecord")
       .def_readonly("load_step", &IterationRecord::load_step)
@@ -1058,8 +1077,10 @@ PYBIND11_MODULE(_core, m)
 
   // ---- parallel ----------------------------------------------------------
   m.def("have_mpi", &Communicator::haveMpi, "Whether the extension was built with MPI support.");
-  m.def("have_metis", &haveMetis, "Whether the extension was built against METIS.");
   m.def("have_petsc", &petsc::available, "Whether the extension was built with PETSc.");
+  m.def("have_gslib",
+        &GatherScatter::haveGslib,
+        "Whether the extension was built with gslib, the gather-scatter of Nek5000.");
   m.def("petsc_version", &petsc::version, "PETSc's version, or an empty string without PETSc.");
   m.def("finalize_mpi",
         &Communicator::finalize,
@@ -1069,6 +1090,22 @@ PYBIND11_MODULE(_core, m)
       "mpi_rank",
       []() { return Communicator::world().rank(); },
       "This process's rank, or 0 in a serial run.");
+  m.def(
+      "mpi_sum",
+      [](std::vector<double> values)
+      {
+        Communicator::world().sumInPlace(values);
+        return values;
+      },
+      "The elementwise sum over all processes of a list of numbers.");
+  m.def(
+      "mpi_max",
+      [](double value) { return Communicator::world().max(value); },
+      "The largest value over all processes.");
+  m.def(
+      "mpi_min",
+      [](double value) { return Communicator::world().min(value); },
+      "The smallest value over all processes.");
   m.def(
       "mpi_size",
       []() { return Communicator::world().size(); },
@@ -1089,7 +1126,10 @@ PYBIND11_MODULE(_core, m)
       },
       py::arg("mesh"),
       py::arg("num_parts"),
-      py::arg("method") = "recursive_coordinate_bisection");
+      py::arg("method") = "automatic");
+  m.def("available_partitioners",
+        &availablePartitioners,
+        "The partitioners of this build: none without PETSc.");
   m.def(
       "sub_mesh",
       [](std::shared_ptr<Mesh> mesh, const std::vector<Index> & elements)
@@ -1104,11 +1144,8 @@ PYBIND11_MODULE(_core, m)
   py::class_<DistributedOptions>(m, "DistributedOptions")
       .def(py::init<>())
       .def_readwrite("partitioner", &DistributedOptions::partitioner)
-      .def_readwrite("linear_solver", &DistributedOptions::linear_solver)
+      .def_readwrite("gather_scatter", &DistributedOptions::gather_scatter)
       .def_readwrite("petsc_options", &DistributedOptions::petsc_options)
-      .def_readwrite("preconditioner", &DistributedOptions::preconditioner)
-      .def_readwrite("overlap", &DistributedOptions::overlap)
-      .def_readwrite("subdomain_solver", &DistributedOptions::subdomain_solver)
       .def_readwrite("linear_tolerance", &DistributedOptions::linear_tolerance)
       .def_readwrite("linear_max_iterations", &DistributedOptions::linear_max_iterations)
       .def_readwrite("verbose", &DistributedOptions::verbose);
@@ -1144,12 +1181,63 @@ PYBIND11_MODULE(_core, m)
            py::arg("transient"),
            py::arg("options") = SolverOptions{})
       .def("gathered_values", &DistributedProblem::gatheredValues, py::arg("variable"))
+      .def("total_reaction",
+           &DistributedProblem::totalReaction,
+           py::arg("variable"),
+           py::arg("boundary"))
       .def("write_vtu",
            &DistributedProblem::writeVTU,
            py::arg("base"),
            py::arg("cell_properties") = std::vector<std::string>{},
            py::arg("fields") = std::vector<std::string>{})
       .def("summary", &DistributedProblem::summary);
+
+  // ---- the projection time integration of a flow -------------------------
+  py::class_<ProjectionSettings>(m, "ProjectionSettings")
+      .def(py::init<>())
+      .def_readwrite("velocities", &ProjectionSettings::velocities)
+      .def_readwrite("pressure", &ProjectionSettings::pressure)
+      .def_readwrite("density", &ProjectionSettings::density)
+      .def_readwrite("dynamic_viscosity", &ProjectionSettings::dynamic_viscosity)
+      .def_readwrite("order", &ProjectionSettings::order)
+      .def_readwrite("own_objects", &ProjectionSettings::own_objects)
+      .def_readwrite("pressure_solver", &ProjectionSettings::pressure_solver)
+      .def_readwrite("velocity_solver", &ProjectionSettings::velocity_solver)
+      .def_readwrite("pressure_tolerance", &ProjectionSettings::pressure_tolerance)
+      .def_readwrite("velocity_tolerance", &ProjectionSettings::velocity_tolerance)
+      .def(
+          "set_body_force",
+          [](ProjectionSettings & s, const std::vector<py::object> & force)
+          {
+            s.body_force.clear();
+            for (const auto & f : force)
+              s.body_force.push_back(f.is_none() ? nullptr : toFunction(f));
+          },
+          py::arg("force"));
+  py::class_<ProjectionSolver, std::shared_ptr<ProjectionSolver>>(m, "ProjectionSolver")
+      .def("last_pressure_iterations", &ProjectionSolver::lastPressureIterations)
+      .def("last_velocity_iterations", &ProjectionSolver::lastVelocityIterations)
+      .def_static(
+          "coefficients",
+          [](const std::vector<double> & times)
+          {
+            std::vector<double> beta, alpha;
+            ProjectionSolver::coefficients(times, beta, alpha);
+            return py::make_tuple(beta, alpha);
+          },
+          py::arg("times"));
+  m.def(
+      "attach_projection",
+      [](Problem & problem, DistributedProblem * distributed, const ProjectionSettings & settings)
+      {
+        auto solver = std::make_shared<ProjectionSolver>(problem, distributed, settings);
+        problem.setTimeIntegrator(solver);
+        return solver;
+      },
+      py::arg("problem"),
+      py::arg("distributed"),
+      py::arg("settings"),
+      "Advance the transient solves of @p problem with the projection time integration of a flow.");
 
   // ---- problem -----------------------------------------------------------
   py::class_<Problem::StateSnapshot>(m, "StateSnapshot");

@@ -12,8 +12,8 @@ option(DUALMESH_BUILD_PYTHON "Build the Python extension module" ON)
 option(DUALMESH_BUILD_TESTS "Build the C++ unit tests" ON)
 option(DUALMESH_ENABLE_OPENMP "Thread the assembly loops with OpenMP" ON)
 option(DUALMESH_ENABLE_MPI "Build the distributed (MPI) solver" OFF)
-option(DUALMESH_ENABLE_METIS "Use METIS for mesh partitioning when available" ON)
-option(DUALMESH_ENABLE_PETSC "Use PETSc for linear solves (linear_solver='petsc')" OFF)
+option(DUALMESH_ENABLE_PETSC "Use PETSc for linear solves (linear_solver='petsc'); always on with MPI" OFF)
+option(DUALMESH_ENABLE_GSLIB "With MPI, build gslib (Nek5000's gather-scatter) as a second gather-scatter next to PETSc's" ON)
 # Automatic differentiation seeds one derivative slot per local degree of
 # freedom of an element (one per node and variable; the corners only for a
 # first-order variable), so the default of 96 covers, for example, Quad9 with
@@ -69,20 +69,15 @@ if(DUALMESH_ENABLE_OPENMP)
   endif()
 endif()
 
-# METIS gives better partitions than the built-in geometric partitioner for
-# unstructured meshes.  It is what libMesh, and therefore MOOSE, uses.
-if(DUALMESH_ENABLE_METIS)
-  find_path(METIS_INCLUDE_DIR metis.h)
-  find_library(METIS_LIBRARY NAMES metis)
-  if(METIS_INCLUDE_DIR AND METIS_LIBRARY)
-    message(STATUS "METIS found: ${METIS_LIBRARY}")
-  else()
-    message(STATUS "METIS not found; using the built-in mesh partitioners")
-  endif()
-endif()
 
 if(DUALMESH_ENABLE_MPI)
   find_package(MPI COMPONENTS CXX REQUIRED)
+  if(DUALMESH_ENABLE_GSLIB)
+    enable_language(C)
+    find_package(MPI COMPONENTS C REQUIRED)
+  endif()
+  # The distributed solver communicates through PETSc (its star forests) and solves with PETSc's Krylov methods and preconditioners, so an MPI build needs PETSc.
+  set(DUALMESH_ENABLE_PETSC ON CACHE BOOL "" FORCE)
 endif()
 
 # PETSc is found with pkg-config, which every PETSc installation provides
@@ -93,6 +88,28 @@ if(DUALMESH_ENABLE_PETSC)
   find_package(PkgConfig REQUIRED)
   pkg_check_modules(PETSC REQUIRED IMPORTED_TARGET PETSc)
   message(STATUS "PETSc found: ${PETSC_VERSION}")
+endif()
+
+# gslib, the gather-scatter library of Nek5000 (BSD license with the DOE notice), is downloaded at a pinned release and built with its own Makefile.
+# It is compiled as C99 and reached through the C file src/parallel/GslibShim.c, because its headers redefine inline and restrict outside C99.
+if(DUALMESH_ENABLE_MPI AND DUALMESH_ENABLE_GSLIB)
+  include(ExternalProject)
+  set(GSLIB_PREFIX ${CMAKE_BINARY_DIR}/_deps/gslib)
+  ExternalProject_Add(
+    gslib_external
+    URL https://github.com/Nek5000/gslib/archive/refs/tags/v1.0.9.tar.gz
+    URL_HASH SHA256=572c78b1ca4ddda75ec85c6299ee0597459f4dbf5170b9faa6de4c435dcdc80b
+    PREFIX ${GSLIB_PREFIX}
+    BUILD_IN_SOURCE 1
+    CONFIGURE_COMMAND ""
+    BUILD_COMMAND make CC=${MPI_C_COMPILER} MPI=1 NBC=1 "CFLAGS=-O2 -fPIC" DESTDIR=${GSLIB_PREFIX}/install install
+    INSTALL_COMMAND ""
+    BUILD_BYPRODUCTS ${GSLIB_PREFIX}/install/lib/libgs.a)
+  file(MAKE_DIRECTORY ${GSLIB_PREFIX}/install/include)
+  add_library(gslib STATIC IMPORTED)
+  set_target_properties(gslib PROPERTIES IMPORTED_LOCATION ${GSLIB_PREFIX}/install/lib/libgs.a
+                                         INTERFACE_INCLUDE_DIRECTORIES ${GSLIB_PREFIX}/install/include)
+  add_dependencies(gslib gslib_external)
 endif()
 
 # ---- core library ------------------------------------------------------------
@@ -111,11 +128,6 @@ endif()
 if(DUALMESH_ENABLE_OPENMP AND OpenMP_CXX_FOUND)
   target_link_libraries(dualmesh_core PUBLIC OpenMP::OpenMP_CXX)
 endif()
-if(DUALMESH_ENABLE_METIS AND METIS_INCLUDE_DIR AND METIS_LIBRARY)
-  target_include_directories(dualmesh_core PRIVATE ${METIS_INCLUDE_DIR})
-  target_link_libraries(dualmesh_core PRIVATE ${METIS_LIBRARY})
-  target_compile_definitions(dualmesh_core PRIVATE DUALMESH_HAVE_METIS)
-endif()
 if(DUALMESH_ENABLE_MPI)
   target_link_libraries(dualmesh_core PUBLIC MPI::MPI_CXX)
   target_compile_definitions(dualmesh_core PUBLIC DUALMESH_HAVE_MPI)
@@ -123,6 +135,12 @@ endif()
 if(DUALMESH_ENABLE_PETSC)
   target_link_libraries(dualmesh_core PUBLIC PkgConfig::PETSC)
   target_compile_definitions(dualmesh_core PUBLIC DUALMESH_HAVE_PETSC)
+endif()
+if(DUALMESH_ENABLE_MPI AND DUALMESH_ENABLE_GSLIB)
+  target_sources(dualmesh_core PRIVATE ${PROJECT_SOURCE_DIR}/src/parallel/GslibShim.c)
+  set_source_files_properties(${PROJECT_SOURCE_DIR}/src/parallel/GslibShim.c PROPERTIES LANGUAGE C)
+  target_link_libraries(dualmesh_core PRIVATE gslib MPI::MPI_C)
+  target_compile_definitions(dualmesh_core PRIVATE DUALMESH_HAVE_GSLIB)
 endif()
 
 # ---- tests ---------------------------------------------------------------------

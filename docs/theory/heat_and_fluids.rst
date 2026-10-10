@@ -281,9 +281,9 @@ convective term :math:`(\mathbf{v} \cdot \nabla) \mathbf{v}`, which accounts for
 a particle being carried into a region where the velocity differs.  On the right
 stands the divergence of the Cauchy stress, split into the pressure and the
 viscous stress :math:`\mu (\nabla \mathbf{v} + \nabla \mathbf{v}^{\mathsf{T}})`
-of a Newtonian fluid, together with the body force.  The module treats steady
-flow, so :math:`\partial \mathbf{v} / \partial t` is dropped.  A transient flow
-would add the generic ``time_derivative`` kernel to each momentum equation.  The
+of a Newtonian fluid, together with the body force.  A steady solve drops
+:math:`\partial \mathbf{v} / \partial t`, and a transient solve keeps it (see
+`Transient flow`_ below).  The
 ratio of the convective to the viscous term defines the Reynolds number
 :math:`Re = \rho V L / \mu` for a problem of characteristic speed :math:`V` and
 length :math:`L`.
@@ -653,10 +653,10 @@ The exact solution makes :math:`\mathbf{r}_m` equal to the viscous force
 velocity field, so the added term is (almost) consistent.  For the Galerkin
 finite element method, integrating :math:`\nabla \psi \cdot \mathbf{F}` over
 the domain gives the mass equation plus
-:math:`\int \tau \nabla \psi \cdot \mathbf{r}_m\, d\Omega`, which is exactly
+:math:`\int \tau \nabla \psi \cdot \mathbf{r}_m\,\mathrm{d}\Omega`, which is exactly
 the pressure-stabilising Petrov-Galerkin (PSPG) method of
 [HughesFrancaBalestra1986]_.  Its pressure-gradient part,
-:math:`\int \tau \nabla \psi \cdot \nabla p\, d\Omega`, is a small pressure
+:math:`\int \tau \nabla \psi \cdot \nabla p\,\mathrm{d}\Omega`, is a small pressure
 Laplacian that removes the checkerboard mode.  For the control volume methods
 the same flux is integrated over the faces of each control volume, and the
 face mass flux becomes the interpolated velocity corrected by
@@ -925,7 +925,7 @@ The mass equation requires the flow through the boundary.
 and the ``incompressible_flow`` physics places it on every side set.  For the finite
 element method this reproduces the boundary term of PSPG exactly.  Summing the
 mass equations of all control volumes gives
-:math:`\oint \mathbf{v}_h \cdot \mathbf{n}\, ds = 0`, so the discrete flow
+:math:`\oint \mathbf{v}_h \cdot \mathbf{n}\,\mathrm{d}s = 0`, so the discrete flow
 conserves mass globally, whatever the stabilisation.
 
 An enclosed flow, with a velocity condition on every boundary, determines the
@@ -933,7 +933,7 @@ pressure only up to a constant.  ``pressure_pin_point`` fixes it with a
 ``point_Dirichlet_boundary_condition``, which replaces the mass equation of the
 entity nearest to a point.  That mass equation is then dropped, and the pinned
 entity becomes the only place where a net boundary flux
-:math:`\oint \mathbf{v}_h \cdot \mathbf{n}\, ds \neq 0` can be accommodated.
+:math:`\oint \mathbf{v}_h \cdot \mathbf{n}\,\mathrm{d}s \neq 0` can be accommodated.
 With walls and a sliding lid the discrete net flux is zero and the pin
 introduces no error.  With prescribed velocities that cross the boundary,
 however, the nodal interpolant of the data carries a net flux of order
@@ -1008,6 +1008,175 @@ with the buoyancy in the stabilisation, the Nusselt number and velocity maxima
 on the :math:`32 \times 32` graded mesh are within 2 % of [DeVahlDavis1983]_ for
 the node methods up to :math:`Ra = 10^6`, and within 3.6 % for the cell-centred
 method.  Newton's method converges quadratically for all four methods.
+
+Transient flow
+--------------
+
+A transient solve keeps the inertia :math:`\rho\, \partial \mathbf{v} / \partial t`
+of :eq:`momentum`, which ``incompressible_flow`` adds to every momentum equation
+when the density is positive, and advances the flow in one of two ways, chosen by
+``time_integration``.
+
+``"monolithic"``, the default, applies the theta method of ``solve_transient`` to
+the whole system: every step solves the velocity and the pressure together by
+Newton's method, as a steady solve does.  It is the robust choice for strongly
+coupled problems and for large steps, at the price of a non-symmetric saddle point
+system at every step.
+
+``"projection"`` is the splitting of Nek5000 and nekRS [Fischer2021]_, which
+replaces the saddle point system by symmetric positive definite problems, each
+with its own fast solver.  With the kinematic pressure :math:`P = p / \rho` and
+the kinematic viscosity :math:`\nu = \mu / \rho`, the step to the time
+:math:`t^n` collects the known terms in
+
+.. math::
+
+   \mathbf{u}^* = -\sum_{j=1}^{k} \left[ \beta_j \mathbf{v}^{n-j}
+     + \Delta t\, \alpha_j (\mathbf{v}^{n-j} \cdot \nabla) \mathbf{v}^{n-j} \right]
+     + \frac{\Delta t}{\rho} \mathbf{f}^n ,
+
+where :math:`\beta_0, \dots, \beta_k` are the coefficients of the backward
+difference of order :math:`k` (BDF\ :math:`k`) and :math:`\alpha_1, \dots,
+\alpha_k` those of the extrapolation of the same order (EXT\ :math:`k`) of the
+advection, with :math:`k` the ``time_order``.  The coefficients are computed from
+the time levels themselves, as the derivative and the value at :math:`t^n` of
+Lagrange polynomials, so that a step shortened to land on an output time keeps
+the order.  The momentum equation at :math:`t^n` then reads
+
+.. math::
+
+   \frac{\beta_0}{\Delta t} \mathbf{v}^n = \frac{\mathbf{u}^*}{\Delta t}
+     - \nabla P^n + \nu \nabla^2 \mathbf{v}^n .
+
+**The pressure.**  Testing this equation with the gradient of a pressure test
+function :math:`q`, and writing the viscous term of a divergence-free velocity as
+:math:`\nu \nabla^2 \mathbf{v} = -\nu \nabla \times \boldsymbol{\omega}`, with the
+vorticity :math:`\boldsymbol{\omega} = \nabla \times \mathbf{v}` extrapolated from
+the steps before, gives the pressure equation
+
+.. math::
+
+   (\nabla q, \nabla P^n) = \frac{1}{\Delta t} (\nabla q, \mathbf{u}^*)
+     - \frac{\beta_0}{\Delta t} \int_{\Gamma} q\, \mathbf{n} \cdot \mathbf{v}_b \,\mathrm{d}\Gamma
+     - \nu \int_{\Gamma} \mathbf{n} \cdot (\boldsymbol{\omega} \times \nabla q) \,\mathrm{d}\Gamma ,
+
+where :math:`\mathbf{v}_b` is the velocity on the boundary, the prescribed one
+where it is prescribed.  The first boundary term is
+:math:`(\beta_0 / \Delta t)(\nabla q, \mathbf{v}^n)` of the divergence-free
+velocity.  The second is the curl-curl form of the viscous term, which
+[Fischer2021]_ keeps to control the divergence error at the boundary, written as
+an integral over the boundary by
+:math:`(\nabla q, \nabla \times \boldsymbol{\omega}) = \int_\Gamma \mathbf{n} \cdot
+(\boldsymbol{\omega} \times \nabla q) \,\mathrm{d}\Gamma`, which holds because
+:math:`\nabla \cdot (\boldsymbol{\omega} \times \nabla q) = \nabla q \cdot \nabla
+\times \boldsymbol{\omega}`.  In this form it needs only the first derivatives of
+the velocity, so it applies to linear elements, whose second derivatives vanish.
+Without it the velocity of the vortex below converges at about first order, and
+with it at second order.  An enclosed flow, with no prescribed pressure, has its pressure fixed at
+one node, after the right-hand side is made to sum to zero.
+
+**The velocity.**  Each component then solves the Helmholtz equation
+
+.. math::
+
+   \nu (\nabla w, \nabla v_i^n) + \frac{\beta_0}{\Delta t} (w, v_i^n)
+     = \frac{1}{\Delta t} (w, u^*_i) - \left(w, \frac{\partial P^n}{\partial x_i}\right) ,
+
+with the prescribed velocity on its boundary and the natural condition
+:math:`\nu\, \partial v_i / \partial n = 0` where the velocity is free and the
+pressure is prescribed (an outflow).
+
+**The three node methods.**  The equations above are written with test
+functions.  The finite element method takes the shape functions.  The dual mesh
+control domain method and the vertex-centered finite volume method take the
+indicator of the control domain :math:`\Omega_I` of each node, so that
+:math:`(w, f)` becomes :math:`\int_{\Omega_I} f \,\mathrm{d}V` and
+:math:`(\nabla q, \mathbf{F})` becomes
+:math:`-\oint_{\partial \Omega_I} \mathbf{F} \cdot \mathbf{n} \,\mathrm{d}S` over
+the interfaces between control domains, as in the assembly of these methods.  The
+mass and gradient terms are then integrals over the control domains, the
+Laplacian is the flux of the gradient out of them, and
+:math:`(\nabla q, \mathbf{u}^*)` is the flux of :math:`\mathbf{u}^*`.  The
+vertex-centered method takes the gradient on an interface from the difference
+along the edge between its two nodes, as its assembly does.  The curl-curl term
+keeps the form above with the shape functions: on linear elements, where the
+vorticity is constant in each element, it equals the integral of
+:math:`\mathbf{n} \cdot \nabla \times \boldsymbol{\omega}` over the part of the
+boundary of each control domain.  The methods of the dual mesh integrate with
+the midpoint rule of every part of a control domain and of every interface,
+which is second order like the methods themselves: two points per direction give
+the same errors at 2.4 times the cost.
+
+**Equal-order elements at small steps.**  The term
+:math:`(\nabla q, \mathbf{u}^*) / \Delta t` contains the divergence of the
+velocities of the steps before, weighted by :math:`\beta_0 / \Delta t`, so the
+splitting acts on the pressure as the stabilization of the pressure-velocity
+formulation would, with the parameter :math:`\Delta t / \beta_0`.  That parameter
+vanishes with the step, and equal-order elements, which are not inf-sup stable,
+then lose their pressure stability: on the vortex below, the pressure error grows
+from :math:`2.3 \times 10^{-2}` at :math:`\Delta t = 0.1` to
+:math:`9.0 \times 10^{-2}` at :math:`\Delta t = 0.002` on the same mesh.  The weight
+is therefore capped at :math:`1 / \tau`, with the parameter :math:`\tau` of
+Tezduyar [Tezduyar1991]_ that the pressure-velocity formulation uses, without its
+unsteady term.  Where :math:`\Delta t / \beta_0` exceeds :math:`\tau` the scheme
+is that of [Fischer2021]_, and as :math:`\Delta t` goes to zero it tends to the
+stabilized discretization of the monolithic solver.  The capped term multiplies a
+divergence, so it does not change the exact solution, and the errors of the
+vortex stay at :math:`1.3 \times 10^{-2}` (velocity) and
+:math:`1.7 \times 10^{-2}` (pressure) for every step from 0.1 to 0.002.
+
+**The solvers.**  The mass, stiffness and gradient matrices and the geometry of
+every quadrature point are computed once, as Nek5000 keeps its geometric
+factors, and the right-hand sides are assembled at every step on several
+threads.  The pressure equation is solved with algebraic multigrid (hypre
+BoomerAMG), starting from the combination of the earlier pressures (kept as up
+to eight directions) that is closest to the solution, the projection-based
+initial guess of [Fischer2021]_, introduced in [Fischer1998]_.  Each Helmholtz
+equation is solved with a Jacobi preconditioner.  The matrices of the finite
+element method are symmetric: their Krylov method is the conjugate gradient
+method, and the closest combination is that in the energy norm.  Those of the
+dual mesh are not symmetric in general: their Krylov method is GMRES, and the
+closest combination is that of the smallest residual.  The matrices and the preconditioners are kept as long as
+:math:`\beta_0 / \Delta t` is unchanged.  The ``"cfl"`` stepper of
+``solve_transient`` chooses each step to keep the Courant number
+:math:`\Delta t \max_e |\mathbf{v}| / h_e` at ``courant_number``, 0.5 by default,
+the value [Fischer2021]_ uses with BDF3 and EXT3.
+
+**Verification.**  ``tests/python/test_projection.py`` and
+``dualmesh_parallel_tests`` check the following for the finite element, dual
+mesh control domain and vertex-centered finite volume methods.
+
+* The decaying Taylor-Green vortex,
+  :math:`\mathbf{v} = (-\cos x \sin y, \sin x \cos y)\, e^{-2 \nu t}`, with its
+  velocity prescribed on the walls of :math:`[0, 2\pi]^2`, :math:`\nu = 0.1`, BDF2
+  and :math:`\Delta t \propto h`: the largest velocity error at :math:`t = 0.5`
+  falls as :math:`6.2 \times 10^{-2}`, :math:`1.3 \times 10^{-2}`,
+  :math:`3.0 \times 10^{-3}` and :math:`7.3 \times 10^{-4}` on
+  :math:`8^2` to :math:`64^2` ``Quad4`` elements with the finite element method,
+  :math:`7.6 \times 10^{-2}` to :math:`1.1 \times 10^{-3}` with the other two,
+  all at second order, and at second order on ``Tri3`` elements as well, where
+  the dual mesh control domain and vertex-centered methods coincide (the edge
+  difference of a linear triangle is its interpolated gradient).  In a periodic
+  box the velocity converges at second order or faster (about third on these
+  uniform grids) and the pressure at second order.
+* The stagnation flow :math:`\mathbf{v} = g(t)\,(x, -y)`, whose linear velocity
+  and quadratic pressure ``Quad9`` elements represent exactly, so that its error
+  is that of the time integration alone: the pressure converges at orders 0.96,
+  2.03 and 2.87 with BDF1, BDF2 and BDF3, with every method.  On the vortex with
+  ``Quad9`` elements and the finite element method
+  the velocity converges at first order with BDF1 and at second order with BDF2
+  and BDF3, whose first steps take the orders below it.
+* The distributed runs give the serial velocity, and the pressure up to its
+  constant, to :math:`10^{-11}` on one to four processes, with walls and in a
+  periodic box.
+
+On the periodic vortex of :math:`256^2` ``Quad4`` elements at a Courant number
+of one half (``dualmesh_benchmark projection``), each step takes one iteration of
+the pressure solve, four without the projection of the earlier pressures, and two
+of each velocity solve, with every method.  A step of the finite element method
+takes 0.030, 0.016 and 0.010 s on one, two and four processes of a laptop, and a
+step of the dual mesh control domain or vertex-centered method 0.041 s on one,
+because it evaluates the flow at the control domains and at their interfaces.
 
 Verification of the fluids module
 ---------------------------------

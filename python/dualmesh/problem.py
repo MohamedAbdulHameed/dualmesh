@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import difflib
+import os
 import re
 import time
 from collections.abc import Iterable, Sequence
@@ -158,15 +159,8 @@ def _solver_options(**kwargs) -> _core.SolverOptions:
     return options
 
 
-#: The options of the linear solver of a distributed problem.
-_DISTRIBUTED_LINEAR = (
-    "linear_solver",
-    "preconditioner",
-    "subdomain_solver",
-    "linear_tolerance",
-    "linear_max_iterations",
-    "petsc_options",
-)
+#: PETSc's options for linear_solver="lu" in a distributed problem: the parallel direct solver.
+_DISTRIBUTED_LU = "-ksp_type preonly -pc_type lu -pc_factor_mat_solver_type mumps"
 
 
 def _distributed_options(options: dict):
@@ -174,13 +168,24 @@ def _distributed_options(options: dict):
     solver settings and the options of the nonlinear solver."""
     linear = _core.DistributedOptions()
     rest = dict(options)
+    # The serial solvers' own settings have no meaning for PETSc, which takes its settings from petsc_options.
+    for name in ("preconditioner", "gmres_restart", "amg_strength_threshold"):
+        if name in rest:
+            raise ValueError(
+                f"{name} is a setting of the serial linear solvers. "
+                'PETSc solves a distributed problem, and its Krylov method and preconditioner are given with petsc_options, for example petsc_options="-ksp_type gmres -pc_type gamg".'
+            )
     solver = rest.pop("linear_solver", "automatic")
-    linear.linear_solver = "bicgstab" if solver == "automatic" else solver
-    linear.preconditioner = rest.pop("preconditioner", "two_level_schwarz")
-    linear.subdomain_solver = rest.pop("subdomain_solver", "ilu")
+    petsc = petsc_option_string(rest.pop("petsc_options", None))
+    if solver == "lu":
+        petsc = _DISTRIBUTED_LU
+    elif solver not in ("automatic", "petsc"):
+        raise ValueError(
+            f"A distributed problem takes linear_solver 'automatic', 'petsc' or 'lu', not '{solver}'."
+        )
+    linear.petsc_options = petsc
     linear.linear_tolerance = float(rest.pop("linear_tolerance", 1e-10))
     linear.linear_max_iterations = int(rest.pop("linear_max_iterations", 5000))
-    linear.petsc_options = petsc_option_string(rest.pop("petsc_options", None))
     linear.verbose = bool(rest.get("_progress", False))
     return linear, rest
 
@@ -220,18 +225,17 @@ class Problem:
         as well, which gives the serial answer.  In a distributed problem
         every process defines the same physics and objects, each assembles
         the elements of its own part of the mesh, and :meth:`solve` takes the
-        distributed linear solvers (see :meth:`solve`).
+        distributed linear solvers (see :meth:`solve`).  Every method runs
+        distributed; for ``"zfvm"`` each part also holds two layers of the
+        cells of the other parts.
     partitioner:
-        How a distributed problem splits the mesh: ``"graph"`` (the default,
-        parts grown through the face connectivity), ``"metis"`` (METIS, when
-        the extension has it) or ``"recursive_coordinate_bisection"``.  See
-        :func:`dualmesh.partition_mesh`.
-    overlap:
-        Layers of elements by which each Schwarz subdomain of a distributed
-        problem reaches into its neighbours.  Default 1, which halves the
-        iteration count of the non-overlapping subdomains on the Poisson
-        problem.  More overlap lowers the iteration count and raises the cost
-        of each subdomain solve.
+        The partitioner of PETSc that splits the elements of a distributed problem among the processes: ``"automatic"`` (the default: PT-Scotch, else ParMETIS), ``"ptscotch"``, ``"parmetis"`` or ``"simple"``.
+        See :func:`dualmesh.partition_mesh`.
+    gather_scatter:
+        The library that exchanges, between the processes of a distributed problem, the values at the nodes that several of them hold.
+        ``"petsc"`` (the default) is PETSc's star forests, which also carry PETSc's own vectors and matrices.
+        ``"gslib"`` is the gather-scatter library of Nek5000, which at setup times pairwise exchanges, a crystal router and an all-reduce and keeps the fastest for the mesh at hand (:func:`dualmesh.have_gslib`).
+        The answer is the same with either; the time per exchange may differ, mostly on many processes.
     """
 
     def __init__(
@@ -241,8 +245,8 @@ class Problem:
         coordinates: str = "cartesian",
         boundary_gradient: str = "first_order",
         distributed: bool | None = None,
-        partitioner: str = "graph",
-        overlap: int = 1,
+        partitioner: str = "automatic",
+        gather_scatter: str = "petsc",
     ):
         if distributed is None:
             distributed = _core.mpi_size() > 1
@@ -250,7 +254,7 @@ class Problem:
         if distributed:
             options = _core.DistributedOptions()
             options.partitioner = partitioner
-            options.overlap = overlap
+            options.gather_scatter = gather_scatter
             self._distributed = _core.DistributedProblem(mesh, method, coordinates, options)
             self._problem = self._distributed.local()
             self._global_mesh = mesh
@@ -296,6 +300,7 @@ class Problem:
 
         self._postprocessors = PostprocessorHistory()
         self._user_step_callback = None
+        self._extra_step_callback = None
         self._domain_volume = None
 
     @property
@@ -405,6 +410,10 @@ class Problem:
         Several conditions on one boundary need different names and an
         explicit ``boundary``."""
         if isinstance(condition, str):
+            category = _core.object_category(condition)
+            # A constraint names its boundaries itself (primary and secondary).
+            if category == "constraint":
+                return self._problem.add_object(condition, name or "", **parameters)
             if "boundary" not in parameters and name:
                 mesh = self._mesh
                 known = set(mesh.sideset_names()) | set(mesh.nodeset_names())
@@ -416,7 +425,6 @@ class Problem:
                     raise ValueError(
                         f"Boundary condition '{name}': give 'boundary', or name the condition after a boundary of the mesh ({', '.join(sorted(known)) or 'none'})."
                     )
-            category = _core.object_category(condition)
             if category == "nodal_boundary_condition":
                 return self._problem.add_object(condition, name or "", **parameters)
             if category == "boundary_condition":
@@ -563,17 +571,13 @@ class Problem:
         while the matrix does not change.
 
         In a distributed problem (see the parameter ``distributed`` of the
-        class) the linear systems are solved by distributed Krylov methods:
-        ``linear_solver`` is ``"bicgstab"`` (the default for any matrix),
-        ``"cg"`` (symmetric positive definite matrices) or ``"petsc"`` (PETSc's
-        solvers, with ``petsc_options``), and ``preconditioner`` is
-        ``"two_level_schwarz"`` (the default: restricted additive Schwarz on
-        overlapping subdomains with a coarse level of one unknown per
-        subdomain and variable, whose iteration count does not grow with the
-        number of processes), ``"additive_schwarz"`` (without the coarse
-        level) or ``"jacobi"``.  ``subdomain_solver`` is ``"ilu"`` (the
-        default) or ``"lu"`` for the subdomain problems.  :doc:`/theory/parallel`
-        gives the method and the iteration counts.
+        class) the linear systems are solved by PETSc.  ``linear_solver`` is
+        ``"automatic"`` (the default: GMRES with algebraic multigrid, hypre
+        BoomerAMG, and the parallel direct solver MUMPS when multigrid fails or
+        the system has a zero pressure block), ``"lu"`` (MUMPS) or
+        ``"petsc"`` (the Krylov method and preconditioner given by
+        ``petsc_options``).  :doc:`/theory/parallel` gives the method and the
+        iteration counts.
         """
         level = report_level(report, "Problem.solve")
         output = self._check_output(output, steady=True)
@@ -679,6 +683,7 @@ class Problem:
         output=None,
         report: str = "full",
         time_stepper: str = "fixed",
+        courant_number: float = 0.5,
         min_time_step: float = 0.0,
         max_time_step: float = 0.0,
         growth_factor: float = 2.0,
@@ -687,6 +692,7 @@ class Problem:
         optimal_iterations: int = 4,
         iteration_window: int = 2,
         max_rejected_steps: int = 10,
+        restart: str | None = None,
         **options,
     ) -> SolveResult:
         r"""March the solution forward in time with the theta method.
@@ -750,6 +756,18 @@ class Problem:
             step that failed to converge is discarded and retried.  It costs
             nothing beyond the solve and suits a problem whose difficulty lies
             in the nonlinearity.
+
+            ``"cfl"`` keeps the Courant number of a flow advanced by the
+            projection time integration (``time_integration="projection"`` of
+            ``incompressible_flow``) at ``courant_number``: each step is the one
+            that gives that Courant number at the velocity of the step before,
+            grown by at most ``growth_factor``, as Nek5000 and nekRS choose their
+            steps.
+        courant_number:
+            The Courant number the ``"cfl"`` stepper aims for,
+            :math:`\Delta t \max_e |\mathbf{u}| / h_e` over the nodes of every
+            element.  Default 0.5, the value Nek5000 and nekRS use with BDF3 and
+            EXT3.
         min_time_step, max_time_step:
             Bounds on the step.  A run that has to go below ``min_time_step``
             is reported as a failure.  Zero means ``time_step`` divided by one
@@ -766,6 +784,9 @@ class Problem:
         max_rejected_steps:
             How many times in a row a step may be rejected before the run is
             declared a failure.
+        restart:
+            A checkpoint (the ``.chk`` file of an :class:`~dualmesh.Output` group with ``checkpoint_interval``) to continue from: the run starts at its time, with its step size, its solution, the history of its material and the history of its post-processors, on any number of processes.
+            ``start_time`` stays the start of the original run, so that the output times and the file numbers continue those of the original run.
         **options:
             Passed to the nonlinear solver of every step (see :meth:`solve`).
 
@@ -782,6 +803,7 @@ class Problem:
         transient.dt = time_step
         transient.theta = implicitness
         transient.time_stepper = time_stepper
+        transient.courant_number = courant_number
         transient.dt_min = min_time_step
         transient.dt_max = max_time_step
         transient.growth_factor = growth_factor
@@ -812,11 +834,46 @@ class Problem:
                 self._problem.set_output_callback(
                     lambda index: files.extend(self._write_fields(csv_output, index))
                 )
+        # A restart continues the run of its checkpoint: its time, its state and the history of its post-processors.
+        first_step = 0
+        if restart is not None:
+            if not _core.have_checkpoints():
+                raise InputError(
+                    "A restart reads a checkpoint, which needs a build with PETSc (MPI, or -DDUALMESH_ENABLE_PETSC=ON)."
+                )
+            restart = str(restart)
+            _, _, first_step = _core.checkpoint_time(restart, self._distributed is not None)
+            transient.restart_file = restart
+            history = restart + ".postprocessors.json"
+            if self._postprocessors.postprocessors and os.path.exists(history):
+                self._postprocessors.load_json(history)
+        checkpoint = None
+        if output is not None and output.checkpoint_interval:
+            if not _core.have_checkpoints():
+                raise InputError(
+                    "Output: checkpoints need a build with PETSc (MPI, or -DDUALMESH_ENABLE_PETSC=ON)."
+                )
+            checkpoint = output.path(".chk")
+            transient.checkpoint_file = checkpoint
+            transient.checkpoint_interval = int(output.checkpoint_interval)
         self._report_start(level, "transient solve")
         start = time.perf_counter()
-        if self._postprocessors.postprocessors:
+        if self._postprocessors.postprocessors and restart is None:
             self.time = start_time
             self._postprocessors.evaluate(self, start_time)
+        if checkpoint is not None and self._postprocessors.postprocessors:
+            # The history of the post-processors goes beside each checkpoint, at the same steps.
+            steps = [first_step]
+            interval = int(output.checkpoint_interval)
+            tolerance = 1e-12 * abs(end_time - start_time)
+
+            def save_history(t, core_problem):
+                steps[0] += 1
+                if (steps[0] % interval == 0 or t >= end_time - tolerance) and self.rank == 0:
+                    self._postprocessors.write_json(checkpoint + ".postprocessors.json")
+
+            self._extra_step_callback = save_history
+            self._install_step_callback()
         options["_progress"] = level == "full"
         try:
             if self._distributed is not None:
@@ -828,6 +885,9 @@ class Problem:
         finally:
             if csv_output is not None:
                 self._problem.set_output_callback(None)
+            if self._extra_step_callback is not None:
+                self._extra_step_callback = None
+                self._install_step_callback()
         if output is not None and "vtu" in output.formats:
             extension = "pvtu" if self._distributed is not None and self.num_ranks > 1 else "vtu"
             files.append(output.write_collection(transient.output_times, extension))
@@ -882,6 +942,7 @@ class Problem:
 
     def _install_step_callback(self) -> None:
         user = self._user_step_callback
+        extra = self._extra_step_callback
         if not self._postprocessors.postprocessors:
             if user is not None:
                 self._problem.set_time_step_callback(user)
@@ -889,6 +950,8 @@ class Problem:
 
         def step(time, core_problem):
             self._postprocessors.evaluate(self, time)
+            if extra is not None:
+                extra(time, core_problem)
             if user is not None:
                 user(time, core_problem)
 
@@ -903,10 +966,6 @@ class Problem:
         :mod:`dualmesh.postprocessors`)."""
         from .postprocessors import create
 
-        if self._distributed is not None:
-            raise ValueError(
-                "Post-processors are not available in a distributed problem yet. Compute the quantity from gathered_values, or run the problem on one process."
-            )
         pp = create(postprocessor_type, name, **parameters)
         self._postprocessors.add(pp)
         self._install_step_callback()
@@ -922,17 +981,20 @@ class Problem:
 
     def write_postprocessor_csv(self, filename: str) -> None:
         """Write the post-processors' history to a CSV file, one row per
-        evaluation, with a header row of names."""
-        self._postprocessors.write_csv(filename)
+        evaluation, with a header row of names.  In a distributed problem the first process writes it."""
+        if self.rank == 0:
+            self._postprocessors.write_csv(filename)
 
     def domain_volume(self) -> float:
         """The volume (area, length) of the domain, with the coordinate factor
         of the problem (2 pi r for axisymmetric, 4 pi r^2 for spherical)."""
         if self._domain_volume is None:
-            probe = Problem(self._mesh, method="fem", coordinates=self.coordinates)
+            probe = Problem(
+                self._mesh, method="fem", coordinates=self.coordinates, distributed=False
+            )
             probe.add_variable("one")
             probe.set_values("one", np.ones(len(probe.entity_points())))
-            self._domain_volume = float(probe.integrate("one"))
+            self._domain_volume = self._sum(float(probe.integrate("one")))
         return self._domain_volume
 
     # ---- results ---------------------------------------------------------
@@ -1003,14 +1065,41 @@ class Problem:
 
     def total_reaction(self, variable: str, boundary: str) -> float:
         """Sum of the secondary variables over a boundary."""
+        if self._distributed is not None:
+            return self._distributed.total_reaction(variable, boundary)
         return self._problem.total_reaction(variable, boundary)
+
+    def nodal_extreme(self, variable: str, kind: str = "max") -> float:
+        """The largest (``kind="max"``) or smallest (``"min"``) nodal value of a variable, over every process."""
+        values = np.asarray(self.values(variable))
+        if kind == "max":
+            local = float(values.max()) if values.size else -np.inf
+            return _core.mpi_max(local) if self._distributed is not None else local
+        local = float(values.min()) if values.size else np.inf
+        return _core.mpi_min(local) if self._distributed is not None else local
+
+    def _sum(self, value: float) -> float:
+        """The sum of ``value`` over the processes of a distributed problem; ``value`` itself otherwise."""
+        if self._distributed is None:
+            return value
+        return float(_core.mpi_sum([value])[0])
 
     def sample(self, variable: str, points) -> np.ndarray:
         """Interpolate a variable at arbitrary points (NaN outside the mesh)."""
         points = np.atleast_2d(np.asarray(points, dtype=float))
         if points.shape[1] < 3:
             points = np.hstack([points, np.zeros((points.shape[0], 3 - points.shape[1]))])
-        return np.asarray(self._problem.sample(variable, [list(p) for p in points]))
+        values = np.asarray(self._problem.sample(variable, [list(p) for p in points]))
+        if self._distributed is None:
+            return values
+        # Every process interpolates in its own elements; a point on a partition boundary lies in elements of several processes, which give the same value, and the processes average what they found.
+        found = ~np.isnan(values)
+        totals = np.asarray(
+            _core.mpi_sum(list(np.where(found, values, 0.0)) + list(found.astype(float)))
+        )
+        sums, counts = totals[: len(values)], totals[len(values) :]
+        with np.errstate(invalid="ignore", divide="ignore"):
+            return np.where(counts > 0, sums / counts, np.nan)
 
     def values_at_nodes(self, variable: str, nodes: Iterable[int]) -> np.ndarray:
         values = self.values(variable)
@@ -1134,7 +1223,7 @@ class Problem:
     def integrate(self, variable: str) -> float:
         """The integral of a variable over the domain, with the coordinate
         factor of the problem."""
-        return self._problem.integrate(variable)
+        return self._sum(float(self._problem.integrate(variable)))
 
     def element_integrals(self, variable: str) -> np.ndarray:
         """The integral of a variable over every element (one value per
@@ -1148,7 +1237,8 @@ class Problem:
         return np.asarray(self._problem.element_integrals(""), dtype=float)
 
     def boundary_flux_integral(self, kernel_name: str, boundary: str) -> float:
-        return self._problem.boundary_flux_integral(kernel_name, boundary)
+        """The integral of the normal flux of one kernel over a side set."""
+        return self._sum(float(self._problem.boundary_flux_integral(kernel_name, boundary)))
 
     # ---- output ----------------------------------------------------------
     def write_vtu(

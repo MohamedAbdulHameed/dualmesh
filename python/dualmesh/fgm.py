@@ -16,9 +16,9 @@ The stress resultants of a beam of width :math:`b` use
 
 .. math::
 
-    (A_{xx}, B_{xx}, D_{xx}) = b \int_{-h/2}^{h/2} E(z) (1, z, z^2) \, dz ,
+    (A_{xx}, B_{xx}, D_{xx}) = b \int_{-h/2}^{h/2} E(z) (1, z, z^2) \,\mathrm{d}z ,
     \qquad
-    S_{xz} = \frac{K_s}{2(1+\nu)} b \int_{-h/2}^{h/2} E(z) \, dz ,
+    S_{xz} = \frac{K_s}{2(1+\nu)} b \int_{-h/2}^{h/2} E(z) \,\mathrm{d}z ,
 
 with :math:`K_s = 5/6` the shear correction factor of a rectangular section.
 For plates every coefficient is divided by :math:`1 - \nu^2` (plane-stress

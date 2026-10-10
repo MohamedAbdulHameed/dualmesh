@@ -239,7 +239,7 @@ class ManufacturedSolution:
     An enclosed flow with a velocity that crosses the boundary is a poor
     manufactured problem for a stabilised equal-order method: the nodal
     interpolant of the exact velocity carries a net flux
-    :math:`\\oint \\mathbf{u}_h \\cdot \\mathbf{n}\\, ds` of order
+    :math:`\\oint \\mathbf{u}_h \\cdot \\mathbf{n}\\,\\mathrm{d}s` of order
     :math:`h^2`, the one mass equation that the pin replaces is the only
     place where that imbalance can go, and the pressure-Laplacian character
     of the stabilisation, with its coefficient :math:`\\tau \\sim h^2`,

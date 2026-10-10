@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 """Mesh generation and mesh file input/output.
 
-Two ways of getting a mesh, as in MOOSE:
+Two ways of getting a mesh:
 
 * **generate** one with the built-in generators (line, rectangle, box,
   annulus), including graded (non-uniform) spacing;

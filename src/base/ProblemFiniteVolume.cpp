@@ -192,6 +192,9 @@ Problem::assembleCellFiniteVolume(const Vector & U,
     auto & touched = sc.touched;
     auto & ctx = sc.ctx;
     const CellFace & f = cm.faces()[face_index];
+    // In a distributed run another process integrates this face.
+    if (!integratesFace(f))
+      return;
     const bool interior = f.neighbor >= 0;
     const Index other = interior ? f.neighbor : f.boundary_entity;
     const int block = cm.cellBlock(f.owner);
@@ -563,7 +566,7 @@ Problem::assembleCellFiniteVolume(const Vector & U,
   // convergence.  A stencil that would overflow the automatic
   // differentiation budget keeps the gradient lagged.
   std::vector<Index> cell_entities;
-  for (Index c = 0; c < cm.numCells(); ++c)
+  for (Index c = 0; c < numIntegratedElements(); ++c)
   {
     const int block = cm.cellBlock(c);
     cell_entities.assign(1, c);

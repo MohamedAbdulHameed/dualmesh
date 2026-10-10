@@ -3,6 +3,7 @@
 // Residual/Jacobian assembly and the steady and transient executioners.
 #include "dualmesh/base/Console.h"
 #include "dualmesh/base/Problem.h"
+#include "dualmesh/parallel/Checkpoint.h"
 
 #include "dualmesh/linalg/Amg.h"
 #include "dualmesh/linalg/IncompleteLU.h"
@@ -23,6 +24,7 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <numeric>
 #include <set>
 #include <sstream>
 
@@ -410,7 +412,7 @@ Problem::assemble(const Vector & U, const AssemblyOptions & opts, Vector & R, Sp
   {
     ThreadScratch & s = scratch[omp_get_thread_num()];
 #pragma omp for schedule(static)
-    for (Index e = 0; e < _mesh->numElements(); ++e)
+    for (Index e = 0; e < numIntegratedElements(); ++e)
     {
       try
       {
@@ -425,7 +427,7 @@ Problem::assemble(const Vector & U, const AssemblyOptions & opts, Vector & R, Sp
     }
   }
 #else
-  for (Index e = 0; e < _mesh->numElements(); ++e)
+  for (Index e = 0; e < numIntegratedElements(); ++e)
     assembleElement(scratch[0], e);
 #endif
   if (!thread_error.empty())
@@ -721,11 +723,24 @@ Problem::buildInterfacePairs()
     {
       const auto & set = _mesh->sideset(name);
       sides.insert(sides.end(), set.begin(), set.end());
+      // The sides of the ghost elements that a distributed run added for this interface.
       if (cell)
         for (int fi : cellMesh().boundaryFaceIndices(*_mesh, name))
           faces.push_back(fi);
+      const auto ghosts = _interface_candidates.find(name);
+      if (ghosts != _interface_candidates.end())
+        for (const Side & ghost : ghosts->second)
+        {
+          sides.push_back(ghost);
+          if (cell)
+            faces.push_back(cellMesh().faceOfSide(ghost));
+        }
     }
-    if (sides.empty())
+    // Only primary points need a partner: a part of a distributed mesh that holds no primary side has nothing to pair.
+    bool has_primary = false;
+    for (const auto & bname : ib->boundaries())
+      has_primary = has_primary || !_mesh->sideset(bname).empty();
+    if (sides.empty() && has_primary)
       throw InputError("'" + ib->name() + "': the secondary side sets are empty.");
     std::vector<Point> centroids;
     for (const Side & sd : sides)
@@ -794,7 +809,7 @@ Problem::applyDirichlet(Vector & U, double load_factor) const
   }
   // A condition on a first-order variable also wrote the unused slots of the
   // non-corner boundary nodes; restore the linear interpolant there.
-  interpolateFirstOrderVariables(U);
+  updateDependentDofs(U);
 }
 
 std::vector<char>
@@ -807,12 +822,35 @@ Problem::constrainedDofs() const
   for (Index i = 0; i < numDofs(); ++i)
     if (!_active_dof[i])
       fixed[i] = 1;
+  for (std::size_t i = 0; i < _primary_of.size(); ++i)
+    if (_primary_of[i] >= 0)
+      fixed[i] = 1;
+  for (std::size_t i = 0; i < _extra_constrained.size() && i < fixed.size(); ++i)
+    if (_extra_constrained[i])
+      fixed[i] = 1;
   return fixed;
 }
 
 void
 Problem::dirichletRows(const Vector & /*U*/, double /*lf*/, Vector & R, SparseMatrix * J) const
 {
+  // A dependent degree of freedom is its primary: its equation is added to the primary's, and its column too (the Jacobian becomes P^T J P), after which its own row and column are empty and are replaced below by the identity, like a prescribed value.
+  if (!_primary_of.empty())
+  {
+    const auto primary = [&](Index i) { return _primary_of[i] >= 0 ? _primary_of[i] : i; };
+    for (Index i = 0; i < numDofs(); ++i)
+      if (_primary_of[i] >= 0)
+        R[_primary_of[i]] += R[i];
+    if (J)
+    {
+      std::vector<Triplet> folded;
+      folded.reserve(static_cast<std::size_t>(J->nonZeros()));
+      for (Index col = 0; col < J->outerSize(); ++col)
+        for (SparseMatrix::InnerIterator it(*J, col); it; ++it)
+          folded.emplace_back(primary(it.row()), primary(it.col()), it.value());
+      J->setFromTriplets(folded.begin(), folded.end());
+    }
+  }
   const std::vector<char> fixed = constrainedDofs();
   for (Index i = 0; i < numDofs(); ++i)
     if (fixed[i])
@@ -1038,7 +1076,7 @@ Problem::saddlePointBlocks(const SparseMatrix & J) const
   std::vector<MappedPoint> mapped;
   MappedPoint geo;
   QpContext context = probe;
-  for (Index e = 0; e < _mesh->numElements(); ++e)
+  for (Index e = 0; e < numIntegratedElements(); ++e)
   {
     const Element & el = _mesh->element(e);
     if (!constraint->activeOnBlock(el.block))
@@ -1644,6 +1682,7 @@ Problem::nonlinearSolve(const SolverOptions & o, AssemblyOptions base, const Vec
     int linear_before = result.linear_iterations;
     double r0 = -1;
     bool converged = false;
+    bool diverged = false;
     bool have_residual_at_U = false;
     for (int it = 1; it <= o.max_iterations + 1; ++it)
     {
@@ -1660,6 +1699,12 @@ Problem::nonlinearSolve(const SolverOptions & o, AssemblyOptions base, const Vec
         _singularity_checked = true;
       }
       const double rn = R.norm();
+      // An iterate that is no longer finite has diverged; going on would hand the linear solver a matrix of infinities.
+      if (!std::isfinite(rn) || !J.coeffs().allFinite())
+      {
+        diverged = true;
+        break;
+      }
       have_residual_at_U = true;
       if (r0 < 0)
         r0 = rn;
@@ -1690,7 +1735,7 @@ Problem::nonlinearSolve(const SolverOptions & o, AssemblyOptions base, const Vec
         for (int ls = 0; ls <= o.max_line_search_steps; ++ls)
         {
           Vector trial = _U + alpha * delta;
-          interpolateFirstOrderVariables(trial);
+          updateDependentDofs(trial);
           double rt = std::numeric_limits<double>::infinity();
           try
           {
@@ -1729,7 +1774,7 @@ Problem::nonlinearSolve(const SolverOptions & o, AssemblyOptions base, const Vec
       const double un = Unew.norm();
       rec.step_norm = (Unew - _U).norm() / (un > 0 ? un : 1.0);
       _U = Unew;
-      interpolateFirstOrderVariables(_U);
+      updateDependentDofs(_U);
       have_residual_at_U = false;
       result.history.push_back(rec);
       ++result.total_iterations;
@@ -1758,8 +1803,15 @@ Problem::nonlinearSolve(const SolverOptions & o, AssemblyOptions base, const Vec
       if (o.error_on_divergence)
       {
         std::ostringstream os;
-        os << "dualmesh: nonlinear solve did not converge at load factor " << lf << " within "
-           << o.max_iterations << " iterations.";
+        if (diverged)
+          os << "dualmesh: the nonlinear solve stopped at load factor " << lf
+             << ": the residual or the Jacobian has NaN or infinite entries. Either Newton's "
+                "method diverged (take smaller load steps, start from a closer state, or refine "
+                "the mesh), or a property or its derivative is not finite at the current "
+                "solution (for example log(0), 1/0, or x^p with p < 1 at x = 0).";
+        else
+          os << "dualmesh: nonlinear solve did not converge at load factor " << lf << " within "
+             << o.max_iterations << " iterations.";
         throw std::runtime_error(os.str());
       }
       return result;
@@ -1843,7 +1895,9 @@ runTransient(const TransientOptions & tr,
              const std::function<SolveResult(const Vector &, double)> & take_step,
              const std::function<void(int, double)> & on_accept,
              const std::function<void(int)> & write_output,
-             bool verbose_root)
+             bool verbose_root,
+             const std::function<void(int, double)> & after_step,
+             const std::function<double(double)> & courant)
 {
   if (tr.dt <= 0)
     throw InputError("Transient: the time step must be positive.");
@@ -1851,9 +1905,15 @@ runTransient(const TransientOptions & tr,
     throw InputError("Transient: theta must be in [0, 1].");
   const bool error_control = tr.time_stepper == "error";
   const bool iteration_control = tr.time_stepper == "iteration";
-  if (!error_control && !iteration_control && tr.time_stepper != "fixed")
+  const bool courant_control = tr.time_stepper == "cfl";
+  if (!error_control && !iteration_control && !courant_control && tr.time_stepper != "fixed")
     throw InputError("Transient: unknown time stepper '" + tr.time_stepper +
-                     "' (use fixed, error, or iteration).");
+                     "' (use fixed, error, iteration or cfl).");
+  if (courant_control && !courant)
+    throw InputError("Transient: the cfl stepper needs a time integration that measures the "
+                     "Courant number, the projection integration of a flow.");
+  if (courant_control && !(tr.courant_number > 0))
+    throw InputError("Transient: the Courant number of the cfl stepper must be positive.");
   if (tr.growth_factor < 1.0)
     throw InputError("Transient: growth_factor must be at least one.");
   if (tr.cutback_factor <= 0.0 || tr.cutback_factor >= 1.0)
@@ -1886,10 +1946,11 @@ runTransient(const TransientOptions & tr,
     if (!(tr.output_times[k] > tr.output_times[k - 1]))
       throw InputError("Transient: the output times must increase.");
   std::size_t next_output = 0;
+  // An output time before the start belongs to an earlier run (a restart continues one), so only the times at the start are written.
   while (next_output < tr.output_times.size() &&
          tr.output_times[next_output] <= current_time + time_tolerance)
   {
-    if (write_output)
+    if (write_output && tr.output_times[next_output] >= current_time - time_tolerance)
       write_output(static_cast<int>(next_output));
     ++next_output;
   }
@@ -1979,6 +2040,14 @@ runTransient(const TransientOptions & tr,
       accepted = r.converged;
       if (!accepted)
         next_dt = step_size * tr.cutback_factor;
+      else if (courant_control)
+      {
+        // The step that gives the Courant number aimed at, at the velocity just reached.
+        const double reached = courant(step_size);
+        next_dt =
+            reached > 0 ? step_size * tr.courant_number / reached : step_size * tr.growth_factor;
+        next_dt = std::min(next_dt, step_size * tr.growth_factor);
+      }
       else if (iteration_control)
       {
         if (iterations < tr.optimal_iterations - tr.iteration_window)
@@ -2035,19 +2104,40 @@ runTransient(const TransientOptions & tr,
     if (shortened)
       next_dt = std::max(next_dt, dt);
     dt = std::min(std::max(next_dt, dt_min), dt_max);
+    if (after_step)
+      after_step(step, dt);
   }
   total.converged = true;
   return total;
 }
 
 SolveResult
-Problem::solveTransient(const TransientOptions & tr, const SolverOptions & options)
+Problem::solveTransient(const TransientOptions & transient, const SolverOptions & options)
 {
   initialize();
   // The step is retried on failure, so the nonlinear solver must report a
   // failure rather than throw.
   SolverOptions attempt = options;
   attempt.error_on_divergence = false;
+  // One process holds the whole problem, numbered as it is.
+  CheckpointLayout layout;
+  layout.num_global_nodes = numEntities();
+  layout.global_nodes.resize(static_cast<std::size_t>(numEntities()));
+  std::iota(layout.global_nodes.begin(), layout.global_nodes.end(), 0);
+  layout.num_global_elements = _mesh->numElements();
+  layout.global_elements.resize(static_cast<std::size_t>(_mesh->numElements()));
+  std::iota(layout.global_elements.begin(), layout.global_elements.end(), 0);
+  // A restart continues from the time, the step size and the state of its checkpoint.
+  TransientOptions tr = transient;
+  int first_step = 0;
+  if (!tr.restart_file.empty())
+  {
+    const CheckpointTime point = readCheckpoint(tr.restart_file, *this, layout);
+    tr.start_time = point.time;
+    tr.dt = point.dt > 0 ? point.dt : tr.dt;
+    first_step = point.step;
+    _time = point.time;
+  }
   applyDirichlet(_U, 1.0);
   const auto write = [&](int index)
   {
@@ -2065,6 +2155,8 @@ Problem::solveTransient(const TransientOptions & tr, const SolverOptions & optio
   // solution, and from the state its predecessor reached when it continues
   // that predecessor (the second half of a doubled step).
   _state_committed_U = _U;
+  if (_time_integrator)
+    _time_integrator->start(_U, _time);
   return runTransient(
       tr,
       options,
@@ -2072,6 +2164,8 @@ Problem::solveTransient(const TransientOptions & tr, const SolverOptions & optio
       _time,
       [&](const Vector & old, double dt)
       {
+        if (_time_integrator)
+          return _time_integrator->step(_U, old, _time, dt);
         if (hasState())
         {
           const bool from_committed = old.size() == _state_committed_U.size() &&
@@ -2085,16 +2179,28 @@ Problem::solveTransient(const TransientOptions & tr, const SolverOptions & optio
       },
       [&](int step, double)
       {
+        if (_time_integrator)
+          _time_integrator->accept(_U, _time);
         if (hasState())
         {
           commitState();
           _state_committed_U = _U;
         }
-        if (_step_callback)
-          _step_callback(_time, *this);
+        notifyStepAccepted();
       },
       write,
-      true);
+      true,
+      [&](int step, double next_dt)
+      {
+        if (tr.checkpoint_file.empty())
+          return;
+        const bool last = _time >= tr.end_time - 1e-12 * std::abs(tr.end_time - tr.start_time);
+        if ((tr.checkpoint_interval > 0 && step % tr.checkpoint_interval == 0) || last)
+          writeCheckpoint(tr.checkpoint_file, *this, layout, {_time, next_dt, first_step + step});
+      },
+      _time_integrator ? std::function<double(double)>(
+                             [&](double dt) { return _time_integrator->courantNumber(_U, dt); })
+                       : std::function<double(double)>());
 }
 
 } // namespace dualmesh

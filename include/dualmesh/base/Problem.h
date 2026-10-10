@@ -135,6 +135,12 @@ struct TransientOptions
   std::string output_file_base;
   /// The variables that the files contain.  Empty: all the variables.
   std::vector<std::string> output_fields;
+  /// The file of the checkpoint, written every checkpoint_interval accepted steps and after the last step.
+  /// Empty: no checkpoint.
+  std::string checkpoint_file;
+  int checkpoint_interval = 0;
+  /// A checkpoint to continue from: the run starts at its time, with its step size, its solution and the history of its material.
+  std::string restart_file;
 
   // ---- adaptive time stepping --------------------------------------------
   /// How the step size is chosen.
@@ -178,6 +184,9 @@ struct TransientOptions
   int iteration_window = 2;
   /// How many times in a row a step may be rejected before giving up.
   int max_rejected_steps = 10;
+  /// The Courant number the "cfl" stepper aims for: each step is the one that gives this Courant number at the solution of the step before, grown by at most growth_factor.
+  /// The stepper needs a time integration that measures the Courant number (the projection integration of a flow).
+  double courant_number = 0.5;
 };
 
 struct IterationRecord
@@ -231,7 +240,30 @@ SolveResult runTransient(const TransientOptions & transient,
                          const std::function<SolveResult(const Vector &, double)> & take_step,
                          const std::function<void(int, double)> & on_accept,
                          const std::function<void(int)> & write_output,
-                         bool verbose_root = true);
+                         bool verbose_root = true,
+                         const std::function<void(int, double)> & after_step = {},
+                         const std::function<double(double)> & courant = {});
+
+/// A time integration that takes the place of the theta method in a transient solve.
+/// The transient loop stays (the output times, the checkpoints, the callbacks), and the integrator advances the solution by one step.
+class TimeIntegrator
+{
+public:
+  virtual ~TimeIntegrator() = default;
+  /// Called once before the first step, with the solution at the start time.
+  virtual void start(const Vector & solution, double time) = 0;
+  /// Advance @p solution from @p old, the last accepted solution, at time - dt, to @p time.
+  virtual SolveResult step(Vector & solution, const Vector & old, double time, double dt) = 0;
+  /// The step to @p time was accepted with @p solution.
+  virtual void accept(const Vector & solution, double time) = 0;
+  /// The Courant number of a step @p dt at @p solution, on every process alike; zero for an integration that does not measure it.
+  virtual double courantNumber(const Vector & solution, double dt) const
+  {
+    (void) solution;
+    (void) dt;
+    return 0.0;
+  }
+};
 
 class Problem
 {
@@ -254,6 +286,17 @@ public:
   void addIntegratedBC(std::shared_ptr<IntegratedBC> bc);
   void addNodalBC(std::shared_ptr<NodalBC> bc);
   void addNodalLoad(std::shared_ptr<NodalLoad> load);
+  void addConstraint(std::shared_ptr<Constraint> constraint);
+  /// The distributed solver joins the constraints across processes, so the local problem of one process leaves them to it.
+  void setConstraintsHandledOutside(bool outside)
+  {
+    _constraints_outside = outside;
+    _initialized = false;
+  }
+  /// Degrees of freedom to treat as prescribed besides the problem's own: the distributed solver sets the copies of prescribed nodes that only another process knows as prescribed.
+  void setExtraConstrainedDofs(std::vector<char> mask) { _extra_constrained = std::move(mask); }
+  /// The residual from which reactions are read: the distributed solver sets the residual summed over the processes.
+  void setLastResidual(const Vector & R) { _last_residual = R; }
   void addProperty(std::shared_ptr<Property> m);
 
   /// Resolve all objects (idempotent; called automatically by solve()).
@@ -337,9 +380,8 @@ public:
     const int rank = _full_order_rank[var];
     return rank < 0 ? -1 : corners * numVariables() + (node - corners) * _num_full_order + rank;
   }
-  /// Set the unused slots of every first-order variable (the non-corner nodes
-  /// of quadratic elements) to the linear interpolant of the corner values.
-  void interpolateFirstOrderVariables(Vector & U) const;
+  /// Set every degree of freedom that is not an unknown of its own: the unused slots of every first-order variable (the non-corner nodes of quadratic elements) to the linear interpolant of the corner values, and every degree of freedom that a constraint makes dependent to the value of its primary.
+  void updateDependentDofs(Vector & U) const;
 
   /// The blocks of the pressure mass matrix Schur preconditioner for the
   /// linear system with matrix @p jacobian (see SaddlePointSolver.h): the
@@ -377,6 +419,9 @@ public:
   /// The concentrated loads of the problem, needed by the distributed solver
   /// to decide which process applies a load given by coordinates.
   const std::vector<std::shared_ptr<NodalLoad>> & nodalLoads() const { return _loads; }
+  const std::vector<std::shared_ptr<Constraint>> & constraints() const { return _constraints; }
+  /// The primary of every degree of freedom that a constraint makes dependent, and -1 for every other one; empty when the problem has no constraint.
+  const std::vector<Index> & primaryDofs() const { return _primary_of; }
   const std::vector<std::shared_ptr<NodalBC>> & nodalBCs() const { return _nbcs; }
   std::vector<std::string> objectNames() const;
   double time() const { return _time; }
@@ -390,6 +435,9 @@ public:
   /// Make the state reached at the last solve the committed one (the start of
   /// the next step).  The transient solver calls it for every accepted step.
   void commitState();
+  /// Start the next step from the committed history, or from the state reached by the last solve (the second half of a doubled step).
+  void startStateFromCommitted();
+  void startStateFromTrial();
   /// A copy of the committed history, and its restoration: for a caller that
   /// solves the same step more than once (an outer iteration).
   struct StateSnapshot
@@ -479,9 +527,47 @@ public:
 
   // ---- executioners ---------------------------------------------------------------------
   SolveResult solveSteady(const SolverOptions & options = {});
+  /// Solve A x = b with the serial linear solvers chosen by @p o (the solve of each Newton iteration).
+  Vector linearSolve(const SparseMatrix & A,
+                     const Vector & b,
+                     const SolverOptions & o,
+                     int * iterations = nullptr) const;
   SolveResult solveTransient(const TransientOptions & transient,
                              const SolverOptions & options = {});
   /// Called after every converged time step (time, problem).
+  /// The elements that this problem integrates: all of them, except the ghost elements at the end of the mesh that a distributed run adds to read the other side of an interface or, for the cell-centered method, the cells next to its part.
+  Index numIntegratedElements() const
+  {
+    return _num_integrated_elements >= 0 ? _num_integrated_elements : _mesh->numElements();
+  }
+  /// Make the elements from @p first on ghosts, which are read but not integrated, and size the solution for the nodes added to the mesh with them.
+  void setGhostElements(Index first);
+  /// The global number of every local element.
+  /// The processes of a distributed problem of the cell-centered method agree by it which of them integrates a face between two of their parts: the one that integrates the cell with the smaller number.
+  void setGlobalElementNumbers(std::vector<Index> numbers)
+  {
+    _global_element_numbers = std::move(numbers);
+  }
+  /// Whether this problem integrates face @p f of the cell-centered method: a face of two integrated cells, a boundary face of an integrated cell, and a face between an integrated cell and a ghost cell when the integrated cell has the smaller global number.
+  /// Every face of a distributed mesh is thus integrated by exactly one process.
+  bool integratesFace(const CellFace & f) const;
+  /// Whether entity @p i belongs to the part that this problem integrates: for the cell-centered method, an integrated cell or a boundary face of one; every node otherwise.
+  /// A value or a load given at a point goes to the nearest of these entities, so that a ghost cell's face, which is not a face of the mesh, is never chosen.
+  bool integratedEntity(Index i) const;
+  /// Sides of ghost elements on side set @p sideset, which an interface condition with that secondary side set may pair with.
+  void addInterfaceCandidates(const std::string & sideset, const std::vector<Side> & sides);
+  /// Call the callback of setTimeStepCallback, if any, for a step accepted at the current time.
+  void notifyStepAccepted()
+  {
+    if (_step_callback)
+      _step_callback(_time, *this);
+  }
+  /// Advance the transient solves with @p integrator instead of the theta method; nullptr restores the theta method.
+  void setTimeIntegrator(std::shared_ptr<TimeIntegrator> integrator)
+  {
+    _time_integrator = std::move(integrator);
+  }
+  const std::shared_ptr<TimeIntegrator> & timeIntegrator() const { return _time_integrator; }
   void setTimeStepCallback(std::function<void(double, Problem &)> cb)
   {
     _step_callback = std::move(cb);
@@ -662,10 +748,6 @@ private:
   void markActiveDofs();
   /// Whether "automatic" should factorise a system of @p n unknowns directly.
   bool preferDirectSolver(Index n) const;
-  Vector linearSolve(const SparseMatrix & A,
-                     const Vector & b,
-                     const SolverOptions & o,
-                     int * iterations = nullptr) const;
   /// The direct solve, which reuses the factorisation of the previous call
   /// when the matrix has not changed (a linear problem in its second Newton
   /// iteration, or a transient with a constant matrix).
@@ -720,6 +802,16 @@ private:
   std::vector<std::shared_ptr<IntegratedBC>> _ibcs;
   std::vector<std::shared_ptr<NodalBC>> _nbcs;
   std::vector<std::shared_ptr<NodalLoad>> _loads;
+  std::vector<std::shared_ptr<Constraint>> _constraints;
+  std::vector<Index> _primary_of;
+  Index _num_integrated_elements = -1;
+  std::vector<Index> _global_element_numbers;
+  std::map<std::string, std::vector<Side>> _interface_candidates;
+  bool _constraints_outside = false;
+  std::vector<char> _extra_constrained;
+  /// Resolve the pairs of the constraints into one primary per dependent degree of freedom, following chains (a corner node periodic in two directions).
+  void buildConstraints();
+  void interpolateFirstOrderVariables(Vector & U) const;
   std::vector<std::shared_ptr<Property>> _property_objects;
   std::map<std::string, std::shared_ptr<Object>> _by_name;
   PropertyRegistry _props;
@@ -733,6 +825,7 @@ private:
   double _time = 0.0;
   double _eigenvalue = 0.0;
   std::function<void(double, Problem &)> _step_callback;
+  std::shared_ptr<TimeIntegrator> _time_integrator;
   std::function<void(int)> _output_callback;
   std::map<std::string, std::vector<double>> _element_fields;
 
@@ -750,10 +843,6 @@ private:
   /// Point the context at the history of its point (inserting a zero record
   /// the first time), or clear the pointers if the point has none.
   void bindState(QpContext & ctx) const;
-  /// Start the next step from the committed history, or from the state
-  /// reached by the last solve (the second half of a doubled step).
-  void startStateFromCommitted();
-  void startStateFromTrial();
 };
 
 } // namespace dualmesh
