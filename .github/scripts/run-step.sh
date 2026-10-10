@@ -8,6 +8,8 @@ set -o pipefail
 bash -e "$1" 2>&1 | tee "$log"
 status=$?
 if [ "$status" -ne 0 ]; then
-  tail -n 80 "$log" | python3 -c 'import sys; t = sys.stdin.read().replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A"); print("::error title=Last lines of the failed step::" + t)'
+  # Windows runners have python, not python3.
+  python="$(command -v python3 || command -v python)"
+  tail -n 80 "$log" | "$python" -c 'import sys; t = sys.stdin.read().replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A"); print("::error title=Last lines of the failed step::" + t)'
 fi
 exit "$status"
