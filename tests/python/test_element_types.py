@@ -85,12 +85,11 @@ def patch_test_error(mesh, method):
 
     problem = dm.Problem(mesh, method=method)
     problem.add_variable("u")
-    problem.add_kernel("diffusion", "diffusion", variable="u")
+    problem.add_kernel("diffusion", variable="u")
     problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "all",
+        "Dirichlet",
+        mesh.sideset_names(),
         variable="u",
-        boundary=mesh.sideset_names(),
         value=exact,
     )
     problem.solve()
@@ -164,7 +163,7 @@ def test_each_element_is_offered_to_exactly_the_methods_that_can_use_it(element_
     if method in SUPPORTED[element_type]:
         dm.Problem(mesh, method=method)
     else:
-        with pytest.raises(ValueError, match=f"{element_type}.*method='fem'.*method='zfvm'"):
+        with pytest.raises(ValueError, match=f"{element_type}.*method='FEM'.*method='ZFVM'"):
             dm.Problem(mesh, method=method)
 
 

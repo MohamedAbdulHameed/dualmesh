@@ -815,3 +815,82 @@ def test_split_rhat_is_rank_normalized_and_folded():
     )
     # Defined for heavy tails (Cauchy draws in stationary chains).
     assert _split_rhat(rng.standard_cauchy((2000, 4, 1))) < 1.01
+
+
+# ---------------------------------------------------------------------------
+# Gradient-enhanced Gaussian process
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("kernel", ["squared_exponential", "matern52", "matern32"])
+def test_the_covariances_of_the_gradients_are_the_derivatives_of_the_kernel(kernel):
+    # cov(z(a), dz/db) = dk/db and cov(dz/da, dz/db) = d2k/da db, by central differences.
+    from dualmesh.uq.gaussian_process import _gradient_kernels
+
+    rng = np.random.default_rng(3)
+    a, b = rng.uniform(size=(3, 2)), rng.uniform(size=(4, 2))
+    ell, h = np.array([0.4, 0.7]), 1e-5
+    _, K0g, Kgg = _gradient_kernels(kernel, a, b, ell)
+    for q in range(2):
+        step = np.zeros(2)
+        step[q] = h
+        plus = _gradient_kernels(kernel, a, b + step, ell)
+        minus = _gradient_kernels(kernel, a, b - step, ell)
+        assert np.allclose(K0g[..., q], (plus[0] - minus[0]) / (2 * h), rtol=1e-6, atol=1e-8)
+        for p in range(2):
+            # d/da_p of cov(z(a), dz/db_q).
+            shift = np.zeros(2)
+            shift[p] = h
+            up = _gradient_kernels(kernel, a + shift, b, ell)[1][..., q]
+            down = _gradient_kernels(kernel, a - shift, b, ell)[1][..., q]
+            assert np.allclose(Kgg[..., p, q], (up - down) / (2 * h), rtol=1e-6, atol=1e-6)
+
+
+def _branin_like(x):
+    return np.sin(3.0 * x[:, 0]) + x[:, 1] ** 2 + 0.5 * x[:, 0] * x[:, 1]
+
+
+def _branin_like_gradient(x):
+    return np.column_stack(
+        [3.0 * np.cos(3.0 * x[:, 0]) + 0.5 * x[:, 1], 2.0 * x[:, 1] + 0.5 * x[:, 0]]
+    )
+
+
+def test_gradients_make_the_surrogate_more_accurate_on_the_same_runs():
+    rng = np.random.default_rng(0)
+    train = rng.uniform(-1.0, 1.0, size=(8, 2))
+    test = rng.uniform(-1.0, 1.0, size=(400, 2))
+    exact = _branin_like(test)
+    plain = uq.GaussianProcess().fit(train, _branin_like(train))
+    enhanced = uq.GaussianProcess().fit(
+        train, _branin_like(train), gradients=_branin_like_gradient(train)
+    )
+    error_plain = np.sqrt(np.mean((plain.predict(test) - exact) ** 2))
+    error_enhanced = np.sqrt(np.mean((enhanced.predict(test) - exact) ** 2))
+    assert error_enhanced < 0.2 * error_plain
+    # The fit interpolates the values it was given, and its uncertainty there is small.
+    mean, sd = enhanced.predict(train, return_standard_deviation=True)
+    assert np.allclose(mean, _branin_like(train), atol=1e-4)
+    assert np.all(sd < 1e-2)
+
+
+def test_gradients_are_refused_where_they_do_not_apply():
+    x = np.random.default_rng(1).uniform(size=(6, 2))
+    y = _branin_like(x)
+    g = _branin_like_gradient(x)
+    with pytest.raises(ValueError, match="needs that of the inputs"):
+        uq.GaussianProcess().fit(x, y, gradients=g[:, :1])
+    with pytest.raises(ValueError, match="scalar output only"):
+        uq.GaussianProcess().fit(x, np.column_stack([y, y]), gradients=g)
+    fitted = uq.GaussianProcess().fit(x, y, gradients=g)
+    with pytest.raises(ValueError, match="leave-one-out is not available"):
+        fitted.leave_one_out()
+
+
+def test_the_length_scales_tell_which_input_matters():
+    """y = sin(4 x1) + 0.05 x2: the fitted length scale of x2, on which the output hardly depends,
+    is much longer than that of x1."""
+    rng = np.random.default_rng(3)
+    x = rng.random((40, 2))
+    y = np.sin(4 * x[:, 0]) + 0.05 * x[:, 1]
+    scales = uq.GaussianProcess().fit(x, y).length_scales
+    assert scales.shape == (1, 2)
+    assert scales[0, 1] > 3.0 * scales[0, 0]

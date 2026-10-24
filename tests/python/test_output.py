@@ -19,11 +19,9 @@ def bus_bar(method="dmcdm"):
         x_min=0.0, x_max=0.1, y_min=0.0, y_max=0.05, num_x_elements=10, num_y_elements=5
     )
     problem = dm.Problem(mesh, method=method)
-    heat = problem.add_physics(
-        "heat_transfer", "heat", thermal_conductivity=20.0, heat_source=1.0e6
-    )
-    heat.add_boundary_condition("Dirichlet_boundary_condition", "left", value=40.0)
-    heat.add_boundary_condition("Dirichlet_boundary_condition", "right", value=10.0)
+    heat = problem.add_physics("heat_transfer", thermal_conductivity=20.0, heat_source=1.0e6)
+    heat.add_boundary_condition("temperature = 40", boundary="left")
+    heat.add_boundary_condition("temperature = 10", boundary="right")
     return problem
 
 
@@ -36,10 +34,9 @@ def cooling_bar(variable_unit="K"):
         "heat_conduction_time_derivative", variable="temperature", density=2.0, specific_heat=3.0
     )
     problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "ends",
+        "Dirichlet",
+        ["left", "right"],
         variable="temperature",
-        boundary=["left", "right"],
         value=0.0,
     )
     return problem
@@ -63,7 +60,7 @@ def test_the_report_levels_of_a_solve(capfd):
     problem.solve(report="summary")
     out = capfd.readouterr().out
     assert (
-        out.startswith("dualmesh steady solve: 66 unknowns, method dmcdm")
+        out.startswith("dualmesh steady solve: 66 unknowns, method DMCDM")
         and "converged" in out
         and "(default)" not in out
     )
@@ -83,11 +80,9 @@ def test_a_study_inside_a_study_prints_nothing(capsys):
     def peak(conductivity):
         problem = dm.Problem(dm.generate_line_mesh(start=0.0, end=1.0, num_elements=8))
         heat = problem.add_physics(
-            "heat_transfer", "heat", thermal_conductivity=conductivity, heat_source=1.0
+            "heat_transfer", thermal_conductivity=conductivity, heat_source=1.0
         )
-        heat.add_boundary_condition(
-            "Dirichlet_boundary_condition", "ends", boundary=["left", "right"], value=0.0
-        )
+        heat.add_boundary_condition("temperature = 0", boundary=["left", "right"])
         problem.solve()
         return float(np.max(problem.values("temperature")))
 
@@ -149,29 +144,24 @@ def test_the_fields_select_the_variables_of_the_files(tmp_path):
     )
     solid = problem.add_physics(
         "solid_mechanics",
-        "solid",
         formulation="plane_stress",
         youngs_modulus=1.0,
         poissons_ratio=0.3,
     )
-    solid.add_boundary_condition("fixed_constraint", "left")
-    solid.add_boundary_condition("traction_boundary_condition", "right", traction=[0.01, 0.0])
+    solid.add_boundary_condition("fixed", boundary="left")
+    solid.add_boundary_condition("traction = [0.01, 0]", boundary="right")
     problem.solve(
         report="none",
         output=dm.Output(
             directory=str(tmp_path),
             file_base="plate",
-            fields=["displacement_x"],
+            fields=["disp_x"],
             formats=["vtu", "csv"],
         ),
     )
     arrays = vtu_arrays(tmp_path / "plate.vtu")
-    assert (
-        "displacement_x" in arrays
-        and "displacement_y" not in arrays
-        and arrays["displacement_x"].get("units") == "m"
-    )
-    assert read_csv(tmp_path / "plate.csv")[0] == ["x (m)", "y (m)", "displacement_x (m)"]
+    assert "disp_x" in arrays and "disp_y" not in arrays and arrays["disp_x"].get("units") == "m"
+    assert read_csv(tmp_path / "plate.csv")[0] == ["x (m)", "y (m)", "disp_x (m)"]
 
 
 @pytest.mark.parametrize("time_stepper", ["fixed", "iteration"])
@@ -247,22 +237,19 @@ def test_a_variable_of_the_object_level_has_a_unit_only_when_one_is_given(tmp_pa
 
 
 def test_an_eigenvalue_study_writes_its_fluxes(tmp_path, capsys):
-    """One-group criticality of a slab written with coefficient_form_PDE: the
+    """One-group criticality of a slab written with general_form_PDE: the
     symbol eigenvalue is 1 / k, and k = 3 / (2 + 0.01 pi^2)."""
     mesh = dm.generate_line_mesh(start=0.0, end=1.0, num_elements=20)
     problem = dm.Problem(mesh)
     neutrons = problem.add_physics(
-        "coefficient_form_PDE",
-        "neutrons",
+        "general_form_PDE",
         variables=["phi"],
-        diffusion_coefficient=0.01,
-        absorption_coefficient=2.0,
-        source="eigenvalue*3.0*phi",
+        c=0.01,
+        a=2.0,
+        f="eigenvalue*3.0*phi",
         units="1/(m^2 s)",
     )
-    neutrons.add_boundary_condition(
-        "Dirichlet_boundary_condition", "zero_flux", boundary=mesh.sideset_names(), value=0.0
-    )
+    neutrons.add_boundary_condition("phi = 0", boundary=mesh.sideset_names())
     result = problem.solve_eigenvalue(
         report="none", output=dm.Output(directory=str(tmp_path), file_base="slab", formats=["csv"])
     )
@@ -272,3 +259,24 @@ def test_an_eigenvalue_study_writes_its_fluxes(tmp_path, capsys):
     assert rows[:, 1] == pytest.approx(problem.values("phi"), rel=1e-11)
     k = 1.0 / float(result.eigenvalues[0])
     assert k == pytest.approx(3.0 / (2.0 + 0.01 * np.pi**2), rel=1e-3)
+
+
+def test_the_stress_of_the_elements_is_written_with_its_values(tmp_path):
+    """A plate on rollers on its left and bottom edges, pulled by 0.01 Pa on its right edge,
+    carries the uniform stress sigma_xx = 0.01 and nothing else, in every element."""
+    mesh = dm.generate_rectangle_mesh(x=[0, 1], y=[0, 1], num_elements=[4, 4])
+    problem = dm.Problem(mesh)
+    solid = problem.add_physics(
+        "solid_mechanics", formulation="plane_stress", youngs_modulus=1.0, poissons_ratio=0.25
+    )
+    solid.add_boundary_condition("disp_x = 0", boundary="left")
+    solid.add_boundary_condition("disp_y = 0", boundary="bottom")
+    solid.add_boundary_condition("traction = [0.01, 0]", boundary="right")
+    problem.solve(report="none")
+    problem.write_vtu(str(tmp_path / "plate.vtu"), cell_properties=["stress"])
+    stress = vtu_arrays(tmp_path / "plate.vtu")["stress"]
+    assert stress.get("NumberOfComponents") == "6"
+    values = np.array(stress.text.split(), dtype=float).reshape(-1, 6)
+    assert len(values) == mesh.num_elements
+    assert np.allclose(values[:, 0], 0.01, rtol=1e-12, atol=0)
+    assert np.abs(values[:, 1:]).max() <= 1e-15

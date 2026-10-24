@@ -55,24 +55,20 @@ def conduction_problem(problem):
     """Heat conduction with a source, a prescribed temperature on two sides and
     convection on the other two."""
     problem.add_variable("temperature")
-    problem.add_kernel(
-        "heat_conduction", "conduction", variable="temperature", thermal_conductivity=2.5
-    )
-    problem.add_kernel("heat_source", "source", variable="temperature", heat_source=40.0)
+    problem.add_kernel("heat_conduction", variable="temperature", thermal_conductivity=2.5)
+    problem.add_kernel("body_force", variable="temperature", value=40.0)
     problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "cold",
+        "Dirichlet",
+        ["left", "bottom"],
         variable="temperature",
-        boundary=["left", "bottom"],
         value=20.0,
     )
     problem.add_boundary_condition(
-        "convective_heat_flux_boundary_condition",
-        "convection",
+        "Robin",
+        ["right", "top"],
         variable="temperature",
-        boundary=["right", "top"],
-        heat_transfer_coefficient=15.0,
-        ambient_temperature=5.0,
+        transfer_coeff=15.0,
+        ambient_value=5.0,
     )
 
 
@@ -120,13 +116,12 @@ def test_distributed_transient_reproduces_the_serial_answer():
             "temperature",
             initial_condition=lambda x, y, z, t: np.sin(np.pi * x) * np.sin(np.pi * y),
         )
-        problem.add_kernel("diffusion", "diffusion", variable="temperature")
-        problem.add_kernel("time_derivative", "time", variable="temperature")
+        problem.add_kernel("diffusion", variable="temperature")
+        problem.add_kernel("time_derivative", variable="temperature")
         problem.add_boundary_condition(
-            "Dirichlet_boundary_condition",
-            "edges",
+            "Dirichlet",
+            ["left", "right", "bottom", "top"],
             variable="temperature",
-            boundary=["left", "right", "bottom", "top"],
             value=0.0,
         )
 
@@ -169,14 +164,13 @@ def test_threading_is_disabled_for_python_objects():
     mesh = dm.generate_rectangle_mesh(0.0, 1.0, 0.0, 1.0, 40, 40)
     problem = dm.Problem(mesh, distributed=False)
     problem.add_variable("u")
-    problem.add_kernel("diffusion", "diffusion", variable="u")
+    problem.add_kernel("diffusion", variable="u")
     problem.add_function("source", lambda x, y, z, t: np.sin(x))
-    problem.add_kernel("body_force", "body", variable="u", value="source")
+    problem.add_kernel("body_force", variable="u", value="source")
     problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "edges",
+        "Dirichlet",
+        ["left", "right", "bottom", "top"],
         variable="u",
-        boundary=["left", "right", "bottom", "top"],
         value=0.0,
     )
     problem.set_num_threads(4)
@@ -217,7 +211,7 @@ def test_a_distributed_problem_takes_its_linear_solver_settings_from_petsc_optio
     mesh = dm.generate_rectangle_mesh(0.0, 1.0, 0.0, 1.0, 4, 4)
     distributed = dm.Problem(mesh, distributed=True)
     conduction_problem(distributed)
-    with pytest.raises(ValueError, match="petsc"):
+    with pytest.raises(ValueError, match="(?i)petsc"):
         distributed.solve(**solver)
 
 
@@ -231,13 +225,12 @@ def test_a_linear_solve_that_cannot_converge_says_what_to_try():
     )
     problem = dm.Problem(mesh, distributed=True)
     problem.add_variable("u")
-    problem.add_kernel("diffusion", "diffusion", variable="u")
-    problem.add_kernel("body_force", "source", variable="u", value=1.0)
+    problem.add_kernel("diffusion", variable="u")
+    problem.add_kernel("body_force", variable="u", value=1.0)
     problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "walls",
+        "Dirichlet",
+        mesh.sideset_names(),
         variable="u",
-        boundary=mesh.sideset_names(),
         value=0.0,
     )
     with pytest.raises(RuntimeError, match="did not converge.*Adjust petsc_options"):
@@ -247,6 +240,35 @@ def test_a_linear_solve_that_cannot_converge_says_what_to_try():
             linear_tolerance=1e-14,
             linear_max_iterations=2,
         )
+
+
+@pytest.mark.skipif(not dm.have_petsc(), reason="built without PETSc")
+@pytest.mark.parametrize("theory", ["Euler_Bernoulli", "Timoshenko"])
+def test_a_distributed_mixed_beam_is_solved_or_refused_never_left_at_zero(theory):
+    """The mixed beam has a zero diagonal in its deflection equation, on which algebraic multigrid
+    fails without an error: PETSc then reports convergence on the preconditioned residual.  The
+    true residual sends the automatic choice on to the direct solver, and the tip of the cantilever
+    deflects by q L^4 / (8 EI) + q L^2 / (2 k G A)."""
+    young, nu, length, load, width, height = 2.0e11, 0.3, 2.0, 1.0e4, 0.1, 0.2
+    mesh = dm.generate_line_mesh(start=0.0, end=length, num_elements=32)
+    problem = dm.Problem(mesh, method="fem", distributed=True)
+    beam = problem.add_physics(
+        "solid_mechanics",
+        formulation="beam",
+        theory=theory,
+        youngs_modulus=young,
+        poissons_ratio=nu,
+        cross_section={"width": width, "height": height},
+        transverse_load=load,
+    )
+    beam.add_boundary_condition("fixed", boundary="left")
+    problem.solve(report="none")
+    inertia, area = width * height**3 / 12, width * height
+    exact = load * length**4 / (8 * young * inertia)
+    if theory == "Timoshenko":
+        exact += load * length**2 / (2 * 5 / 6 * young / (2 * (1 + nu)) * area)
+    tip = problem.sample("disp_z", [[length, 0.0, 0.0]])[0]
+    assert tip == pytest.approx(exact, rel=2e-3)
 
 
 @pytest.mark.parametrize("method", ["dmcdm", "fem", "hfvm"])
@@ -259,26 +281,19 @@ def test_distributed_pressure_velocity_flow_reproduces_the_serial_answer(method,
 
     def define(problem):
         problem.add_physics(
-            "incompressible_flow",
-            "flow",
-            velocities=["u", "v"],
+            "fluid_dynamics",
             dynamic_viscosity=1.0,
             density=density,
             formulation="pressure",
             pressure_pin_point=(0.5, 0.0),
         )
-        problem.add_boundary_condition(
-            "Dirichlet_boundary_condition", "lid", variable="u", boundary="top", value=1.0
-        )
-        problem.add_boundary_condition(
-            "Dirichlet_boundary_condition", "lid_v", variable="v", boundary="top", value=0.0
-        )
-        for variable in ("u", "v"):
+        problem.add_boundary_condition("Dirichlet", "top", variable="velocity_x", value=1.0)
+        problem.add_boundary_condition("Dirichlet", "top", variable="velocity_y", value=0.0)
+        for variable in ("velocity_x", "velocity_y"):
             problem.add_boundary_condition(
-                "Dirichlet_boundary_condition",
-                f"walls_{variable}",
+                "Dirichlet",
+                ["left", "right", "bottom"],
                 variable=variable,
-                boundary=["left", "right", "bottom"],
                 value=0.0,
             )
 
@@ -289,7 +304,7 @@ def test_distributed_pressure_velocity_flow_reproduces_the_serial_answer(method,
     distributed = dm.Problem(mesh, method=method, distributed=True)
     define(distributed)
     distributed.solve(linear_tolerance=1e-12)
-    for variable in ("u", "v", "pressure"):
+    for variable in ("velocity_x", "velocity_y", "pressure"):
         got = np.asarray(distributed.gathered_values(variable))
         assert got == pytest.approx(serial.values(variable), abs=1e-8)
 
@@ -307,26 +322,19 @@ def test_distributed_petsc_reproduces_the_serial_answer(method, options):
 
     def define(problem):
         problem.add_physics(
-            "incompressible_flow",
-            "flow",
-            velocities=["u", "v"],
+            "fluid_dynamics",
             dynamic_viscosity=1.0,
             density=50.0,
             formulation="pressure",
             pressure_pin_point=(0.5, 0.0),
         )
-        problem.add_boundary_condition(
-            "Dirichlet_boundary_condition", "lid", variable="u", boundary="top", value=1.0
-        )
-        problem.add_boundary_condition(
-            "Dirichlet_boundary_condition", "lid_v", variable="v", boundary="top", value=0.0
-        )
-        for variable in ("u", "v"):
+        problem.add_boundary_condition("Dirichlet", "top", variable="velocity_x", value=1.0)
+        problem.add_boundary_condition("Dirichlet", "top", variable="velocity_y", value=0.0)
+        for variable in ("velocity_x", "velocity_y"):
             problem.add_boundary_condition(
-                "Dirichlet_boundary_condition",
-                f"walls_{variable}",
+                "Dirichlet",
+                ["left", "right", "bottom"],
                 variable=variable,
-                boundary=["left", "right", "bottom"],
                 value=0.0,
             )
 
@@ -337,33 +345,26 @@ def test_distributed_petsc_reproduces_the_serial_answer(method, options):
     distributed = dm.Problem(mesh, method=method, distributed=True)
     define(distributed)
     distributed.solve(linear_solver="petsc", petsc_options=options, linear_tolerance=1e-12)
-    for variable in ("u", "v", "pressure"):
+    for variable in ("velocity_x", "velocity_y", "pressure"):
         got = np.asarray(distributed.gathered_values(variable))
         assert got == pytest.approx(serial.values(variable), abs=1e-8)
 
 
 def _taylor_hood_cavity(problem):
     problem.add_physics(
-        "incompressible_flow",
-        "flow",
-        velocities=["u", "v"],
+        "fluid_dynamics",
         dynamic_viscosity=1.0,
         density=50.0,
         formulation="Taylor_Hood",
         pressure_pin_point=(0.5, 0.0),
     )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", "lid", variable="u", boundary="top", value=1.0
-    )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", "lid_v", variable="v", boundary="top", value=0.0
-    )
-    for variable in ("u", "v"):
+    problem.add_boundary_condition("Dirichlet", "top", variable="velocity_x", value=1.0)
+    problem.add_boundary_condition("Dirichlet", "top", variable="velocity_y", value=0.0)
+    for variable in ("velocity_x", "velocity_y"):
         problem.add_boundary_condition(
-            "Dirichlet_boundary_condition",
-            f"walls_{variable}",
+            "Dirichlet",
+            ["left", "right", "bottom"],
             variable=variable,
-            boundary=["left", "right", "bottom"],
             value=0.0,
         )
 
@@ -398,7 +399,7 @@ def test_distributed_taylor_hood_reproduces_the_serial_answer(options):
     distributed = dm.Problem(mesh, method="fem", distributed=True)
     _taylor_hood_cavity(distributed)
     distributed.solve(linear_tolerance=1e-12, **options)
-    for variable in ("u", "v", "pressure"):
+    for variable in ("velocity_x", "velocity_y", "pressure"):
         got = np.asarray(distributed.gathered_values(variable))
         assert got == pytest.approx(serial.values(variable), abs=1e-8)
 
@@ -418,17 +419,11 @@ def test_distributed_periodic_boundaries_reproduce_the_serial_answer(method, gat
 
     def define(problem):
         problem.add_variable("u")
-        problem.add_kernel("diffusion", "diffusion", variable="u")
-        problem.add_kernel("reaction", "reaction", variable="u")
-        problem.add_kernel(
-            "body_force", "source", variable="u", value="1 + cos(2*pi*x + 0.3)*sin(2*pi*y)"
-        )
-        problem.add_boundary_condition(
-            "periodic_boundary_condition", "periodic_x", primary="left", secondary="right"
-        )
-        problem.add_boundary_condition(
-            "periodic_boundary_condition", "periodic_y", primary="bottom", secondary="top"
-        )
+        problem.add_kernel("diffusion", variable="u")
+        problem.add_kernel("reaction", variable="u")
+        problem.add_kernel("body_force", variable="u", value="1 + cos(2*pi*x + 0.3)*sin(2*pi*y)")
+        problem.add_boundary_condition("periodic", primary="left", secondary="right")
+        problem.add_boundary_condition("periodic", primary="bottom", secondary="top")
 
     mesh = dm.generate_rectangle_mesh(0.0, 1.0, 0.0, 1.0, 12, 10)
     serial = dm.Problem(mesh, method=method, distributed=False)
@@ -479,36 +474,29 @@ def _creep_block(distributed):
     p = dm.Problem(mesh, distributed=distributed)
     for v in ("temperature", "ux", "uy", "uz"):
         p.add_variable(v)
-    p.add_kernel("diffusion", "conduction", variable="temperature")
+    p.add_kernel("diffusion", variable="temperature")
     p.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "T",
+        "Dirichlet",
+        list(mesh.sideset_names()),
         variable="temperature",
-        boundary=list(mesh.sideset_names()),
         value=T,
     )
     p.add_property(
         "small_strain_stress",
-        "stress",
         displacements=["ux", "uy", "uz"],
         formulation="three_dimensional",
         youngs_modulus=1e11,
         poissons_ratio=0.3,
         creep_model="parsed",
         creep_rate="A * von_mises_stress^n * exp(-Q / temperature)",
-        creep_constant_names=["A", "n", "Q"],
-        creep_constant_values=[A, n, Q],
+        creep_constants={"A": A, "n": n, "Q": Q},
         temperature="temperature",
     )
-    for i, v in enumerate(("ux", "uy", "uz")):
-        p.add_kernel("stress_divergence", f"equilibrium_{v}", variable=v, component=i)
+    for v in ("ux", "uy", "uz"):
+        p.add_kernel("stress_divergence", variable=v, displacements=["ux", "uy", "uz"])
     for v, side in (("ux", "left"), ("uy", "bottom"), ("uz", "back")):
-        p.add_boundary_condition(
-            "Dirichlet_boundary_condition", f"hold_{v}", variable=v, boundary=[side], value=0.0
-        )
-    p.add_boundary_condition(
-        "traction_boundary_condition", "pull", variable="uz", boundary=["front"], traction=stress
-    )
+        p.add_boundary_condition("Dirichlet", side, variable=v, value=0.0)
+    p.add_boundary_condition("traction", "front", variable="uz", traction=stress)
     p.add_postprocessor("nodal_extreme_value", "stretch", variable="uz")
     p.solve(report="none")
     return p
@@ -566,9 +554,8 @@ def test_a_distributed_gap_condition_reproduces_the_serial_answer(method):
         problem = conduction_problem(mesh, method, distributed=distributed)
         problem.add_boundary_condition(
             "gap_heat_transfer",
-            "gap",
+            "primary",
             variable="temperature",
-            boundary=["primary"],
             secondary_boundary=["secondary"],
             gap_conductance=CONDUCTANCE,
         )
@@ -579,3 +566,235 @@ def test_a_distributed_gap_condition_reproduces_the_serial_answer(method):
 
     serial, distributed = solve(False), solve(True)
     assert distributed == pytest.approx(serial, rel=1e-9)
+
+
+def test_distributed_error_norms_are_those_of_the_whole_domain():
+    """Each process integrates its own elements, and the squares add: the norms of a distributed
+    problem equal the serial ones, so a convergence study gives the same orders on any number of
+    processes (run under mpirun, this compares the parts with the whole)."""
+    exact = "sin(pi*x)*sin(pi*y)"
+    gradient = ["pi*cos(pi*x)*sin(pi*y)", "pi*sin(pi*x)*cos(pi*y)"]
+
+    def norms(distributed):
+        mesh = dm.generate_rectangle_mesh(0.0, 1.0, 0.0, 1.0, num_elements=[16, 16])
+        problem = dm.Problem(mesh, method="fem", distributed=distributed)
+        problem.add_variable("u")
+        problem.add_kernel("diffusion", variable="u")
+        problem.add_kernel("body_force", variable="u", value="2*pi^2*" + exact)
+        problem.add_boundary_condition(
+            "Dirichlet", ["left", "right", "bottom", "top"], variable="u", value=0.0
+        )
+        problem.solve(report="none")
+        return problem.error_norms("u", exact, gradient)
+
+    serial, distributed = norms(False), norms(True)
+    assert distributed == pytest.approx(serial, rel=1e-10)
+
+
+def test_a_distributed_error_controlled_transient_reproduces_the_serial_answer():
+    """The error estimate of the adaptive step is formed from the global norm, so every process
+    takes the same step and the run neither stalls nor drifts from the serial answer."""
+
+    def run(distributed):
+        mesh = dm.generate_rectangle_mesh(0.0, 1.0, 0.0, 1.0, num_elements=[8, 8])
+        problem = dm.Problem(mesh, method="fem", distributed=distributed)
+        heat = problem.add_physics(
+            "heat_transfer",
+            thermal_conductivity=1.0,
+            density=1.0,
+            specific_heat=1.0,
+            heat_source=1.0,
+        )
+        heat.add_boundary_condition("temperature = 0", boundary=["left", "right"])
+        problem.solve_transient(end_time=0.1, time_step=0.01, time_stepper="error", report="none")
+        return problem.sample("temperature", [[0.5, 0.5]])[0]
+
+    assert run(True) == pytest.approx(run(False), rel=1e-9)
+
+
+@pytest.mark.parametrize(
+    "option, message",
+    [
+        ({"nonlinear_solver": "newtn"}, "Unknown nonlinear solver"),
+        ({"line_search": "bogus"}, "Unknown line_search"),
+    ],
+)
+def test_a_distributed_solve_refuses_options_it_does_not_have(option, message):
+    mesh = dm.generate_rectangle_mesh(0.0, 1.0, 0.0, 1.0, 4, 4)
+    problem = dm.Problem(mesh, distributed=True)
+    conduction_problem(problem)
+    with pytest.raises(ValueError, match=message):
+        problem.solve(report="none", **option)
+
+
+def test_a_distributed_solve_with_the_line_search_reproduces_the_serial_answer():
+    """One nonlinear driver serves the serial and the distributed problem, so the backtracking
+    line search works on every number of processes."""
+
+    def solve(distributed):
+        mesh = dm.generate_rectangle_mesh(0.0, 1.0, 0.0, 1.0, num_elements=[8, 8])
+        problem = dm.Problem(mesh, method="fem", distributed=distributed)
+        problem.add_variable("u")
+        problem.add_kernel("diffusion", variable="u", diffusivity="1 + 10*u^2")
+        problem.add_kernel("body_force", variable="u", value=50.0)
+        problem.add_boundary_condition(
+            "Dirichlet", ["left", "right", "bottom", "top"], variable="u", value=0.0
+        )
+        problem.solve(report="none", line_search="backtracking")
+        return problem.sample("u", [[0.5, 0.5]])[0]
+
+    assert solve(True) == pytest.approx(solve(False), rel=1e-10)
+
+
+def _equal_order_cavity(problem):
+    problem.add_physics(
+        "fluid_dynamics",
+        dynamic_viscosity=1.0,
+        density=50.0,
+        formulation="pressure",
+        pressure_pin_point=(0.5, 0.0),
+    )
+    problem.add_boundary_condition("Dirichlet", "top", variable="velocity_x", value=1.0)
+    problem.add_boundary_condition("Dirichlet", "top", variable="velocity_y", value=0.0)
+    for variable in ("velocity_x", "velocity_y"):
+        problem.add_boundary_condition(
+            "Dirichlet", ["left", "right", "bottom"], variable=variable, value=0.0
+        )
+
+
+@pytest.mark.parametrize("preconditioner", ["lsc", "pcd", "pressure_mass"])
+@pytest.mark.parametrize(
+    "element_type, define", [("Quad4", _equal_order_cavity), ("Quad9", _taylor_hood_cavity)]
+)
+def test_distributed_block_preconditioners_reproduce_the_serial_answer(
+    preconditioner, element_type, define
+):
+    """The operators of the Schur complement approximation are assembled on every part and
+    summed in the global numbering, and the sign of the Schur complement is measured from the
+    coupling blocks of all parts together."""
+    n = 16 if element_type == "Quad4" else 8
+    mesh = dm.generate_rectangle_mesh(0.0, 1.0, 0.0, 1.0, n, n, element_type=element_type)
+    serial = dm.Problem(mesh, method="fem", distributed=False)
+    define(serial)
+    serial.solve(linear_solver="lu")
+    distributed = dm.Problem(mesh, method="fem", distributed=True)
+    define(distributed)
+    distributed.solve(preconditioner=preconditioner, linear_tolerance=1e-12)
+    for variable in ("velocity_x", "velocity_y", "pressure"):
+        got = np.asarray(distributed.gathered_values(variable))
+        assert got == pytest.approx(serial.values(variable), abs=1e-8)
+    if dm.have_petsc():
+        # The same split with exact block solves on one process and distributed: an operator
+        # summed wrongly over the parts would change the count, not the answer.  The blocks are
+        # solved exactly because one V-cycle of BoomerAMG leaves round-off differences of the
+        # parallel sums from run to run, which pcd amplifies (116 to 217 iterations per Newton
+        # step measured on two processes).
+        exact = {
+            "-fieldsplit_0_pc_type": "lu",
+            "-fieldsplit_0_pc_factor_mat_solver_type": "mumps",
+            "-fieldsplit_1_laplacian_pc_type": "lu",
+            "-fieldsplit_1_laplacian_pc_factor_mat_solver_type": "mumps",
+            "-fieldsplit_1_pc_type": "lu",
+            "-fieldsplit_1_pc_factor_mat_solver_type": "mumps",
+        }
+        split = dm.Problem(mesh, method="fem", distributed=True)
+        define(split)
+        result = split.solve(
+            preconditioner=preconditioner, petsc_options=exact, linear_tolerance=1e-12
+        )
+        one = dm.Problem(mesh, method="fem", distributed=False)
+        define(one)
+        expected = one.solve(
+            linear_solver="petsc",
+            preconditioner=preconditioner,
+            petsc_options=exact,
+            linear_tolerance=1e-12,
+        )
+        per_step = result.linear_iterations / result.total_iterations
+        assert per_step <= expected.linear_iterations / expected.total_iterations + 2
+
+
+def test_a_distributed_lu_takes_no_preconditioner():
+    mesh = dm.generate_rectangle_mesh(0.0, 1.0, 0.0, 1.0, 4, 4)
+    distributed = dm.Problem(mesh, distributed=True)
+    conduction_problem(distributed)
+    with pytest.raises(ValueError, match="takes no preconditioner"):
+        distributed.solve(linear_solver="lu", preconditioner="amg")
+
+
+def test_a_distributed_problem_names_the_closest_preconditioner():
+    mesh = dm.generate_rectangle_mesh(0.0, 1.0, 0.0, 1.0, 4, 4)
+    distributed = dm.Problem(mesh, distributed=True)
+    conduction_problem(distributed)
+    with pytest.raises(ValueError, match="Did you mean 'LSC'"):
+        distributed.solve(preconditioner="lcs")
+
+
+def _thermoelastic_plate(problem):
+    heat = problem.add_physics("heat_transfer", thermal_conductivity=20.0, heat_source=1.0e6)
+    heat.add_boundary_condition("temperature = 300", boundary="left")
+    solid = problem.add_physics(
+        "solid_mechanics", formulation="plane_stress", youngs_modulus=2.0e11, thickness=0.01
+    )
+    solid.add_boundary_condition("fixed", boundary="left")
+    problem.add_coupling(
+        "thermal_expansion",
+        heat_transfer=heat,
+        solid_mechanics=solid,
+        linear_expansion_coeff=1.2e-5,
+        stress_free_temperature=293.0,
+    )
+
+
+def _cantilever(problem):
+    solid = problem.add_physics(
+        "solid_mechanics", formulation="plane_stress", youngs_modulus=2.0e11, thickness=0.01
+    )
+    solid.add_boundary_condition("fixed", boundary="left")
+    solid.add_boundary_condition("traction = [0, -1e6]", boundary="right")
+
+
+_SOLID = ("disp_x", "disp_y")
+_THERMOELASTIC = ("temperature", "disp_x", "disp_y")
+
+
+@pytest.mark.parametrize(
+    "define, variables, preconditioner",
+    [
+        (_cantilever, _SOLID, "amg"),
+        (_cantilever, _SOLID, None),
+        (_thermoelastic_plate, _THERMOELASTIC, "physics_blocks"),
+        (_thermoelastic_plate, _THERMOELASTIC, None),
+    ],
+)
+def test_distributed_solid_preconditioners_reproduce_the_serial_answer(
+    define, variables, preconditioner
+):
+    """The rigid body modes of the solid reach PETSc's smoothed aggregation on the owned rows of
+    every process, and the split by physics solves the temperature, then the displacements.  The
+    automatic choice takes the first for a solid and the second for a solid coupled to heat."""
+    mesh = dm.generate_rectangle_mesh(x=[0.0, 0.1], y=[0.0, 0.02], num_elements=[40, 8])
+    serial = dm.Problem(mesh, distributed=False)
+    define(serial)
+    serial.solve(linear_solver="lu", report="none")
+    distributed = dm.Problem(mesh, distributed=True)
+    define(distributed)
+    options = {"preconditioner": preconditioner} if preconditioner else {}
+    distributed.solve(linear_tolerance=1e-12, report="none", **options)
+    for variable in variables:
+        expected = serial.values(variable)
+        got = np.asarray(distributed.gathered_values(variable))
+        assert np.abs(got - expected).max() <= 1e-8 * np.abs(expected).max()
+
+
+@pytest.mark.skipif(not dm.have_petsc(), reason="built without PETSc")
+def test_distributed_amg_takes_the_rigid_body_modes_of_a_solid():
+    """A three-dimensional cantilever: GAMG with the rigid body modes takes 31 iterations on two
+    processes; without the rotations it took 169."""
+    mesh = dm.generate_box_mesh(x=[0, 10], y=[0, 1], z=[0, 1], num_elements=[40, 4, 4])
+    problem = dm.Problem(mesh, distributed=True)
+    solid = problem.add_physics("solid_mechanics", youngs_modulus=2e11, poissons_ratio=0.3)
+    solid.add_boundary_condition("fixed", boundary="left")
+    solid.add_boundary_condition("traction = [0, -1e6, 0]", boundary="right")
+    result = problem.solve(report="none", linear_tolerance=1e-10, preconditioner="amg")
+    assert result.linear_iterations <= 60

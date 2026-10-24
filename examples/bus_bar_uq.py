@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
-"""Uncertainty of the bus bar of Reddy's Example 5.4.3 (examples/bus_bar.py).
+"""Uncertainty of the bus bar of examples/bus_bar.py.
 
 The conductivity, the heat source (as a factor on 1e6 W/m^3) and the
 convection coefficient are uncertain.  A Latin hypercube sample of 64 runs
@@ -17,16 +17,11 @@ def bus_bar(conductivity=20.0, heat_source=1.0, convection=75.0):
     )
     problem = dm.Problem(mesh, method="dmcdm")
     heat = problem.add_physics(
-        "heat_transfer", "heat", thermal_conductivity=conductivity, heat_source=1.0e6 * heat_source
+        "heat_transfer", thermal_conductivity=conductivity, heat_source=1.0e6 * heat_source
     )
-    heat.add_boundary_condition("Dirichlet_boundary_condition", "left", value=40.0)
-    heat.add_boundary_condition("Dirichlet_boundary_condition", "right", value=10.0)
-    heat.add_boundary_condition(
-        "convective_heat_flux_boundary_condition",
-        "top",
-        heat_transfer_coefficient=convection,
-        ambient_temperature=0.0,
-    )
+    heat.add_boundary_condition("temperature = 40", boundary="left")
+    heat.add_boundary_condition("temperature = 10", boundary="right")
+    heat.add_boundary_condition("heat_flux = h*temperature", boundary="top", h=convection)
     problem.add_postprocessor(
         "total_reaction", "heat_through_left", variable="temperature", boundary="left"
     )

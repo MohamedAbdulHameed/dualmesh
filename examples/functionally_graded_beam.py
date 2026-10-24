@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
-"""Reddy, Section 7.5: bending of a functionally graded beam.
+"""Bending of a functionally graded beam.
 
 A pinned-pinned beam of length L = 100 in under a uniform load is analysed
 with the three dual mesh beam models, for several values of the power-law
@@ -11,7 +11,12 @@ import dualmesh as dm
 LENGTH, WIDTH, HEIGHT = 100.0, 1.0, 1.0
 MODULUS_TOP, MODULUS_BOTTOM, POISSON = 30.0e6, 3.0e6, 0.3
 LOAD = 0.5
-MODELS = ("beam_Euler_Bernoulli_mixed", "beam_Timoshenko_displacement", "beam_Timoshenko_mixed")
+# The theory and, for Timoshenko, the form of each beam model.
+MODELS = {
+    "Euler-Bernoulli": ("Euler_Bernoulli", None),
+    "Timoshenko, displacement": ("Timoshenko", "displacement"),
+    "Timoshenko, mixed": ("Timoshenko", None),
+}
 
 
 def solve(model, power_law_index, num_elements=16):
@@ -25,62 +30,35 @@ def solve(model, power_law_index, num_elements=16):
     )
     mesh = dm.generate_line_mesh(start=0.0, end=LENGTH / 2, num_elements=num_elements)
     problem = dm.Problem(mesh)
+    theory, form = MODELS[model]
     beam = problem.add_physics(
-        "beam",
-        "beam",
-        model=model,
+        "solid_mechanics",
+        formulation="beam",
+        theory=theory,
+        form=form,
         extensional_stiffness=stiffness.extensional,
         coupling_stiffness=stiffness.coupling,
         bending_stiffness=stiffness.bending,
-        shear_stiffness=stiffness.shear,
+        # The Euler-Bernoulli beam has no shear deformation, so it takes no shear stiffness.
+        **({"shear_stiffness": stiffness.shear} if theory == "Timoshenko" else {}),
         transverse_load=LOAD,
     )
-    third = beam.variable_names()[2]
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "pin_axial",
-        variable="axial_displacement",
-        boundary="left",
-        value=0.0,
-    )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "pin_deflection",
-        variable="deflection",
-        boundary="left",
-        value=0.0,
-    )
-    if third == "bending_moment":
-        problem.add_boundary_condition(
-            "Dirichlet_boundary_condition", "pin_moment", variable=third, boundary="left", value=0.0
-        )
-    else:
-        problem.add_boundary_condition(
-            "Dirichlet_boundary_condition",
-            "symmetry_rotation",
-            variable=third,
-            boundary="right",
-            value=0.0,
-        )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "symmetry_axial",
-        variable="axial_displacement",
-        boundary="right",
-        value=0.0,
-    )
+    # Pinned at the left end, where the physics holds the moment at zero, and the right end is
+    # the centre of the beam, a plane of symmetry.
+    beam.add_boundary_condition(["disp_x = 0", "disp_z = 0"], boundary="left")
+    beam.add_boundary_condition("symmetry", boundary="right")
     problem.solve(report="none")
     return problem, stiffness
 
 
 if __name__ == "__main__":
-    print("   n   " + "".join(f"{m.replace('Beam', ''):>26s}" for m in MODELS))
+    print("   n   " + "".join(f"{m:>26s}" for m in MODELS))
     for power_law_index in (0.0, 1.0, 2.0, 3.0, 5.0, 10.0, 20.0):
         row = []
         for model in MODELS:
             problem, stiffness = solve(model, power_law_index)
             reduced = stiffness.bending - stiffness.coupling**2 / stiffness.extensional
-            centre = problem.values("deflection")[-1]
+            centre = problem.values("disp_z")[-1]
             row.append(centre * reduced / (LOAD * LENGTH**4) * 10)
         print(f"{power_law_index:5.1f}" + "".join(f"{value:26.4f}" for value in row))
-    print("(normalized centre deflection w Dhat / (q0 L^4) x 10, Table 7.5.3)")
+    print("(normalized centre deflection w Dhat / (q0 L^4) x 10)")

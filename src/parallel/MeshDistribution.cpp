@@ -38,16 +38,17 @@ takeName(const std::vector<Index> & in, std::size_t & at)
   return name;
 }
 
-/// What every rank needs to know of the whole mesh: its dimension, its block names, and the names of its side sets and node sets.
+/// What every rank needs to know of the whole mesh: its dimension and the dimension of its space, its block names, and the names of its side sets and node sets.
 struct Header
 {
   int dimension = 0;
+  int space_dimension = 0;
   std::map<int, std::string> block_names;
   std::vector<std::string> sidesets, nodesets;
 
   std::vector<Index> encode() const
   {
-    std::vector<Index> out{dimension, static_cast<Index>(block_names.size())};
+    std::vector<Index> out{dimension, space_dimension, static_cast<Index>(block_names.size())};
     for (const auto & [block, name] : block_names)
     {
       out.push_back(block);
@@ -67,6 +68,7 @@ struct Header
     Header h;
     std::size_t at = 0;
     h.dimension = static_cast<int>(in[at++]);
+    h.space_dimension = static_cast<int>(in[at++]);
     for (Index k = 0, n = in [at++]; k < n; ++k)
     {
       const int block = static_cast<int>(in[at++]);
@@ -86,6 +88,7 @@ public:
   explicit PartBuilder(const Header & header) : _header(header)
   {
     _part.mesh = std::make_shared<Mesh>(header.dimension);
+    _part.mesh->setSpaceDimension(header.space_dimension);
     _sides.resize(header.sidesets.size());
     _nodes.resize(header.nodesets.size());
   }
@@ -292,6 +295,7 @@ distributeMesh(const Mesh & mesh,
         throw InputError("The mesh has fewer elements (" + std::to_string(mesh.numElements()) +
                          ") than there are processes (" + std::to_string(comm.size()) + ").");
       header.dimension = mesh.dimension();
+      header.space_dimension = mesh.spaceDimension();
       header.block_names = mesh.blockNames();
       for (const auto & [name, sides] : mesh.sidesets())
         header.sidesets.push_back(name);
@@ -314,7 +318,8 @@ distributeMesh(const Mesh & mesh,
   header = Header::decode(encoded);
 
   // The root's DMPlex holds every cell; PETSc's partitioner divides them, and DMPlexDistribute and DMPlexDistributeData move each cell and its record to its rank, together with the cells of the ghost layers (PETSc's overlap: in a mesh of cells and vertices, a layer holds the cells that share a vertex with the layers inside it).
-  const Mesh empty(header.dimension);
+  Mesh empty(header.dimension);
+  empty.setSpaceDimension(header.space_dimension);
   const Mesh & held = comm.isRoot() ? mesh : empty;
   // PETSC_COMM_WORLD is valid only once PETSc runs, which may be first here.
   petsc::initialize();

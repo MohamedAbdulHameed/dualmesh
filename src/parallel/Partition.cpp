@@ -202,6 +202,7 @@ subMesh(const Mesh & mesh,
         std::vector<Index> & local_to_global)
 {
   Mesh out(mesh.dimension());
+  out.setSpaceDimension(mesh.spaceDimension());
   local_to_global.clear();
   std::vector<Index> global_to_local(mesh.numNodes(), -1);
   std::map<Index, Index> element_map; // global element -> local element

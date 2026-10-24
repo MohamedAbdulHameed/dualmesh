@@ -141,5 +141,9 @@ class Output:
             )
         lines += ["</Collection>", "</VTKFile>", ""]
         path = self.path(".pvd")
-        Path(path).write_text("\n".join(lines))
+        from . import _core
+
+        # One index for the whole run: the first process writes it.
+        if _core.mpi_rank() == 0:
+            Path(path).write_text("\n".join(lines))
         return path

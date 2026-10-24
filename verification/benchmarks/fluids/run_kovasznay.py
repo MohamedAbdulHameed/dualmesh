@@ -35,8 +35,8 @@ import plotstyle  # noqa: E402
 RE = 40.0
 LAMBDA = RE / 2 - math.sqrt(RE**2 / 4 + 4 * math.pi**2)
 FIELDS = {
-    "u": f"1 - exp({LAMBDA!r}*x)*cos(2*pi*y)",
-    "v": f"{LAMBDA / (2 * math.pi)!r}*exp({LAMBDA!r}*x)*sin(2*pi*y)",
+    "velocity_x": f"1 - exp({LAMBDA!r}*x)*cos(2*pi*y)",
+    "velocity_y": f"{LAMBDA / (2 * math.pi)!r}*exp({LAMBDA!r}*x)*sin(2*pi*y)",
     "pressure": f"(1 - exp({2 * LAMBDA!r}*x))/2",
 }
 # Elements across x, and 4/3 as many across y.  The coarsest mesh is 16 across: on 8 x 11 elements the cell-centered method has no converged solution (Newton's method and relaxed direct iteration both fail).
@@ -59,9 +59,7 @@ def study(**physics):
 
     s = mms.ManufacturedSolution(FIELDS, dimension=2, flux_boundaries={"right": (1.0, 0.0)})
     s.add_physics(
-        "incompressible_flow",
-        "flow",
-        velocities=["u", "v"],
+        "fluid_dynamics",
         density=1.0,
         dynamic_viscosity=1.0 / RE,
         **physics,
@@ -97,26 +95,23 @@ def projection_errors(n, method):
     grid = mesh(n)
     problem = dm.Problem(grid, method=method, distributed=False)
     problem.add_physics(
-        "incompressible_flow",
-        "flow",
-        velocities=["u", "v"],
+        "fluid_dynamics",
         density=1.0,
         dynamic_viscosity=1.0 / RE,
         formulation="pressure",
         time_integration="projection",
     )
     walls = ["left", "right", "bottom", "top"]
-    for variable in ("u", "v"):
+    for variable in ("velocity_x", "velocity_y"):
         problem.add_boundary_condition(
-            "Dirichlet_boundary_condition",
-            f"exact_{variable}",
+            "Dirichlet",
+            walls,
             variable=variable,
-            boundary=walls,
             value=FIELDS[variable],
         )
     problem.initialize()
     points = problem.entity_points()
-    for variable in ("u", "v"):
+    for variable in ("velocity_x", "velocity_y"):
         exact = _core.ParsedFunction(FIELDS[variable])
         problem.set_values(variable, np.array([exact(p[0], p[1], p[2], 0.0) for p in points]))
     # Ten time units, about five times the time the flow takes to cross the domain at its mean speed, after which the error of the initial interpolation has decayed.
@@ -132,7 +127,7 @@ def projection_errors(n, method):
     shift = (problem.integrate("pressure") - exact_pressure_integral()) / volume
     pressure_exact = f"{FIELDS['pressure']} + {shift!r}"
     errors = {}
-    for variable, exact in (("u", FIELDS["u"]), ("pressure", pressure_exact)):
+    for variable, exact in (("velocity_x", FIELDS["velocity_x"]), ("pressure", pressure_exact)):
         errors[variable] = problem.error_norms(variable, exact)[0]
     return errors
 
@@ -155,8 +150,8 @@ def compute():
         )
         data[method] = {
             "h": np.asarray(result.sizes),
-            "u": np.asarray(result.errors[("u", "l2")]),
-            "u_h1": np.asarray(result.errors[("u", "h1")]),
+            "u": np.asarray(result.errors[("velocity_x", "l2")]),
+            "u_h1": np.asarray(result.errors[("velocity_x", "h1")]),
             "pressure": np.asarray(result.errors[("pressure", "l2")]),
         }
         print(
@@ -169,8 +164,8 @@ def compute():
     )
     data["fem, Taylor-Hood"] = {
         "h": np.asarray(result.sizes),
-        "u": np.asarray(result.errors[("u", "l2")]),
-        "u_h1": np.asarray(result.errors[("u", "h1")]),
+        "u": np.asarray(result.errors[("velocity_x", "l2")]),
+        "u_h1": np.asarray(result.errors[("velocity_x", "h1")]),
         "pressure": np.asarray(result.errors[("pressure", "l2")]),
     }
     print(f"Taylor-Hood: velocity L2 {data['fem, Taylor-Hood']['u']}", flush=True)
@@ -180,7 +175,7 @@ def compute():
         h = data[method]["h"]
         data[f"projection {method}"] = {
             "h": h,
-            "u": np.asarray([r["u"] for r in rows]),
+            "u": np.asarray([r["velocity_x"] for r in rows]),
             "pressure": np.asarray([r["pressure"] for r in rows]),
         }
         print(

@@ -260,11 +260,13 @@ Gradients, fluxes and properties
 These are evaluated at element centroids, one row per element, because that is
 where a piecewise quantity is best represented and where Gauss-point quantities
 are most accurate.  ``property_at_centroids`` returns any property that a
-property object declared, so ``"stress"``, ``"strain"`` and ``"volumetric_strain"`` are
-available from ``linear_elastic_stress`` without further setup.  Stress and
-strain use the Voigt ordering :math:`(xx, yy, zz, yz, xz, xy)`, and the ``zz``
-component is filled in for plane strain and axisymmetric problems as well as
-three-dimensional ones, because it is nonzero there.
+property object declared, so ``"stress"``, ``"strain"``, ``"elastic_strain"``,
+``"volumetric_strain"`` and ``"von_mises_stress"`` are available from
+``small_strain_stress`` without further setup.  Stress and strain use the Voigt
+ordering :math:`(xx, yy, zz, yz, xz, xy)`.  The ``zz`` component is filled in
+wherever it is not zero: the stress of plane strain and axisymmetric problems,
+the strain of plane stress and axisymmetric problems, and both in three
+dimensions.
 
 Integrals
 ---------

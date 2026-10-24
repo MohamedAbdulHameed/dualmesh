@@ -37,7 +37,6 @@ def _stress_problem(mesh, material, displacements, coordinates="cartesian", meth
         formulation = "axisymmetric"
     p.add_property(
         material,
-        "stress",
         displacements=displacements,
         formulation=formulation,
         youngs_modulus=E,
@@ -45,9 +44,9 @@ def _stress_problem(mesh, material, displacements, coordinates="cartesian", meth
         **extra,
     )
     stress = "first_piola_kirchhoff_stress" if material == "finite_strain_stress" else "stress"
-    for i, d in enumerate(displacements):
+    for d in displacements:
         p.add_kernel(
-            "stress_divergence", f"equilibrium_{d}", variable=d, component=i, stress_property=stress
+            "stress_divergence", variable=d, displacements=displacements, stress_property=stress
         )
     return p
 
@@ -68,14 +67,7 @@ def test_at_small_strain_the_finite_strain_stress_is_the_small_strain_stress(met
     results = []
     for material in ("small_strain_stress", "finite_strain_stress"):
         p = _stress_problem(mesh, material, ["u"], coordinates="axisymmetric", method=method)
-        p.add_boundary_condition(
-            "pressure_boundary_condition",
-            "inside",
-            variable="u",
-            component=0,
-            boundary=["inner"],
-            pressure=pressure,
-        )
+        p.add_boundary_condition("pressure", "inner", displacements=["u"], pressure=pressure)
         p.solve()
         results.append(np.asarray(p.values("u")))
     small, finite = results
@@ -108,14 +100,11 @@ def test_a_neo_hookean_bar_stretched_uniaxially_has_the_exact_nominal_stress(str
         mesh, "finite_strain_stress", ["ux", "uy", "uz"], stress_update="neo_Hookean"
     )
     for v, side in (("ux", "left"), ("uy", "bottom"), ("uz", "back")):
-        p.add_boundary_condition(
-            "Dirichlet_boundary_condition", f"hold_{v}", variable=v, boundary=[side], value=0.0
-        )
+        p.add_boundary_condition("Dirichlet", side, variable=v, value=0.0)
     p.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "pull",
+        "Dirichlet",
+        "right",
         variable="ux",
-        boundary=["right"],
         value=stretch - 1.0,
     )
     p.solve(load_factors=[0.25, 0.5, 0.75, 1.0])
@@ -150,10 +139,9 @@ def test_a_rigid_rotation_rotates_the_stress_and_adds_none(update):
         ("uy", f"sin({a})*(1 + {s})*x + cos({a})*y - y"),
     ):
         p.add_boundary_condition(
-            "Dirichlet_boundary_condition",
-            f"motion_{v}",
+            "Dirichlet",
+            ["left", "right", "top", "bottom"],
             variable=v,
-            boundary=["left", "right", "top", "bottom"],
             value=dm.ParsedFunction(expression),
             scale_with_load=False,
         )
@@ -234,11 +222,9 @@ def test_a_thick_tube_inflated_to_large_strain_by_a_follower_pressure(method):
             stress_update="neo_Hookean",
         )
         p.add_boundary_condition(
-            "pressure_boundary_condition",
-            "inside",
-            variable="u",
-            component=0,
-            boundary=["inner"],
+            "pressure",
+            "inner",
+            displacements=["u"],
             pressure=pressure,
             deformation_gradient_property="deformation_gradient",
         )
@@ -268,21 +254,37 @@ def test_the_axisymmetric_formulation_inflates_the_same_tube(method):
         method=method,
         stress_update="neo_Hookean",
     )
+    p.add_boundary_condition("Dirichlet", ["top", "bottom"], variable="uz", value=0.0)
     p.add_boundary_condition(
-        "Dirichlet_boundary_condition", "ends", variable="uz", boundary=["top", "bottom"], value=0.0
+        "pressure",
+        "left",
+        displacements=["ur", "uz"],
+        pressure=pressure,
+        deformation_gradient_property="deformation_gradient",
     )
-    for i, v in enumerate(("ur", "uz")):
-        p.add_boundary_condition(
-            "pressure_boundary_condition",
-            f"inside_{v}",
-            variable=v,
-            component=i,
-            boundary=["left"],
-            pressure=pressure,
-            deformation_gradient_property="deformation_gradient",
-        )
     p.solve(load_factors=list(np.linspace(0.1, 1.0, 10)))
     points = [[r, 0.1, 0.0] for r in np.linspace(b, c, 9)]
     sampled = np.asarray(p.sample("ur", points))
     exact = reference(np.linspace(b, c, 9))
     assert np.abs(sampled - exact).max() < 2e-3 * exact[0]
+
+
+@pytest.mark.parametrize("stretch", [1.05, 1.3])
+def test_the_neo_hookean_elastic_strain_is_the_green_lagrange_strain_of_the_stretch(stretch):
+    # No eigenstrain, so F_e = F = diag(stretch, s, s): E_e = (F^T F - I) / 2, and the
+    # volumetric strain is J - 1.
+    pytest.importorskip("scipy")
+    mesh = dm.generate_box_mesh(0, 1, 0, 1, 0, 1, 2, 2, 2)
+    p = _stress_problem(
+        mesh, "finite_strain_stress", ["ux", "uy", "uz"], stress_update="neo_Hookean"
+    )
+    for v, side in (("ux", "left"), ("uy", "bottom"), ("uz", "back")):
+        p.add_boundary_condition("Dirichlet", side, variable=v, value=0.0)
+    p.add_boundary_condition("Dirichlet", "right", variable="ux", value=stretch - 1.0)
+    p.solve(load_factors=[0.25, 0.5, 0.75, 1.0], report="none")
+    _, s = _uniaxial_neo_hookean(stretch)
+    elastic = p.property_at_centroids("elastic_strain")
+    expected = [0.5 * (stretch**2 - 1), 0.5 * (s**2 - 1), 0.5 * (s**2 - 1), 0, 0, 0]
+    assert np.allclose(elastic, expected, rtol=1e-8, atol=1e-12)
+    volumetric = p.property_at_centroids("volumetric_strain")
+    assert np.allclose(volumetric, stretch * s * s - 1, rtol=1e-8)

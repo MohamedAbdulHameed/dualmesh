@@ -80,7 +80,8 @@ public:
                            std::vector<double> & beta,
                            std::vector<double> & alpha);
 
-  /// The iterations of the last step's pressure solve and of its velocity solves.
+  /// The iterations of the last step's pressure solve and of its velocity solves (the benchmark
+  /// program reports them).
   int lastPressureIterations() const { return _pressure_iterations; }
   int lastVelocityIterations() const { return _velocity_iterations; }
 

@@ -1,13 +1,13 @@
 Verification
 ============
 
-Every number this library produces for a published problem is checked against
-the published value.  The suite in ``tests/python`` reproduces the dual mesh
-control domain results of Reddy's book chapter by chapter.  The directory
-``tests/cpp`` holds the structural tests that do not depend on a published
-table.  A manufactured-solution study measures the order of convergence of
-every method on every element type, and :doc:`openfoam` compares the solvers
-with an independent code.
+Every problem of the verification suite has a reference: an exact solution, a
+published value, or an independent code.  The suite in ``tests/python`` solves
+the problems below and compares every computed value with its reference.  The
+directory ``tests/cpp`` holds the structural tests.  A manufactured-solution
+study measures the order of convergence of every method on every element type,
+:doc:`benchmarks/index` gives the benchmarks of flow and of the solvers, and
+:doc:`openfoam` compares the solvers with an independent code.
 
 .. code-block:: console
 
@@ -17,91 +17,71 @@ with an independent code.
 What is covered
 ---------------
 
+Where a problem has no exact solution, its reference is the published dual
+mesh solution on the same mesh [Reddy2024]_, which checks that the code
+implements the method as published.
+
 .. list-table::
    :header-rows: 1
-   :widths: 22 48 30
+   :widths: 50 50
 
-   * - Source
-     - Problem
+   * - Problem
      - What is checked
-   * - Example 3.3.1
-     - :math:`-u'' = 10\cos x`, Dirichlet and mixed cases, four elements,
+   * - :math:`-u'' = 10\cos x`, Dirichlet and mixed cases, four elements,
        trapezoidal source rule
      - nodal values (both cases)
-   * - Example 5.3.1, Table 5.3.1
-     - cooling fin :math:`-u'' + 400u = 0` with a convective end
+   * - cooling fin :math:`-u'' + 400u = 0` with a convective end
      - nodal values on 5, 10 and 20 elements, and the heat flow :math:`Q(0)`
-   * - Example 5.3.2
-     - axisymmetric conduction in a cylinder with heat generation
+   * - axisymmetric conduction in a cylinder with heat generation
      - exact nodal values, and :math:`Q(R_0) = \pi R_0^2 g_0`
-   * - Example 5.4.1, Table 5.4.1
-     - conduction in a :math:`3a \times 2a` rectangle with insulated edges
-     - the :math:`3 \times 2` nodal values, the :math:`6 \times 4` and
-       :math:`12 \times 8` tables, and the identity of the dual mesh and finite
+   * - conduction in a :math:`3a \times 2a` rectangle with insulated edges
+     - nodal values on :math:`3 \times 2`, :math:`6 \times 4` and
+       :math:`12 \times 8` meshes, and the identity of the dual mesh and finite
        element solutions on triangles
-   * - Example 5.4.2, Table 5.4.2
-     - conduction with a parabolic edge temperature
-     - both tabulated rows (:math:`8 \times 8` mesh)
-   * - Example 5.4.3, Table 5.4.3
-     - bus bar with heat generation and surface convection
-     - both tabulated rows, to every printed digit
-   * - Example 5.4.4, Table 5.4.4
-     - advection-diffusion at :math:`Pe = 75` on :math:`50 \times 50` and
+   * - conduction with a parabolic edge temperature
+     - nodal values on an :math:`8 \times 8` mesh
+   * - bus bar with heat generation and surface convection
+     - nodal values on a :math:`10 \times 5` mesh, to every printed digit
+   * - advection-diffusion at :math:`Pe = 75` on :math:`50 \times 50` and
        :math:`100 \times 100` meshes
      - the diagonal profile, to :math:`2\times10^{-5}`
-   * - Example 6.2.2
-     - :math:`-u'' + 2u^3 = 0` with a nonlinear flux condition
+   * - :math:`-u'' + 2u^3 = 0` with a nonlinear flux condition
      - nodal values on 4 and 8 elements
-   * - Example 6.2.3, Table 6.2.2
-     - conduction with :math:`k(T) = k_0(1 + k_1 T)`
+   * - conduction with :math:`k(T) = k_0(1 + k_1 T)`
      - nodal values on 4 and 8 elements
-   * - Example 6.2.4
-     - large-deformation bar, :math:`a(u') = EA(1 + 1.5u' + 0.5u'^2)`
+   * - large-deformation bar, :math:`a(u') = EA(1 + 1.5u' + 0.5u'^2)`
      - tip displacement at three load levels (a kernel written in Python)
-   * - Example 6.3.1, Table 6.3.1
-     - two-dimensional nonlinear conduction
-     - both tabulated rows, with Newton's method and with direct iteration
-   * - Example 6.3.2
-     - nonlinear bus bar, :math:`k = 20 + 0.2T`
+   * - two-dimensional nonlinear conduction
+     - nodal values, with Newton's method and with direct iteration
+   * - nonlinear bus bar, :math:`k = 20 + 0.2T`
      - the linear and nonlinear nodal values
-   * - Tables 7.5.1–7.5.4
-     - pinned and clamped beams, three dual mesh models, four meshes
+   * - pinned and clamped beams, three dual mesh models, four meshes
      - centre deflections, and the exact centre moment of the mixed models
-   * - Table 7.5.3
-     - functionally graded beams, seven power-law indices
+   * - functionally graded beams, seven power-law indices
      - normalized centre deflections for all three models
-   * - Table 7.6.1
-     - von Kármán bending of a pinned beam, six load levels
+   * - von Kármán bending of a pinned beam, six load levels
      - centre deflections with Newton's method and with direct iteration
        (:math:`\gamma = 0.35`)
-   * - Table 8.6.1
-     - hinged circular plate, five meshes
+   * - hinged circular plate, five meshes
      - centre deflection, and agreement with the analytical solution
-   * - Table 8.6.2
-     - clamped functionally graded circular plate, ten power-law indices
+   * - clamped functionally graded circular plate, ten power-law indices
      - centre deflections (32 elements)
-   * - Table 9.8.1
-     - plate under a uniform edge load, four meshes
+   * - plate under a uniform edge load, four meshes
      - displacements and element-centre stresses
-   * - Example 9.8.1
-     - uniform edge stress
+   * - uniform edge stress
      - :math:`u = t_0 a / E` exactly, and an exactly uniform stress
-   * - Table 9.8.2
-     - creeping flow squeezed between plates (:math:`20 \times 16` graded mesh)
+   * - creeping flow squeezed between plates (:math:`20 \times 16` graded mesh)
      - the horizontal velocity profiles at two stations, and the recovered
        pressure
-   * - Table 9.8.3
-     - lid-driven cavity at :math:`Re = 0` and :math:`Re = 1000`
+   * - lid-driven cavity at :math:`Re = 0` and :math:`Re = 1000`
      - the centreline profile for both, by load stepping and by direct
        iteration
-   * - Table 9.9.1
-     - pressurized thick cylinder, quadrilateral and triangular meshes
+   * - pressurized thick cylinder, quadrilateral and triangular meshes
      - radial displacements, and monotone convergence to the Lamé solution
-   * - Table 10.5.1
-     - clamped functionally graded plate, six power-law indices, four meshes
+   * - clamped functionally graded plate, six power-law indices, four meshes
      - normalized centre deflections
 
-Additional checks that do not depend on a published table are the patch test on
+Additional checks without a published reference are the patch test on
 distorted meshes of every element type, the geometric closure of the dual mesh
 (the control volumes partition each element and their interface areas balance),
 exactness
@@ -118,37 +98,14 @@ Where the mesh and the data are fully specified, the code reproduces the
 published values to the last printed digit.  Two classes of small differences
 remain, both documented in the tests:
 
-* **Rounding.** The book prints four or five decimals, so the tests accept a
-  difference of one unit in the last printed digit (e.g., :math:`1.1\times10^{-4}`
-  for Table 7.5.1).
-* **Meshes that the text does not fully specify.** For the pressurized cylinder
-  (Table 9.9.1) the book gives the number of subdivisions across the wall and
-  the total element count, without the exact circumferential distribution, and
-  for triangles it does not state how the quadrilaterals are split.  The tests
-  therefore compare the quadrilateral results within half a percent and, in
-  addition, check monotone convergence to the analytical solution for both
-  element types.
-
-Two discrepancies in the book
------------------------------
-
-Two published values differ from the values computed by this code, and in both
-cases the evidence indicates an error in the book's table.
-
-1. **Table 5.4.2, last entry.**  The table gives the dual mesh temperature at
-   :math:`(x, y) = (0.175, 0.05)` as 335.34 K.  Every other entry of that table
-   is reproduced here to the last printed digit, the finite element value at
-   the same point is 335.49 K, and the dual mesh solution is above the finite
-   element solution at every other point of the table.  This code gives
-   335.545 K, which suggests that 335.34 is a typographical error for 335.54.
-
-2. **Table 5.4.3, caption.**  The table is captioned
-   ":math:`20 \times 10` mesh", but Fig. 5.4.15(b) shows a :math:`10 \times 5`
-   primal mesh, and Example 6.3.2 quotes the same numbers for its
-   :math:`10 \times 5` mesh.  On a :math:`10 \times 5` mesh this code reproduces
-   all eighteen tabulated values to every printed digit.  On a
-   :math:`20 \times 10` mesh the values differ in the second decimal.  The data
-   therefore come from the :math:`10 \times 5` mesh of the figure.
+* **Rounding.** The published values have four or five decimals, so the tests
+  accept a difference of one unit in the last printed digit.
+* **Meshes that are not fully specified.** For the pressurized cylinder the
+  published mesh is given by the number of subdivisions across the wall and
+  the total element count, without the exact circumferential distribution or
+  the split of the quadrilaterals into triangles.  The tests therefore compare
+  the quadrilateral results within half a percent and, in addition, check
+  monotone convergence to the analytical solution for both element types.
 
 Order of accuracy: manufactured solutions
 -----------------------------------------
@@ -172,9 +129,8 @@ exactly, and its observed order between two meshes is
 :mod:`dualmesh.mms` does the symbolic work with SymPy: a
 :class:`~dualmesh.mms.ManufacturedSolution` holds the exact fields and the
 physics of the equations, added with ``add_physics`` as to a problem
-(``coefficient_form_PDE`` for diffusion with a variable or solution-dependent
-coefficient, convection in either form, absorption and the time derivative,
-``heat_transfer``, ``solid_mechanics`` and ``incompressible_flow``).  Each
+(``general_form_PDE`` for any equation written as text or by its
+coefficients, ``heat_transfer``, ``solid_mechanics`` and ``fluid_dynamics``).  Each
 physics states, in SymPy, the flux and the source of the objects it
 generates, so that the forcing is derived from the equations the code
 assembles.  The study derives the forcing, including the metric factors of the
@@ -264,7 +220,7 @@ A user-defined study requires only a few lines:
    from dualmesh import mms
 
    study = mms.ManufacturedSolution({"u": "sin(pi*x)*cos(pi*y) + x*y"}, dimension=2)
-   study.add_physics("coefficient_form_PDE", "diffusion", diffusion_coefficient="1 + 0.5*x*y")
+   study.add_physics("general_form_PDE", variables="u", equations="-div((1 + 0.5*x*y)*grad(u)) = 0")  # the forcing is derived
    result = study.convergence_study(
        lambda n: dm.generate_rectangle_mesh(0, 1, 0, 1, n, n, element_type="Tri6"),
        [4, 8, 16, 32],
@@ -284,10 +240,9 @@ The model is two-group diffusion theory with an axial buckling of
 The outer boundary has no incoming current, which the benchmark gives as
 :math:`\partial \phi_g / \partial n = -0.4692\, \phi_g / D_g`.  The script
 ``verification/benchmarks/neutronics/run_iaea_2d_pwr.py`` writes the
-two-group equations with ``coefficient_form_PDE`` (see
-:ref:`tutorial-criticality`), and this condition as a
-``Robin_boundary_condition`` with the transfer coefficient
-:math:`1/2.1312`.  The reference is the extrapolated finite-difference
+two-group equations with ``general_form_PDE`` (see
+:ref:`tutorial-criticality`), and this condition as
+``"-diffusion_1*dphi1/dn = phi1/2.1312"`` and its thermal counterpart.  The reference is the extrapolated finite-difference
 solution of problem 11-A2-1: :math:`k_\mathrm{eff} = 1.02959` (Table 1) and
 the zone average thermal fluxes (Table 3).  The assembly powers follow from
 these fluxes and are normalised to a core average of one.
@@ -344,11 +299,12 @@ Newton's method on the coupled system.  The numbers are in
 Reproducing a single case
 -------------------------
 
-Every test is an ordinary function, so a case can be run on its own:
+Every test is an ordinary function, so a file or a single test can be run on
+its own:
 
 .. code-block:: console
 
-   pytest tests/python/test_heat_transfer.py -k example_5_4_3 -v
-   pytest tests/python/test_beams.py -k table_7_5_1 -v
+   pytest tests/python/test_heat_transfer.py -v
+   pytest tests/python/test_beams.py -v
 
 and the ``examples`` directory holds stand-alone scripts for several of them.

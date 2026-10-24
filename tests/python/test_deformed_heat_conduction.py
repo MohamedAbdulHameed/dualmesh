@@ -38,7 +38,6 @@ def _heated_cylinder(strain, method="fem", surface="dirichlet", deformed=True):
         p.add_variable(v)
     p.add_property(
         "parsed_eigenstrain",
-        "expansion",
         eigenstrain_name="expansion",
         expression=str(strain),
         strain_type="linear",
@@ -46,46 +45,38 @@ def _heated_cylinder(strain, method="fem", surface="dirichlet", deformed=True):
     )
     p.add_property(
         "small_strain_stress",
-        "stress",
         displacements=["disp_r", "disp_z"],
         formulation="axisymmetric",
         youngs_modulus=1e11,
         poissons_ratio=0.3,
         eigenstrain_names=["expansion"],
     )
-    for i, d in enumerate(("disp_r", "disp_z")):
-        p.add_kernel("stress_divergence", f"eq_{d}", variable=d, component=i)
-    p.add_boundary_condition(
-        "Dirichlet_boundary_condition", "axis", variable="disp_r", boundary=["left"], value=0.0
-    )
-    p.add_boundary_condition(
-        "Dirichlet_boundary_condition", "base", variable="disp_z", boundary=["bottom"], value=0.0
-    )
+    for d in ("disp_r", "disp_z"):
+        p.add_kernel("stress_divergence", variable=d, displacements=["disp_r", "disp_z"])
+    p.add_boundary_condition("Dirichlet", "left", variable="disp_r", value=0.0)
+    p.add_boundary_condition("Dirichlet", "bottom", variable="disp_z", value=0.0)
     on_deformed = {"deformation_gradient_property": "deformation_gradient"} if deformed else {}
     p.add_kernel(
         "heat_conduction",
-        "conduction",
         variable="temperature",
         thermal_conductivity=K,
         **on_deformed,
     )
-    p.add_kernel("heat_source", "heat", variable="temperature", heat_source=Q0)
+    p.add_kernel("body_force", variable="temperature", value=Q0)
     if surface == "dirichlet":
         p.add_boundary_condition(
-            "Dirichlet_boundary_condition",
-            "surface",
+            "Dirichlet",
+            "right",
             variable="temperature",
-            boundary=["right"],
             value=0.0,
         )
     else:
         p.add_boundary_condition(
-            "convective_heat_flux_boundary_condition",
-            "surface",
+            "Robin",
+            "right",
             variable="temperature",
-            boundary=["right"],
-            heat_transfer_coefficient=H,
-            ambient_temperature=0.0,
+            transfer_coeff=H,
+            ambient_value=0.0,
             **on_deformed,
         )
     p.solve(relative_tolerance=1e-12, absolute_tolerance=1e-12)
@@ -147,61 +138,52 @@ def test_a_rigid_rotation_changes_nothing():
         p.add_variable("temperature")
         p.add_property(
             "finite_strain_stress",
-            "stress",
             displacements=["ux", "uy"],
             formulation="plane_strain",
             youngs_modulus=1e9,
             poissons_ratio=0.3,
             stress_update="neo_Hookean",
         )
-        for i, d in enumerate(("ux", "uy")):
-            p.add_kernel(
-                "stress_divergence",
-                f"eq_{d}",
-                variable=d,
-                component=i,
-                stress_property="first_piola_kirchhoff_stress",
-            )
+        p.add_kernel(
+            "stress_divergence",
+            displacements=["ux", "uy"],
+            stress_property="first_piola_kirchhoff_stress",
+        )
         p.add_function("rotate_x", dm.ParsedFunction(rotate_x))
         p.add_function("rotate_y", dm.ParsedFunction(rotate_y))
         everywhere = ["left", "right", "top", "bottom"]
         p.add_boundary_condition(
-            "Dirichlet_boundary_condition",
-            "bx",
+            "Dirichlet",
+            everywhere,
             variable="ux",
-            boundary=everywhere,
             value="rotate_x",
         )
         p.add_boundary_condition(
-            "Dirichlet_boundary_condition",
-            "by",
+            "Dirichlet",
+            everywhere,
             variable="uy",
-            boundary=everywhere,
             value="rotate_y",
         )
         on_deformed = {"deformation_gradient_property": "deformation_gradient"} if deformed else {}
         p.add_kernel(
             "heat_conduction",
-            "conduction",
             variable="temperature",
             thermal_conductivity=2.0,
             **on_deformed,
         )
-        p.add_kernel("heat_source", "heat", variable="temperature", heat_source=5.0)
+        p.add_kernel("body_force", variable="temperature", value=5.0)
         p.add_boundary_condition(
-            "Dirichlet_boundary_condition",
-            "cold",
+            "Dirichlet",
+            "left",
             variable="temperature",
-            boundary=["left"],
             value=0.0,
         )
         p.add_boundary_condition(
-            "convective_heat_flux_boundary_condition",
-            "film",
+            "Robin",
+            "right",
             variable="temperature",
-            boundary=["right"],
-            heat_transfer_coefficient=3.0,
-            ambient_temperature=1.0,
+            transfer_coeff=3.0,
+            ambient_value=1.0,
             **on_deformed,
         )
         p.solve(relative_tolerance=1e-12, absolute_tolerance=1e-12)
@@ -217,9 +199,7 @@ def test_the_property_must_have_nine_components():
     mesh = dm.generate_line_mesh(0.0, 1.0, 4)
     p = dm.Problem(mesh)
     p.add_variable("temperature")
-    p.add_property("constant_property", "k", property_names=["k"], property_values=[1.0])
-    p.add_kernel(
-        "heat_conduction", "conduction", variable="temperature", deformation_gradient_property="k"
-    )
+    p.add_property("constant", properties={"k": 1.0})
+    p.add_kernel("heat_conduction", variable="temperature", deformation_gradient_property="k")
     with pytest.raises(Exception, match="must have nine components"):
         p.solve()

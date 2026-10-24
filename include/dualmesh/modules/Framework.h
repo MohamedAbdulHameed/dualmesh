@@ -19,10 +19,8 @@ public:
 
 protected:
   ADReal coefficient(const QpContext & ctx) const;
-  FunctionPtr _k;
+  FieldCoefficient _k;
   std::vector<double> _poly;
-  std::string _prop_name;
-  int _prop = -1;
 };
 
 class AnisotropicDiffusion : public Kernel
@@ -49,10 +47,8 @@ public:
   ADReal computeSource(const QpContext & ctx) const override;
 
 private:
-  FunctionPtr _c;
+  FieldCoefficient _c;
   double _p;
-  std::string _prop_name;
-  int _prop = -1;
 };
 
 class BodyForce : public Kernel
@@ -79,7 +75,7 @@ public:
   ADReal computeSource(const QpContext & ctx) const override;
 
 private:
-  FunctionPtr _c;
+  FieldCoefficient _c;
 };
 
 class Advection : public Kernel
@@ -88,14 +84,25 @@ public:
   explicit Advection(const InputParameters & p);
   static InputParameters validParams();
   void initialSetup(Problem & problem) override;
-  bool hasFlux() const override { return _conservative; }
-  bool hasSource() const override { return !_conservative; }
+  bool hasFlux() const override { return _conservative || _face_flux; }
+  bool hasSource() const override { return !hasFlux(); }
+  bool usesFaceSides() const override { return _face_flux; }
+  bool nonConservativeFaceFlux() const override { return _face_flux && !_conservative; }
+  bool hasKinks() const override { return _scheme == AdvectionScheme::Limited; }
+  bool needsSideGradients() const override
+  {
+    return _scheme == AdvectionScheme::LinearUpwind || _scheme == AdvectionScheme::Limited;
+  }
+  bool advectingNormalVelocity(const QpContext & ctx, double & velocity) const override;
   void computeFlux(const QpContext & ctx, ADVector3 & F) const override;
   ADReal computeSource(const QpContext & ctx) const override;
 
 private:
   bool _conservative = false;
-  std::array<FunctionPtr, 3> _v;
+  /// Whether an advection scheme of a control volume method chooses the face value.
+  bool _face_flux = false;
+  AdvectionScheme _scheme = AdvectionScheme::Central;
+  std::array<FieldCoefficient, 3> _v;
 };
 
 class CoupledForce : public Kernel
@@ -109,9 +116,7 @@ public:
 
 private:
   int _v = -1;
-  FunctionPtr _c;
-  std::string _prop_name;
-  int _prop = -1;
+  FieldCoefficient _c;
 };
 
 class DirichletBC : public NodalBC
@@ -156,6 +161,7 @@ public:
 
 private:
   FieldCoefficient _q;
+  int _F = -1;
 };
 
 class RobinBC : public IntegratedBC
@@ -168,6 +174,7 @@ public:
 
 protected:
   FieldCoefficient _h, _uinf, _q;
+  int _F = -1;
 };
 
 class ConstantProperty : public Property
@@ -179,8 +186,7 @@ public:
   void computeProperties(QpContext & ctx) const override;
 
 private:
-  std::vector<std::string> _names;
-  std::vector<double> _values;
+  RealMap _values;
   std::vector<int> _ids;
 };
 
@@ -194,7 +200,7 @@ public:
   void computeProperties(QpContext & ctx) const override;
 
 private:
-  std::vector<std::string> _names, _fnames;
+  StringMap _functions;
   std::vector<FunctionPtr> _f;
   std::vector<int> _ids;
 };
@@ -209,7 +215,7 @@ public:
 
   std::string primaryBoundary() const { return _params.getString("primary"); }
   std::string secondaryBoundary() const { return _params.getString("secondary"); }
-  /// The periodic variables: every variable of @p problem unless the parameter variables names some.
+  /// The periodic variables: every variable of @p problem unless the parameter 'variable' names some.
   std::vector<int> periodicVariables(const Problem & problem) const;
   /// For every point of @p secondary, the index of the point of @p primary that the translation maps it onto.
   /// The translation is the parameter, or else the vector between the centroids of the two point sets; a point without a match is an InputError.

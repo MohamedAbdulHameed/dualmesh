@@ -1,20 +1,13 @@
 name: Wheels
 
-# Binary wheels, so that `pip install dualmesh-multiphysics` needs no compiler.
-# (The PyPI distribution is dualmesh-multiphysics; the package is imported as
-# dualmesh and the command is dualmesh.)
-#
-# The wheels are built on every tag that starts with "v" and on demand, and are
-# kept as workflow artifacts.  Publishing to PyPI is the last job; it runs only
-# for a tag, and uses PyPI Trusted Publishing (OIDC): no token is stored in
-# GitHub.  The trusted publisher on pypi.org is project dualmesh-multiphysics,
-# owner MohamedAbdulHameed, repository dualmesh, workflow wheels.yml,
-# environment pypi (a GitHub environment of exactly that name must exist).
+# Binary wheels and the source distribution, built and tested on every tag that
+# starts with "v" and on demand, and kept as workflow artifacts.  dualmesh is
+# not published on PyPI.
 #
 # Running this workflow by hand from main (Actions -> Wheels -> Run workflow) is
-# the release dry run: every wheel and the sdist are built and tested, and the
-# publish job is skipped because the ref is not a tag.  A tag is pushed only
-# after that run is green; scripts/release.py enforces the order.
+# the release dry run: every wheel and the sdist are built and tested.  A tag
+# is pushed only after that run is green; scripts/release.py enforces the
+# order.
 #
 # Lessons of v0.1.0, checked by scripts/release.py and
 # tests/python/test_release_script.py:
@@ -79,24 +72,25 @@ jobs:
           name: sdist
           path: dist/*.tar.gz
 
-  publish:
-    name: Publish to PyPI
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [wheels, sdist]
+  sbom:
+    name: Software bill of materials
     runs-on: ubuntu-latest
-    environment: pypi
-    permissions:
-      id-token: write
     steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          path: dist
-          merge-multiple: true
-      - name: Software bill of materials of the release
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Build the source distribution
+        run: pipx run build --sdist
+      - name: Unpack the source distribution
+        run: mkdir sdist && tar -xf dist/*.tar.gz -C sdist --strip-components=1
+      - name: Scan the source distribution
+        # Pinned by its commit, as every action of the repository is
+        # (scripts/release.py checks them); the action runs syft itself.
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
         with:
-          path: dist
+          path: sdist
           format: spdx-json
-          output-file: dualmesh-sbom.spdx.json
-          upload-artifact: true
-      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
+          output-file: sbom-spdx.json
+          upload-artifact: false
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: sbom
+          path: sbom-spdx.json

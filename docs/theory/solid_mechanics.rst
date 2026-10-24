@@ -4,8 +4,7 @@ Linear elasticity
 This chapter describes the small-strain, linearly elastic solid mechanics of
 the ``solid_mechanics`` module: the equilibrium equations that are solved, the
 kinematics and the constitutive law, the four idealisations supported (plane
-stress, plane strain, axisymmetric and three-dimensional), orthotropic
-materials, thermal strain, the boundary conditions belonging to the elasticity
+stress, plane strain, axisymmetric and three-dimensional), thermal strain, the boundary conditions belonging to the elasticity
 duality pair, and the out-of-plane thickness.  It assumes undergraduate solid
 mechanics but no acquaintance with this library.  Throughout, a stress
 component is positive in tension, and a displacement, traction or force
@@ -67,10 +66,10 @@ traction component is the natural partner of the displacement component with
 no further construction.
 
 The module splits the work between two kinds of object.  The **property object**,
-``linear_elastic_stress``, is independent of the equilibrium statement: given
+``small_strain_stress``, is independent of the equilibrium statement: given
 the displacement gradients at an integration point it computes the strain and
-the stress and provides them as the properties ``stress``, ``strain`` and
-``volumetric_strain``.  The **kernel**, ``stress_divergence``, is independent
+the stress and provides them as the properties ``stress``, ``strain``,
+``elastic_strain`` and ``volumetric_strain``.  The **kernel**, ``stress_divergence``, is independent
 of the constitutive law: it receives the index of the component :math:`i` it
 represents, reads the stress property, and returns the flux
 :eq:`elasticity-flux` together with the axisymmetric source described below.
@@ -151,8 +150,8 @@ The constitutive law is a matrix product in the same ordering,
 
    \sigma_I = \sum_{J=0}^{5} C_{IJ}\, \varepsilon_J ,
 
-with :math:`C_{IJ}` assembled once when the property object is constructed.  The
-isotropic stiffness is built from Young's modulus :math:`E`, a stiffness in
+with :math:`C_{IJ}` the isotropic stiffness of the formulation.  The
+stiffness is built from Young's modulus :math:`E`, a stiffness in
 force per unit area, and Poisson's ratio :math:`\nu`, the ratio of transverse
 contraction to axial extension, which must satisfy :math:`-1 < \nu < 1/2`.  It
 is convenient to name the Lamé constants
@@ -165,10 +164,12 @@ is convenient to name the Lamé constants
 in which :math:`\mu` is the shear modulus.  Both :math:`\lambda` and the
 plane-strain, axisymmetric and three-dimensional stiffnesses below become
 singular as :math:`\nu \to 1/2`, so a nearly incompressible material needs
-care, and the default :math:`\nu = 0`, which gives no transverse coupling at
-all, is rarely the material intended.  Which stiffness is built is chosen by
-``formulation``, one of ``plane_stress``, ``plane_strain``, ``axisymmetric``
-or ``three_dimensional``.  Any other string is an error.  The number of names
+care.  Young's modulus has no default.  When Poisson's ratio is not given, it is
+the property ``poissons_ratio`` if a property object declares it, and otherwise
+:math:`1/3`, the default of the library, which the report marks as a default.
+Which stiffness is built is chosen by ``formulation``, one of
+``plane_stress``, ``plane_strain``, ``axisymmetric``, ``axisymmetric_1d`` or
+``three_dimensional``.  Any other string is an error.  The number of names
 in ``displacements`` and the dimension of the mesh must match the choice: two
 of each for the plane and axisymmetric formulations, three for the
 three-dimensional one.
@@ -191,10 +192,17 @@ leaving
      0 & 0 & \tfrac{1}{2}(1-\nu) \end{bmatrix}
    \begin{Bmatrix} \varepsilon_{xx} \\ \varepsilon_{yy} \\ \gamma_{xy} \end{Bmatrix} ,
 
-the shear entry being :math:`E/[2(1+\nu)] = G`.  The row that would give
-:math:`\sigma_{zz}` is left at zero, so the ``stress`` property reports
-:math:`\sigma_{zz} = 0`, which is what the idealisation asserts.  This is the
-default formulation.
+the shear entry being :math:`E/[2(1+\nu)] = G`.  The ``stress`` property
+reports :math:`\sigma_{zz} = 0`, which is what the idealisation asserts, and
+the ``strain`` property reports the out-of-plane strain that keeps it so,
+
+.. math::
+
+   \varepsilon_{zz} = -\frac{\nu}{1-\nu}\,(\varepsilon_{xx} + \varepsilon_{yy}),
+
+of the elastic strains, plus the eigenstrains.  The ``volumetric_strain``
+includes it.  A two-dimensional Cartesian problem names its formulation,
+``plane_stress`` or ``plane_strain``, because neither is right for every body.
 
 Plane strain
 ^^^^^^^^^^^^
@@ -318,57 +326,6 @@ engineering strains.
 Three displacement variables and a three-dimensional mesh are required, and
 the thickness must be left at one.
 
-Orthotropic materials
----------------------
-
-A material whose stiffness differs along two perpendicular in-plane
-directions, such as a unidirectional composite lamina or a rolled sheet, is
-described in a plane problem by four reduced stiffnesses, given through
-``stiffness_c11``, ``stiffness_c12``, ``stiffness_c22`` and ``stiffness_c66``:
-
-.. math::
-
-   \begin{Bmatrix} \sigma_{xx} \\ \sigma_{yy} \\ \sigma_{xy} \end{Bmatrix}
-   = \begin{bmatrix} c_{11} & c_{12} & 0 \\ c_{12} & c_{22} & 0 \\
-     0 & 0 & c_{66} \end{bmatrix}
-   \begin{Bmatrix} \varepsilon_{xx} \\ \varepsilon_{yy} \\ \gamma_{xy} \end{Bmatrix} .
-
-Here :math:`c_{11}` and :math:`c_{22}` are the direct stiffnesses along the
-two material axes, :math:`c_{12}` is the coupling term, placed symmetrically
-so that the stiffness stays symmetric, and :math:`c_{66}` is the in-plane
-shear stiffness relating :math:`\sigma_{xy}` to the engineering shear strain
-:math:`\gamma_{xy} = 2\varepsilon_{xy}`.  The material
-axes are assumed to coincide with the mesh axes, so a laminate whose fibres
-run at an angle needs stiffnesses already rotated into the mesh frame.
-
-Giving a non-zero ``stiffness_c11`` is what selects the orthotropic branch:
-the four reduced stiffnesses are then used as given and ``youngs_modulus`` and
-``poissons_ratio`` are ignored, while a zero value leaves the isotropic
-stiffness of the chosen formulation in force.  There is no separate switch, so
-a model intended as orthotropic that leaves :math:`c_{11}` unset becomes
-isotropic without warning, with whatever :math:`E` and :math:`\nu` are set.
-The branch has three limitations, two of which can change an answer without
-producing an error message.
-
-* The reduced stiffnesses apply to ``plane_stress`` and ``plane_strain`` only,
-  and both then give the same matrix, because the constants are used exactly
-  as supplied, with no out-of-plane condition applied to them.  The caller
-  supplies reduced plane-stress or reduced plane-strain constants, whichever
-  the problem needs.
-* Supplying them with ``three_dimensional`` is reported as an error, because a
-  full anisotropic stiffness cannot be built from four in-plane numbers.
-* Supplying them with ``axisymmetric`` is accepted and then ignored without
-  warning, because that formulation always builds its stiffness from :math:`E`
-  and :math:`\nu`.
-
-One further consequence follows.  In the orthotropic branch the out-of-plane
-row of the stiffness is left at zero, so the plane-strain :math:`\sigma_{zz}`
-is not recovered and slot 2 of the ``stress`` property reports zero whatever
-the in-plane strains are.  The in-plane solution is unaffected, because that
-row never enters equilibrium, but post-processing that uses
-:math:`\sigma_{zz}`, such as a three-dimensional yield or failure measure,
-gives incorrect results in this case.
-
 Thermal strain
 --------------
 
@@ -378,36 +335,33 @@ that free expansion.  With :math:`\alpha` the coefficient of thermal
 expansion per degree, :math:`T` the temperature field and
 :math:`T_{\mathrm{ref}}` the temperature at which the body is free of stress,
 the thermal strain is :math:`\varepsilon^{\mathrm{th}} = \alpha\,(T -
-T_{\mathrm{ref}})` and :eq:`elasticity-constitutive` is replaced by
+T_{\mathrm{ref}})`.  It is an *eigenstrain*, a strain that the material takes
+without stress: ``thermal_expansion_eigenstrain`` declares it, and
+``small_strain_stress`` subtracts the eigenstrains it lists in
+``eigenstrain_names`` from the strain before :eq:`elasticity-constitutive`,
 
 .. math::
    :label: elasticity-thermal
 
-   \sigma_I = \sum_{J=0}^{2} C_{IJ}
-              \left( \varepsilon_J - \varepsilon^{\mathrm{th}} \right)
-            + \sum_{J=3}^{5} C_{IJ}\, \varepsilon_J .
+   \sigma_I = \sum_{J=0}^{5} C_{IJ}
+              \left( \varepsilon_J - \varepsilon^{\mathrm{th}}_J \right) ,
+   \qquad \varepsilon^{\mathrm{th}}_J = \alpha\,(T - T_{\mathrm{ref}})
+   \ (J = 0, 1, 2), \quad \varepsilon^{\mathrm{th}}_J = 0 \ (J = 3, 4, 5).
 
 The thermal part is subtracted from the three normal strain components only,
-slots 0, 1 and 2, and the shear components are left untouched.  That is the
-correct statement for an isotropic expansion, which changes lengths equally in
-all directions and produces no shear, and writing it this way keeps the
-thermal strain isotropic even when the stiffness is orthotropic.  The sign
-follows from :eq:`elasticity-thermal`: heating a fully restrained body above
-:math:`T_{\mathrm{ref}}` makes :math:`\varepsilon_J -
-\varepsilon^{\mathrm{th}}` negative and puts the body into compression, as it
-should.  Columns of the stiffness that are zero contribute nothing to the
-thermal term, so in plane strain, where the :math:`zz` column of the in-plane
-rows is zero, the in-plane thermal stress is :math:`-(c_{11} +
-c_{12})\,\alpha\,(T - T_{\mathrm{ref}})` with :math:`c_{11} = f(1-\nu)` and
-:math:`c_{12} = f\nu`.  A reader comparing against a textbook plane-strain
-thermoelastic formula that also carries the out-of-plane column should be
-aware of the difference.  Thermal strain is applied only when
-``thermal_expansion_coefficient`` and ``temperature`` are both set.  Giving one
-without the other is accepted and has no effect, and the default
-``reference_temperature`` of zero turns the whole temperature field into a
-thermal load, which is seldom the intended behaviour.
+because an isotropic expansion changes lengths equally in all directions and
+produces no shear.  Heating a fully restrained body above
+:math:`T_{\mathrm{ref}}` makes :math:`\varepsilon_J - \varepsilon^{\mathrm{th}}_J`
+negative and puts the body into compression.  In plane strain the
+out-of-plane strain is zero, so the thermal strain loads the :math:`zz`
+direction too, and a body restrained in its plane carries
+:math:`\sigma_{xx} = \sigma_{yy} = -E\,\alpha\,(T - T_{\mathrm{ref}})/(1 - 2\nu)`.
+In plane stress the body expands freely through its thickness.  The
+``stress_free_temperature`` :math:`T_{\mathrm{ref}}` has no default, because
+no value is right for every problem.  The ``thermal_expansion`` coupling of
+the physics adds the eigenstrain and lists it.
 
-The ``temperature`` parameter names an ordinary variable of the problem, and
+The ``temperature`` parameter of ``thermal_expansion_eigenstrain`` names an ordinary variable of the problem, and
 this has a useful consequence.  If that variable is itself being solved for,
 by a heat conduction kernel elsewhere in the same problem, the thermal stress
 depends on an unknown of the system.  Because the property object is written in the
@@ -437,7 +391,7 @@ condition at all for a component has the natural condition with a zero value,
 Prescribed displacement
 ^^^^^^^^^^^^^^^^^^^^^^^
 
-``Dirichlet_boundary_condition`` prescribes the primary variable,
+``Dirichlet`` prescribes the primary variable,
 :math:`u_i = g(\mathbf{x}, t)` at every node of the named boundary, replacing
 that node's equilibrium equation.  A zero value is a rigid support in that
 direction and a non-zero value a prescribed settlement or stretch.  Prescribing
@@ -449,7 +403,7 @@ it ramp with them, as a displacement-controlled test requires.
 Prescribed traction
 ^^^^^^^^^^^^^^^^^^^
 
-``traction_boundary_condition`` prescribes the secondary variable directly:
+``traction`` prescribes the secondary variable directly:
 the component of the surface traction, in force per unit area, conjugate to
 the variable the object is attached to.  Because that variable determines the
 component, the object has no ``component`` parameter and is added once per
@@ -464,7 +418,7 @@ is multiplied by the thickness before it enters the residual.
 Pressure
 ^^^^^^^^
 
-``pressure_boundary_condition`` applies a load that follows the orientation of
+``pressure`` applies a load that follows the orientation of
 the surface.  A fluid pressure :math:`p` acts normal to the surface and
 towards the body, so the traction it exerts is
 
@@ -476,12 +430,11 @@ towards the body, so the traction it exerts is
 with :math:`\mathbf{n}` the outward unit normal.  The convention is contained
 entirely in the minus sign: a positive pressure presses inward, against the outward
 normal, and a negative value is a suction.  Because each component of the
-normal multiplies the pressure separately, this object does take a
-``component`` parameter, and one instance is added per displacement variable
-with its own component, as for the kernels.  The component must agree with the
-component the object's ``variable`` represents.  A mismatch is not detected and
-applies the pressure along the wrong axis.  The pressure is multiplied by the
-thickness in plane problems.
+normal multiplies the pressure separately, one instance acts on each
+displacement variable.  The object takes the list ``displacements`` and finds
+the component of each instance from the place of its variable in that list, so
+the component cannot disagree with the variable.  The pressure is multiplied by
+the thickness in plane problems.
 
 Concentrated force
 ^^^^^^^^^^^^^^^^^^
@@ -534,28 +487,24 @@ problem: the thickness of the sheet in plane stress, or the length of the
 slice being modelled in plane strain.  It multiplies the entire equilibrium
 equation, i.e., the flux :eq:`elasticity-flux` assembled by
 ``stress_divergence``, the traction assembled by
-``traction_boundary_condition`` and the pressure assembled by
-``pressure_boundary_condition``, converting stresses per unit area into forces
+``traction`` and the pressure assembled by
+``pressure``, converting stresses per unit area into forces
 per unit length of the cross-section so that every residual has the
 dimensions of a force.  It applies to ``plane_stress`` and ``plane_strain``
 only: in three dimensions there is no out-of-plane dimension to account for,
 and in the axisymmetric case the measure :math:`2\pi r` already supplies the
 circumferential extent of the material surrounding each control domain, so in
-both cases the value must be left at its default of one.  Another value is
-accepted there and produces a wrong answer with no diagnostic.
+both cases the value stays at its default of one, and another value is
+refused.
 
-The thickness must be consistent throughout a model.  Because
-:math:`h` multiplies both sides of the balance, the value given to every
-``stress_divergence`` kernel and the value given to every
-``traction_boundary_condition`` and ``pressure_boundary_condition`` of the same
-model must be identical.  A consistent thickness scales stiffness and
-distributed loading alike and so cancels out of the displacement solution of a
-linear problem.  An inconsistent one produces a model whose loading is scaled
-by one thickness and whose stiffness is scaled by another, which changes the
-answer by their ratio and is difficult to detect afterwards.  The
-``solid_mechanics`` physics removes the risk by passing its ``thickness`` to
-its kernels, its body force and its traction and pressure conditions.  At the
-object level the same value must be given to each of them.
+The thickness is given once, to the ``stress_divergence`` kernels.  The
+``traction``, ``pressure`` and ``gap_contact`` conditions of a displacement
+read it from the kernel of that displacement, so the loads and the stiffness
+are always scaled by the same :math:`h`, which cancels out of the displacement
+solution of a linear problem.  A condition reads one thickness: when the
+kernels of one displacement have different thicknesses (blocks of different
+thickness), the condition is refused.  The ``solid_mechanics`` physics passes
+its ``thickness`` to its kernels and its body force.
 
 One load is deliberately excluded from this rule.  A ``point_source`` is
 applied **without** the thickness factor, because a concentrated load is a
@@ -567,19 +516,17 @@ out-of-plane direction becomes a point force of :math:`q h`.
 Verification
 ------------
 
-The module is verified against Chapter 9 of the book in
-``tests/python/test_solid_mechanics.py``.  Example 9.8.1, a quadrant of a
-plate under uniform edge stress, has the exact solution :math:`u(a) = t_0 a /
-E`, which the computed edge displacement matches to machine precision with an
-exactly uniform stress field.  Example 9.8.2, a cantilevered plate under a
-uniform edge load, reproduces the dual mesh rows of Table 9.8.1 on meshes of
-one, two, four and eight elements a side, both for the corner displacements
-and for the stress at the centre of the element nearest the support.  The
-thick-walled cylinder under internal pressure of Section 9.9.4.1, solved as a
-plane-strain quadrant of an annulus with symmetry conditions on the straight
-edges and ``pressure_boundary_condition`` on the bore, reproduces the
-quadrilateral columns of Table 9.9.1 to about 0.5 %, which is the accuracy the
-book's statement of the mesh permits, converges monotonically to the
-analytical solution of Eq. (9.9.24) on quadrilateral and triangular meshes
-alike, and agrees to within 0.2 % with the same cylinder solved as an
-axisymmetric problem.
+The module is verified in ``tests/python/test_solid_mechanics.py``.  A
+quadrant of a plate under uniform edge stress has the exact solution
+:math:`u(a) = t_0 a / E`, which the computed edge displacement matches to
+machine precision with an exactly uniform stress field.  A cantilevered plate
+under a uniform edge load reproduces the published dual mesh values
+[Reddy2024]_ on meshes of one, two, four and eight elements a side, both for
+the corner displacements and for the stress at the centre of the element
+nearest the support.  A thick-walled cylinder under internal pressure, solved
+as a plane-strain quadrant of an annulus with symmetry conditions on the
+straight edges and ``pressure`` on the bore, reproduces the
+published quadrilateral values to about 0.5 %, which is the accuracy the
+published description of the mesh permits, converges monotonically to the
+Lamé solution on quadrilateral and triangular meshes alike, and agrees to
+within 0.2 % with the same cylinder solved as an axisymmetric problem.

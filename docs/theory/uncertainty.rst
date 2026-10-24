@@ -445,8 +445,10 @@ closed form.
      - Interpolation of the training points, :math:`Q^2 > 0.99` on 400 test
        points of the Branin function from 60 runs, more than 95 % of the
        standardised errors within :math:`\pm 3`, closed-form leave-one-out
-       equal to explicit refits to :math:`10^{-6}`, and time series outputs
-       through principal components.
+       equal to explicit refits to :math:`10^{-6}`, time series outputs
+       through principal components, and fitted length scales that tell which
+       input matters (on :math:`\sin(4 x_1) + 0.05 x_2`, that of :math:`x_2` is
+       more than three times that of :math:`x_1`).
    * - Calibration
      - A quadratic model with normal priors and noise, whose posterior is
        normal and known in closed form: posterior means within a tenth of a

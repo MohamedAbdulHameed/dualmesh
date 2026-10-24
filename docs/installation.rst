@@ -18,24 +18,6 @@ Optional at run time: `meshio <https://github.com/nschloe/meshio>`_ for reading
 and writing mesh files, and
 `matplotlib <https://matplotlib.org>`_ for the plotting in the examples.
 
-From PyPI
----------
-
-Binary wheels for Linux, macOS (Intel and Apple silicon) and Windows, for
-Python 3.9 to 3.13, are published on PyPI under the distribution name
-``dualmesh-multiphysics``.  The name only differs on PyPI: the package is
-imported as ``dualmesh`` and the command-line program is ``dualmesh``.
-
-.. code-block:: console
-
-   pip install dualmesh-multiphysics
-   pip install "dualmesh-multiphysics[all]"   # meshio, matplotlib, SymPy, SciPy
-   python -c "import dualmesh; print(dualmesh.__version__)"
-   dualmesh --version
-
-The wheels are built without MPI and PETSc.  To use either, build from source
-as described below.
-
 From source
 -----------
 
@@ -98,10 +80,10 @@ Running the tests
 .. code-block:: console
 
    ctest --test-dir build --output-on-failure   # C++ unit tests
-   pytest                                       # verification against the book
+   pytest                                       # the verification suite
 
-The Python suite reproduces the published dual mesh results of every worked
-example of the book that has tabulated values (see :doc:`verification`).
+The Python suite compares every computed value with an exact solution, a
+published value or an independent code (see :doc:`verification`).
 
 Checking the installation
 -------------------------

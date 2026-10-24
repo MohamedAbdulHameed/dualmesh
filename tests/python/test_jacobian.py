@@ -71,26 +71,23 @@ def test_nonlinear_coefficients_and_a_jump_between_blocks(method):
     absorption 0.5 u^3, at a state that is not a solution."""
     mesh = two_block_square()
     problem = dm.Problem(mesh, method=method)
+    # k is the property of the two parsed objects below, one per block.
     pde = problem.add_physics(
-        "coefficient_form_PDE", "pde", absorption_coefficient="0.5*u**2", source=1.0
+        "general_form_PDE", variables="u", equations="-div(k*grad(u)) + 0.5*u^3 = 1"
     )
     problem.add_property(
-        "parsed_property",
-        "k_left",
+        "parsed",
         block=["left_block"],
-        property_name="diffusion_coefficient",
+        property_name="k",
         expression="1 + u^2",
-        coupled_variables=["u"],
     )
     problem.add_property(
-        "parsed_property",
-        "k_right",
+        "parsed",
         block=["right_block"],
-        property_name="diffusion_coefficient",
+        property_name="k",
         expression="3 * (1 + u^2)",
-        coupled_variables=["u"],
     )
-    pde.add_boundary_condition("Dirichlet_boundary_condition", "left", value=0.5)
+    pde.add_boundary_condition("u = 0.5", boundary="left")
     problem.initialize()
     points = problem.entity_points()
     problem.set_values("u", 0.5 + 0.3 * np.sin(2.0 * points[:, 0]) + 0.2 * points[:, 1] ** 2)
@@ -106,20 +103,15 @@ def test_navier_stokes_in_the_pressure_formulation(method):
         x_min=0.0, x_max=1.0, y_min=0.0, y_max=1.0, num_x_elements=3, num_y_elements=3
     )
     problem = dm.Problem(mesh, method=method)
-    flow = problem.add_physics(
-        "incompressible_flow", "flow", velocities=["u", "v"], formulation="pressure", density=10.0
-    )
-    flow.add_boundary_condition("Dirichlet_boundary_condition", "top", value=[1.0, 0.0])
+    flow = problem.add_physics("fluid_dynamics", formulation="pressure", density=10.0)
+    flow.add_boundary_condition(["velocity_x = 1", "velocity_y = 0"], boundary="top")
     flow.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "walls",
-        boundary=["left", "right", "bottom"],
-        value=[0.0, 0.0],
+        ["velocity_x = 0", "velocity_y = 0"], boundary=["left", "right", "bottom"]
     )
     problem.initialize()
     points = problem.entity_points()
-    problem.set_values("u", np.sin(3.0 * points[:, 1]) * points[:, 0])
-    problem.set_values("v", np.cos(2.0 * points[:, 0]) * points[:, 1])
+    problem.set_values("velocity_x", np.sin(3.0 * points[:, 1]) * points[:, 0])
+    problem.set_values("velocity_y", np.cos(2.0 * points[:, 0]) * points[:, 1])
     problem.set_values("pressure", points[:, 0] * points[:, 1])
     _, jacobian = problem.linear_system()
     exact = jacobian.toarray()

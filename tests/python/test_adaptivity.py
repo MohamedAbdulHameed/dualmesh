@@ -82,12 +82,11 @@ def corner_solution(x, y):
 def solve_corner_problem(mesh):
     problem = dm.Problem(mesh)
     problem.add_variable("u")
-    problem.add_kernel("diffusion", "diffusion", variable="u")
+    problem.add_kernel("diffusion", variable="u")
     problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
+        "Dirichlet",
         "boundary",
         variable="u",
-        boundary="boundary",
         value=lambda x, y, z, t: float(corner_solution(np.array(x), np.array(y))),
     )
     problem.solve()
@@ -155,12 +154,11 @@ def test_refinement_leaves_no_hanging_node():
     for method in ("dmcdm", "fem", "hfvm"):
         problem = dm.Problem(mesh, method=method)
         problem.add_variable("u")
-        problem.add_kernel("diffusion", "diffusion", variable="u")
+        problem.add_kernel("diffusion", variable="u")
         problem.add_boundary_condition(
-            "Dirichlet_boundary_condition",
-            "walls",
+            "Dirichlet",
+            mesh.sideset_names(),
             variable="u",
-            boundary=mesh.sideset_names(),
             value=exact,
         )
         problem.solve()
@@ -217,12 +215,11 @@ def test_the_indicator_vanishes_for_a_field_the_elements_represent_exactly():
     mesh = unit_square(4)
     problem = dm.Problem(mesh)
     problem.add_variable("u")
-    problem.add_kernel("diffusion", "diffusion", variable="u")
+    problem.add_kernel("diffusion", variable="u")
     problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "walls",
+        "Dirichlet",
+        mesh.sideset_names(),
         variable="u",
-        boundary=mesh.sideset_names(),
         value=lambda x, y, z, t: 1.0 + 2.0 * x - 3.0 * y,
     )
     problem.solve()
@@ -235,15 +232,14 @@ def test_the_indicator_is_largest_where_the_solution_bends_most():
     mesh = unit_square(8)
     problem = dm.Problem(mesh)
     problem.add_variable("u")
-    problem.add_kernel("diffusion", "diffusion", variable="u")
+    problem.add_kernel("diffusion", variable="u")
     problem.add_kernel(
-        "body_force", "source", variable="u", value=lambda x, y, z, t: 400.0 * np.exp(-20.0 * x)
+        "body_force", variable="u", value=lambda x, y, z, t: 400.0 * np.exp(-20.0 * x)
     )
     problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "walls",
+        "Dirichlet",
+        mesh.sideset_names(),
         variable="u",
-        boundary=mesh.sideset_names(),
         value=lambda x, y, z, t: np.exp(-20.0 * x),
     )
     problem.solve()
@@ -259,12 +255,11 @@ def test_the_indicator_is_not_available_for_cell_centred_finite_volume():
     mesh = unit_square(4)
     problem = dm.Problem(mesh, method="zfvm")
     problem.add_variable("u")
-    problem.add_kernel("diffusion", "diffusion", variable="u")
+    problem.add_kernel("diffusion", variable="u")
     problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "walls",
+        "Dirichlet",
+        mesh.sideset_names(),
         variable="u",
-        boundary=mesh.sideset_names(),
         value=0.0,
     )
     problem.solve()
@@ -354,12 +349,11 @@ def test_the_adaptive_driver_runs_the_whole_loop():
     def build(mesh):
         problem = dm.Problem(mesh)
         problem.add_variable("u")
-        problem.add_kernel("diffusion", "diffusion", variable="u")
+        problem.add_kernel("diffusion", variable="u")
         problem.add_boundary_condition(
-            "Dirichlet_boundary_condition",
+            "Dirichlet",
             "boundary",
             variable="u",
-            boundary="boundary",
             value=lambda x, y, z, t: float(corner_solution(np.array(x), np.array(y))),
         )
         return problem
@@ -394,15 +388,14 @@ def test_the_adaptive_driver_stops_at_the_element_budget():
     def build(mesh):
         problem = dm.Problem(mesh)
         problem.add_variable("u")
-        problem.add_kernel("diffusion", "diffusion", variable="u")
+        problem.add_kernel("diffusion", variable="u")
         problem.add_boundary_condition(
-            "Dirichlet_boundary_condition",
-            "walls",
+            "Dirichlet",
+            mesh.sideset_names(),
             variable="u",
-            boundary=mesh.sideset_names(),
             value=0.0,
         )
-        problem.add_kernel("body_force", "source", variable="u", value=1.0)
+        problem.add_kernel("body_force", variable="u", value=1.0)
         return problem
 
     mesh = dm.solve_with_adaptive_refinement(

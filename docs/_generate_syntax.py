@@ -33,8 +33,8 @@ throughout.
 The heat transfer module states Fourier conduction, internal generation,
 storage, and the three surface conditions of the subject: prescribed flux,
 convection, and radiation.  The conductivity may depend on position, on time,
-on a property, and on the temperature itself, which is what makes the
-nonlinear examples of Reddy's Chapter 6 reproducible.
+on a property, and on the temperature itself, which makes the conduction
+nonlinear.
 """,
     "solid_mechanics": """
 The solid mechanics module covers the deformation of solids, from the
@@ -60,10 +60,10 @@ MODULE_GROUPS = {
         (
             "Continuum elasticity",
             {
-                "linear_elastic_stress",
+                "small_strain_stress",
                 "stress_divergence",
-                "traction_boundary_condition",
-                "pressure_boundary_condition",
+                "traction",
+                "pressure",
             },
             """
 Small-strain linear elasticity in plane stress, plane strain, axisymmetry and

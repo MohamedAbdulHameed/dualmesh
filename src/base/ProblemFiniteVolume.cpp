@@ -32,6 +32,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <exception>
 
 namespace dualmesh
 {
@@ -133,10 +134,9 @@ Problem::assembleCellFiniteVolume(const Vector & U,
 
   const auto weightOf = [&](const ResidualObject * k, bool time_kernel)
   {
-    double w = time_kernel ? 1.0 : opts.theta;
-    if (k->scalesWithLoad())
-      w *= opts.load_factor;
-    return w;
+    if (!time_kernel)
+      return steadyWeight(*k, opts);
+    return k->scalesWithLoad() ? opts.load_factor : 1.0;
   };
 
   const auto scatter = [&](const std::vector<ADReal> & Rloc,
@@ -183,6 +183,8 @@ Problem::assembleCellFiniteVolume(const Vector & U,
     s.ctx.dt = opts.dt;
     s.ctx.eigenvalue = _eigenvalue;
     s.ctx.load_factor = opts.load_factor;
+    s.ctx.inertia = opts.inertia;
+    s.ctx.theta = opts.include_time_kernels ? opts.theta : 1.0;
     s.ctx.mode = opts.mode;
   }
   const auto assembleFace = [&](ThreadScratch & sc, Index face_index)
@@ -439,6 +441,34 @@ Problem::assembleCellFiniteVolume(const Vector & U,
           ctx.grad_u_old[v][k] = ctx.grad_u[v][k].value();
       }
     }
+    // The two sides of the face, for an advective flux: the values of the owner and of the
+    // entity across the face (with their derivatives), their reconstructed gradients (a boundary
+    // entity has none), their positions, and the weight of the owner in the central value.
+    ctx.on_face =
+        std::any_of(ks.begin(), ks.end(), [](const Kernel * k) { return k->usesFaceSides(); });
+    if (ctx.on_face)
+    {
+      ctx.side_x[0] = xO;
+      ctx.side_x[1] = xN;
+      ctx.side_weight = interior ? w : 0.0;
+      for (int side = 0; side < 2; ++side)
+      {
+        ctx.side_u[side].resize(nv);
+        ctx.side_grad[side].clear();
+        if (side == 0 || interior)
+          ctx.side_grad[side].resize(nv);
+        for (int v = 0; v < nv; ++v)
+        {
+          const int slot = side * nv + v;
+          ADReal value = ADReal::withZeroDerivatives(U[dofs[slot]], ndx);
+          if (ndx > 0)
+            value.setDerivative(slot, 1.0);
+          ctx.side_u[side][v] = value;
+          if (!ctx.side_grad[side].empty())
+            ctx.side_grad[side][v] = cellGradient(side == 0 ? f.owner : f.neighbor, v);
+        }
+      }
+    }
     ctx.state_domain = 1;
     ctx.state_owner = face_index;
     ctx.state_key = 0;
@@ -454,6 +484,7 @@ Problem::assembleCellFiniteVolume(const Vector & U,
     const double ef = interior ? cf : boundaryEntityFactor(f.centroid);
     const auto normalFlux = [&](const Kernel * k)
     {
+      ctx.time_weight = timeWeight(*k, opts);
       ADVector3 F{ADReal(0.0), ADReal(0.0), ADReal(0.0)};
       k->computeFlux(ctx, F);
       ADReal fn(0.0);
@@ -462,10 +493,24 @@ Problem::assembleCellFiniteVolume(const Vector & U,
           fn += F[kk] * f.area[kk];
       return fn;
     };
-    std::vector<ADReal> fluxes;
-    fluxes.reserve(ks.size());
-    for (const Kernel * k : ks)
-      fluxes.push_back(normalFlux(k));
+    // The flux of the owner's equation, and that of the neighbour's, which differs from it for a
+    // non-conservative face flux (Kernel::nonConservativeFaceFlux).
+    const auto sideFluxes = [&](const Kernel * k, ADReal & owner_flux, ADReal & neighbor_flux)
+    {
+      if (!ctx.on_face || !k->nonConservativeFaceFlux())
+      {
+        owner_flux = neighbor_flux = normalFlux(k);
+        return;
+      }
+      ctx.reference_side = 0;
+      owner_flux = normalFlux(k);
+      ctx.reference_side = 1;
+      neighbor_flux = normalFlux(k);
+      ctx.reference_side = -1;
+    };
+    std::vector<ADReal> fluxes(ks.size()), neighbor_fluxes(ks.size());
+    for (std::size_t i = 0; i < ks.size(); ++i)
+      sideFluxes(ks[i], fluxes[i], neighbor_fluxes[i]);
     // A face between two blocks: the properties of the two sides differ, and
     // the flux that is continuous across the face is the one of the
     // distance-weighted harmonic mean of the two coefficients,
@@ -485,6 +530,14 @@ Problem::assembleCellFiniteVolume(const Vector & U,
       {
         if (!ks[i]->activeOnBlock(neighbor_block))
           continue;
+        // An advective flux carries the properties of the upstream side.
+        double normal_velocity = 0.0;
+        if (ks[i]->advectingNormalVelocity(ctx, normal_velocity))
+        {
+          if (normal_velocity < 0.0)
+            sideFluxes(ks[i], fluxes[i], neighbor_fluxes[i]);
+          continue;
+        }
         const ADReal fN = normalFlux(ks[i]);
         const ADReal fO = fluxes[i];
         // The conductances of the two sides, the derivatives of their fluxes
@@ -506,6 +559,7 @@ Problem::assembleCellFiniteVolume(const Vector & U,
           fluxes[i] = fO * (cN / ((1.0 - w) * cN + w * cO));
         else
           fluxes[i] = w * fO + (1.0 - w) * fN;
+        neighbor_fluxes[i] = fluxes[i];
       }
       ctx.element = f.owner;
       ctx.block = block;
@@ -514,17 +568,28 @@ Problem::assembleCellFiniteVolume(const Vector & U,
     {
       const Kernel * k = ks[i];
       const int v = k->variable();
-      ADReal fn = fluxes[i];
-      fn *= weightOf(k, k->isTimeKernel());
-      Rloc[v] -= cf * fn;
-      Rloc[nv + v] += ef * fn;
+      const double weight = weightOf(k, k->isTimeKernel());
+      Rloc[v] -= (cf * weight) * fluxes[i];
       touched[v] = 1;
-      touched[nv + v] = 1;
+      // An advective flux through the boundary leaves (or enters) the domain: it does not enter
+      // the equation of the boundary entity, which is the condition on the conductive flux.  The
+      // non-conservative form is a term of each side's own equation, so it enters the neighbour
+      // only where the kernel acts there.
+      const bool neighbor_term =
+          !k->nonConservativeFaceFlux() ||
+          (k->activeOnBlock(neighbor_block) &&
+           (_vars[v].blocks.empty() || _vars[v].blocks.count(neighbor_block)));
+      if ((interior || !k->usesFaceSides()) && neighbor_term)
+      {
+        Rloc[nv + v] += (ef * weight) * neighbor_fluxes[i];
+        touched[nv + v] = 1;
+      }
     }
     scatter(Rloc, dofs, touched, sc.triplets, atomic);
   };
 
-  std::string thread_error;
+  // The first error of a thread, rethrown as it is, so that its type (InputError) is kept.
+  std::exception_ptr thread_error;
 #ifdef _OPENMP
 #pragma omp parallel num_threads(nthreads) if (nthreads > 1)
   {
@@ -536,11 +601,11 @@ Problem::assembleCellFiniteVolume(const Vector & U,
       {
         assembleFace(sc, i);
       }
-      catch (const std::exception & ex)
+      catch (...)
       {
 #pragma omp critical(dualmesh_thread_error)
-        if (thread_error.empty())
-          thread_error = ex.what();
+        if (!thread_error)
+          thread_error = std::current_exception();
       }
     }
   }
@@ -548,14 +613,15 @@ Problem::assembleCellFiniteVolume(const Vector & U,
   for (Index i = 0; i < static_cast<Index>(cm.faces().size()); ++i)
     assembleFace(scratch[0], i);
 #endif
-  if (!thread_error.empty())
-    throw std::runtime_error(thread_error);
+  if (thread_error)
+    std::rethrow_exception(thread_error);
 
   // ---- cell (volume) integrals: sources and time terms ---------------------
   auto & dofs = scratch[0].dofs;
   auto & Rloc = scratch[0].Rloc;
   auto & touched = scratch[0].touched;
   auto & ctx = scratch[0].ctx;
+  ctx.on_face = false;
   std::vector<IntegrationPoint> pts;
   MappedPoint geo;
   // A source may depend on the gradient, as the convective inertia
@@ -681,6 +747,7 @@ Problem::assembleCellFiniteVolume(const Vector & U,
         const double cf = coordFactor(geo.x) * ip.weight;
         for (const Kernel * k : ks)
         {
+          ctx.time_weight = timeWeight(*k, opts);
           const ADReal S = k->computeSource(ctx) * cf * weightOf(k, k->isTimeKernel());
           Rloc[k->variable()] += S;
           touched[k->variable()] = 1;
@@ -696,7 +763,7 @@ Problem::assembleCellFiniteVolume(const Vector & U,
     for (const auto & bc : _ibcs)
     {
       const int v = bc->variable();
-      const double wfac = opts.theta * (bc->scalesWithLoad() ? opts.load_factor : 1.0);
+      const double wfac = steadyWeight(*bc, opts);
       if (const auto * ib = dynamic_cast<const InterfaceBC *>(bc.get()))
       {
         // A gap between two boundaries: the boundary unknown of every primary
@@ -835,7 +902,7 @@ Problem::assembleCellFiniteVolume(const Vector & U,
     for (const auto & load : _loads)
     {
       const int v = load->variable();
-      const double wfac = opts.theta * (load->scalesWithLoad() ? opts.load_factor : 1.0);
+      const double wfac = steadyWeight(*load, opts);
       for (Index n : load->nodes())
       {
         if (!_owned_entity.empty() && !_owned_entity[n])

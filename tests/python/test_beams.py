@@ -62,76 +62,71 @@ def beam_problem(
     mesh = dm.generate_line_mesh(start=0.0, end=LENGTH / 2, num_elements=num_elements)
     problem = dm.Problem(mesh, method=method)
     third = "rotation" if model == "beam_Timoshenko_displacement" else "moment"
-    for name in ("axial_displacement", "deflection", third):
+    for name in ("axial_disp", "deflection", third):
         problem.add_variable(name)
     common = dict(
         extensional_stiffness=s.extensional,
         coupling_stiffness=s.coupling,
         bending_stiffness=s.bending,
-        shear_stiffness=s.shear,
         transverse_load=load,
         von_karman=von_karman,
     )
+    # The Euler-Bernoulli beam has no shear deformation, so it takes no shear stiffness.
+    if model != "beam_Euler_Bernoulli_mixed":
+        common["shear_stiffness"] = s.shear
     if model == "beam_Timoshenko_displacement":
         variables = dict(
-            axial_displacement="axial_displacement",
+            axial_displacement="axial_disp",
             transverse_displacement="deflection",
             rotation="rotation",
         )
     else:
         variables = dict(
-            axial_displacement="axial_displacement",
+            axial_displacement="axial_disp",
             transverse_displacement="deflection",
             bending_moment="moment",
         )
-    for variable in ("axial_displacement", "deflection", third):
+    for variable in ("axial_disp", "deflection", third):
         options = dict(common, **variables, variable=variable)
         if model == "beam_Timoshenko_displacement" and variable == "rotation":
             # Reduced integration of the shear term removes shear locking.
             options.update(quadrature="midpoint", reduced_integration=True)
-        problem.add_kernel(model, f"{model}_{variable}", **options)
+        problem.add_kernel(model, **options)
 
     # x = 0: pinned (w = 0, M = 0) or clamped (w = 0, rotation = 0)
     problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "fixed_axial",
-        variable="axial_displacement",
-        boundary="left",
+        "Dirichlet",
+        "left",
+        variable="axial_disp",
         value=0.0,
     )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", "support", variable="deflection", boundary="left", value=0.0
-    )
+    problem.add_boundary_condition("Dirichlet", "left", variable="deflection", value=0.0)
     if support == "pinned" and third == "moment":
         problem.add_boundary_condition(
-            "Dirichlet_boundary_condition",
-            "no_moment",
+            "Dirichlet",
+            "left",
             variable="moment",
-            boundary="left",
             value=0.0,
         )
     elif support == "clamped" and third == "rotation":
         problem.add_boundary_condition(
-            "Dirichlet_boundary_condition",
-            "no_rotation",
+            "Dirichlet",
+            "left",
             variable="rotation",
-            boundary="left",
             value=0.0,
         )
     # x = L/2: symmetry (u = 0, and the natural conditions V = 0, rotation = 0)
     problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "symmetry_axial",
-        variable="axial_displacement",
-        boundary="right",
+        "Dirichlet",
+        "right",
+        variable="axial_disp",
         value=0.0,
     )
     if third == "rotation":
         problem.add_boundary_condition(
-            "Dirichlet_boundary_condition",
-            "symmetry_rotation",
+            "Dirichlet",
+            "right",
             variable="rotation",
-            boundary="right",
             value=0.0,
         )
     return problem, third
@@ -234,14 +229,13 @@ def test_reduced_integration_removes_shear_locking():
     s = stiffness(0.0)
     mesh = dm.generate_line_mesh(start=0.0, end=LENGTH / 2, num_elements=8)
     problem = dm.Problem(mesh)
-    for name in ("axial_displacement", "deflection", "rotation"):
+    for name in ("axial_disp", "deflection", "rotation"):
         problem.add_variable(name)
-    for variable in ("axial_displacement", "deflection", "rotation"):
+    for variable in ("axial_disp", "deflection", "rotation"):
         problem.add_kernel(
             "beam_Timoshenko_displacement",
-            f"beam_{variable}",
             variable=variable,
-            axial_displacement="axial_displacement",
+            axial_displacement="axial_disp",
             transverse_displacement="deflection",
             rotation="rotation",
             extensional_stiffness=s.extensional,
@@ -251,25 +245,19 @@ def test_reduced_integration_removes_shear_locking():
             transverse_load=LOAD,
         )
     problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "a",
-        variable="axial_displacement",
-        boundary="left",
+        "Dirichlet",
+        "left",
+        variable="axial_disp",
         value=0.0,
     )
+    problem.add_boundary_condition("Dirichlet", "left", variable="deflection", value=0.0)
     problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", "b", variable="deflection", boundary="left", value=0.0
-    )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "c",
-        variable="axial_displacement",
-        boundary="right",
+        "Dirichlet",
+        "right",
+        variable="axial_disp",
         value=0.0,
     )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", "d", variable="rotation", boundary="right", value=0.0
-    )
+    problem.add_boundary_condition("Dirichlet", "right", variable="rotation", value=0.0)
     problem.solve()
     reduced_problem.solve()
     full_integration = problem.values("deflection")[-1]

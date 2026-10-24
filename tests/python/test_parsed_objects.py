@@ -33,12 +33,11 @@ def _conduction(conductivity):
     p = dm.Problem(mesh)
     p.add_variable("temperature", initial_condition=300.0)
     conductivity(p)
-    p.add_kernel("body_force", "q", variable="temperature", value=1e4)
+    p.add_kernel("body_force", variable="temperature", value=1e4)
     p.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "ends",
+        "Dirichlet",
+        ["left", "right"],
         variable="temperature",
-        boundary=["left", "right"],
         value=300.0,
     )
     result = p.solve(relative_tolerance=1e-12, absolute_tolerance=1e-10)
@@ -52,25 +51,20 @@ def test_parsed_property_matches_the_built_in_polynomial_conductivity():
 
     def parsed(p):
         p.add_property(
-            "parsed_property",
-            "k",
+            "parsed",
             property_name="k",
             expression="k0 * (1 + beta * temperature)",
-            coupled_variables=["temperature"],
-            constant_names=["k0", "beta"],
-            constant_values=[2.0, 0.01],
+            constants={"k0": 2.0, "beta": 0.01},
         )
         p.add_kernel(
             "heat_conduction",
-            "conduction",
             variable="temperature",
-            thermal_conductivity_property="k",
+            thermal_conductivity="k",
         )
 
     def built_in(p):
         p.add_kernel(
             "heat_conduction",
-            "conduction",
             variable="temperature",
             thermal_conductivity=2.0,
             temperature_polynomial=[1.0, 0.01],
@@ -88,17 +82,13 @@ def test_parsed_property_reads_functions_and_other_properties():
     p = dm.Problem(mesh)
     p.add_variable("u", initial_condition=2.0)
     p.add_function("ramp", dm.ParsedFunction("10*x + t"))
-    p.add_property("constant_property", "c", property_names=["c"], property_values=[3.0])
+    p.add_property("constant", properties={"c": 3.0})
     p.add_property(
-        "parsed_property",
-        "combined",
+        "parsed",
         property_name="combined",
         expression="c * u + ramp",
-        coupled_variables=["u"],
-        function_names=["ramp"],
-        coupled_properties=["c"],
     )
-    p.add_kernel("diffusion", "d", variable="u")
+    p.add_kernel("diffusion", variable="u")
     p.apply_initial_conditions()
     centroids = np.array([0.125, 0.375, 0.625, 0.875])
     assert np.asarray(p.property_at_centroids("combined")).ravel() == pytest.approx(
@@ -107,14 +97,12 @@ def test_parsed_property_reads_functions_and_other_properties():
     q = dm.Problem(mesh)
     q.add_variable("u")
     q.add_property(
-        "parsed_property",
-        "bad",
+        "parsed",
         property_name="bad",
         expression="missing",
-        coupled_properties=["missing"],
     )
-    q.add_kernel("diffusion", "d", variable="u")
-    with pytest.raises(Exception, match="Add the property object that declares it before this one"):
+    q.add_kernel("diffusion", variable="u")
+    with pytest.raises(Exception, match="unknown name 'missing'"):
         q.apply_initial_conditions()
         q.property_at_centroids("bad")
 
@@ -126,30 +114,26 @@ def _free_bar(eigenstrain):
     p = dm.Problem(mesh)
     for v in ("temperature", "ux", "uy", "uz"):
         p.add_variable(v)
-    p.add_kernel("diffusion", "conduction", variable="temperature")
+    p.add_kernel("diffusion", variable="temperature")
     p.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "T",
+        "Dirichlet",
+        list(mesh.sideset_names()),
         variable="temperature",
-        boundary=list(mesh.sideset_names()),
         value=800.0,
     )
     eigenstrain(p)
     p.add_property(
         "small_strain_stress",
-        "stress",
         displacements=["ux", "uy", "uz"],
         formulation="three_dimensional",
         youngs_modulus=1e11,
         poissons_ratio=0.3,
         eigenstrain_names=["expansion"],
     )
-    for i, v in enumerate(("ux", "uy", "uz")):
-        p.add_kernel("stress_divergence", f"equilibrium_{v}", variable=v, component=i)
+    for v in ("ux", "uy", "uz"):
+        p.add_kernel("stress_divergence", variable=v, displacements=["ux", "uy", "uz"])
     for v, side in (("ux", "left"), ("uy", "bottom"), ("uz", "back")):
-        p.add_boundary_condition(
-            "Dirichlet_boundary_condition", f"hold_{v}", variable=v, boundary=[side], value=0.0
-        )
+        p.add_boundary_condition("Dirichlet", side, variable=v, value=0.0)
     p.solve()
     corner = [1 - 1e-9, 1 - 1e-9, 1 - 1e-9]
     return np.array([p.sample(v, [corner])[0] for v in ("ux", "uy", "uz")])
@@ -165,23 +149,18 @@ def test_parsed_eigenstrain_matches_thermal_expansion(strain_type):
     def parsed(p):
         p.add_property(
             "parsed_eigenstrain",
-            "expansion",
             expression=("3 * " if strain_type == "volumetric" else "") + "alpha * temperature",
             strain_type=strain_type,
             eigenstrain_name="expansion",
-            coupled_variables=["temperature"],
-            constant_names=["alpha"],
-            constant_values=[alpha],
-            stress_free_state_names=["temperature"],
-            stress_free_state_values=[T0],
+            constants={"alpha": alpha},
+            stress_free_state={"temperature": T0},
         )
 
     def built_in(p):
         p.add_property(
             "thermal_expansion_eigenstrain",
-            "expansion",
             temperature="temperature",
-            thermal_expansion_coefficient=alpha,
+            linear_expansion_coeff=alpha,
             stress_free_temperature=T0,
             eigenstrain_name="expansion",
         )
@@ -195,7 +174,6 @@ def test_an_axial_parsed_eigenstrain_stretches_only_along_the_axis():
     def axial(p):
         p.add_property(
             "parsed_eigenstrain",
-            "expansion",
             expression="1e-3",
             strain_type="linear",
             direction="axial",
@@ -206,53 +184,50 @@ def test_an_axial_parsed_eigenstrain_stretches_only_along_the_axis():
     assert u == pytest.approx([0.0, 0.0, 1e-3], abs=1e-12)
 
 
-def test_parsed_creep_reproduces_a_power_law_exactly():
+@pytest.mark.parametrize("implicitness", [1.0, 0.5])
+def test_parsed_creep_reproduces_a_power_law_exactly(implicitness):
     """A bar under a constant stress creeps at A sigma^n exp(-Q/T); backward
-    Euler with the radial return gives the exact strain at any step."""
+    Euler with the radial return gives the exact strain at any step.  The
+    equilibrium has no time derivative, so a step of any theta takes it at the
+    new time, where the material history is (with Crank-Nicolson it was taken
+    half at the old time, without the history, and the strain came out 185 %
+    too large)."""
     A, n, Q, T, stress = 1e-30, 3.0, 2000.0, 700.0, 50e6
     mesh = dm.generate_box_mesh(0, 1e-3, 0, 1e-3, 0, 1e-3, 1, 1, 1)
     p = dm.Problem(mesh)
     for v in ("temperature", "ux", "uy", "uz"):
         p.add_variable(v)
-    p.add_kernel("diffusion", "conduction", variable="temperature")
+    p.add_kernel("diffusion", variable="temperature")
     p.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "T",
+        "Dirichlet",
+        list(mesh.sideset_names()),
         variable="temperature",
-        boundary=list(mesh.sideset_names()),
         value=T,
     )
     p.add_property(
         "small_strain_stress",
-        "stress",
         displacements=["ux", "uy", "uz"],
         formulation="three_dimensional",
         youngs_modulus=1e11,
         poissons_ratio=0.3,
         creep_model="parsed",
         creep_rate="A * von_mises_stress^n * exp(-Q / temperature)",
-        creep_constant_names=["A", "n", "Q"],
-        creep_constant_values=[A, n, Q],
+        creep_constants={"A": A, "n": n, "Q": Q},
         temperature="temperature",
     )
-    for i, v in enumerate(("ux", "uy", "uz")):
-        p.add_kernel("stress_divergence", f"equilibrium_{v}", variable=v, component=i)
+    for v in ("ux", "uy", "uz"):
+        p.add_kernel("stress_divergence", variable=v, displacements=["ux", "uy", "uz"])
     for v, side in (("ux", "left"), ("uy", "bottom"), ("uz", "back")):
-        p.add_boundary_condition(
-            "Dirichlet_boundary_condition", f"hold_{v}", variable=v, boundary=[side], value=0.0
-        )
-    p.add_boundary_condition(
-        "traction_boundary_condition", "pull", variable="uz", boundary=["front"], traction=stress
-    )
+        p.add_boundary_condition("Dirichlet", side, variable=v, value=0.0)
+    p.add_boundary_condition("traction", "front", variable="uz", traction=stress)
     p.solve()
-    p.solve_transient(end_time=1e6, time_step=2.5e5)
+    p.solve_transient(end_time=1e6, time_step=2.5e5, implicitness=implicitness)
     strain = p.sample("uz", [[0.5e-3, 0.5e-3, 1e-3 * (1 - 1e-9)]])[0] / 1e-3
     rate = A * stress**n * np.exp(-Q / T)
     assert strain == pytest.approx(stress / 1e11 + rate * 1e6, rel=1e-8)
     with pytest.raises(Exception, match="needs 'creep_rate'"):
         p.add_property(
             "small_strain_stress",
-            "other",
             displacements=["ux", "uy", "uz"],
             formulation="three_dimensional",
             creep_model="parsed",
@@ -265,17 +240,15 @@ def _creep_bar(**creep):
     p = dm.Problem(mesh)
     for v in ("temperature", "ux", "uy", "uz"):
         p.add_variable(v)
-    p.add_kernel("diffusion", "conduction", variable="temperature")
+    p.add_kernel("diffusion", variable="temperature")
     p.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "T",
+        "Dirichlet",
+        list(mesh.sideset_names()),
         variable="temperature",
-        boundary=list(mesh.sideset_names()),
         value=700.0,
     )
     p.add_property(
         "small_strain_stress",
-        "stress",
         displacements=["ux", "uy", "uz"],
         formulation="three_dimensional",
         youngs_modulus=1e11,
@@ -283,15 +256,11 @@ def _creep_bar(**creep):
         temperature="temperature",
         **{"creep_model": "parsed", **creep},
     )
-    for i, v in enumerate(("ux", "uy", "uz")):
-        p.add_kernel("stress_divergence", f"equilibrium_{v}", variable=v, component=i)
+    for v in ("ux", "uy", "uz"):
+        p.add_kernel("stress_divergence", variable=v, displacements=["ux", "uy", "uz"])
     for v, side in (("ux", "left"), ("uy", "bottom"), ("uz", "back")):
-        p.add_boundary_condition(
-            "Dirichlet_boundary_condition", f"hold_{v}", variable=v, boundary=[side], value=0.0
-        )
-    p.add_boundary_condition(
-        "traction_boundary_condition", "pull", variable="uz", boundary=["front"], traction=50e6
-    )
+        p.add_boundary_condition("Dirichlet", side, variable=v, value=0.0)
+    p.add_boundary_condition("traction", "front", variable="uz", traction=50e6)
     return p
 
 
@@ -303,8 +272,7 @@ def test_parsed_creep_reads_the_grain_size():
     for grain_size in (20e-6, 10e-6):
         p = _creep_bar(
             creep_rate="B * von_mises_stress / (temperature * grain_size^3)",
-            creep_constant_names=["B"],
-            creep_constant_values=[B],
+            creep_constants={"B": B},
             grain_size=grain_size,
         )
         p.solve()
@@ -332,17 +300,14 @@ def test_a_non_finite_jacobian_is_reported_as_such():
 
     def infinite_slope(p):
         p.add_property(
-            "parsed_property",
-            "k",
+            "parsed",
             property_name="k",
             expression="1 + (temperature - 300)^(1/2)",
-            coupled_variables=["temperature"],
         )
         p.add_kernel(
             "heat_conduction",
-            "conduction",
             variable="temperature",
-            thermal_conductivity_property="k",
+            thermal_conductivity="k",
         )
 
     with pytest.raises(RuntimeError, match="NaN or infinite entries"):

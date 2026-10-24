@@ -21,13 +21,12 @@ def slab(num_elements=40, method="dmcdm"):
     mesh = dm.generate_line_mesh(start=0.0, end=1.0, num_elements=num_elements)
     problem = dm.Problem(mesh, method=method)
     problem.add_variable("temperature")
-    problem.add_kernel("diffusion", "diffusion", variable="temperature")
-    problem.add_kernel("time_derivative", "storage", variable="temperature")
+    problem.add_kernel("diffusion", variable="temperature")
+    problem.add_kernel("time_derivative", variable="temperature")
     problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "ends",
+        "Dirichlet",
+        ["left", "right"],
         variable="temperature",
-        boundary=["left", "right"],
         value=0.0,
     )
     # The initial condition is set after the variable exists, so that it does
@@ -179,24 +178,18 @@ def test_a_nonlinear_step_that_will_not_converge_is_rejected_and_retried():
     problem = dm.Problem(mesh)
     problem.add_variable("temperature")
     problem.set_values("temperature", np.full(mesh.num_nodes, 300.0))
-    problem.add_kernel(
-        "heat_conduction", "conduction", variable="temperature", thermal_conductivity=20.0
-    )
+    problem.add_kernel("heat_conduction", variable="temperature", thermal_conductivity=20.0)
     problem.add_kernel(
         "heat_conduction_time_derivative",
-        "storage",
         variable="temperature",
         density=7800.0,
         specific_heat=460.0,
     )
+    problem.add_boundary_condition("Dirichlet", "left", variable="temperature", value=3000.0)
     problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", "hot", variable="temperature", boundary="left", value=3000.0
-    )
-    problem.add_boundary_condition(
-        "radiative_heat_flux_boundary_condition",
-        "radiation",
+        "radiative_heat_flux",
+        "right",
         variable="temperature",
-        boundary="right",
         emissivity=0.9,
         ambient_temperature=300.0,
     )
@@ -220,14 +213,12 @@ def test_the_run_reports_a_failure_instead_of_grinding_to_a_halt():
     mesh = dm.generate_line_mesh(start=0.0, end=1.0, num_elements=10)
     problem = dm.Problem(mesh)
     problem.add_variable("u")
-    problem.add_kernel("diffusion", "diffusion", variable="u")
-    problem.add_kernel("time_derivative", "time", variable="u")
+    problem.add_kernel("diffusion", variable="u")
+    problem.add_kernel("time_derivative", variable="u")
     # A reaction with a negative coefficient and a large exponent, which has no
     # bounded solution, so no step size helps.
-    problem.add_kernel("reaction", "runaway", variable="u", coefficient=-1.0e12, exponent=3.0)
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", "left", variable="u", boundary="left", value=1.0
-    )
+    problem.add_kernel("reaction", variable="u", coeff=-1.0e12, exponent=3.0)
+    problem.add_boundary_condition("Dirichlet", "left", variable="u", value=1.0)
     with pytest.raises(RuntimeError, match="transient solve failed"):
         problem.solve_transient(
             end_time=1.0,
@@ -261,13 +252,12 @@ def test_the_distributed_solver_takes_the_same_steps():
 
     def define(problem):
         problem.add_variable("temperature")
-        problem.add_kernel("diffusion", "diffusion", variable="temperature")
-        problem.add_kernel("time_derivative", "storage", variable="temperature")
+        problem.add_kernel("diffusion", variable="temperature")
+        problem.add_kernel("time_derivative", variable="temperature")
         problem.add_boundary_condition(
-            "Dirichlet_boundary_condition",
-            "ends",
+            "Dirichlet",
+            ["left", "right"],
             variable="temperature",
-            boundary=["left", "right"],
             value=0.0,
         )
         values = np.sin(np.pi * problem.entity_points()[:, 0])

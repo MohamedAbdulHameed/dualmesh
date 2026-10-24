@@ -4,6 +4,7 @@
 // reaction, body force, advection, time derivative, standard boundary
 // conditions, point sources, and constant and function properties.
 #include "dualmesh/modules/Framework.h"
+#include "dualmesh/base/Deformation.h"
 #include "dualmesh/base/Factory.h"
 #include "dualmesh/base/Kernel.h"
 #include "dualmesh/base/Problem.h"
@@ -30,14 +31,10 @@ Diffusion::validParams()
   p.addOptional("diffusivity",
                 ParameterKind::Function,
                 1.0,
-                "Diffusivity k, given as a constant or as the name of a registered function "
-                "of (x, y, z, t). It must be positive. It is ignored when "
-                "'diffusivity_property' names a property.");
-  p.addOptional("diffusivity_property",
-                ParameterKind::String,
-                std::string(""),
-                "Name of a property to use as the diffusivity (overrides "
-                "'diffusivity').");
+                "Diffusivity k: a constant, a registered function of (x, y, z, t), the name of a "
+                "property, or an expression of the fields, x, y, z, t, the functions and the "
+                "properties. It must be positive. Default 1.");
+  p.setRange("diffusivity", ParameterRange::Positive);
   p.addOptional("solution_polynomial",
                 ParameterKind::RealList,
                 std::vector<double>{1.0},
@@ -52,21 +49,19 @@ Diffusion::validParams()
 Diffusion::Diffusion(const InputParameters & p) : Kernel(p)
 {
   _poly = p.getRealList("solution_polynomial");
-  _prop_name = p.getString("diffusivity_property");
 }
 
 void
 Diffusion::initialSetup(Problem & problem)
 {
   Kernel::initialSetup(problem);
-  _k = getFunction(problem, "diffusivity");
-  _prop = _prop_name.empty() ? -1 : problem.propertyRegistry().id(_prop_name);
+  _k.setup(problem, _params, "diffusivity", name());
 }
 
 ADReal
 Diffusion::coefficient(const QpContext & ctx) const
 {
-  ADReal k = _prop >= 0 ? ctx.property(_prop) : ADReal(_k->value(ctx.x, ctx.time));
+  ADReal k = _k.value(ctx);
   if (_poly.size() == 1 && _poly[0] == 1.0)
     return k;
   const ADReal & u = ctx.coefficientValue(_var);
@@ -114,7 +109,7 @@ void
 AnisotropicDiffusion::initialSetup(Problem & problem)
 {
   Kernel::initialSetup(problem);
-  const int dim = problem.mesh().dimension();
+  const int dim = problem.mesh().spaceDimension();
   for (auto & row : _K)
     row.fill(0.0);
   if (static_cast<int>(_entries.size()) == dim)
@@ -152,19 +147,16 @@ Reaction::validParams()
       "A reaction term, which in structural problems is the restoring action of an "
       "elastic foundation and in transport problems a decay or growth. It contributes no "
       "flux and the source S = c u^p. With the default exponent 1 the term is linear.");
-  p.addOptional("coefficient",
+  p.addOptional("coeff",
                 ParameterKind::Function,
                 1.0,
-                "Coefficient c in the source S = c u^p, as a constant or the name of a function. "
-                "The source enters the residual as written, so a positive c removes u (a decay, "
-                "or the restoring action of an elastic foundation) and a negative c produces it.");
-  p.addOptional("coefficient_property",
-                ParameterKind::String,
-                std::string(""),
-                "Name of a property that multiplies 'coefficient' in c. A property "
-                "that depends on the solution, such as a parsed_property of the variable, makes "
-                "the term nonlinear, and its derivative enters the Jacobian through the "
-                "automatic differentiation. Default none.");
+                "Coefficient c in the source S = c u^p: a constant, a registered function, the "
+                "name of a property, or an expression of the fields, x, y, z, t, the functions "
+                "and the properties. The source enters the residual as written, so a positive c "
+                "removes u (a decay, or the restoring action of an elastic foundation) and a "
+                "negative c produces it. A coefficient that depends on the solution makes the "
+                "term nonlinear, and its derivative enters the Jacobian through the automatic "
+                "differentiation. Default 1.");
   p.addOptional("exponent",
                 ParameterKind::Real,
                 1.0,
@@ -174,24 +166,19 @@ Reaction::validParams()
   return p;
 }
 
-Reaction::Reaction(const InputParameters & p)
-    : Kernel(p), _p(p.getReal("exponent")), _prop_name(p.getString("coefficient_property"))
-{
-}
+Reaction::Reaction(const InputParameters & p) : Kernel(p), _p(p.getReal("exponent")) {}
 
 void
 Reaction::initialSetup(Problem & problem)
 {
   Kernel::initialSetup(problem);
-  _c = getFunction(problem, "coefficient");
-  _prop = _prop_name.empty() ? -1 : problem.propertyRegistry().id(_prop_name);
+  _c.setup(problem, _params, "coeff", name());
 }
 
 ADReal
 Reaction::computeSource(const QpContext & ctx) const
 {
-  const ADReal c = _prop >= 0 ? ctx.property(_prop) * _c->value(ctx.x, ctx.time)
-                              : ADReal(_c->value(ctx.x, ctx.time));
+  const ADReal c = _c.value(ctx);
   const ADReal & u = ctx.value(_var);
   if (_p == 1.0)
     return c * u;
@@ -206,15 +193,18 @@ BodyForce::validParams()
 {
   InputParameters p = Kernel::validParams();
   p.setClassDescription(
-      "A distributed source on the right-hand side of the equation. It contributes no flux and "
-      "the source S = -f, so a positive intensity drives the variable up. Use it for a body "
-      "force, an internal generation rate, or any forcing that depends only on position and time.");
+      "The source term of any equation, per unit volume: the heat source (volumetric heat "
+      "generation, W/m^3) of an equation for a temperature, the body force (N/m^3) of an "
+      "equation for a displacement or a velocity, and the production rate of an equation for a "
+      "concentration. It contributes no flux and the source S = -f, so a positive value drives "
+      "the variable up (adds heat, pushes along the positive axis). The heat_transfer physics "
+      "adds it for its heat_source.");
   p.addOptional("value",
                 ParameterKind::Function,
                 1.0,
-                "Intensity f of the source, per unit volume, as a constant or the name of "
-                "a registered function of (x, y, z, t). A positive value drives the "
-                "variable up.");
+                "The source f per unit volume, as a constant, a registered function of (x, y, z, "
+                "t), or an expression of x, y, z and t: for a temperature the heat source in "
+                "W/m^3. A positive value drives the variable up.");
   p.addOptional("scale_with_load",
                 ParameterKind::Boolean,
                 true,
@@ -250,12 +240,13 @@ TimeDerivative::validParams()
       "S = c (u - u_old) / dt. It is a time kernel: it is skipped entirely in a steady "
       "solve, and it is not multiplied by the time-integration weight theta, which applies "
       "to the steady terms only.");
-  p.addOptional("coefficient",
+  p.addOptional("coeff",
                 ParameterKind::Function,
                 1.0,
-                "Capacity coefficient c multiplying the time derivative, as a constant or the name "
-                "of a function. For heat conduction it is the volumetric heat capacity rho c_p, "
-                "for a mass balance the porosity, and for a wave problem the density.");
+                "Capacity coefficient c multiplying the time derivative: a constant, a registered "
+                "function of (x, y, z, t), the name of a property, or an expression of the fields. "
+                "For heat conduction it is the volumetric heat capacity rho c_p, for a mass "
+                "balance the porosity. Default 1.");
   return p;
 }
 
@@ -265,14 +256,13 @@ void
 TimeDerivative::initialSetup(Problem & problem)
 {
   Kernel::initialSetup(problem);
-  _c = getFunction(problem, "coefficient");
+  _c.setup(problem, _params, "coeff", name());
 }
 
 ADReal
 TimeDerivative::computeSource(const QpContext & ctx) const
 {
-  const double c = _c->value(ctx.x, ctx.time);
-  return c * (ctx.value(_var) - ctx.oldValue(_var)) / ctx.dt;
+  return _c.value(ctx) * (ctx.value(_var) - ctx.oldValue(_var)) / ctx.dt;
 }
 
 // ---------------------------------------------------------------------------
@@ -285,17 +275,11 @@ Advection::validParams()
       "(so that -div F = div(v u)), and the 'non_conservative' form uses the source S = v . grad "
       "u.");
   p.addOptional("velocity",
-                ParameterKind::RealList,
-                std::vector<double>{0.0, 0.0, 0.0},
-                "Constant velocity components (vx, vy, vz).");
-  p.addOptional("velocity_functions",
                 ParameterKind::StringList,
-                std::vector<std::string>{},
-                "Names of registered functions giving the velocity components. The list is "
-                "matched by position and may be shorter than the dimension: a component uses its "
-                "function when one is listed at that position and otherwise uses the "
-                "corresponding entry of 'velocity', so a list with one name overrides only the x "
-                "component.");
+                std::vector<std::string>{"0", "0", "0"},
+                "The velocity components (vx, vy, vz), each a number, a registered function or an "
+                "expression of x, y, z, t and the fields. Missing trailing components are zero. "
+                "Default zero.");
   p.addOptional("advection_form",
                 ParameterKind::String,
                 std::string("non_conservative"),
@@ -304,20 +288,23 @@ Advection::validParams()
                 "exactly over the control domains. Use it when the velocity is divergence free or "
                 "when a conservation check matters. 'non_conservative', the default, contributes "
                 "the source S = v . grad u, which requires less computation and is the correct "
-                "reading when the equation is written in non-conservative form. Any other string "
-                "is an error.");
+                "reading when the equation is written in non-conservative form. With an "
+                "advection scheme other than central both are face fluxes: m u_f through each "
+                "face, or m (u_f - u_C) for the control volume C on each side, with m the "
+                "normal velocity times the face area. Any other string is an error.");
+  addAdvectionSchemeParam(p);
   return p;
 }
 
 Advection::Advection(const InputParameters & p) : Kernel(p)
 {
   const auto form = p.getString("advection_form");
+  const auto scheme = p.getString("advection_scheme");
+  _face_flux = scheme == "upwind" || scheme == "linear_upwind" || scheme == "limited";
   if (form == "conservative")
     _conservative = true;
-  else if (form == "non_conservative")
-    _conservative = false;
-  else
-    throw InputError("advection '" + name() +
+  else if (form != "non_conservative")
+    throw InputError("'" + name() +
                      "': advection_form must be 'conservative' or 'non_conservative'.");
 }
 
@@ -325,24 +312,34 @@ void
 Advection::initialSetup(Problem & problem)
 {
   Kernel::initialSetup(problem);
-  auto v = _params.getRealList("velocity");
-  v.resize(3, 0.0);
-  const auto names = _params.getStringList("velocity_functions");
+  auto v = _params.getStringList("velocity");
+  if (v.size() > 3)
+    throw InputError("'" + name() + "': the velocity has at most three components.");
+  v.resize(3, "0");
   for (int d = 0; d < 3; ++d)
-  {
-    if (d < static_cast<int>(names.size()))
-      _v[d] = problem.function(names[d]);
-    else
-      _v[d] = std::make_shared<ConstantFunction>(v[d]);
-  }
+    _v[d].setup(problem, v[d], name() + "', velocity component " + std::to_string(d) + " '");
+  _scheme = advectionScheme(problem, _params.getString("advection_scheme"), name());
+}
+
+bool
+Advection::advectingNormalVelocity(const QpContext & ctx, double & velocity) const
+{
+  if (!_face_flux)
+    return false;
+  velocity = 0.0;
+  for (int d = 0; d < ctx.dim; ++d)
+    velocity += _v[d].value(ctx).value() * ctx.normal[d];
+  return true;
 }
 
 void
 Advection::computeFlux(const QpContext & ctx, ADVector3 & F) const
 {
-  const ADReal & u = ctx.value(_var);
+  double velocity = 0.0;
+  advectingNormalVelocity(ctx, velocity);
+  const ADReal u = ctx.advectedValue(_var, velocity, _scheme) - ctx.referenceValue(_var);
   for (int d = 0; d < ctx.dim; ++d)
-    F[d] = -_v[d]->value(ctx.x, ctx.time) * u;
+    F[d] = -_v[d].value(ctx) * u;
 }
 
 ADReal
@@ -351,7 +348,7 @@ Advection::computeSource(const QpContext & ctx) const
   const auto & g = ctx.gradient(_var);
   ADReal s(0.0);
   for (int d = 0; d < ctx.dim; ++d)
-    s += _v[d]->value(ctx.x, ctx.time) * g[d];
+    s += _v[d].value(ctx) * g[d];
   return s;
 }
 
@@ -369,42 +366,31 @@ CoupledForce::validParams()
                 ParameterKind::String,
                 "Name of the other variable that drives this equation. It must already "
                 "exist on the problem.");
-  p.addOptional("coefficient",
+  p.addOptional("coeff",
                 ParameterKind::Function,
                 1.0,
-                "Coefficient c in the source S = -c v, as a constant or the name of a function. A "
+                "Coefficient c in the source S = -c v: a constant, a registered function, the "
+                "name of a property (for a coefficient that differs between regions), or an "
+                "expression of the fields, x, y, z, t, the functions and the properties. A "
                 "positive c makes the coupled variable v a source for this equation, and a "
-                "negative c makes it a sink.");
-  p.addOptional(
-      "coefficient_property",
-      ParameterKind::String,
-      std::string(""),
-      "Name of a property that multiplies 'coefficient' in c, for a "
-      "coefficient that differs between regions (e.g., a conductivity or a reaction rate). "
-      "Default none.");
+                "negative c makes it a sink. Default 1.");
   return p;
 }
 
-CoupledForce::CoupledForce(const InputParameters & p)
-    : Kernel(p), _prop_name(p.getString("coefficient_property"))
-{
-}
+CoupledForce::CoupledForce(const InputParameters & p) : Kernel(p) {}
 
 void
 CoupledForce::initialSetup(Problem & problem)
 {
   Kernel::initialSetup(problem);
   _v = coupledVariable(problem, "coupled_variable");
-  _c = getFunction(problem, "coefficient");
-  _prop = _prop_name.empty() ? -1 : problem.propertyRegistry().id(_prop_name);
+  _c.setup(problem, _params, "coeff", name());
 }
 
 ADReal
 CoupledForce::computeSource(const QpContext & ctx) const
 {
-  if (_prop >= 0)
-    return -ctx.property(_prop) * _c->value(ctx.x, ctx.time) * ctx.value(_v);
-  return -_c->value(ctx.x, ctx.time) * ctx.value(_v);
+  return -_c.value(ctx) * ctx.value(_v);
 }
 
 // ---------------------------------------------------------------------------
@@ -450,10 +436,7 @@ PointDirichletBC::validParams()
       "cell or boundary face) nearest to a point. For a first-order variable on a quadratic mesh "
       "the entity is the nearest corner node. Its main use is to fix the level of the pressure of "
       "an enclosed incompressible flow, which the equations determine only up to a constant.");
-  p.addOptional("boundary",
-                ParameterKind::StringList,
-                std::vector<std::string>{},
-                "Not used. The entity is chosen by 'point'.");
+  p.remove("boundary");
   p.addRequired("point",
                 ParameterKind::RealList,
                 "The coordinates (x, y, z) of the point. Missing trailing coordinates are zero.");
@@ -520,9 +503,8 @@ NeumannBC::validParams()
       ParameterKind::Function,
       0.0,
       "Prescribed value of n . F. For a diffusion-type kernel F = k grad u, so a positive value "
-      "is an inflow of u into the body. This is the same convention as "
-      "heat_flux_boundary_condition, whose 'heat_flux' is the heat entering the body. The default "
-      "0 is the do-nothing condition, insulated for heat transfer and traction free for "
+      "is an inflow of u into the body: for heat transfer, the heat flux entering the body. The "
+      "default 0 is the do-nothing condition, insulated for heat transfer and traction free for "
       "elasticity. "
       "It is a constant, a registered function, or an expression of the fields, their gradients (grad_x(u), grad_y(u), grad_z(u)), x, y, z and t, which is differentiated automatically.");
   p.addOptional("scale_with_load",
@@ -532,6 +514,9 @@ NeumannBC::validParams()
                 "parameter defaults to true, unlike the framework default, because the applied "
                 "loading is normally the quantity that is ramped. Set it to false for a part of "
                 "the loading that must stay fixed while the rest is increased.");
+  deformation::addParameter(p,
+                            "the flux is per unit deformed area and is multiplied by the area "
+                            "ratio da/dA = |J F^-T N| to give the flux per unit undeformed area.");
   return p;
 }
 
@@ -542,12 +527,14 @@ NeumannBC::initialSetup(Problem & problem)
 {
   IntegratedBC::initialSetup(problem);
   _q.setup(problem, _params, "flux", name());
+  _F = deformation::propertyId(problem, _params, name());
 }
 
 ADReal
 NeumannBC::computeBoundaryFlux(const QpContext & ctx) const
 {
-  return _q.value(ctx);
+  const ADReal q = _q.value(ctx);
+  return _F >= 0 ? q * deformation::areaRatio(ctx, _F) : q;
 }
 
 InputParameters
@@ -558,7 +545,7 @@ RobinBC::validParams()
       "Mixed (Robin, convection) condition n . F = q0 - h (u - u_ambient), e.g. Newton's law "
       "of cooling.");
   p.addOptional(
-      "transfer_coefficient",
+      "transfer_coeff",
       ParameterKind::Function,
       0.0,
       "Transfer, or film, coefficient h in n . F = q0 - h (u - u_ambient). It "
@@ -567,19 +554,22 @@ RobinBC::validParams()
       "default 0 switches the transfer term off and leaves a pure Neumann "
       "condition of strength 'flux'. "
       "Like 'flux' and 'ambient_value', it is a constant, a registered function, or an expression of the fields, their gradients, x, y, z and t.");
+  p.setRange("transfer_coeff", ParameterRange::NonNegative);
   p.addOptional("ambient_value",
                 ParameterKind::Function,
                 0.0,
                 "Far-field value u_ambient that the transfer term drives u towards. It is used "
-                "only when 'transfer_coefficient' is non-zero. The default is 0, independent of "
+                "only when 'transfer_coeff' is non-zero. The default is 0, independent of "
                 "the initial condition, so leaving it unset cools the surface towards zero.");
   p.addOptional(
       "flux",
       ParameterKind::Function,
       0.0,
       "Prescribed part q0 of the natural quantity n . F, added to the transfer term. It carries "
-      "the same sign convention as Neumann_boundary_condition: a positive value drives u into the "
-      "body.");
+      "the same sign convention as Neumann: a positive value drives u into the body.");
+  deformation::addParameter(p,
+                            "the flux is per unit deformed area and is multiplied by the area "
+                            "ratio da/dA = |J F^-T N| to give the flux per unit undeformed area.");
   return p;
 }
 
@@ -589,15 +579,17 @@ void
 RobinBC::initialSetup(Problem & problem)
 {
   IntegratedBC::initialSetup(problem);
-  _h.setup(problem, _params, "transfer_coefficient", name());
+  _h.setup(problem, _params, "transfer_coeff", name());
   _uinf.setup(problem, _params, "ambient_value", name());
   _q.setup(problem, _params, "flux", name());
+  _F = deformation::propertyId(problem, _params, name());
 }
 
 ADReal
 RobinBC::computeBoundaryFlux(const QpContext & ctx) const
 {
-  return _q.value(ctx) - _h.value(ctx) * (ctx.value(_var) - _uinf.value(ctx));
+  const ADReal q = _q.value(ctx) - _h.value(ctx) * (ctx.value(_var) - _uinf.value(ctx));
+  return _F >= 0 ? q * deformation::areaRatio(ctx, _F) : q;
 }
 
 // ---------------------------------------------------------------------------
@@ -609,43 +601,44 @@ ConstantProperty::validParams()
   InputParameters p = Property::validParams();
   p.setClassDescription(
       "Declares scalar properties that are constant in space and time. The "
-      "properties are then available to any kernel or boundary condition on the same "
-      "blocks: a kernel consumes one by being given its name in the matching *_property "
-      "parameter, for example the 'diffusivity_property' of the diffusion kernel.");
-  p.addRequired("property_names",
-                ParameterKind::StringList,
-                "Names under which the values are declared, in the same order as "
-                "'property_values', and the two lists must be the same length. A name given here "
-                "is what a kernel's *_property parameter must be set to in order to consume the "
-                "value.");
-  p.addRequired("property_values",
-                ParameterKind::RealList,
-                "One constant per name in 'property_names', matched by position. The units are "
-                "those that the consuming kernel expects, and they are not checked.");
+      "properties are then available, by their names, to every kernel, boundary condition, "
+      "property object and expression on the same blocks: a coefficient given as the name of "
+      "a property, such as diffusivity = 'thermal_conductivity', reads it.");
+  p.addRequired("properties",
+                ParameterKind::RealMap,
+                "The declared properties: name -> value, for example "
+                "{thermal_conductivity: 400.0}. The units are those that the objects reading them "
+                "expect, and they are not checked.");
   return p;
 }
 
 ConstantProperty::ConstantProperty(const InputParameters & p) : Property(p)
 {
-  _names = p.getStringList("property_names");
-  _values = p.getRealList("property_values");
-  if (_names.size() != _values.size())
-    throw InputError("'property_names' and 'property_values' must have the same length.");
+  _values = p.getRealMap("properties");
+  if (_values.empty())
+    throw InputError("'" + name() + "': give at least one property in 'properties'.");
 }
 
 void
 ConstantProperty::declareProperties(PropertyRegistry & r)
 {
   _ids.clear();
-  for (const auto & n : _names)
+  for (const auto & [n, value] : _values)
+  {
+    (void) value;
     _ids.push_back(r.declare(n, 1));
+  }
 }
 
 void
 ConstantProperty::computeProperties(QpContext & ctx) const
 {
-  for (std::size_t i = 0; i < _ids.size(); ++i)
-    ctx.property(_ids[i]) = ADReal(_values[i]);
+  std::size_t i = 0;
+  for (const auto & [n, value] : _values)
+  {
+    (void) n;
+    ctx.property(_ids[i++]) = ADReal(value);
+  }
 }
 
 namespace
@@ -660,15 +653,15 @@ public:
     InputParameters p = Property::validParams();
     p.setClassDescription(
         "Multiplies properties computed by the property objects added before it, on its blocks, "
-        "by constant factors: 'scaled_properties' names them and 'property_factors' gives the "
-        "factors. It is intended for sensitivity and uncertainty studies, in which a correlation "
-        "is scaled without a change to the property object that computes it.");
+        "by constant factors, given by 'property_factors'. It is intended for sensitivity and "
+        "uncertainty studies, in which a correlation is scaled without a change to the property "
+        "object that computes it.");
     return p;
   }
   explicit PropertyScaling(const InputParameters & p) : Property(p)
   {
-    if (p.getStringList("scaled_properties").empty())
-      throw InputError("'" + name() + "': give at least one of 'scaled_properties'.");
+    if (p.getRealMap("property_factors").empty())
+      throw InputError("'" + name() + "': give at least one factor in 'property_factors'.");
   }
   void declareProperties(PropertyRegistry &) override {}
   void computeProperties(QpContext &) const override {}
@@ -680,29 +673,24 @@ FunctionProperty::validParams()
 {
   InputParameters p = Property::validParams();
   p.setClassDescription(
-      "Declares scalar properties whose values come from functions of position and time. "
-      "The functions must already be registered on the problem. Use this for a property that "
-      "varies through the body, such as a graded conductivity. A property that depends on the "
-      "solution itself requires a parsed_property, or a property object written in Python or C++.");
-  p.addRequired("property_names",
-                ParameterKind::StringList,
-                "Names under which the values are declared, in the same order as 'functions', and "
-                "the two lists must be the same length.");
-  p.addRequired("functions",
-                ParameterKind::StringList,
-                "Names of functions already registered on the problem, one per entry of "
-                "'property_names' and matched by position. An unknown name is an error at set-up. "
-                "Each function is evaluated at (x, y, z, t) at every integration point, so the "
-                "property may vary in space and time, independently of the solution.");
+      "Declares scalar properties whose values are functions of position and time. Use this "
+      "for a property that varies through the body, such as a graded conductivity. A property "
+      "that depends on the solution itself requires a parsed property, or a property object "
+      "written in Python or C++.");
+  p.addRequired("properties",
+                ParameterKind::StringMap,
+                "The declared properties: name -> a registered function or an expression of x, "
+                "y, z and t, for example {thermal_conductivity: '20 + 5*x'}. Each is evaluated at "
+                "every integration point, so the property may vary in space and time, "
+                "independently of the solution.");
   return p;
 }
 
 FunctionProperty::FunctionProperty(const InputParameters & p) : Property(p)
 {
-  _names = p.getStringList("property_names");
-  _fnames = p.getStringList("functions");
-  if (_names.size() != _fnames.size())
-    throw InputError("'property_names' and 'functions' must have the same length.");
+  _functions = p.getStringMap("properties");
+  if (_functions.empty())
+    throw InputError("'" + name() + "': give at least one property in 'properties'.");
 }
 
 void
@@ -710,16 +698,22 @@ FunctionProperty::initialSetup(Problem & problem)
 {
   Property::initialSetup(problem);
   _f.clear();
-  for (const auto & n : _fnames)
-    _f.push_back(problem.function(n));
+  for (const auto & [n, text] : _functions)
+  {
+    (void) n;
+    _f.push_back(problem.function(text));
+  }
 }
 
 void
 FunctionProperty::declareProperties(PropertyRegistry & r)
 {
   _ids.clear();
-  for (const auto & n : _names)
+  for (const auto & [n, text] : _functions)
+  {
+    (void) text;
     _ids.push_back(r.declare(n, 1));
+  }
 }
 
 void
@@ -747,10 +741,11 @@ PeriodicBC::validParams()
   p.addRequired("secondary",
                 ParameterKind::String,
                 "The side set or node set whose nodes become copies of the primary nodes.");
-  p.addOptional("variables",
-                ParameterKind::StringList,
+  p.addOptional("variable",
+                ParameterKind::Names,
                 std::vector<std::string>{},
-                "The variables that are periodic. Default: every variable of the problem.");
+                "The variable or variables that are periodic. Default: every variable of the "
+                "problem.");
   p.addOptional("translation",
                 ParameterKind::RealList,
                 std::vector<double>{},
@@ -765,7 +760,7 @@ std::vector<int>
 PeriodicBC::periodicVariables(const Problem & problem) const
 {
   std::vector<int> vars;
-  const auto names = _params.getStringList("variables");
+  const auto names = _params.getStringList("variable");
   if (names.empty())
     for (int v = 0; v < problem.numVariables(); ++v)
       vars.push_back(v);
@@ -884,15 +879,15 @@ registerFrameworkObjects(Factory & f)
   f.add<TimeDerivative>("time_derivative", ObjectCategory::Kernel, m);
   f.add<Advection>("advection", ObjectCategory::Kernel, m);
   f.add<CoupledForce>("coupled_force", ObjectCategory::Kernel, m);
-  f.add<PointDirichletBC>("point_Dirichlet_boundary_condition", ObjectCategory::NodalBC, m);
-  f.add<DirichletBC>("Dirichlet_boundary_condition", ObjectCategory::NodalBC, m);
-  f.add<NeumannBC>("Neumann_boundary_condition", ObjectCategory::BoundaryCondition, m);
-  f.add<RobinBC>("Robin_boundary_condition", ObjectCategory::BoundaryCondition, m);
+  f.add<PointDirichletBC>("point_Dirichlet", ObjectCategory::NodalBC, m);
+  f.add<DirichletBC>("Dirichlet", ObjectCategory::NodalBC, m);
+  f.add<NeumannBC>("Neumann", ObjectCategory::BoundaryCondition, m);
+  f.add<RobinBC>("Robin", ObjectCategory::BoundaryCondition, m);
   f.add<NodalLoad>("point_source", ObjectCategory::NodalLoad, m);
-  f.add<PeriodicBC>("periodic_boundary_condition", ObjectCategory::Constraint, m);
-  f.add<ConstantProperty>("constant_property", ObjectCategory::Property, m);
+  f.add<PeriodicBC>("periodic", ObjectCategory::Constraint, m);
+  f.add<ConstantProperty>("constant", ObjectCategory::Property, m);
   f.add<PropertyScaling>("property_scaling", ObjectCategory::Property, m);
-  f.add<FunctionProperty>("function_property", ObjectCategory::Property, m);
+  f.add<FunctionProperty>("function", ObjectCategory::Property, m);
 }
 
 } // namespace dualmesh

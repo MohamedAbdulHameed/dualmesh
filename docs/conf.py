@@ -29,6 +29,7 @@ version = ".".join(release.split(".")[:2])
 
 extensions = [
     "sphinx.ext.autodoc",
+    "sphinx.ext.autosummary",
     "sphinx.ext.napoleon",
     "sphinx.ext.viewcode",
     "sphinx.ext.mathjax",
@@ -63,6 +64,11 @@ autodoc_member_order = "bysource"
 autodoc_typehints = "description"
 napoleon_google_docstring = True
 napoleon_numpy_docstring = True
+napoleon_use_rtype = False
+# The API reference has one page per function and class, written from the
+# docstrings when the documentation is built (docs/reference/generated).
+autosummary_generate = True
+autosummary_imported_members = True
 
 intersphinx_mapping = {
     "python": ("https://docs.python.org/3", None),

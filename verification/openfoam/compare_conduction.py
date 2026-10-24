@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 """Compare dualmesh and OpenFOAM for steady conduction in a plate.
 
-The problem is Example 5.4.2 of Reddy's book: a 0.2 m by 0.1 m plate with
+The problem is a 0.2 m by 0.1 m plate with
 conductivity 0.2 W/(m K), held at 500 K on the left and 300 K on the right,
 insulated at the bottom, and with T = 500 (1 - 10 x^2) on top.  The OpenFOAM
 side (``conduction_openfoam.sh``) marches ``laplacianFoam`` to steady state on
-the same grid; the book's tabulated dual mesh values are printed alongside.
+the same grid; the published dual mesh values on an 8 x 8 mesh (Reddy 2024)
+are printed alongside.
 
 Usage::
 
@@ -21,7 +22,7 @@ from pathlib import Path
 import dualmesh as dm
 import numpy as np
 
-# Table 5.4.2 of the book (8 x 8 mesh), at y = 0 and y = 0.05.
+# The published dual mesh values on an 8 x 8 mesh (Reddy 2024), at y = 0 and y = 0.05.
 BOOK_X = np.arange(1, 8) * 0.025
 BOOK_BOTTOM = np.array([482.85, 464.48, 443.88, 420.42, 393.88, 364.48, 332.85])
 BOOK_MIDDLE = np.array([485.54, 469.30, 450.01, 426.98, 400.01, 369.30, 335.54])
@@ -34,21 +35,17 @@ def solve_with_dualmesh(nx: int, ny: int, method: str = "dmcdm"):
     problem = dm.Problem(mesh, method=method)
     problem.add_variable("temperature")
     problem.add_kernel("heat_conduction", variable="temperature", thermal_conductivity=0.2)
+    problem.add_boundary_condition("Dirichlet", "left", variable="temperature", value=500.0)
     problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", "left", variable="temperature", boundary="left", value=500.0
-    )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
+        "Dirichlet",
         "right",
         variable="temperature",
-        boundary="right",
         value=300.0,
     )
     problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
+        "Dirichlet",
         "top",
         variable="temperature",
-        boundary="top",
         value=lambda x, y, z, t: 500.0 * (1.0 - 10.0 * x * x),
     )
     problem.solve()
@@ -82,7 +79,7 @@ def main() -> int:
     for name, book in (("bottom_line", BOOK_BOTTOM), ("middle_line", BOOK_MIDDLE)):
         y = 0.0 if name == "bottom_line" else 0.05
         print(f"T(x, y = {y})")
-        print(f"{'x':>8}{'dualmesh':>12}{'OpenFOAM':>12}{'book 8x8':>12}")
+        print(f"{'x':>8}{'dualmesh':>12}{'OpenFOAM':>12}{'8x8':>12}")
         dual = problem.sample("temperature", np.column_stack([BOOK_X, np.full_like(BOOK_X, y)]))
         foam = None
         if name in lines:

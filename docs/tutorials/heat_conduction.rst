@@ -5,7 +5,7 @@ A cooling fin in one dimension
 ------------------------------
 
 The equation :math:`-u'' + 400\,u = 0` on :math:`(0, 0.05)` with
-:math:`u(0) = 300` and :math:`u'(L) + 2u(L) = 0` is Example 5.3.1 of the book.
+:math:`u(0) = 300` and :math:`u'(L) + 2u(L) = 0` describes a cooling fin.
 It shows the three components of every problem (kernels, boundary conditions
 and a solve) and the recovery of the secondary variable at the fixed end.
 
@@ -20,13 +20,13 @@ Running it prints
    dmcdm  Q(0) = 4817.0
    fem    u =  300.000  257.567  225.507  202.527  187.703  180.437
 
-which are the values of Table 5.3.1 of the book.  The two computations differ
-only in the ``method`` argument of :class:`dualmesh.Problem`.
+The two computations differ only in the ``method`` argument of
+:class:`dualmesh.Problem`.
 
 A bus bar in two dimensions
 ---------------------------
 
-Example 5.4.3 adds internal heat generation and a convective boundary.  The
+A bus bar adds internal heat generation and a convective boundary.  The
 script ``examples/bus_bar.py`` defines the problem, adds five
 post-processors (the heat flows through the left and right sides, the
 temperatures at the middle of the bottom and top edges, and the largest
@@ -36,8 +36,7 @@ temperature), and writes the field and the post-processors to files:
    :language: python
    :pyobject: bus_bar
 
-The temperature at the middle of the bottom edge is 83.142, as in Table 5.4.3
-of the book.
+The temperature at the middle of the bottom edge is 83.142.
 
 Points to note
 --------------

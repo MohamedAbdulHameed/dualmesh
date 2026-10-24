@@ -136,35 +136,11 @@ struct ProjectionSolver::Geometry
           }
         }
         first[e + 1] = first[e] + static_cast<Index>(points.size());
-        const int dim = ref.dimension();
         for (const auto & p : points)
         {
           mapPoint(mesh, el, p.xi, mp);
           // J^{-T}: the physical gradient is G times the reference gradient.
-          const auto & J = mp.J;
-          const double id = 1.0 / mp.detJ;
-          double inv[3][3] = {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}};
-          if (dim == 1)
-            inv[0][0] = id;
-          else if (dim == 2)
-          {
-            inv[0][0] = J[1][1] * id;
-            inv[0][1] = -J[0][1] * id;
-            inv[1][0] = -J[1][0] * id;
-            inv[1][1] = J[0][0] * id;
-          }
-          else
-          {
-            inv[0][0] = (J[1][1] * J[2][2] - J[1][2] * J[2][1]) * id;
-            inv[0][1] = (J[0][2] * J[2][1] - J[0][1] * J[2][2]) * id;
-            inv[0][2] = (J[0][1] * J[1][2] - J[0][2] * J[1][1]) * id;
-            inv[1][0] = (J[1][2] * J[2][0] - J[1][0] * J[2][2]) * id;
-            inv[1][1] = (J[0][0] * J[2][2] - J[0][2] * J[2][0]) * id;
-            inv[1][2] = (J[0][2] * J[1][0] - J[0][0] * J[1][2]) * id;
-            inv[2][0] = (J[1][0] * J[2][1] - J[1][1] * J[2][0]) * id;
-            inv[2][1] = (J[0][1] * J[2][0] - J[0][0] * J[2][1]) * id;
-            inv[2][2] = (J[0][0] * J[1][1] - J[0][1] * J[1][0]) * id;
-          }
+          const auto & inv = mp.Jinv;
           std::array<double, 9> g{};
           for (int i = 0; i < 3; ++i)
             for (int j = 0; j < 3; ++j)
@@ -243,6 +219,9 @@ ProjectionSolver::setUp()
 {
   const Mesh & mesh = _problem.mesh();
   _dim = mesh.dimension();
+  if (mesh.spaceDimension() > _dim)
+    throw InputError("The projection solver of incompressible flow is not available on a surface "
+                     "or a curve in space.");
   if (_problem.method() == Method::FiniteVolumeCell)
     throw InputError("Projection: the projection time integration runs with the finite element "
                      "method and the methods of the dual mesh (fem, dmcdm and hfvm) so far.");
@@ -278,12 +257,11 @@ ProjectionSolver::setUp()
       if (term && assembled &&
           (term->variable() == _pressure ||
            std::find(_velocity.begin(), _velocity.end(), term->variable()) != _velocity.end()))
-        throw InputError(
-            "Projection: '" + name +
-            "' acts on the flow, which the projection time integration assembles "
-            "from its density, viscosity and body force alone. Give a body force "
-            "with the body_force of incompressible_flow, prescribe the velocity or the "
-            "pressure on the boundary, or use time_integration='monolithic'.");
+        throw InputError("Projection: '" + name +
+                         "' acts on the flow, which the projection time integration assembles "
+                         "from its density, viscosity and body force alone. Give a body force "
+                         "with the body_force of fluid_dynamics, prescribe the velocity or the "
+                         "pressure on the boundary, or use time_integration='monolithic'.");
     }
   }
 
@@ -778,7 +756,7 @@ ProjectionSolver::step(Vector & solution, const Vector & old, double time, doubl
         for (int j = 1; j <= k; ++j)
           divergence -= beta[j] / beta[0] * sc.grad[j - 1][d][d];
       }
-      const double advective = 2.0 * std::sqrt(speed2) / h, viscous = 4.0 * nu / (h * h);
+      const double advective = 2.0 * std::sqrt(speed2) / h, viscous = 3.0 * 4.0 * nu / (h * h);
       const double weight = std::min(c, std::sqrt(advective * advective + viscous * viscous));
       double star[3];
       computeStar(sc, star);

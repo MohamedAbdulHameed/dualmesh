@@ -40,12 +40,15 @@ _INNER_STUDY = contextvars.ContextVar("dualmesh_inner_study", default=False)
 
 def report_level(report: str, where: str) -> str:
     """The report level that a study prints at.  A study inside a different
-    study (for example, a solve in an uncertainty study) prints nothing."""
+    study (for example, a solve in an uncertainty study) prints nothing, and
+    in a run on several processes only the first one prints."""
     if report not in REPORT_LEVELS:
         raise InputError(
             f"{where}: report must be one of {', '.join(REPORT_LEVELS)}, not '{report}'."
         )
-    return "none" if _INNER_STUDY.get() else report
+    from . import _core
+
+    return "none" if _INNER_STUDY.get() or _core.mpi_rank() != 0 else report
 
 
 @contextlib.contextmanager

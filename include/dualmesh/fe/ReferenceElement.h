@@ -70,10 +70,10 @@ public:
   /// Sides: local node lists (in outward-consistent order) and their type.
   int numSides() const { return static_cast<int>(_sides.size()); }
   const std::vector<int> & sideNodes(int s) const { return _sides[s]; }
-  /// Type of a side; for Edge2 the sides are points (returned as Edge2 with
-  /// the flag sideIsPoint() set).
-  bool sideIsPoint() const { return _dim == 1; }
-  ElementType sideType() const { return _side_type; }
+  /// The outward unit normal of side @p s in reference coordinates.  The side
+  /// nodes are wound so that this is their right-hand normal (for an edge of a
+  /// two-dimensional element, the edge direction turned clockwise).
+  const Point & sideNormal(int s) const { return _side_normals[s]; }
 
   /// Dual mesh geometry.
   ///
@@ -93,13 +93,6 @@ public:
   const std::vector<Patch> & sidePatches(int s) const { return _side_full[s]; }
   /// The whole element as a list of patches (FEM volume integration).
   const std::vector<Patch> & elementPatches() const { return _elem_full; }
-  /// True for the triangles and tetrahedra, whose reference coordinates are
-  /// barycentric.
-  bool isSimplex() const
-  {
-    return _type == ElementType::Tri3 || _type == ElementType::Tet4 || _type == ElementType::Tri6 ||
-           _type == ElementType::Tet10;
-  }
   /// True when the nodes sit on a tensor-product grid of one-dimensional
   /// coordinates, which is the case for Edge2, Edge3, Quad4, Quad9, Hex8 and
   /// Hex27.  For these elements the shape functions are products of
@@ -123,6 +116,9 @@ public:
 
 private:
   explicit ReferenceElement(ElementType type);
+  /// The outward normals of the sides, from their winding, each checked to
+  /// point away from the centroid of the reference element.
+  void buildSideNormals();
   /// The dual of an element whose nodes sit on a tensor grid: every node owns
   /// the box bounded by the planes half way to its neighbours in each
   /// direction.  @p coordinates are the one-dimensional grid coordinates,
@@ -157,7 +153,7 @@ private:
   std::vector<Point> _nodes;
   Point _centroid;
   std::vector<std::vector<int>> _sides;
-  ElementType _side_type;
+  std::vector<Point> _side_normals;
   std::vector<std::vector<Patch>> _scv;
   std::vector<DualFace> _faces;
   std::vector<std::vector<std::vector<Patch>>> _side_patches;

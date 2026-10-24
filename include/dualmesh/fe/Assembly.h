@@ -19,8 +19,21 @@ struct MappedPoint
   Point x{0, 0, 0};
   double N[kMaxElementNodes];
   Point dN[kMaxElementNodes]; ///< physical gradients of the shape functions
+  /// The Jacobian determinant; on a surface or a curve in space (an element
+  /// of lower dimension than the space) the measure sqrt(det(J^T J)), which
+  /// is positive.
   double detJ = 0;
+  /// The Jacobian dx/dxi: row i is the space direction, column j the
+  /// reference direction.
   double J[3][3];
+  /// The inverse of J, or on a surface or a curve in space the pseudo-inverse
+  /// (J^T J)^{-1} J^T: the physical gradient of a function is
+  /// grad_i = sum_j Jinv[j][i] d/dxi_j, which is the tangential gradient on a
+  /// surface.
+  double Jinv[3][3];
+  /// The unit normal of a surface element in space (t1 x t2 normalized);
+  /// zero for every other element.
+  Point normal{0, 0, 0};
   /// The linear shape functions of the element's corners and their physical
   /// gradients, for a variable interpolated at first order on a quadratic
   /// element (the pressure of a Taylor-Hood element).  They are filled by
@@ -86,10 +99,6 @@ void buildSidePoints(const Mesh & mesh,
                      const QuadratureSpec & spec,
                      std::vector<IntegrationPoint> & out);
 
-/// A symmetric quadrature rule on the reference triangle (dim 2) or
-/// tetrahedron (dim 3) exact to at least @p degree, with points in reference
-/// coordinates and weights that sum to the reference measure.  Returns false
-/// when no tabulated rule reaches the degree.
 /// The point of a side closest to @p x.
 struct SideProjection
 {
@@ -109,6 +118,10 @@ SideProjection projectOntoSide(const Mesh & mesh, const Side & side, const Point
 /// nearest one.
 int sideControlOwner(const Mesh & mesh, const Side & side, const Point & xi);
 
+/// A symmetric quadrature rule on the reference triangle (dim 2) or
+/// tetrahedron (dim 3) exact to at least @p degree, with points in reference
+/// coordinates and weights that sum to the reference measure.  Returns false
+/// when no tabulated rule reaches the degree.
 bool
 simplexQuadrature(int dim, int degree, std::vector<Point> & points, std::vector<double> & weights);
 

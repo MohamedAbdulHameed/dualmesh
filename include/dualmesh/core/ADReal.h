@@ -102,9 +102,6 @@ public:
   double derivative(int i) const { return i < _size ? _deriv[i] : 0.0; }
   const double * derivatives() const { return _deriv.data(); }
 
-  /// Drop all derivative information (used for lagged/Picard coefficients).
-  ADReal detached() const { return ADReal(_value); }
-
   /// this += s * b, value and derivatives, without a temporary.  This is the
   /// operation of every sum over shape functions in an assembly loop.
   void addScaledBy(const ADReal & b, double s)
@@ -311,6 +308,9 @@ operator>=(const ADReal & a, const ADReal & b)
 inline ADReal
 sqrt(const ADReal & a)
 {
+  // At zero the derivative is taken as zero: the one-sided limit does not
+  // exist, and a norm that vanishes with its argument (a p-Laplacian at a
+  // critical point) then keeps a finite, usable Jacobian entry.
   const double s = std::sqrt(a.value());
   return a.chain(s, s > 0 ? 0.5 / s : 0.0);
 }
@@ -361,8 +361,11 @@ pow(const ADReal & a, double p)
     return a;
   if (p == 2.0)
     return a * a;
-  const double f = std::pow(a.value(), p);
-  return a.chain(f, p * std::pow(a.value(), p - 1.0));
+  // One power evaluation: the derivative p f / v avoids the second
+  // std::pow(v, p - 1), except at v = 0, where f / v is not defined.
+  const double v = a.value();
+  const double f = std::pow(v, p);
+  return a.chain(f, v != 0.0 ? p * f / v : p * std::pow(v, p - 1.0));
 }
 inline ADReal
 pow(const ADReal & a, const ADReal & b)
@@ -374,18 +377,6 @@ inline std::ostream &
 operator<<(std::ostream & os, const ADReal & a)
 {
   return os << a.value();
-}
-
-/// Plain-value helper that works for both double and ADReal.
-inline double
-rawValue(double v)
-{
-  return v;
-}
-inline double
-rawValue(const ADReal & v)
-{
-  return v.value();
 }
 
 using ADVector3 = std::array<ADReal, 3>;

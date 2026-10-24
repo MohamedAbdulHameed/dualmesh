@@ -22,7 +22,7 @@ physics that a method cannot treat correctly is refused with an explanation.
 
 The library is written in C++17 and is driven from Python.  A model is
 described in physical terms: *physics* such as ``heat_transfer``,
-``solid_mechanics`` and ``incompressible_flow``, their boundary conditions,
+``solid_mechanics`` and ``fluid_dynamics``, their boundary conditions,
 and *couplings* such as ``thermal_expansion``.  Each physics generates the
 *kernels*, *property objects* and *boundary conditions* of its equations, which
 are registered objects with validated and self-documenting parameters.  An equation without a physics is
@@ -35,7 +35,7 @@ it with the codes whose capabilities it measures itself against: MOOSE, COMSOL
 Multiphysics, OpenFOAM, and Nek5000 and nekRS.
 
 A two-dimensional bus bar with internal heat generation, fixed temperatures on
-two sides and convection on the top (Example 5.4.3 of Reddy's book) reads:
+two sides and convection on the top reads:
 
 .. code-block:: python
 
@@ -46,18 +46,17 @@ two sides and convection on the top (Example 5.4.3 of Reddy's book) reads:
    )
 
    problem = dm.Problem(mesh, method="dmcdm")
-   heat = problem.add_physics("heat_transfer", "heat", thermal_conductivity=20.0, heat_source=1.0e6)
-   heat.add_boundary_condition("Dirichlet_boundary_condition", "left", value=40.0)
-   heat.add_boundary_condition("Dirichlet_boundary_condition", "right", value=10.0)
-   heat.add_boundary_condition(
-       "convective_heat_flux_boundary_condition", "top", heat_transfer_coefficient=75.0
-   )
+   heat = problem.add_physics("heat_transfer", thermal_conductivity=20.0, heat_source=1.0e6)
+   heat.add_boundary_condition("temperature = 40", boundary="left")
+   heat.add_boundary_condition("temperature = 10", boundary="right")
+   heat.add_boundary_condition("heat_flux = 75*temperature", boundary="top")
    problem.solve()
 
-   print(problem.sample("temperature", [[0.05, 0.0]]))  # 83.142 (Reddy, Table 5.4.3)
+   print(problem.sample("temperature", [[0.05, 0.0]]))  # 83.142
 
-A boundary condition named after a side set of the mesh acts on that side
-set.  The complete script, with post-processors and output files, is
+A boundary condition is written as text: the temperature on the left
+prescribes its value, and ``heat_flux``, the heat leaving through the
+boundary, prescribes the flux.  The complete script, with post-processors and output files, is
 ``examples/bus_bar.py``.
 
 The dual mesh control domain method
@@ -83,8 +82,8 @@ is the outward unit normal.  The secondary variables (fluxes, forces and
 moments) appear on the interfaces of the control domains, as in the finite
 volume method.  The gradients on these interfaces are evaluated from the
 finite element interpolation, so that no gradient reconstruction is needed.
-Chapter 5 of Reddy's book [Reddy2024]_ develops the method, and :doc:`theory/index`
-presents it in the form that the code implements.
+Reddy [Reddy2024]_ develops the method, and :doc:`theory/index` presents it
+in the form that the code implements.
 
 Physics modules
 ---------------
@@ -96,7 +95,7 @@ flux, convection and radiation boundary conditions, in Cartesian,
 axisymmetric and spherical coordinates.
 
 **Solid mechanics.**  Linear elasticity in plane stress, plane strain,
-axisymmetric and three-dimensional form, isotropic or orthotropic, with
+axisymmetric and three-dimensional form for isotropic materials, with
 thermal strain, small or finite strain, and creep.  The reduced theories of
 structural members are included: Euler-Bernoulli and Timoshenko beams,
 classical and first-order shear deformation plates, and axisymmetric circular
@@ -183,7 +182,7 @@ Contents
    user_guide/index
    tutorials/index
    objects
-   api
+   reference/index
 
 .. toctree::
    :maxdepth: 2

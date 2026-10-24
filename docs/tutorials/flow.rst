@@ -1,7 +1,7 @@
 Viscous incompressible flow
 ===========================
 
-The ``incompressible_flow`` physics solves the equations of an incompressible
+The ``fluid_dynamics`` physics solves the equations of an incompressible
 Newtonian fluid.  This tutorial uses its default, the penalty formulation: the
 pressure is replaced by :math:`P = -\gamma\,\nabla\cdot\mathbf{v}`, and the
 penalty term is integrated with a reduced rule, which prevents locking of the

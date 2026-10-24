@@ -26,20 +26,20 @@ def cantilever(n, method="fem", element_type="Hex8", **options):
     problem = dm.Problem(mesh, method=method)
     problem.add_physics(
         "solid_mechanics",
-        "solid",
-        displacements=["u", "v", "w"],
         formulation="three_dimensional",
         youngs_modulus=200.0e9,
         poissons_ratio=0.3,
         body_force=[0.0, 0.0, -7.8e4],
     )
-    problem.add_boundary_condition("fixed_constraint", "left", displacements=["u", "v", "w"])
+    problem.add_boundary_condition(
+        "Dirichlet", "left", variable=["disp_x", "disp_y", "disp_z"], value=0.0
+    )
     result = problem.solve(**options)
     return problem, result
 
 
 def deflection(problem):
-    return np.array(problem.values("w"))
+    return np.array(problem.values("disp_z"))
 
 
 @pytest.mark.parametrize("method", ["fem", "dmcdm"])
@@ -90,23 +90,24 @@ def test_thermoelastic_near_null_space_has_rigid_modes_and_a_constant():
         num_z_elements=2,
     )
     problem = dm.Problem(mesh, method="fem")
-    for name in ("temperature", "u", "v", "w"):
+    for name in ("temperature", "disp_x", "disp_y", "disp_z"):
         problem.add_variable(name)
     problem.add_kernel("heat_conduction", variable="temperature", thermal_conductivity=1.0)
     problem.add_property(
-        "linear_elastic_stress",
-        "steel",
-        displacements=["u", "v", "w"],
+        "small_strain_stress",
+        displacements=["disp_x", "disp_y", "disp_z"],
         formulation="three_dimensional",
         youngs_modulus=1.0,
         poissons_ratio=0.3,
     )
-    for c, name in enumerate(("u", "v", "w")):
-        problem.add_kernel("stress_divergence", variable=name, component=c)
-    problem.add_boundary_condition("fixed_constraint", "left", displacements=["u", "v", "w"])
+    for name in ("disp_x", "disp_y", "disp_z"):
+        problem.add_kernel(
+            "stress_divergence", variable=name, displacements=["disp_x", "disp_y", "disp_z"]
+        )
     problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", "left", variable="temperature", value=0.0, boundary="left"
+        "Dirichlet", "left", variable=["disp_x", "disp_y", "disp_z"], value=0.0
     )
+    problem.add_boundary_condition("Dirichlet", "left", variable="temperature", value=0.0)
     problem.initialize()
     B = np.asarray(problem._problem.near_nullspace())
     # Three translations, three rotations and the constant temperature.
@@ -116,7 +117,7 @@ def test_thermoelastic_near_null_space_has_rigid_modes_and_a_constant():
 
 def test_multigrid_input_checks():
     with pytest.raises(
-        Exception, match="'amg' works with linear_solver 'cg', 'bicgstab' or 'automatic'"
+        Exception, match="'AMG' works with linear_solver 'CG', 'BiCGStab' or 'automatic'"
     ):
         cantilever(2, linear_solver="gmres", preconditioner="amg")
     with pytest.raises(Exception, match="needs a symmetric matrix"):

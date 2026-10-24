@@ -1,8 +1,8 @@
 Cross-verification against OpenFOAM
 ===================================
 
-Agreement with a book's tables shows that the implementation matches the
-method.  Agreement with an independent code on the same problem shows that the
+Agreement with published values of a method shows that the implementation
+matches the method.  Agreement with an independent code on the same problem shows that the
 method and the implementation together describe the physics.  The scripts in
 ``verification/openfoam`` perform the second comparison: they run `OpenFOAM
 <https://www.openfoam.com>`_, run dualmesh on the same problem (on the same
@@ -84,9 +84,12 @@ to within the discretization error of each method.
 Steady conduction in a plate
 ----------------------------
 
-``laplacianFoam``, marched to steady state, is compared with the dual mesh
-solution of the same problem (the geometry and boundary conditions of
-Example 5.4.2 of the book) on the same :math:`40 \times 20` grid:
+A plate of :math:`0.2\ \mathrm{m} \times 0.1\ \mathrm{m}` with the conductivity
+:math:`0.2\ \mathrm{W/(m\,K)}` is held at 500 K on the left and 300 K on the
+right, is insulated at the bottom, and has the temperature
+:math:`T = 500 (1 - 10 x^2)` on top.  ``laplacianFoam``, marched to steady
+state, is compared with the dual mesh solution on the same
+:math:`40 \times 20` grid:
 
 .. list-table:: :math:`T(x, y=0)` in kelvin
    :header-rows: 1

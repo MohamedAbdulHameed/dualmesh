@@ -33,7 +33,7 @@ combined with, and solved.  dualmesh is one in the following precise sense:
    kernel or a property object that reads the other field, such as
    ``heat_convection`` (the flow carries the heat), ``Boussinesq_buoyancy``
    (the temperature drives the flow), the thermal strain of
-   ``linear_elastic_stress`` (the temperature loads the solid), or
+   ``thermal_expansion_eigenstrain`` (the temperature loads the solid), or
    ``coupled_force`` for any linear coupling.
 
 3. **Monolithic, fully coupled solution.**  All fields are solved together as
@@ -70,8 +70,8 @@ What is in place
        flux, convection and radiation boundaries.
    * - Solid mechanics
      - Linear elasticity in plane stress, plane strain, axisymmetric and
-       three-dimensional form, for isotropic and orthotropic materials and
-       with thermal strain.  Finite strain with a neo-Hookean material, creep
+       three-dimensional form, for isotropic materials and with thermal
+       strain.  Finite strain with a neo-Hookean material, creep
        laws given as expressions, eigenstrains, and frictionless contact
        between bodies by a penalty.  Euler-Bernoulli and Timoshenko beams,
        classical and first-order shear deformation plates, axisymmetric
@@ -117,7 +117,7 @@ What is in place
      - Built-in generators, every format that meshio reads, local refinement
        of triangular meshes and uniform refinement of all linear types.
    * - Verification
-     - Reddy's book examples, analytical solutions, OpenFOAM cross-checks, and
+     - Analytical solutions, published values, benchmarks, OpenFOAM cross-checks, and
        a method-of-manufactured-solutions study of every method and element.
    * - Interfaces
      - Python API, command-line tools for the object reference and the side
@@ -158,7 +158,10 @@ much each limitation restricts the problems that can be solved:
 
 2. **Scale.**  dualmesh distributes the mesh with PETSc's DMPlex (PT-Scotch or
    ParMETIS partitions it) and solves through PETSc with algebraic multigrid
-   (hypre BoomerAMG), field split and the parallel direct solver MUMPS; the
+   (hypre BoomerAMG, and GAMG with the rigid body modes of a solid), block
+   preconditioners of a flow (the least squares commutator and the pressure
+   convection-diffusion operator) and of coupled physics, and the parallel
+   direct solver MUMPS.  The
    values at shared nodes are exchanged through PETSc's star forests or gslib.
    Its multigrid iteration count stays flat from one to four processes, the
    largest count run so far, and the projection time integration of a flow
@@ -181,8 +184,10 @@ much each limitation restricts the problems that can be solved:
    models with wall functions, upwind-biased and limited convection schemes,
    compressible and multiphase solvers and moving meshes, and Nek5000 and nekRS
    offer high-order spectral elements, LES and runs on GPUs.  dualmesh has no
-   turbulence model yet, and it stabilizes convection by streamline upwinding
-   only.
+   turbulence model yet.  It stabilizes convection by streamline upwinding with
+   the finite element and dual mesh methods, and by upwind, linear upwind and
+   van Albada limited face values with every control volume method, where
+   OpenFOAM offers a larger family of limiters.
 
 5. **Time integration and analysis types.**  dualmesh has the :math:`\theta`
    family, and the backward differences of order 1 to 3 in the projection

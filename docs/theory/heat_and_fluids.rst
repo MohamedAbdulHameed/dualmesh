@@ -120,15 +120,15 @@ The **prescribed temperature**, or essential, condition sets
 of each affected node with that statement, the displaced equation being retained
 so that the secondary variable can be recovered afterwards as a reaction.  Use
 it wherever the surface temperature is controlled or known.  The object is
-``Dirichlet_boundary_condition``.
+``Dirichlet``.
 
 The **prescribed flux**, or natural, condition sets
 :math:`\mathbf{n} \cdot (k \nabla T) = q(\mathbf{x}, t)`, with :math:`q` the
 heat entering per unit area.  Use it for a surface heated by a known source such
 as an electrical element, and use its default value of zero, or no condition at
-all, for an insulated or symmetry surface.  The object is
-``heat_flux_boundary_condition``, the heat-transfer name of the generic
-``Neumann_boundary_condition``, with the same sign convention.
+all, for an insulated or symmetry surface.  The physics level writes it as
+text with the heat *leaving* the body, ``"heat_flux = -q"``, and the object
+level is ``Neumann``, with the flux entering the body as above.
 
 The **convection** condition applies Newton's law of cooling, which models the
 thermal resistance of the fluid boundary layer adjacent to the surface by one
@@ -145,12 +145,14 @@ The minus sign makes the condition physically consistent with the library's
 convention: where the surface is hotter than the fluid the bracket is positive,
 the entering flux is negative, and heat leaves.  Only the temperature
 *difference* enters, so any consistent temperature scale may be used, unlike the
-radiation condition below.  The object is
-``convective_heat_flux_boundary_condition``.  It depends on no unknown other
+radiation condition below.  The physics level writes it as text,
+``"heat_flux = h*(temperature - T_inf)"``, with :math:`h` and
+:math:`T_\infty` given as definitions, and the object level is ``Robin``
+(``transfer_coeff`` and ``ambient_value``).  It depends on no unknown other
 than :math:`T` itself and is differentiated exactly, so a linear conduction
-problem carrying it still converges in a single Newton step.  Its
-default ambient temperature is zero, which cools the surface towards zero and is
-rarely intended when the variable is in degrees Celsius.
+problem carrying it still converges in a single Newton step.  The default
+``ambient_value`` of ``Robin`` is zero, which cools the surface towards zero and
+is rarely intended when the variable is in degrees Celsius.
 
 The **grey-body radiation** condition applies the Stefan-Boltzmann law to a
 surface exchanging radiation with large surroundings:
@@ -176,7 +178,7 @@ code factors the difference as
 :math:`T^4 - T_\infty^4 = ( T^2 + T_\infty^2 )( T + T_\infty )( T - T_\infty )`
 and evaluates the first two brackets at the previous iterate, leaving a term
 linear in the current temperature.  The object is
-``radiative_heat_flux_boundary_condition``, and its default ambient temperature
+``radiative_heat_flux``, and its default ambient temperature
 of zero models radiation into deep space.
 
 Temperature-dependent conductivity
@@ -193,9 +195,9 @@ time, by a polynomial in the temperature:
    k(\mathbf{x}, t, T) = k_0(\mathbf{x}, t)
    \left( c_0 + c_1 T + c_2 T^2 + \cdots \right) .
 
-The base value :math:`k_0` is the ``thermal_conductivity`` parameter, or a
-property when ``thermal_conductivity_property`` names one.  Naming a
-property replaces :math:`k_0` alone, and the polynomial still multiplies it.
+The base value :math:`k_0` is the ``thermal_conductivity`` parameter: a
+number, a function, an expression or the name of a property.  The
+polynomial multiplies it in every case.
 The coefficients are the ``temperature_polynomial`` list, evaluated by Horner's
 rule from the highest downwards.  Two details of :eq:`kpoly` require attention.
 The polynomial **multiplies** the base value, so a list supplied by the user
@@ -226,24 +228,18 @@ current differentiated one.
 Verification of the heat transfer module
 ----------------------------------------
 
-The module is verified in ``tests/python/test_heat_transfer.py`` against the
-published dual mesh results of Reddy's book.  The cooling fin of
-Example 5.3.1, a one-dimensional problem with a Robin condition at the tip, is
-reproduced on ten and twenty elements against the nodal temperatures and base
-heat flow of Table 5.3.1, the temperatures agreeing within
-:math:`6\times10^{-3}\ \mathrm{K}` and the recovered reaction of
-:math:`4807\ \mathrm{W}` within three parts in ten thousand.  The bus bar of
-Example 5.4.3, which combines volumetric generation, two fixed edges and a
-convecting top surface, reproduces every printed digit of Table 5.4.3 on a
-:math:`10 \times 5` mesh.  That table is captioned as :math:`20 \times 10`, but
-the accompanying figure shows the coarser mesh and its values agree with those
-quoted for :math:`10 \times 5` elsewhere in the book, so the test uses the mesh
-from which the tabulated values were obtained.  The nonlinear plate of
-Example 6.3.1, with :math:`k = k_0 (1 + 100\,T)`, matches the dual mesh column
-of Table 6.3.1 to within three hundredths of a degree by Newton's method and by
-direct iteration alike.  The size of this tolerance is governed by the relative
-convergence criterion of :math:`10^{-3}` used in the book, and the
-discretization error is smaller.
+The module is verified in ``tests/python/test_heat_transfer.py`` against
+published dual mesh results [Reddy2024]_.  The cooling fin, a one-dimensional
+problem with a Robin condition at the tip, is solved on ten and twenty elements,
+and its nodal temperatures agree within :math:`6\times10^{-3}\ \mathrm{K}` and
+the recovered heat flow at the base of :math:`4807\ \mathrm{W}` within three
+parts in ten thousand.  The bus bar, which combines volumetric generation, two
+fixed edges and a convecting top surface, reproduces every printed digit on a
+:math:`10 \times 5` mesh.  The nonlinear plate with
+:math:`k = k_0 (1 + 100\,T)` matches within three hundredths of a degree by
+Newton's method and by direct iteration alike.  The size of this tolerance is
+governed by the relative convergence criterion of :math:`10^{-3}` of the
+published solution, and the discretization error is smaller.
 
 Viscous incompressible flow
 ---------------------------
@@ -316,8 +312,8 @@ on a single family of Lagrange elements, violates this condition.
 The penalty formulation
 ^^^^^^^^^^^^^^^^^^^^^^^
 
-The library avoids the mixed problem by the penalty formulation of Chapter 9 of
-Reddy's book.  In this formulation the constraint is relaxed and the fluid is
+The library avoids the mixed problem by the penalty formulation
+[Reddy2024]_.  In this formulation the constraint is relaxed and the fluid is
 treated as very slightly compressible, through the constitutive assumption
 
 .. math::
@@ -453,7 +449,7 @@ Each object takes the same ``velocities`` list, in coordinate order, and a
 zero-based ``component`` index into it.  The index is range checked, but its
 agreement with the ``variable`` parameter is not, so a mismatch assembles one
 momentum equation into another without any error message.  The
-``incompressible_flow`` physics prevents such a mismatch by adding the viscous
+``fluid_dynamics`` physics prevents such a mismatch by adding the viscous
 and penalty kernels for every component, the
 inertia kernel when a non-zero density is given, and the pressure property
 object described next.
@@ -471,7 +467,7 @@ where :eq:`penalty` replaces :math:`\gamma \nabla \cdot \mathbf{v}` by
 :math:`-P`.  This is the :math:`i`-th component of the surface traction, so a
 boundary with no condition at all is traction free, which is the usual outflow
 condition.  Walls and moving lids are imposed as
-``Dirichlet_boundary_condition`` conditions on the velocity components.
+``Dirichlet`` conditions on the velocity components.
 
 Recovering the pressure
 ^^^^^^^^^^^^^^^^^^^^^^^
@@ -533,11 +529,34 @@ problem is then close enough to its predecessor for Newton's method to converge,
 and the computation passes through a sequence of flows of increasing Reynolds
 number up to the final one.
 
+**The Stokes start.**  A steady flow whose velocity is at rest (zero at every
+unknown that no condition prescribes) starts Newton's method from the Stokes
+solution: the same problem with the inertia :math:`\rho (\mathbf{v} \cdot
+\nabla) \mathbf{v}` turned off, solved at the first load factor.  The state at
+rest holds the prescribed boundary velocities next to zero values, so its
+linearised inertia has steep gradients, and the first step from it can leave the
+basin of convergence.  On a channel at :math:`Re = 100` with the inflow
+:math:`y` or :math:`6 y (1 - y)`, the first step of the cell-centred method
+from rest landed 300 away from the Stokes pressure, whose range is 0 to 28, and
+Newton's method diverged on :math:`16 \times 16` and :math:`32 \times 32`
+cells.  From the Stokes solution it converges in 3 to 4 iterations to the
+solution that continuation in the Reynolds number reaches.  The Stokes solve
+takes the pressure mass preconditioner when the flow takes ``"lsc"`` or
+``"pcd"``, which approximate a convection that it does not have.  A velocity
+that the user gives as the start (``set_values`` or ``initial_condition``) is
+kept, and the report of the solve states the Stokes start.
+
+**A diverging iteration.**  When the residual grows to a million times its
+first value, the solve stops and says that Newton's method diverged, with the
+remedies: load steps, a closer start, Picard iteration, or an advection scheme
+for a flow at a high cell Reynolds number.  Before, the iteration went on until
+its matrix could not be factorised, and the error then pointed at the boundary
+conditions.
+
 Direct iteration with relaxation
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-The alternative is direct, or Picard, iteration, which is the linearization used
-in the book.  Every nonlinear coefficient is evaluated at the previous iterate,
+The alternative is direct, or Picard, iteration.  Every nonlinear coefficient is evaluated at the previous iterate,
 so the transporting velocity in :math:`\rho (\mathbf{v} \cdot \nabla) u_i` is
 held fixed and each iteration is a linear convection-diffusion solve.  The
 matrix is cheaper to form and the method is far less sensitive to the starting
@@ -552,9 +571,8 @@ remedy is under-relaxation: after the linear solve produces a tentative iterate
    \mathbf{U}^{r+1} = \left( 1 - \beta \right) \tilde{\mathbf{U}}^{r+1}
    + \beta \, \mathbf{U}^{r} ,
 
-where :math:`\beta` is the ``relaxation`` parameter, written :math:`\gamma` in
-the book's Eq. (6.2.15) and not to be confused with the penalty parameter of
-:eq:`penalty`.  The weight :math:`\beta` multiplies the **old** iterate:
+where :math:`\beta` is the ``relaxation`` parameter, not to be confused with
+the penalty parameter :math:`\gamma` of :eq:`penalty`.  The weight :math:`\beta` multiplies the **old** iterate:
 :math:`\beta = 0`, the default, is the unrelaxed method, a value near one leaves
 the iterate almost unchanged, and a value of about one half is suitable for a
 flow that converges with difficulty.  Relaxation is skipped on the first
@@ -581,7 +599,7 @@ Second, the penalty term must be integrated with a reduced rule, which has no
 counterpart in the cell-centred finite volume method.  Third, the pressure is
 only recovered afterwards, element by element.  The *pressure-velocity* (or *mixed*)
 formulation, selected with ``formulation="pressure"`` of the
-``incompressible_flow`` physics, keeps the pressure :math:`p` as
+``fluid_dynamics`` physics, keeps the pressure :math:`p` as
 an unknown field and solves the mass equation alongside the momentum
 equations.  It works with all four methods.
 
@@ -675,10 +693,21 @@ density so that it also covers the Stokes equations:
 
    \tau = \left[ \left( \frac{2 \rho}{\Delta t} \right)^2
    + \left( \frac{2 \rho |\mathbf{v}|}{h} \right)^2
-   + \left( \frac{4 \mu}{h^2} \right)^2 \right]^{-1/2} .
+   + 9 \left( \frac{4 \mu}{h^2} \right)^2 \right]^{-1/2} .
 
 The three terms are the reciprocal time scales of the unsteadiness, of
-convection across an element and of diffusion across it.  The first is absent
+convection across an element and of diffusion across it.  The factor 9 on the
+viscous term, which the navier_stokes module of MOOSE [MOOSE2025]_ takes
+(``INSADTauMaterial``), gives the viscous limit :math:`h^2 / (12 \nu)`, that of
+the optimal parameter of linear elements, :math:`(h / 2 |\mathbf{v}|)(\coth
+\mathrm{Pe}_h - 1 / \mathrm{Pe}_h)` [BrooksHughes1982]_, where the form of
+Tezduyar without it gives :math:`h^2 / (4 \nu)`, three times too much.
+Measured on 32 by 32 elements at :math:`Re = 100`, against a Taylor-Hood
+solution on :math:`64 \times 64` elements, the factor halves the error of the
+cavity centreline velocities (``fem`` 0.0045 and 0.0088 against 0.0016 and
+0.0041), and it lowers the error of the Kovasznay flow by about a quarter for
+every method and that of the Nusselt number of natural convection at
+:math:`Ra = 10^5` from 1.1 % to 0.5 %.  The first is absent
 in a steady solve.  The element size is :math:`h = (c V_e)^{1/d}`, with
 :math:`V_e` the element volume and :math:`c = 1` for quadrilaterals and
 hexahedra, 2 for triangles and prisms and 6 for tetrahedra and pyramids, so
@@ -687,12 +716,12 @@ size :math:`h`.  The size is halved for a quadratic element.  With inertia,
 ``momentum_stabilization`` adds the streamline-upwind term of
 [BrooksHughes1982]_ to each momentum equation as the flux
 :math:`\rho \tau\, r_{m,i}\, \mathbf{v}`, which damps the oscillations of
-convection-dominated flow.  The ``incompressible_flow`` physics adds it
+convection-dominated flow.  The ``fluid_dynamics`` physics adds it
 whenever the density is non-zero.
 
 Every force in the momentum equations must also appear in
 :math:`\mathbf{r}_m`, because a force missing there causes the stabilisation
-term to act against that force.  The ``incompressible_flow`` physics passes
+term to act against that force.  The ``fluid_dynamics`` physics passes
 its ``body_force`` and the buoyancy of a ``nonisothermal_flow`` coupling to the
 stabilisation, with the
 same load scaling as the force itself.  Without the buoyancy in
@@ -792,12 +821,13 @@ one derivative per local degree of freedom: 22 on a ``Quad9`` element, against
 a saddle point system whose pressure block is exactly zero.  An incomplete LU
 factorisation meets a zero pivot on the first pressure row, so the default
 linear solver (``linear_solver="automatic"``) factorises these systems
-directly whatever their size.  In two dimensions the direct factorisation is
-fast.  In three dimensions its cost grows quickly (a ``Tet10`` mesh with about
-20 000 unknowns takes about :math:`4\ \mathrm{s}` per factorisation in one
-thread), and a large problem is better solved with PETSc
-(``linear_solver="petsc"``), for instance with a Schur complement field split,
-or with MUMPS in parallel.
+directly where that is inexpensive, and splits a larger one with the least
+squares commutator, a block preconditioner that approximates the Schur
+complement of the pressure (see :doc:`/user_guide/solving`).  In three
+dimensions the direct factorisation grows costly quickly (a ``Tet10`` mesh
+with about 20 000 unknowns takes about :math:`4\ \mathrm{s}` per
+factorisation in one thread), and on a three-dimensional cavity on two
+processes the split is about twice as fast as MUMPS from 37 000 unknowns on.
 
 **Verification.**  ``tests/python/test_taylor_hood.py`` checks the element in
 four ways.
@@ -920,9 +950,9 @@ Boundary conditions for the pressure
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 The mass equation requires the flow through the boundary.
-``mass_flux_boundary_condition`` supplies it as the natural boundary quantity
+``mass_flux`` supplies it as the natural boundary quantity
 :math:`q = -\mathbf{v} \cdot \mathbf{n}`, computed from the discrete velocity,
-and the ``incompressible_flow`` physics places it on every side set.  For the finite
+and the ``fluid_dynamics`` physics places it on every side set.  For the finite
 element method this reproduces the boundary term of PSPG exactly.  Summing the
 mass equations of all control volumes gives
 :math:`\oint \mathbf{v}_h \cdot \mathbf{n}\,\mathrm{d}s = 0`, so the discrete flow
@@ -930,7 +960,7 @@ conserves mass globally, whatever the stabilisation.
 
 An enclosed flow, with a velocity condition on every boundary, determines the
 pressure only up to a constant.  ``pressure_pin_point`` fixes it with a
-``point_Dirichlet_boundary_condition``, which replaces the mass equation of the
+``point_Dirichlet``, which replaces the mass equation of the
 entity nearest to a point.  That mass equation is then dropped, and the pinned
 entity becomes the only place where a net boundary flux
 :math:`\oint \mathbf{v}_h \cdot \mathbf{n}\,\mathrm{d}s \neq 0` can be accommodated.
@@ -946,7 +976,7 @@ Verification of the pressure-velocity formulation
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 ``tests/python/test_pressure_velocity.py`` checks the formulation with the
-manufactured solutions of the ``incompressible_flow`` physics
+manufactured solutions of the ``fluid_dynamics`` physics
 (:class:`dualmesh.mms.ManufacturedSolution`), whose exact
 velocity is divergence free, whose right boundary is an outlet with the exact
 traction and whose pressure has no symmetry.  With the density
@@ -1013,7 +1043,7 @@ Transient flow
 --------------
 
 A transient solve keeps the inertia :math:`\rho\, \partial \mathbf{v} / \partial t`
-of :eq:`momentum`, which ``incompressible_flow`` adds to every momentum equation
+of :eq:`momentum`, which ``fluid_dynamics`` adds to every momentum equation
 when the density is positive, and advances the flow in one of two ways, chosen by
 ``time_integration``.
 
@@ -1022,6 +1052,21 @@ the whole system: every step solves the velocity and the pressure together by
 Newton's method, as a steady solve does.  It is the robust choice for strongly
 coupled problems and for large steps, at the price of a non-symmetric saddle point
 system at every step.
+
+The mass equation has no time derivative, so every :math:`\theta` takes it at
+the new time with the weight 1, and so it takes the pressure gradient and the
+stabilisation of the momentum equations (``momentum_stabilization``) and of
+the mass flux.  Their residual :eq:`pv_residual` is then the residual of the
+discrete momentum equation, the time difference and :math:`\nabla p^{n+1}`
+with the other terms weighted by :math:`\theta` at the new state and by
+:math:`1 - \theta` at the old one, so it vanishes for the solution of the
+discrete equations.  On :math:`\mathbf{v} = (1 + t, 0)`, :math:`p = -x`,
+which the elements hold exactly, Crank-Nicolson is now exact to round-off.
+Weighted between the two times, the pressure was an average of two steps, its
+error came back with the opposite sign at every step and grew, to
+:math:`5 \times 10^{-2}` after four steps on :math:`16 \times 16` elements.
+On the rotating flow :math:`\mathbf{v} = (1 + t)(y, x)` Crank-Nicolson has the
+error of backward Euler.
 
 ``"projection"`` is the splitting of Nek5000 and nekRS [Fischer2021]_, which
 replaces the saddle point system by symmetric positive definite problems, each
@@ -1181,25 +1226,24 @@ because it evaluates the flow at the control domains and at their interfaces.
 Verification of the fluids module
 ---------------------------------
 
-The module is checked in ``tests/python/test_fluids.py`` against the penalty
-results of Chapter 9 of Reddy's book.  The creeping flow squeezed between two
-approaching plates, Example 9.8.3, is computed on the graded
-:math:`20 \times 16` mesh and reproduces the horizontal velocity profiles of the
-dual mesh column of Table 9.8.2 at two stations to within
+The module is checked in ``tests/python/test_fluids.py`` against published
+dual mesh penalty results [Reddy2024]_.  The creeping flow squeezed between two
+approaching plates is computed on a graded :math:`20 \times 16` mesh and
+reproduces the horizontal velocity profiles at two stations to within
 :math:`2 \times 10^{-3}`.  The same test takes the recovered penalty pressure at
 the element centroids and confirms that it follows Nadai's approximate solution
 :math:`P = 3 \mu V_0 (a^2 + y^2 - x^2) / (2 b^3)` in the interior, with a
 correlation above :math:`0.999` and a magnitude correct to within 5 %,
 the comparison being restricted to the interior because the corners of this
-problem are singular.  The lid-driven cavity of Example 9.8.4 is computed on the
+problem are singular.  The lid-driven cavity is computed on a
 :math:`16 \times 20` mesh graded towards the lid and reproduces the centreline
-profile of Table 9.8.3 to within :math:`2 \times 10^{-3}` at :math:`Re = 0`,
+profile to within :math:`2 \times 10^{-3}` at :math:`Re = 0`,
 where the flow is Stokes, and again at :math:`Re = 1000`, where the same profile
 is obtained twice: once by Newton's method with the lid ramped in five load
 steps, and once by relaxed direct iteration with :math:`\beta = 0.5`.  A further
 test at :math:`Re = 400` confirms that the two nonlinear solvers agree with each
 other to :math:`10^{-6}` in every nodal velocity, a stronger statement than
-either comparison with the book, and a final test confirms that the divergence of
+either comparison with the published profile, and a final test confirms that the divergence of
 the computed field stays below :math:`10^{-5}` everywhere, as :eq:`penalty`
 requires at the penalty parameter used.
 
@@ -1239,6 +1283,90 @@ incompressible flow, because
 :math:`\nabla \cdot (\mathbf{v} T) = \mathbf{v} \cdot \nabla T + T \nabla
 \cdot \mathbf{v}` and the last term vanishes.
 
+**The advection scheme.**  At a high cell Péclet number
+:math:`\mathrm{Pe}_h = |\mathbf{v}| h / (2 \kappa)`, with
+:math:`\kappa = k / (\rho c_p)`, the central source :eq:`heatconvection`
+oscillates.  The heat that a ``nonisothermal_flow`` coupling carries takes, by
+default, the streamline stabilisation below (SUPG) with FEM, DMCDM and HFVM,
+and the limited face flux of :doc:`finite_volume` with ZFVM: the schemes that
+measured the closest on boundary layers and jumps.  ``advection_scheme`` of
+``heat_transfer`` chooses another one (``"central"``, ``"upwind"``,
+``"linear_upwind"``, ``"limited"``, ``"SUPG"``), because the best scheme depends
+on the case: where conduction matters as much as convection, as in resolved
+natural convection, central can be closer (below).  The face schemes write the
+term with the faces of each control volume, as :math:`\rho c_p \sum_f m\, T_f`,
+with the flux :math:`m` of the velocity that the mass equation conserves, so
+that the heat is conserved exactly and the temperature does not depend on its
+scale.  The inertia of a flow takes its scheme from the method, with no option,
+because one scheme measured the closest in every case: the streamline
+stabilisation ``momentum_stabilization`` with FEM, DMCDM and HFVM, and the
+limited face flux :math:`\rho \sum_f m\, v_{i,f}` with ZFVM (on the cavity at
+:math:`Re = 100` and 1000, the Kovasznay flow and natural convection).
+``streamline_stabilization=True`` keeps the central form with SUPG on ZFVM.
+
+With FEM, DMCDM and HFVM, ``"SUPG"`` adds ``heat_streamline_stabilization``,
+the streamline upwind Petrov-Galerkin term of [BrooksHughes1982]_.  It is the
+flux :math:`\mathbf{F} = \tau\, \mathbf{v}\, r`, which adds
+:math:`\int_\Omega \tau\, (\mathbf{v} \cdot \nabla w)\, r \, d\Omega` to the
+equation of the test function :math:`w`, with the residual
+
+.. math::
+
+   r = \rho c_p \left( \frac{\partial T}{\partial t} + \mathbf{v} \cdot \nabla T
+   \right) - q .
+
+The kernel builds :math:`r` as the sum of the sources of every other kernel of
+the temperature: the convection, the heat capacity term and each heat source,
+also one added with ``add_kernel``.  A source missing from :math:`r` would make
+the stabilisation act against it: with the heat source added as a kernel and
+only the source of the physics in :math:`r`, the order on a smooth solution
+fell from 2.8 to 1.2.  The parameter is that of [Tezduyar1991]_
+
+.. math::
+
+   \tau = \left[ \left( \frac{2 |\mathbf{v}|}{h} \right)^2
+   + 9 \left( \frac{4 \kappa}{h^2} \right)^2
+   + \left( \frac{2}{\Delta t} \right)^2 \right]^{-1/2} ,
+
+with the factor 9 of the flow (above).  On the boundary layer of
+:math:`\mathrm{Pe} = 100` on 10, 20 and 40 elements the maximum error is 0.028,
+0.013 and 0.0024 with it, and 0.083, 0.134 and 0.143 without it, which
+overdiffuses where conduction and convection are comparable.
+
+The residual leaves out the conduction term :math:`-\nabla \cdot (k \nabla T)`,
+whose second derivatives vanish inside a linear element.  For the exact
+solution this term is not zero, so the stabilisation adds an error of the order
+of :math:`\tau k |\Delta T|`.  It is small where convection dominates, where
+:math:`\tau \approx h / (2 |\mathbf{v}|)`, and zero for a harmonic temperature.
+On :math:`T = \sin(\pi x) \sin(\pi y)` with :math:`k = 0.01` the error of SUPG
+is :math:`1.4 \times 10^{-2}`, :math:`2.3 \times 10^{-3}` and
+:math:`2.6 \times 10^{-4}` on 8, 16 and 32 elements per side (Galerkin's
+:math:`2.6 \times 10^{-2}`, :math:`6.3 \times 10^{-3}` and
+:math:`1.6 \times 10^{-3}`).  On the harmonic :math:`T = e^x \sin y` both converge at second
+order.  For the inertia of a flow, SUPG is ``streamline_stabilization``, which
+``fluid_dynamics`` adds by default with the central scheme only.
+
+On the skew jump of [BrooksHughes1982]_ with the outflow held at zero (a
+:math:`24 \times 24` mesh, :math:`k = 10^{-6}`), Galerkin's temperature reaches
+409, and that of SUPG stays in :math:`[-0.12, 1.08]` away from the outflow
+layer, with 1.6 at the node next to the outflow corner, where the layer meets
+the jump.  This overshoot at a layer is a known property of SUPG, which is not
+bounded.  The bounded schemes are those of the control volume methods.
+
+**The time derivative inside a residual.**  The theta method weights a steady
+kernel by :math:`\theta` at the new time and by :math:`1 - \theta` at the old
+time, where the kernel has no old value and its time derivative is zero.  A
+residual-based stabilisation puts the time derivative inside a steady kernel,
+so the derivative would enter the step with the weight :math:`\theta`.  The
+context of the kernel therefore carries the inverse of the kernel's own weight
+for it: :math:`1/\theta` at the new time for this kernel, 1 for the
+stabilisation of a flow, which the step takes at the new time (see
+"Transient flow"), and 0 at the old time.  The derivative enters with the
+weight 1.  The explicit step (:math:`\theta = 0`)
+cannot give it a weight, so it refuses these kernels.  With Crank-Nicolson, SUPG then converges
+at second order on :math:`T = e^x \sin y\, (1 + t)`, with the error of backward
+Euler.  With the weight :math:`\theta` it converged at order 0.7 to 1.1.
+
 The two terms couple the velocity and the temperature in both directions, and
 the Jacobian of the coupled system has the blocks
 :math:`\partial R_{\mathbf{v}} / \partial T` from :eq:`boussinesq` and
@@ -1264,22 +1392,26 @@ number reached by continuation, the dual mesh method gives:
    ============  ==========  ========  ===========  ========  ===========  ========
    :math:`Ra`    :math:`Nu`  ref.      :math:`u_m`  ref.      :math:`v_m`  ref.
    ============  ==========  ========  ===========  ========  ===========  ========
-   :math:`10^3`  1.117       1.118     3.660        3.649     3.707        3.697
-   :math:`10^4`  2.243       2.243     16.24        16.18     19.71        19.62
-   :math:`10^5`  4.517       4.519     34.79        34.73     68.78        68.59
-   :math:`10^6`  8.814       8.800     64.97        64.63     223.4        219.4
+   :math:`10^3`  1.117       1.118     3.659        3.649     3.710        3.697
+   :math:`10^4`  2.242       2.243     16.27        16.18     19.72        19.62
+   :math:`10^5`  4.507       4.519     35.09        34.73     68.92        68.59
+   :math:`10^6`  8.774       8.800     65.78        64.63     224.6        219.4
    ============  ==========  ========  ===========  ========  ===========  ========
 
 Here :math:`u_m` is the largest horizontal velocity on the vertical centreline
 and :math:`v_m` the largest vertical velocity on the horizontal centreline.  The
-Nusselt numbers agree to within 0.2 % and the velocity maxima to within 0.6 %,
-except :math:`v_m` at :math:`Ra = 10^6`, which is 1.8 % high, where the wall jet
-is thinnest.  On a :math:`64 \times 64` mesh this value is 221.0.  The finite
+Nusselt numbers agree to within 0.3 % and the velocity maxima to within 1.8 %,
+except :math:`v_m` at :math:`Ra = 10^6`, which is 2.4 % high, where the wall jet
+is thinnest.  On a :math:`64 \times 64` mesh this value is 221.4.  The heat
+carries the default streamline stabilisation, whose residual leaves the
+conduction term out.  That costs a little here, where conduction matters as
+much as convection: with ``advection_scheme="central"`` the differences were
+0.2 % and 0.6 % (1.8 % for :math:`v_m` at :math:`Ra = 10^6`).  The finite
 element and vertex-centred finite volume methods give Nusselt numbers within
 0.2 % of the same values.  The heat entering at the hot wall leaves at the cold
 wall to round-off, and on a :math:`16 \times 16` mesh at :math:`Ra = 10^4` the
 relative Newton steps of the last load step fall as
-:math:`2.3 \times 10^{-3}`, :math:`2.5 \times 10^{-6}`,
-:math:`5.1 \times 10^{-12}`, which is quadratic convergence.  The tests are in
+:math:`1.8 \times 10^{-3}`, :math:`1.5 \times 10^{-6}`,
+:math:`2.1 \times 10^{-12}`, which is quadratic convergence.  The tests are in
 ``tests/python/test_multiphysics.py`` and the example script is
 ``examples/natural_convection.py``.

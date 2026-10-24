@@ -3,6 +3,7 @@
 #include "dualmesh/core/ParsedFunction.h"
 
 #include <Eigen/IterativeLinearSolvers>
+#include <Eigen/LU>
 #include <Eigen/SparseLU>
 
 #include <algorithm>
@@ -22,6 +23,27 @@ Problem::Problem(std::shared_ptr<Mesh> mesh, Method method, CoordinateSystem coo
 {
   if (!_mesh)
     throw InputError("Problem needs a mesh.");
+  if (_mesh->numElements() == 0)
+    throw InputError("The mesh has no elements, so there is nothing to solve on. A mesh built node "
+                     "by node needs its elements too (add_element, or mesh_from_arrays with "
+                     "cells).");
+  if (_coord == CoordinateSystem::Axisymmetric || _coord == CoordinateSystem::SphericalRadial)
+  {
+    // The radius is x: a mesh that reaches x < 0 has no meaning in these coordinates, and the
+    // factor 2 pi r of the integrals turns negative there.
+    const auto box = _mesh->boundingBox();
+    double size = 0.0;
+    for (int k = 0; k < 3; ++k)
+      size = std::max(size, box.second[k] - box.first[k]);
+    if (box.first[0] < -1e-12 * size)
+    {
+      std::ostringstream os;
+      os << "In " << (_coord == CoordinateSystem::Axisymmetric ? "axisymmetric" : "spherical")
+         << " coordinates the radius is x, which must not be negative, and this mesh reaches x = "
+         << box.first[0] << ". Place the axis at x = 0 and the body at x >= 0.";
+      throw InputError(os.str());
+    }
+  }
   if (_coord == CoordinateSystem::SphericalRadial && _mesh->dimension() != 1)
     throw InputError("The spherical radial coordinate system requires a one-dimensional mesh.");
   if (_coord == CoordinateSystem::Axisymmetric && _mesh->dimension() == 3)
@@ -50,8 +72,8 @@ Problem::Problem(std::shared_ptr<Mesh> mesh, Method method, CoordinateSystem coo
                                            "integrates over the same control domains,")
          << " because " << ReferenceElement::get(t).dualMeshLimitation() << ". "
          << elementTypeName(t)
-         << " elements work with the finite element method (method='fem') and the "
-            "cell-centred finite volume method (method='zfvm').";
+         << " elements work with the finite element method (method='FEM') and the "
+            "cell-centred finite volume method (method='ZFVM').";
       throw InputError(os.str());
     }
   }
@@ -102,6 +124,21 @@ Problem::setVariableUnit(const std::string & name, const std::string & unit)
       return;
     }
   throw InputError("Variable '" + name + "' does not exist.");
+}
+
+void
+Problem::extendVariableBlocks(const std::string & name, const std::vector<std::string> & blocks)
+{
+  Variable & v = _vars[variableIndex(name)];
+  // An empty set is every block: it stays so, or becomes so.
+  if (v.blocks.empty())
+    return;
+  if (blocks.empty())
+    v.blocks.clear();
+  else
+    for (const auto & b : blocks)
+      v.blocks.insert(_mesh->blockId(b));
+  _initialized = false;
 }
 
 int
@@ -295,43 +332,84 @@ Problem::addObject(const std::string & type, const std::string & name_in, InputP
   std::string name = name_in;
   if (name.empty())
   {
+    // A name is taken when an object has it, or when the objects of a list of variables carry it
+    // as their prefix (name_variable).
+    const auto taken = [this](const std::string & n)
+    {
+      if (_by_name.count(n))
+        return true;
+      const auto it = _by_name.lower_bound(n + "_");
+      return it != _by_name.end() && it->first.compare(0, n.size() + 1, n + "_") == 0;
+    };
     int i = 0;
     do
       name = type + "_" + std::to_string(i++);
-    while (_by_name.count(name));
+    while (taken(name));
   }
-  // A boundary condition given a list of variables is created once per
-  // variable.  fixed_constraint names its list 'displacements'.
   const auto category = f.category(type);
-  if (type == "symmetry_boundary_condition")
-    return addSymmetryCondition(name, std::move(params));
-  if (category == ObjectCategory::BoundaryCondition || category == ObjectCategory::NodalBC)
+  // A model kernel added without 'variable' is added once for every variable of the model.
+  const auto & model = params.modelVariables();
+  if (!model.empty() && !params.isSetByUser("variable"))
   {
-    std::vector<std::string> keys;
-    for (const char * key : {"variables", "displacements"})
-      if ((std::string(key) == "variables" || type == "fixed_constraint") && params.has(key) &&
-          params.isSetByUser(key) && !params.getStringList(key).empty())
-        keys.push_back(key);
-    if (keys.size() > 1)
-      throw InputError(
-          "Boundary condition '" + name +
-          "': 'variables' and 'displacements' define the same thing. Give only one of them.");
-    if (!keys.empty())
+    std::vector<std::string> variables;
+    for (const auto & key : model)
     {
-      if (params.isSetByUser("variable") && !params.getString("variable").empty())
-        throw InputError("Boundary condition '" + name + "': 'variable' and '" + keys[0] +
-                         "' define the same thing. Give only one of them.");
-      const auto variables = params.getStringList(keys[0]);
+      if (!params.isSet(key))
+        continue;
+      const auto & raw = params.getRaw(key);
+      if (const auto * one = std::get_if<std::string>(&raw))
+      {
+        if (!one->empty())
+          variables.push_back(*one);
+      }
+      else if (const auto * list = std::get_if<std::vector<std::string>>(&raw))
+        for (const auto & v : *list)
+          if (!v.empty())
+            variables.push_back(v);
+    }
+    if (variables.empty())
+      throw InputError(type + " '" + name + "': give the variables of the model.");
+    std::shared_ptr<Object> last;
+    for (const auto & variable : variables)
+    {
+      InputParameters copy = params;
+      copy.set("variable", variable);
+      last = addObject(type, name + "_" + variable, std::move(copy));
+    }
+    return last;
+  }
+  if (type == "symmetry")
+    return addSymmetryCondition(name, std::move(params));
+  // An object given a list of variables is added once for each of them.
+  if (params.has("variable") && params.isSetByUser("variable"))
+  {
+    const auto & raw = params.getRaw("variable");
+    if (const auto * list = std::get_if<std::vector<std::string>>(&raw); list && list->size() > 1)
+    {
       std::shared_ptr<Object> last;
-      for (const auto & variable : variables)
+      for (const auto & variable : *list)
       {
         InputParameters copy = params;
-        copy.set(keys[0], std::vector<std::string>{});
         copy.set("variable", variable);
         last = addObject(type, name + "_" + variable, std::move(copy));
       }
       return last;
     }
+  }
+  if (type == "Dirichlet")
+  {
+    // One value for one variable on one boundary: a second Dirichlet condition there would
+    // silently replace the first.  Boundaries that only meet (a corner of two side sets) may carry
+    // conditions of their own.
+    auto boundaries = params.getStringList("boundary");
+    std::sort(boundaries.begin(), boundaries.end());
+    std::string key = params.getStringList("variable").front() + " on";
+    for (const auto & b : boundaries)
+      key += " " + b;
+    if (!_dirichlet_keys.insert(key).second)
+      throw InputError("Dirichlet '" + name + "': the value of " + key +
+                       " is already prescribed by another condition. Give one value per "
+                       "variable and boundary.");
   }
   auto obj = f.create(type, name, std::move(params));
   switch (category)
@@ -364,16 +442,12 @@ Problem::addSymmetryCondition(const std::string & name, InputParameters params)
   // The plane of the side set is normal to the coordinate axis along which
   // all its nodes share one coordinate.  The condition is the zero value of
   // the displacement along that axis.
-  const auto displacements = params.getStringList("displacements");
-  if (displacements.empty())
+  const auto displacements =
+      params.isSet("variable") ? params.getStringList("variable") : std::vector<std::string>{};
+  if (displacements.size() < 2)
     throw InputError("Boundary condition '" + name +
-                     "': symmetry_boundary_condition needs 'displacements', the displacement "
-                     "variables in the order of the coordinate axes.");
-  if (params.isSetByUser("variable") ||
-      (params.has("variables") && params.isSetByUser("variables")))
-    throw InputError("Boundary condition '" + name +
-                     "': symmetry_boundary_condition takes 'displacements' only. 'variable' and "
-                     "'variables' define the same thing and must not be given with it.");
+                     "': symmetry needs 'variable', the displacement variables in the order of "
+                     "the coordinate axes.");
   const auto boundaries = params.getStringList("boundary");
   std::vector<Index> nodes;
   for (const auto & b : boundaries)
@@ -388,8 +462,12 @@ Problem::addSymmetryCondition(const std::string & name, InputParameters params)
   for (int k = 0; k < 3; ++k)
     size = std::max(size, box.second[k] - box.first[k]);
   const double tolerance = 1e-8 * std::max(size, 1e-300);
-  const int dim = std::min<int>(_mesh->dimension(), static_cast<int>(displacements.size()));
+  const int dim = std::min<int>(_mesh->spaceDimension(), static_cast<int>(displacements.size()));
+  // The plane of symmetry is normal to the one axis along which every node of the boundary has
+  // the same coordinate.  A boundary constant along two axes (one node, or nodes on a line in
+  // three dimensions) does not determine the plane.
   int axis = nodes.empty() ? 0 : -1;
+  int constant_axes = 0;
   for (int k = 0; k < dim && !nodes.empty(); ++k)
   {
     double lo = _mesh->node(nodes[0])[k], hi = lo;
@@ -400,22 +478,28 @@ Problem::addSymmetryCondition(const std::string & name, InputParameters params)
     }
     if (hi - lo <= tolerance)
     {
-      axis = k;
-      break;
+      if (axis < 0)
+        axis = k;
+      ++constant_axes;
     }
   }
+  if (constant_axes > 1)
+    throw InputError("Boundary condition '" + name +
+                     "': symmetry needs a boundary that determines its plane, and the nodes of "
+                     "this one have the same coordinate along " +
+                     std::to_string(constant_axes) +
+                     " axes (a single node, or a line in three dimensions). Give a side set or "
+                     "a node set that spans the plane of symmetry.");
   if (axis < 0)
     throw InputError("Boundary condition '" + name +
-                     "': symmetry_boundary_condition needs a side set in a plane normal to a "
+                     "': symmetry needs a side set in a plane normal to a "
                      "coordinate axis (x, y or z constant on all its nodes), and this one is not. "
                      "An inclined symmetry plane is not available. Rotate the mesh so that the "
                      "plane is normal to an axis.");
   InputParameters copy = params;
-  copy.set("displacements", std::vector<std::string>{});
   copy.set("variable", displacements[axis]);
   const std::string object_name = name + "_" + displacements[axis];
-  auto obj =
-      Factory::instance().create("symmetry_boundary_condition", object_name, std::move(copy));
+  auto obj = Factory::instance().create("symmetry", object_name, std::move(copy));
   addNodalBC(std::static_pointer_cast<NodalBC>(obj));
   return obj;
 }
@@ -619,11 +703,62 @@ Problem::objectNames() const
 }
 
 void
+Problem::buildNodeGradients()
+{
+  const Index nn = _mesh->numNodes();
+  const int dim = _mesh->dimension();
+  if (dim != _mesh->spaceDimension())
+    throw InputError("The linear upwind and limited schemes of the node-based methods need a "
+                     "mesh of the dimension of its space (not a surface or a line in space).");
+  std::vector<std::set<Index>> around(static_cast<std::size_t>(nn));
+  for (const auto & el : _mesh->elements())
+    for (int i = 0; i < el.numNodes(); ++i)
+      for (int j = 0; j < el.numNodes(); ++j)
+        if (i != j)
+          around[static_cast<std::size_t>(el.nodes[i])].insert(el.nodes[j]);
+  _gradient_offsets.assign(static_cast<std::size_t>(nn) + 1, 0);
+  _gradient_nodes.clear();
+  _gradient_weights.clear();
+  for (Index a = 0; a < nn; ++a)
+  {
+    const Point xa = _mesh->node(a);
+    Eigen::Matrix3d G = Eigen::Matrix3d::Zero();
+    for (Index b : around[static_cast<std::size_t>(a)])
+    {
+      const Point d = _mesh->node(b) - xa;
+      for (int i = 0; i < dim; ++i)
+        for (int j = 0; j < dim; ++j)
+          G(i, j) += d[i] * d[j];
+    }
+    const Eigen::MatrixXd Gd = G.topLeftCorner(dim, dim);
+    const Eigen::FullPivLU<Eigen::MatrixXd> lu(Gd);
+    if (!lu.isInvertible())
+      throw InputError("The gradient at node " + std::to_string(a) +
+                       " cannot be reconstructed from the nodes around it (they do not span the "
+                       "space), which the linear upwind and limited schemes need.");
+    const Eigen::MatrixXd Ginv = lu.inverse();
+    for (Index b : around[static_cast<std::size_t>(a)])
+    {
+      const Point d = _mesh->node(b) - xa;
+      Point w{0, 0, 0};
+      for (int i = 0; i < dim; ++i)
+        for (int j = 0; j < dim; ++j)
+          w[i] += Ginv(i, j) * d[j];
+      _gradient_nodes.push_back(b);
+      _gradient_weights.push_back(w);
+    }
+    _gradient_offsets[static_cast<std::size_t>(a) + 1] = static_cast<Index>(_gradient_nodes.size());
+  }
+}
+
+void
 Problem::initialize()
 {
   if (_initialized)
     return;
   _singularity_checked = false;
+  _singularity_pattern_rows = -1;
+  _singularity_pattern_nonzeros = -1;
   if (_vars.empty())
     throw InputError("The problem has no variables.");
   if (_kernels.empty())
@@ -640,7 +775,7 @@ Problem::initialize()
           "The variable " + first +
           " is declared first order on a mesh with quadratic elements. Mixed-order "
           "interpolation (the Taylor-Hood element) is a finite element construction and needs "
-          "method='fem'. The dual mesh and finite volume methods interpolate every variable at "
+          "method='FEM'. The dual mesh and finite volume methods interpolate every variable at "
           "the order of the mesh; for them, declare the variable with the mesh order.");
     for (const auto & el : _mesh->elements())
       if (el.numCorners() < el.numNodes() &&
@@ -656,6 +791,28 @@ Problem::initialize()
   }
   for (auto & k : _kernels)
     k->initialSetup(*this);
+  // The equations without a time derivative, which a step of the theta method takes at the new
+  // time only.
+  _new_time_only.assign(_vars.size(), 1);
+  for (const auto & k : _kernels)
+    if (k->isTimeKernel())
+      _new_time_only[static_cast<std::size_t>(k->variable())] = 0;
+  // The second-order advection schemes of the node-based methods take the gradient at the nodes.
+  _gradient_offsets.clear();
+  if (_method == Method::DualMesh || _method == Method::FiniteVolumeVertex)
+    for (const auto & k : _kernels)
+      if (k->needsSideGradients())
+      {
+        if (_parallel)
+          throw InputError(
+              "'" + k->name() +
+              "': the linear upwind and limited schemes of the node-based methods reconstruct "
+              "the gradient at a node from the nodes around it, which a part of a distributed "
+              "mesh does not hold at its interfaces yet. Use them on one process, the cell-centred "
+              "method ZFVM, or the upwind scheme.");
+        buildNodeGradients();
+        break;
+      }
   for (auto & b : _ibcs)
     b->initialSetup(*this);
   if (_mixed_order)
@@ -701,6 +858,7 @@ Problem::initialize()
   // reason.
   for (Index e = 0; e < _mesh->numElements(); ++e)
     ReferenceElement::get(_mesh->element(e).type);
+  checkMeshInversions();
   // Threading is only used when every object and every function can be called
   // from several threads at once.  Anything defined in Python cannot, because
   // the interpreter is protected by the global interpreter lock.
@@ -782,6 +940,60 @@ Problem::markActiveDofs()
       for (int a = 0; a < numLocalNodes(el, v); ++a)
         _active_dof[dof(el.nodes[a], v)] = 1;
     }
+  }
+}
+
+void
+Problem::checkMeshInversions()
+{
+  // The measure of a volume element enters every integral as |det J|, so a
+  // mesh whose winding is reversed is integrated with a positive measure and
+  // returns a wrong answer without a warning.  The generators and the mesh
+  // readers fix the orientation themselves; a mesh built node by node may not,
+  // and this is where that is caught.  The check runs once, at initialize(),
+  // at the centroid and half way from it to every node: points inside every
+  // element, where the integration points lie, and away from the apex of a
+  // pyramid, whose map is degenerate there by construction.  A surface or a
+  // curve in space is exempt: its measure is a square root, and the side of
+  // its normal is a convention that fixOrientation sets.
+  const int space = _mesh->spaceDimension();
+  MappedPoint mp;
+  for (Index e = 0; e < _mesh->numElements(); ++e)
+  {
+    const Element & el = _mesh->element(e);
+    const auto & ref = ReferenceElement::get(el.type);
+    if (ref.dimension() != space)
+      continue;
+    const Point & c = ref.centroid();
+    bool inverted = false;
+    for (int n = -1; !inverted && n < el.numNodes(); ++n)
+    {
+      const Point xi = n < 0 ? c : 0.5 * (c + ref.node(n));
+      try
+      {
+        mapPoint(*_mesh, el, xi, mp);
+      }
+      catch (const std::runtime_error &)
+      {
+        std::ostringstream os;
+        os << "Element " << e << " of block " << el.block << " is degenerate: its Jacobian "
+           << "determinant is zero inside it (nodes on one line or in one plane, or a repeated "
+           << "node). Correct the mesh where it is generated.";
+        throw InputError(os.str());
+      }
+      inverted = mp.detJ < 0.0;
+    }
+    if (!inverted)
+      continue;
+    const Point & x = _mesh->node(el.nodes[0]);
+    std::ostringstream os;
+    os << "Element " << e << " of block " << el.block << " (a " << el.numNodes()
+       << "-node element whose first node is at (" << x[0] << ", " << x[1] << ", " << x[2]
+       << ")) is inverted: its Jacobian determinant is negative, so its "
+          "integrals would be computed with a positive measure and the answer would be wrong. "
+          "Reverse the winding of its nodes, or call fix_orientation() on the mesh (the "
+          "generators and read_mesh do this themselves; a mesh built node by node may need it).";
+    throw InputError(os.str());
   }
 }
 
@@ -891,7 +1103,7 @@ Problem::fillContext(QpContext & ctx,
   // localDofIndex); ld == 0: values only.  The local vectors are in the same
   // compact layout.
   const int nv = numVariables();
-  const int dim = _mesh->dimension();
+  const int dim = _mesh->spaceDimension();
   ctx.u.resize(nv);
   ctx.grad_u.resize(nv);
   // The shape functions a variable is interpolated with: the element's own,
@@ -1105,23 +1317,6 @@ Problem::restoreState(const StateSnapshot & s)
       o.trial = o.committed;
     }
   }
-}
-
-std::vector<std::vector<double>>
-Problem::stateAtElements() const
-{
-  std::vector<std::vector<double>> out(_mesh->numElements());
-  QpContext ctx;
-  for (Index e = 0; e < _mesh->numElements(); ++e)
-  {
-    ctx.state_domain = 0;
-    ctx.state_owner = e;
-    ctx.state_key = kCentroidStateKey;
-    bindState(ctx);
-    if (ctx.state_old)
-      out[e].assign(ctx.state_old, ctx.state_old + _state_record);
-  }
-  return out;
 }
 
 void

@@ -83,27 +83,15 @@ def read_openfoam_mesh(vtu_path: Path) -> dm.Mesh:
 
 def solve_with_dualmesh(mesh, method: str = "dmcdm"):
     problem = dm.Problem(mesh, method=method)
-    problem.add_physics(
+    solid = problem.add_physics(
         "solid_mechanics",
-        "solid",
-        displacements=["u", "v"],
         youngs_modulus=YOUNGS_MODULUS,
         poissons_ratio=POISSONS_RATIO,
         formulation="plane_stress",
     )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", "symmetry_x", variable="u", boundary="left", value=0.0
-    )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", "symmetry_y", variable="v", boundary="down", value=0.0
-    )
-    problem.add_boundary_condition(
-        "traction_boundary_condition",
-        "load",
-        variable="u",
-        boundary="right",
-        traction=APPLIED_STRESS,
-    )
+    solid.add_boundary_condition("disp_x = 0", boundary="left")
+    solid.add_boundary_condition("disp_y = 0", boundary="down")
+    solid.add_boundary_condition("traction = [sigma, 0]", boundary="right", sigma=APPLIED_STRESS)
     problem.solve()
     return problem
 

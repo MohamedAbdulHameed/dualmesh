@@ -215,7 +215,12 @@ jobs:
           ctest --test-dir build --output-on-failure
           PYTHONPATH=$PWD/python python -m pytest tests/python -q --cov=python/dualmesh --cov-report=xml:python-coverage.xml --cov-report=term
       - name: C++ coverage report
-        run: gcovr --root . --filter src/ --filter include/ --xml cpp-coverage.xml --print-summary build
+        # The innermost loops of the automatic differentiation run more than 2^32
+        # times, which gcovr takes for the gcov overflow bug (GCC bug 68080) and
+        # refuses; these counts are genuine, so gcovr only warns about them.
+        run: >-
+          gcovr --root . --filter src/ --filter include/ --xml cpp-coverage.xml
+          --gcov-ignore-parse-errors=suspicious_hits.warn_once_per_file --print-summary build
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: coverage

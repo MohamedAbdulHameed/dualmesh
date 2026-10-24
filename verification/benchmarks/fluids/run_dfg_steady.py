@@ -42,31 +42,25 @@ def solve(mesh, method, formulation="pressure"):
 
     problem = dm.Problem(mesh, method=method)
     problem.add_physics(
-        "incompressible_flow",
-        "flow",
-        velocities=["u", "v"],
+        "fluid_dynamics",
         density=1.0,
         dynamic_viscosity=1e-3,
         formulation=formulation,
         viscous_form="laplacian",
     )
     problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "inflow_u",
-        variable="u",
-        boundary="inlet",
+        "Dirichlet",
+        "inlet",
+        variable="velocity_x",
         value="4*0.3*y*(0.41 - y)/0.41^2",
         scale_with_load=True,
     )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", "inflow_v", variable="v", boundary="inlet", value=0.0
-    )
-    for variable in ("u", "v"):
+    problem.add_boundary_condition("Dirichlet", "inlet", variable="velocity_y", value=0.0)
+    for variable in ("velocity_x", "velocity_y"):
         problem.add_boundary_condition(
-            "Dirichlet_boundary_condition",
-            f"no_slip_{variable}",
+            "Dirichlet",
+            ["walls", "cylinder"],
             variable=variable,
-            boundary=["walls", "cylinder"],
             value=0.0,
         )
     start = time.perf_counter()
@@ -75,8 +69,8 @@ def solve(mesh, method, formulation="pressure"):
     elapsed = time.perf_counter() - start
     pressure = problem.sample("pressure", [[0.15, 0.2], [0.25, 0.2]])
     return {
-        "drag": -SCALE * problem.total_reaction("u", "cylinder"),
-        "lift": -SCALE * problem.total_reaction("v", "cylinder"),
+        "drag": -SCALE * problem.total_reaction("velocity_x", "cylinder"),
+        "lift": -SCALE * problem.total_reaction("velocity_y", "cylinder"),
         "dp": pressure[0] - pressure[1],
         "unknowns": problem.num_active_dofs(),
         "time": elapsed,

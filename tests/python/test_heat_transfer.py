@@ -46,17 +46,11 @@ def test_example_3_3_1_source_with_trapezoidal_rule(case, expected):
         value=lambda x, y, z, t: 10.0 * math.cos(x),
         quadrature="control_domain_trapezoid",  # F_I = 0.5 dx [f(x_A) + f(x_B)]
     )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", variable="u", boundary="left", value=0.0
-    )
+    problem.add_boundary_condition("Dirichlet", "left", variable="u", value=0.0)
     if case == "dirichlet":
-        problem.add_boundary_condition(
-            "Dirichlet_boundary_condition", variable="u", boundary="right", value=0.0
-        )
+        problem.add_boundary_condition("Dirichlet", "right", variable="u", value=0.0)
     else:
-        problem.add_boundary_condition(
-            "Neumann_boundary_condition", variable="u", boundary="right", flux=0.0
-        )
+        problem.add_boundary_condition("Neumann", "right", variable="u", flux=0.0)
     problem.solve()
     computed = problem.values("u")[1 : 1 + len(expected)]
     assert computed == pytest.approx(expected, abs=5e-4)
@@ -69,14 +63,10 @@ def cooling_fin(num_elements):
     """Example 5.3.1: -u'' + 400 u = 0, u(0) = 300, u'(L) + 2 u(L) = 0."""
     problem = line_problem(num_elements, length=0.05)
     problem.add_variable("u")
-    problem.add_kernel("diffusion", variable="u", name="conduction")
-    problem.add_kernel("reaction", variable="u", coefficient=400.0)
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", variable="u", boundary="left", value=300.0
-    )
-    problem.add_boundary_condition(
-        "Robin_boundary_condition", variable="u", boundary="right", transfer_coefficient=2.0
-    )
+    problem.add_kernel("diffusion", variable="u")
+    problem.add_kernel("reaction", variable="u", coeff=400.0)
+    problem.add_boundary_condition("Dirichlet", "left", variable="u", value=300.0)
+    problem.add_boundary_condition("Robin", "right", variable="u", transfer_coeff=2.0)
     problem.solve()
     return problem
 
@@ -121,11 +111,11 @@ def test_example_5_3_2_cylinder_with_heat_generation(num_elements):
     problem = dm.Problem(mesh, method="dmcdm", coordinates="axisymmetric")
     problem.add_variable("temperature")
     problem.add_kernel("heat_conduction", variable="temperature", thermal_conductivity=conductivity)
-    problem.add_kernel("heat_source", variable="temperature", heat_source=generation)
+    problem.add_kernel("body_force", variable="temperature", value=generation)
     problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
+        "Dirichlet",
+        "right",
         variable="temperature",
-        boundary="right",
         value=surface_temperature,
     )
     problem.solve()
@@ -153,13 +143,11 @@ def rectangular_conduction(nx, ny, element_type="Quad4", method="dmcdm"):
     problem = dm.Problem(mesh, method=method)
     problem.add_variable("temperature")
     problem.add_kernel("diffusion", variable="temperature")
+    problem.add_boundary_condition("Dirichlet", "right", variable="temperature", value=0.0)
     problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", variable="temperature", boundary="right", value=0.0
-    )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
+        "Dirichlet",
+        "top",
         variable="temperature",
-        boundary="top",
         value=lambda x, y, z, t: math.cos(math.pi * x / 6.0),
     )
     problem.solve()
@@ -222,16 +210,12 @@ def bus_bar_like_problem(conductivity_polynomial=(1.0,)):
         thermal_conductivity=0.2,
         temperature_polynomial=list(conductivity_polynomial),
     )
+    problem.add_boundary_condition("Dirichlet", "left", variable="temperature", value=500.0)
+    problem.add_boundary_condition("Dirichlet", "right", variable="temperature", value=300.0)
     problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", variable="temperature", boundary="left", value=500.0
-    )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", variable="temperature", boundary="right", value=300.0
-    )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
+        "Dirichlet",
+        "top",
         variable="temperature",
-        boundary="top",
         value=lambda x, y, z, t: 500.0 * (1.0 - 10.0 * x * x),
     )
     return problem
@@ -286,19 +270,15 @@ def bus_bar(nx, ny, conductivity_polynomial=(1.0,), conductivity=20.0):
         thermal_conductivity=conductivity,
         temperature_polynomial=list(conductivity_polynomial),
     )
-    problem.add_kernel("heat_source", variable="temperature", heat_source=1.0e6)
+    problem.add_kernel("body_force", variable="temperature", value=1.0e6)
+    problem.add_boundary_condition("Dirichlet", "left", variable="temperature", value=40.0)
+    problem.add_boundary_condition("Dirichlet", "right", variable="temperature", value=10.0)
     problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", variable="temperature", boundary="left", value=40.0
-    )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", variable="temperature", boundary="right", value=10.0
-    )
-    problem.add_boundary_condition(
-        "convective_heat_flux_boundary_condition",
+        "Robin",
+        "top",
         variable="temperature",
-        boundary="top",
-        heat_transfer_coefficient=75.0,
-        ambient_temperature=0.0,
+        transfer_coeff=75.0,
+        ambient_value=0.0,
     )
     problem.solve(max_iterations=100)
     return problem
@@ -377,9 +357,9 @@ def test_example_5_4_4_advection_diffusion(peclet, num_elements, x_values, expec
         "advection", variable="u", velocity=[1.0, 1.0], advection_form="non_conservative"
     )
     problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
+        "Dirichlet",
+        ["left", "right", "bottom", "top"],
         variable="u",
-        boundary=["left", "right", "bottom", "top"],
         value=lambda x, y, z, t: exact(x, y),
     )
     problem.solve(linear_solver="lu")
@@ -410,10 +390,8 @@ def test_example_6_2_2_cubic_reaction(num_elements, expected):
     problem = line_problem(num_elements, length=1.0, start=1.0)
     problem.add_variable("u", initial_condition=0.5)
     problem.add_kernel("diffusion", variable="u")
-    problem.add_kernel("reaction", variable="u", coefficient=2.0, exponent=3.0)
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", variable="u", boundary="left", value=1.0
-    )
+    problem.add_kernel("reaction", variable="u", coeff=2.0, exponent=3.0)
+    problem.add_boundary_condition("Dirichlet", "left", variable="u", value=1.0)
     problem.add_boundary_condition(NonlinearFluxBoundaryCondition(variable="u", boundary="right"))
     problem.solve(max_iterations=200)
     values = problem.values("u")
@@ -435,12 +413,8 @@ def test_example_6_2_3_temperature_dependent_bar(num_elements, expected):
         thermal_conductivity=0.2,
         temperature_polynomial=[1.0, 2.0e-3],
     )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", variable="temperature", boundary="left", value=500.0
-    )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", variable="temperature", boundary="right", value=300.0
-    )
+    problem.add_boundary_condition("Dirichlet", "left", variable="temperature", value=500.0)
+    problem.add_boundary_condition("Dirichlet", "right", variable="temperature", value=300.0)
     problem.solve()
     assert problem.values("temperature")[1:-1] == pytest.approx(expected, abs=2e-2)
 
@@ -459,11 +433,7 @@ def test_example_6_2_4_large_deformation_bar(load, expected_tip):
     problem = line_problem(8, length=1.0)
     problem.add_variable("displacement")
     problem.add_kernel(LargeDeformationBar(variable="displacement", axial_stiffness=1.0))
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", variable="displacement", boundary="left", value=0.0
-    )
-    problem.add_boundary_condition(
-        "Neumann_boundary_condition", variable="displacement", boundary="right", flux=load
-    )
+    problem.add_boundary_condition("Dirichlet", "left", variable="displacement", value=0.0)
+    problem.add_boundary_condition("Neumann", "right", variable="displacement", flux=load)
     problem.solve(load_factors=list(np.linspace(0.2, 1.0, 5)), max_iterations=100)
     assert problem.values("displacement")[-1] == pytest.approx(expected_tip, abs=1e-3)

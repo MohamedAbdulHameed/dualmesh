@@ -5,9 +5,9 @@ from __future__ import annotations
 
 import difflib
 import os
-import re
 import time
 from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -15,6 +15,7 @@ from . import _core
 from ._core import InputError
 from .console import report_level
 from .output import Output
+from .tables import ResultTables
 
 SolveResult = _core.SolveResult
 
@@ -88,6 +89,14 @@ SolveResult.write_json = _solve_result_write_json
 SolveResult.write_csv = _solve_result_write_csv
 
 
+def _object_name(obj) -> str:
+    """The internal name of an object that an add method returned (or the name itself)."""
+    if isinstance(obj, str):
+        return obj
+    name = obj.name
+    return name() if callable(name) else name
+
+
 def _as_function(value):
     """A number, an expression string, a compiled function or a callable, as
     something the extension accepts where it expects a function."""
@@ -116,6 +125,41 @@ def petsc_option_string(options) -> str:
         else:
             parts.append(f"{name} {value}")
     return " ".join(parts)
+
+
+#: The names of the solvers and preconditioners as the input writes them: abbreviations in
+#: capitals and proper names with a capital (CODE_AND_DOCS_RULES 4.1).  Any spelling is accepted;
+#: the C++ layer takes the lower-case name.
+SPELLING = {
+    "lu": "LU",
+    "cg": "CG",
+    "gmres": "GMRES",
+    "bicgstab": "BiCGStab",
+    "petsc": "PETSc",
+    "ilu": "ILU",
+    "ilut": "ILUT",
+    "amg": "AMG",
+    "jacobi": "Jacobi",
+    "lsc": "LSC",
+    "pcd": "PCD",
+    "newton": "Newton",
+    "picard": "Picard",
+}
+
+
+def _spelled(name: str) -> str:
+    """The name as the input writes it."""
+    return SPELLING.get(str(name).lower(), str(name))
+
+
+def _check_preconditioner(name) -> None:
+    if str(name).lower() not in PRECONDITIONERS:
+        close = difflib.get_close_matches(str(name).lower(), PRECONDITIONERS, n=1)
+        hint = f" Did you mean '{_spelled(close[0])}'?" if close else ""
+        raise InputError(
+            f"Unknown preconditioner '{name}'.{hint} The preconditioners are "
+            f"{', '.join(_spelled(p) for p in PRECONDITIONERS)}."
+        )
 
 
 def _solver_options(**kwargs) -> _core.SolverOptions:
@@ -155,9 +199,43 @@ def _solver_options(**kwargs) -> _core.SolverOptions:
             )
         if key == "petsc_options":
             value = petsc_option_string(value)
+        if key in ("linear_solver", "preconditioner", "nonlinear_solver") and isinstance(
+            value, str
+        ):
+            value = value.lower()
+        if key == "preconditioner":
+            _check_preconditioner(value)
         setattr(options, key, value)
     return options
 
+
+#: The methods, written as the abbreviations they are (CODE_AND_DOCS_RULES 4.1); the lower-case
+#: spelling is accepted.
+METHODS = {"fem": "FEM", "dmcdm": "DMCDM", "hfvm": "HFVM", "zfvm": "ZFVM"}
+
+
+def _method_name(method: str) -> str:
+    """The method in capitals, the way the input writes it."""
+    return METHODS.get(str(method).lower(), method)
+
+
+#: The preconditioners of the linear solvers: those of a Krylov method on the whole system, the
+#: block preconditioners of a flow, and the split by physics.
+PRECONDITIONERS = (
+    "ilu",
+    "ilut",
+    "amg",
+    "jacobi",
+    "none",
+    "lsc",
+    "pcd",
+    "pressure_mass",
+    "physics_blocks",
+)
+
+#: The preconditioners of a distributed problem: the block preconditioners of a flow, the split by
+#: physics, and PETSc's smoothed aggregation multigrid with the rigid body modes of a solid.
+_DISTRIBUTED_PRECONDITIONERS = ("lsc", "pcd", "pressure_mass", "physics_blocks", "amg")
 
 #: PETSc's options for linear_solver="lu" in a distributed problem: the parallel direct solver.
 _DISTRIBUTED_LU = "-ksp_type preonly -pc_type lu -pc_factor_mat_solver_type mumps"
@@ -167,27 +245,102 @@ def _distributed_options(options: dict):
     """Split the solver options of a distributed problem into its linear
     solver settings and the options of the nonlinear solver."""
     linear = _core.DistributedOptions()
-    rest = dict(options)
+    rest = {
+        key: value.lower()
+        if key in ("linear_solver", "preconditioner", "nonlinear_solver") and isinstance(value, str)
+        else value
+        for key, value in options.items()
+    }
     # The serial solvers' own settings have no meaning for PETSc, which takes its settings from petsc_options.
-    for name in ("preconditioner", "gmres_restart", "amg_strength_threshold"):
+    for name in ("gmres_restart", "amg_strength_threshold"):
         if name in rest:
             raise ValueError(
                 f"{name} is a setting of the serial linear solvers. "
                 'PETSc solves a distributed problem, and its Krylov method and preconditioner are given with petsc_options, for example petsc_options="-ksp_type gmres -pc_type gamg".'
             )
+    preconditioner = rest.get("preconditioner")
+    if preconditioner is not None:
+        _check_preconditioner(preconditioner)
+        if preconditioner not in _DISTRIBUTED_PRECONDITIONERS:
+            raise InputError(
+                f"A distributed problem takes the preconditioner {', '.join(repr(_spelled(p)) for p in _DISTRIBUTED_PRECONDITIONERS)}. "
+                f"'{_spelled(preconditioner)}' is a setting of the serial linear solvers, and other PETSc "
+                'preconditioners are given with petsc_options, for example petsc_options="-pc_type asm".'
+            )
     solver = rest.pop("linear_solver", "automatic")
+    if solver == "lu" and preconditioner is not None:
+        raise InputError(
+            f"linear_solver='LU' factorises the system and takes no preconditioner. Give "
+            f"preconditioner='{_spelled(preconditioner)}' with linear_solver='automatic' or 'PETSc'."
+        )
     petsc = petsc_option_string(rest.pop("petsc_options", None))
     if solver == "lu":
         petsc = _DISTRIBUTED_LU
     elif solver not in ("automatic", "petsc"):
         raise ValueError(
-            f"A distributed problem takes linear_solver 'automatic', 'petsc' or 'lu', not '{solver}'."
+            f"A distributed problem takes linear_solver 'automatic', 'PETSc' or 'LU', not '{solver}'."
         )
     linear.petsc_options = petsc
     linear.linear_tolerance = float(rest.pop("linear_tolerance", 1e-10))
     linear.linear_max_iterations = int(rest.pop("linear_max_iterations", 5000))
     linear.verbose = bool(rest.get("_progress", False))
     return linear, rest
+
+
+# ---------------------------------------------------------------------------
+# Destruction of distributed problems at collective points
+# ---------------------------------------------------------------------------
+# A distributed problem holds MPI, PETSc and gslib objects that every process must destroy
+# together.  Python's cycle collector frees an unreachable problem whenever each process happens
+# to run it, so one process could block in a destructor while another waits in a solve.  When a
+# distributed problem is collected, its C++ object is kept here instead, and the processes
+# destroy the kept objects together, in the order of their creation, at the collective points:
+# the creation of a problem and the start of a solve.  Before that, every process collects its
+# cycles, so that the processes of one script hold the same unreachable problems at that point.
+_KEPT_FOR_COLLECTIVE_DESTRUCTION: list = []
+_CREATED = [0]
+
+
+def _keep_for_collective_destruction(serial: int, distributed) -> None:
+    _KEPT_FOR_COLLECTIVE_DESTRUCTION.append((serial, distributed))
+
+
+def _destroy_collectively() -> None:
+    """Destroy the kept distributed problems, on every process at the same point."""
+    if _core.mpi_size() <= 1:
+        return
+    import gc
+
+    gc.collect()
+    _KEPT_FOR_COLLECTIVE_DESTRUCTION.sort(key=lambda kept: kept[0])
+    while _KEPT_FOR_COLLECTIVE_DESTRUCTION:
+        _KEPT_FOR_COLLECTIVE_DESTRUCTION.pop(0)
+
+
+def _destroy_at_exit() -> None:
+    # Registered when the module is imported, before the first finalizer of weakref registers its
+    # own exit hook, so that it runs after the finalizers have kept the last problems.
+    _destroy_collectively()
+
+
+import atexit as _atexit  # noqa: E402
+
+_atexit.register(_destroy_at_exit)
+
+
+def _changes_model(method):
+    """Mark the solution as no longer that of the model: a method that adds
+    to the problem or changes a parameter."""
+    import functools
+
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        # A refused call changes nothing, so only a call that returns marks the solution.
+        result = method(self, *args, **kwargs)
+        self._steady_solution = False
+        return result
+
+    return wrapper
 
 
 class Problem:
@@ -241,7 +394,7 @@ class Problem:
     def __init__(
         self,
         mesh,
-        method: str = "dmcdm",
+        method: str = "DMCDM",
         coordinates: str = "cartesian",
         boundary_gradient: str = "first_order",
         distributed: bool | None = None,
@@ -250,22 +403,30 @@ class Problem:
     ):
         if distributed is None:
             distributed = _core.mpi_size() > 1
+        method = _method_name(method)
         self._distributed = None
+        _destroy_collectively()
         if distributed:
             options = _core.DistributedOptions()
             options.partitioner = partitioner
             options.gather_scatter = gather_scatter
-            self._distributed = _core.DistributedProblem(mesh, method, coordinates, options)
+            self._distributed = _core.DistributedProblem(mesh, method.lower(), coordinates, options)
             self._problem = self._distributed.local()
+            import weakref
+
+            _CREATED[0] += 1
+            weakref.finalize(self, _keep_for_collective_destruction, _CREATED[0], self._distributed)
             self._global_mesh = mesh
             mesh = self._problem.mesh
         else:
-            self._problem = _core.Problem(mesh, method, coordinates)
+            self._problem = _core.Problem(mesh, method.lower(), coordinates)
         self._problem.set_boundary_gradient(boundary_gradient)
         self._mesh = mesh
         self._objects: list = []  # keeps Python-defined objects alive
         self._init_postprocessing()
         self._physics: dict = {}
+        # True while the solution is a converged steady solution of the model as it stands.
+        self._steady_solution = False
         self._couplings: dict = {}
         self.method = method
         self.coordinates = coordinates
@@ -325,6 +486,7 @@ class Problem:
         return list(self._problem.boundary_entities(boundary))
 
     # ---- definition ------------------------------------------------------
+    @_changes_model
     def add_variable(
         self,
         name: str,
@@ -370,11 +532,12 @@ class Problem:
         """The order a variable was declared with: ``"mesh"`` or ``"first"``."""
         return self._problem.variable_order(name)
 
+    @_changes_model
     def add_function(self, name: str, function) -> None:
         """Register a named function of ``(x, y, z, t)`` (or a constant)."""
         self._problem.add_function(name, function)
 
-    def _add(self, adder, object_or_type, name, kwargs):
+    def _add(self, adder, object_or_type, kwargs):
         if isinstance(object_or_type, str):
             # A matrix (a list of rows of numbers) is passed row by row.
             kwargs = {
@@ -385,76 +548,73 @@ class Problem:
                 else v
                 for k, v in kwargs.items()
             }
-            return self._problem.add_object(object_or_type, name or "", **kwargs)
+            return self._problem.add_object(object_or_type, **kwargs)
         if kwargs:
             raise TypeError("Extra parameters are not accepted when adding an object instance.")
         self._objects.append(object_or_type)
         adder(object_or_type)
         return object_or_type
 
-    def add_kernel(self, kernel, name: str | None = None, **parameters):
-        """Add a kernel by registered type name, or an object built in Python."""
-        return self._add(self._problem.add_kernel, kernel, name, parameters)
+    @_changes_model
+    def add_kernel(self, kernel, **parameters):
+        """Add a term to an equation: a kernel of the object reference by its
+        type name, or a kernel written in Python::
 
-    def add_boundary_condition(self, condition, name: str | None = None, **parameters):
-        """Add a boundary condition (essential or natural).
+            problem.add_kernel("diffusion", variable="u", diffusivity=2.0)
+        """
+        return self._add(self._problem.add_kernel, kernel, parameters)
 
-        When ``boundary`` is not given, the name of the condition is taken as
-        its boundary, so that a condition named after a side set acts on that
-        side set::
+    @_changes_model
+    def add_boundary_condition(self, condition, boundary=None, **parameters):
+        """Add a boundary condition (essential or natural) on the side sets or
+        node sets named by ``boundary``::
 
-            problem.add_boundary_condition(
-                "Dirichlet_boundary_condition", "left", variable="u", value=0.0
-            )
+            problem.add_boundary_condition("Dirichlet", "left", variable="u", value=0.0)
+            problem.add_boundary_condition("Dirichlet", ["left", "right"], variable=["u", "v"])
 
-        Several conditions on one boundary need different names and an
-        explicit ``boundary``."""
+        A list of variables adds the condition to each of them.  A periodic
+        condition names its two boundaries with ``primary`` and ``secondary``,
+        and ``point_Dirichlet`` acts at a ``point``, so neither takes
+        ``boundary``."""
+        if boundary is not None:
+            parameters["boundary"] = [boundary] if isinstance(boundary, str) else list(boundary)
+            known = set(self._mesh.sideset_names()) | set(self._mesh.nodeset_names())
+            for name in parameters["boundary"]:
+                if name not in known:
+                    close = difflib.get_close_matches(name, sorted(known), n=1)
+                    hint = f" Did you mean '{close[0]}'?" if close else ""
+                    raise ValueError(
+                        f"{condition}: the mesh has no boundary '{name}'.{hint} Its boundaries are: {', '.join(sorted(known)) or 'none'}."
+                    )
         if isinstance(condition, str):
             category = _core.object_category(condition)
-            # A constraint names its boundaries itself (primary and secondary).
-            if category == "constraint":
-                return self._problem.add_object(condition, name or "", **parameters)
-            if "boundary" not in parameters and name:
-                mesh = self._mesh
-                known = set(mesh.sideset_names()) | set(mesh.nodeset_names())
-                if name in known:
-                    parameters["boundary"] = [name]
-                elif re.search(
-                    r"^\s+boundary \([^)]*required", _core.describe_object(condition), re.M
-                ):
-                    raise ValueError(
-                        f"Boundary condition '{name}': give 'boundary', or name the condition after a boundary of the mesh ({', '.join(sorted(known)) or 'none'})."
-                    )
-            if category == "nodal_boundary_condition":
-                return self._problem.add_object(condition, name or "", **parameters)
-            if category == "boundary_condition":
-                return self._problem.add_object(condition, name or "", **parameters)
-            raise ValueError(f"'{condition}' is a {category}, not a boundary condition.")
+            if category not in ("boundary_condition", "nodal_boundary_condition", "constraint"):
+                raise ValueError(f"'{condition}' is a {category}, not a boundary condition.")
+            return self._problem.add_object(condition, **parameters)
         if isinstance(condition, _core.NodalBC):
-            return self._add(self._problem.add_nodal_bc, condition, name, parameters)
-        return self._add(self._problem.add_integrated_bc, condition, name, parameters)
+            return self._add(self._problem.add_nodal_bc, condition, parameters)
+        return self._add(self._problem.add_integrated_bc, condition, parameters)
 
-    def add_property(self, property_type, name: str | None = None, **parameters):
+    @_changes_model
+    def add_property(self, property_type, **parameters):
         """Add a property object: an object that computes named properties at
         the integration points of its blocks (e.g., a thermal conductivity,
-        a stress or the cross sections of a region), which the physics and
-        the kernels read by name::
+        a stress or the cross sections of a region), which the physics, the
+        kernels and the expressions read by name::
 
             problem.add_property(
-                "constant_property",
-                "copper",
-                block=["bar"],
-                property_names=["thermal_conductivity"],
-                property_values=[400.0],
+                "constant", block=["bar"], properties={"thermal_conductivity": 400.0}
             )
         """
-        return self._add(self._problem.add_property, property_type, name, parameters)
+        return self._add(self._problem.add_property, property_type, parameters)
 
-    def add_point_source(self, source="point_source", name: str | None = None, **parameters):
+    @_changes_model
+    def add_point_source(self, source="point_source", **parameters):
         """Add a concentrated nodal source (point force or point heat source)."""
-        return self._add(self._problem.add_nodal_load, source, name, parameters)
+        return self._add(self._problem.add_nodal_load, source, parameters)
 
-    def add_physics(self, physics: str, name: str | None = None, **parameters):
+    @_changes_model
+    def add_physics(self, physics: str, **parameters):
         """Add a set of equations named in physical terms (see
         :mod:`dualmesh.physics` and ``dualmesh list --category physics``).
 
@@ -462,54 +622,54 @@ class Problem:
         materials when the problem is initialised.  It returns the physics,
         whose :meth:`~dualmesh.physics.Physics.add_boundary_condition` and
         :meth:`~dualmesh.physics.Physics.add_kernel` add conditions and terms
-        to its equations::
+        to its equations, and which a coupling takes to name it::
 
             heat = problem.add_physics(
-                "heat_transfer", "heat", thermal_conductivity=20.0, heat_source=1.0e6
+                "heat_transfer", thermal_conductivity=20.0, heat_source=1.0e6
             )
-            heat.add_boundary_condition("Dirichlet_boundary_condition", "left", value=40.0)
+            heat.add_boundary_condition("Dirichlet", "left", value=40.0)
         """
         from . import physics as _physics
 
-        name = name or physics
-        if name in self._physics or name in self._couplings:
-            raise _physics.InputError(
-                f"The problem already has a physics or coupling named '{name}'."
-            )
-        instance = _physics.create(physics, name, parameters)
+        instance = _physics.create(
+            physics, _physics.unique_name(physics, self._physics), parameters
+        )
         if not isinstance(instance, _physics.Physics):
             raise _physics.InputError(f"'{physics}' is a coupling. Add it with add_coupling.")
         instance._attach(self)
-        self._physics[name] = instance
+        self._physics[instance.name] = instance
         return instance
 
-    def add_coupling(self, coupling: str, name: str | None = None, **parameters):
-        """Couple two physics of the problem, e.g., ``thermal_expansion``,
-        ``Boussinesq_buoyancy`` or ``heat_convection`` (``dualmesh list
-        --category coupling``)::
+    @_changes_model
+    def add_coupling(self, coupling: str, **parameters):
+        """Couple two physics of the problem, e.g., ``thermal_expansion`` or
+        ``nonisothermal_flow`` (``dualmesh list --category coupling``)::
 
+            heat = problem.add_physics("heat_transfer", thermal_conductivity=20.0)
+            solid = problem.add_physics(
+                "solid_mechanics", youngs_modulus=200.0e9, poissons_ratio=0.3
+            )
             problem.add_coupling(
                 "thermal_expansion",
-                "expansion",
-                heat_transfer="heat",
-                solid_mechanics="solid",
-                thermal_expansion_coefficient=1.2e-5,
+                heat_transfer=heat,
+                solid_mechanics=solid,
+                linear_expansion_coeff=1.2e-5,
                 stress_free_temperature=293.15,
             )
+
+        A coupling takes each of its physics as the object that
+        :meth:`add_physics` returned.  A physics may be left out when the
+        problem has only one physics of its type.
         """
         from . import physics as _physics
 
-        name = name or coupling
-        if name in self._physics or name in self._couplings:
-            raise _physics.InputError(
-                f"The problem already has a physics or coupling named '{name}'."
-            )
+        name = _physics.unique_name(coupling, self._couplings)
         instance = _physics.create(coupling, name, parameters)
         if not isinstance(instance, _physics.Coupling):
             raise _physics.InputError(f"'{coupling}' is a physics. Add it with add_physics.")
         if any(p._built for p in self._physics.values()):
             raise _physics.InputError(
-                f"Coupling '{name}': add the couplings before the problem is solved or initialised."
+                f"{coupling}: add the couplings before the problem is solved or initialised."
             )
         instance._apply(self)
         self._couplings[name] = instance
@@ -527,6 +687,22 @@ class Problem:
             if not getattr(coupling, "_built", False):
                 coupling._build(self)
                 coupling._built = True
+        # The advection scheme of a heat transfer physics applies to the heat a flow carries, which
+        # only a nonisothermal_flow coupling adds.
+        carried = {
+            id(c.heat_transfer)
+            for c in self._couplings.values()
+            if getattr(c, "type_name", "") == "nonisothermal_flow"
+        }
+        for physics in new:
+            if (
+                getattr(physics, "type_name", "") == "heat_transfer"
+                and physics.advection_scheme is not None
+                and id(physics) not in carried
+            ):
+                raise InputError(
+                    f"heat_transfer: advection_scheme '{physics.advection_scheme}' discretises the heat that a flow carries, and no nonisothermal_flow coupling makes a flow carry this heat."
+                )
 
     def initialize(self) -> None:
         """Resolve all objects (called automatically by :meth:`solve`)."""
@@ -548,14 +724,19 @@ class Problem:
         ``"picard"``, or ``"linear"``), ``max_iterations``, ``relative_tolerance``,
         ``absolute_tolerance``, ``step_tolerance``, ``relaxation`` (the
         acceleration parameter of direct iteration), ``line_search``
-        (``"none"``, the default, or ``"backtracking"``, which halves a Newton
-        step until the residual norm falls) and ``max_line_search_steps``
+        (``"automatic"``, the default, which is backtracking when the limited
+        advection scheme is used, whose limiter has kinks on which the full
+        Newton step can cycle, and none otherwise; ``"none"``; or
+        ``"backtracking"``, which halves a Newton step until the residual norm
+        falls) and ``max_line_search_steps``
         (default 10), ``load_factors`` (load
         stepping), ``linear_solver`` (``"automatic"``, the default, ``"lu"``,
         ``"bicgstab"``, ``"gmres"``, ``"cg"`` or ``"petsc"``),
         ``preconditioner`` (``"ilu"``, the default, ``"ilut"``, ``"amg"``,
-        ``"jacobi"``, ``"none"``, or ``"pressure_mass_schur"`` for
-        pressure-velocity flow), ``amg_strength_threshold``,
+        ``"jacobi"``, ``"none"``, the block preconditioners of
+        pressure-velocity flow ``"lsc"``, ``"pcd"`` and ``"pressure_mass"``,
+        or the split by physics ``"physics_blocks"``),
+        ``amg_strength_threshold``,
         ``linear_tolerance``, ``linear_max_iterations``, ``gmres_restart``,
         ``petsc_options`` (PETSc's options, as a string or a dictionary, for
         ``linear_solver="petsc"``) and ``error_on_divergence``.
@@ -563,21 +744,25 @@ class Problem:
 
         ``"automatic"`` factorises the system directly where that is cheap,
         which is always in one dimension, up to :math:`10^5` unknowns in two
-        and up to a few thousand in three.  Larger systems are solved by the
-        conjugate gradient method or BiCGSTAB preconditioned by algebraic
-        multigrid, then by BiCGSTAB with an incomplete LU factorisation, and
-        then by the direct solver, each one taken when the previous one does
-        not converge.  The factorisation and the multigrid hierarchy are kept
+        and up to a few thousand in three.  A larger flow is solved by
+        flexible GMRES with the least squares commutator (``"lsc"``), and any
+        other larger system by the conjugate gradient method or BiCGSTAB
+        preconditioned by algebraic multigrid, then by BiCGSTAB with an
+        incomplete LU factorisation, and then by the direct solver, each one
+        taken when the previous one does not converge.  The factorisation and the multigrid hierarchy are kept
         while the matrix does not change.
 
         In a distributed problem (see the parameter ``distributed`` of the
         class) the linear systems are solved by PETSc.  ``linear_solver`` is
-        ``"automatic"`` (the default: GMRES with algebraic multigrid, hypre
-        BoomerAMG, and the parallel direct solver MUMPS when multigrid fails or
-        the system has a zero pressure block), ``"lu"`` (MUMPS) or
-        ``"petsc"`` (the Krylov method and preconditioner given by
-        ``petsc_options``).  :doc:`/theory/parallel` gives the method and the
-        iteration counts.
+        ``"automatic"`` (the default: MUMPS for a flow small enough to
+        factorise and the least squares commutator for a larger one, GAMG with
+        the rigid body modes for a solid, the split by physics for a solid
+        coupled to other physics, and GMRES with hypre BoomerAMG otherwise,
+        with MUMPS when an iteration fails), ``"lu"`` (MUMPS) or ``"petsc"``
+        (the Krylov method and preconditioner given by ``petsc_options``).
+        ``preconditioner`` may be ``"lsc"``, ``"pcd"``, ``"pressure_mass"``,
+        ``"physics_blocks"`` or ``"amg"``.  :doc:`/theory/parallel` gives the
+        method and the iteration counts.
         """
         level = report_level(report, "Problem.solve")
         output = self._check_output(output, steady=True)
@@ -588,13 +773,97 @@ class Problem:
         if self._distributed is not None:
             linear, options = _distributed_options(options)
             self._distributed.set_linear_solver(linear)
+            _destroy_collectively()
             result = self._distributed.solve_steady(_solver_options(**options))
         else:
             result = self._problem.solve_steady(_solver_options(**options))
+        self._steady_solution = bool(result.converged)
         if self._postprocessors.postprocessors:
             self._postprocessors.evaluate(self, self.time)
         files = self._write_fields(output) if output is not None else []
         self._report_end(level, result, time.perf_counter() - start, files)
+        return result
+
+    # ---- adjoint sensitivities ----------------------------------------------
+    @_changes_model
+    def add_parameter(self, name: str, value: float) -> None:
+        """Register a named parameter that :meth:`sensitivities` differentiates
+        with respect to: a settable constant, read by its name wherever a
+        coefficient, a source or a boundary value accepts a function.  Register
+        the parameters before the objects that read them."""
+        self._problem.add_parameter(name, float(value))
+
+    @_changes_model
+    def set_parameter(self, name: str, value: float) -> None:
+        """Assign a parameter registered by :meth:`add_parameter`; the objects
+        that read it see the new value at the next solve."""
+        self._problem.set_parameter(name, float(value))
+
+    def boundary_integral(self, variable: str, boundary: str) -> float:
+        """The integral of a variable over one side set, with the coordinate
+        factor: the value of the boundary objective of :meth:`sensitivities`."""
+        return self._problem.objective_value(variable, boundary)
+
+    def sensitivities(
+        self, objective, parameters, report: str = "full", **options
+    ) -> SensitivityResult:
+        """The derivative of an objective of the solution with respect to named
+        parameters, by one adjoint solve.
+
+        ``objective`` is the name of a variable, for its integral over the whole
+        domain, or a dict ``{"variable": ..., "boundary": ...}`` for its integral
+        over one side set.  ``parameters`` lists the names given to
+        :meth:`add_parameter`.  The problem must have been solved first: the
+        sensitivities are those of the converged solution.  Keyword arguments
+        are the linear solver options of :meth:`solve`, for the adjoint solve.
+
+        With ``R(U, p) = 0`` the solved residual, ``g`` the objective and ``J``
+        the exact Jacobian at the solution, the adjoint ``lambda`` solves
+        ``J^T lambda = (dg/dU)^T`` and every sensitivity follows from
+        ``dg/dp = dg/dU dU/dp - lambda (dR/dp + J dU/dp)`` on the free degrees
+        of freedom, where ``dU/dp`` is nonzero only where a prescribed value
+        depends on the parameter.  ``dR/dp`` is a central difference of the
+        residual at the converged solution (one assembly per parameter, no
+        solve), so the study costs one adjoint solve however many unknowns the
+        problem has, and one assembly per parameter.
+        """
+        level = report_level(report, "Problem.sensitivities")
+        if self._distributed is not None:
+            raise InputError(
+                "sensitivities: a distributed problem is not differentiated yet; run the study on one process."
+            )
+        if not self._steady_solution:
+            raise InputError(
+                "sensitivities: the problem holds no converged steady solution of the model as it stands. Call solve() first, after the last change of the model or of a parameter; a transient or eigenvalue study is not differentiated."
+            )
+        self._build_physics()
+        if isinstance(objective, str):
+            variable, boundary = objective, ""
+        elif isinstance(objective, dict) and isinstance(objective.get("variable"), str):
+            variable, boundary = objective["variable"], objective.get("boundary", "")
+        else:
+            raise InputError(
+                "sensitivities: the objective is the name of a variable (its integral over the "
+                f"domain) or a dict {{'variable': ..., 'boundary': ...}}, not {objective!r}."
+            )
+        if not isinstance(parameters, (list, tuple)) or not parameters:
+            raise InputError(
+                "sensitivities: parameters is the list of the names given to add_parameter, "
+                f"not {parameters!r}."
+            )
+        start = time.perf_counter()
+        values = self._problem.sensitivities(
+            variable, boundary, list(parameters), _solver_options(**options)
+        )
+        result = SensitivityResult(objective=(boundary, variable), values=dict(values))
+        if level != "none":
+            from .console import header
+
+            if level == "full":
+                print(header("sensitivity study"))
+                print(self.summary(), flush=True)
+            print(result.summary())
+            print(f"  ({time.perf_counter() - start:.2f} s)")
         return result
 
     # ---- reports and files of the solves ------------------------------------
@@ -674,6 +943,7 @@ class Problem:
             files.append(path)
         return files
 
+    @_changes_model
     def solve_transient(
         self,
         end_time: float,
@@ -713,6 +983,11 @@ class Problem:
         accurate, and which can oscillate after a sharp transient.
         ``implicitness=0`` is the forward Euler method, which is explicit in
         the steady terms and is stable only below a critical step.
+
+        A problem without a time derivative (no capacity or mass term) is
+        marched quasi-statically: each step solves the steady problem at its
+        time, which is what loads that change in time or a material history
+        such as creep need.
 
         Parameters
         ----------
@@ -759,7 +1034,7 @@ class Problem:
 
             ``"cfl"`` keeps the Courant number of a flow advanced by the
             projection time integration (``time_integration="projection"`` of
-            ``incompressible_flow``) at ``courant_number``: each step is the one
+            ``fluid_dynamics``) at ``courant_number``: each step is the one
             that gives that Courant number at the velocity of the step before,
             grown by at most ``growth_factor``, as Nek5000 and nekRS choose their
             steps.
@@ -879,6 +1154,7 @@ class Problem:
             if self._distributed is not None:
                 linear, options = _distributed_options(options)
                 self._distributed.set_linear_solver(linear)
+                _destroy_collectively()
                 result = self._distributed.solve_transient(transient, _solver_options(**options))
             else:
                 result = self._problem.solve_transient(transient, _solver_options(**options))
@@ -894,6 +1170,7 @@ class Problem:
         self._report_end(level, result, time.perf_counter() - start, files)
         return result
 
+    @_changes_model
     def solve_eigenvalue(
         self,
         num_modes: int = 1,
@@ -1064,13 +1341,13 @@ class Problem:
         return self._problem.reactions(variable, boundary)
 
     def total_reaction(self, variable: str, boundary: str) -> float:
-        """Sum of the secondary variables over a boundary."""
+        """Sum of the secondary variables over a boundary.  Collective in a distributed problem: every process calls it (see :doc:`/theory/parallel`)."""
         if self._distributed is not None:
             return self._distributed.total_reaction(variable, boundary)
         return self._problem.total_reaction(variable, boundary)
 
     def nodal_extreme(self, variable: str, kind: str = "max") -> float:
-        """The largest (``kind="max"``) or smallest (``"min"``) nodal value of a variable, over every process."""
+        """The largest (``kind="max"``) or smallest (``"min"``) nodal value of a variable, over every process.  Collective in a distributed problem: every process calls it (see :doc:`/theory/parallel`)."""
         values = np.asarray(self.values(variable))
         if kind == "max":
             local = float(values.max()) if values.size else -np.inf
@@ -1085,7 +1362,7 @@ class Problem:
         return float(_core.mpi_sum([value])[0])
 
     def sample(self, variable: str, points) -> np.ndarray:
-        """Interpolate a variable at arbitrary points (NaN outside the mesh)."""
+        """Interpolate a variable at arbitrary points (NaN outside the mesh).  Collective in a distributed problem: every process calls it (see :doc:`/theory/parallel`)."""
         points = np.atleast_2d(np.asarray(points, dtype=float))
         if points.shape[1] < 3:
             points = np.hstack([points, np.zeros((points.shape[0], 3 - points.shape[1]))])
@@ -1128,8 +1405,8 @@ class Problem:
     def property_at_centroids(self, property_name: str) -> np.ndarray:
         return np.asarray(self._problem.property_at_centroids(property_name))
 
-    def kernel_flux_at_centroids(self, kernel_name: str) -> np.ndarray:
-        return np.asarray(self._problem.kernel_flux_at_centroids(kernel_name))
+    def kernel_flux_at_centroids(self, kernel) -> np.ndarray:
+        return np.asarray(self._problem.kernel_flux_at_centroids(_object_name(kernel)))
 
     def error_indicator(self, variable: str) -> np.ndarray:
         """One error indicator per element, from gradient recovery.
@@ -1175,7 +1452,9 @@ class Problem:
         ``quadrature_points`` per direction on every element (zero chooses the
         polynomial order plus two, which over-integrates the leading term of
         the error) and include the coordinate factor.  The sum runs on several
-        threads unless one of the functions is a Python callable.
+        threads unless one of the functions is a Python callable.  A distributed
+        problem sums the squares over every process, so the norms are those of
+        the whole domain; the call is collective (every process makes it).
         """
         l2, h1 = self._problem.error_norms(
             variable,
@@ -1183,7 +1462,11 @@ class Problem:
             None if exact_gradient is None else [_as_function(g) for g in exact_gradient],
             quadrature_points,
         )
-        return float(l2), float(h1)
+        if self._distributed is None:
+            return float(l2), float(h1)
+        # Each process integrates its own elements: the squares add.
+        squares = _core.mpi_sum([float(l2) ** 2, float(h1) ** 2])
+        return float(np.sqrt(squares[0])), float(np.sqrt(squares[1]))
 
     def linear_system(self):
         r"""The residual and the Jacobian of the steady problem at the current
@@ -1216,13 +1499,13 @@ class Problem:
         spherical coordinates the measure includes the coordinate factor, i.e., it
         is the area :math:`\int 2 \pi r \, \mathrm{d}s` of the surface of
         revolution.  It is the area :math:`A` over which the ``total_force`` of a
-        ``traction_boundary_condition`` is spread."""
+        ``traction`` is spread."""
         names = [boundary] if isinstance(boundary, str) else list(boundary)
         return self._problem.boundary_measure(names)
 
     def integrate(self, variable: str) -> float:
         """The integral of a variable over the domain, with the coordinate
-        factor of the problem."""
+        factor of the problem.  Collective in a distributed problem: every process calls it (see :doc:`/theory/parallel`)."""
         return self._sum(float(self._problem.integrate(variable)))
 
     def element_integrals(self, variable: str) -> np.ndarray:
@@ -1236,15 +1519,17 @@ class Problem:
         problem (e.g., :math:`2 \\pi r` in axisymmetric coordinates)."""
         return np.asarray(self._problem.element_integrals(""), dtype=float)
 
-    def boundary_flux_integral(self, kernel_name: str, boundary: str) -> float:
-        """The integral of the normal flux of one kernel over a side set."""
-        return self._sum(float(self._problem.boundary_flux_integral(kernel_name, boundary)))
+    def boundary_flux_integral(self, kernel, boundary: str) -> float:
+        """The integral of the normal flux of one kernel over a side set.  Collective in a distributed problem: every process calls it (see :doc:`/theory/parallel`)."""
+        return self._sum(
+            float(self._problem.boundary_flux_integral(_object_name(kernel), boundary))
+        )
 
     # ---- output ----------------------------------------------------------
     def write_vtu(
         self, filename: str, cell_properties: Sequence[str] = (), fields: Sequence[str] = ()
     ) -> None:
-        """Write a VTK unstructured grid (readable by ParaView and VisIt).
+        """Write a VTK unstructured grid (readable by ParaView and VisIt).  Collective in a distributed problem: every process calls it (see :doc:`/theory/parallel`).
 
         ``fields`` are the variables that the file contains (default: all of
         them), and ``cell_properties`` are the properties that it contains as
@@ -1300,7 +1585,7 @@ class Problem:
         process.  A distributed problem allocates one vector of the global
         size per process, so this suits tests and small problems, and a large
         run writes its result with :meth:`write_vtu`.  For a serial problem it
-        equals :meth:`values`."""
+        equals :meth:`values`.  Collective in a distributed problem: every process calls it (see :doc:`/theory/parallel`)."""
         if self._distributed is not None:
             return np.asarray(self._distributed.gathered_values(variable))
         return self.values(variable)
@@ -1335,7 +1620,7 @@ class Problem:
             self._problem.variable_name(i) for i in range(self._problem.num_variables)
         ]
         points = np.asarray(self.entity_points())
-        dimension = self._mesh.dimension
+        dimension = self._mesh.space_dimension
         columns = [points[:, i] for i in range(dimension)]
         columns += [self.values(name) for name in names]
         header = ",".join(
@@ -1355,3 +1640,57 @@ class Problem:
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return f"<dualmesh.Problem method={self.method} {self._mesh.num_nodes} nodes>"
+
+
+@dataclass
+class SensitivityResult(ResultTables):
+    """The outcome of a sensitivity study: d(objective)/d(parameter) of every
+    named parameter, by one adjoint solve of :meth:`Problem.sensitivities`.
+
+    ``values`` maps a parameter name to its derivative, ``tables
+    ["sensitivities"]`` is the table of them, and ``summary()``,
+    ``to_dict()``, ``write_json(path)`` and ``write_csv(path)`` follow the
+    result protocol."""
+
+    objective: tuple  # (boundary, variable); an empty boundary: the domain
+    values: dict
+
+    def description(self) -> str:
+        """The objective in words, for the titles."""
+        boundary, variable = self.objective
+        if not boundary:
+            return f"integral of {variable} over the domain"
+        return f"integral of {variable} over the boundary '{boundary}'"
+
+    @property
+    def tables(self) -> dict:
+        from .tables import Table
+
+        rows = [[name, value] for name, value in self.values.items()]
+        return {
+            "sensitivities": Table(
+                ["parameter", "d objective / d parameter"],
+                ["", ""],
+                rows,
+                title=f"Sensitivities of the {self.description()}",
+            )
+        }
+
+    def summary(self) -> str:
+        return self.tables["sensitivities"].format()
+
+    def __str__(self) -> str:
+        return self.summary()
+
+    def to_dict(self) -> dict:
+        return {
+            "study": "sensitivity",
+            "objective": self.description(),
+            "sensitivities": dict(self.values),
+        }
+
+    def write_json(self, path) -> None:
+        """Write :meth:`to_dict` to a JSON file."""
+        from .parameters import write_json_numbers
+
+        write_json_numbers(self.to_dict(), path)

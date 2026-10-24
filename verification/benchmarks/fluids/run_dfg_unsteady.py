@@ -49,41 +49,33 @@ def run(mesh, method):
 
     problem = dm.Problem(mesh, method=method)
     problem.add_physics(
-        "incompressible_flow",
-        "flow",
-        velocities=["u", "v"],
+        "fluid_dynamics",
         density=1.0,
         dynamic_viscosity=1e-3,
         formulation="pressure",
         time_integration="projection",
     )
     problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "inflow_u",
-        variable="u",
-        boundary="inlet",
+        "Dirichlet",
+        "inlet",
+        variable="velocity_x",
         value="4*1.5*y*(0.41 - y)/0.41^2",
     )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", "inflow_v", variable="v", boundary="inlet", value=0.0
-    )
-    for variable in ("u", "v"):
+    problem.add_boundary_condition("Dirichlet", "inlet", variable="velocity_y", value=0.0)
+    for variable in ("velocity_x", "velocity_y"):
         problem.add_boundary_condition(
-            "Dirichlet_boundary_condition",
-            f"no_slip_{variable}",
+            "Dirichlet",
+            ["walls", "cylinder"],
             variable=variable,
-            boundary=["walls", "cylinder"],
             value=0.0,
         )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", "outflow", variable="pressure", boundary="outlet", value=0.0
-    )
+    problem.add_boundary_condition("Dirichlet", "outlet", variable="pressure", value=0.0)
     history = {"time": [], "drag": [], "lift": []}
 
     def record(t, _problem):
         history["time"].append(t)
-        history["drag"].append(-SCALE * problem.total_reaction("u", "cylinder"))
-        history["lift"].append(-SCALE * problem.total_reaction("v", "cylinder"))
+        history["drag"].append(-SCALE * problem.total_reaction("velocity_x", "cylinder"))
+        history["lift"].append(-SCALE * problem.total_reaction("velocity_y", "cylinder"))
 
     problem.set_time_step_callback(record)
     start = time.perf_counter()

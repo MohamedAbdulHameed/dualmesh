@@ -11,6 +11,7 @@
 #include <cctype>
 #include <cmath>
 #include <limits>
+#include <map>
 #include <sstream>
 
 namespace dualmesh
@@ -56,7 +57,20 @@ InputParameters
 ResidualObject::validParams()
 {
   InputParameters p = Object::validParams();
-  p.addRequired("variable", ParameterKind::String, "The variable (equation) this object acts on.");
+  p.addRequired("variable",
+                ParameterKind::Names,
+                "The variable (equation) this object acts on. A list of variables creates the "
+                "object once for each of them, with all its other parameters equal.");
+  p.addOptional("scale_with_load",
+                ParameterKind::Boolean,
+                false,
+                "Multiply this contribution by the load factor during load stepping.");
+  return p;
+}
+
+void
+ResidualObject::addIntegrationParams(InputParameters & p)
+{
   p.addOptional("block",
                 ParameterKind::StringList,
                 std::vector<std::string>{},
@@ -67,7 +81,7 @@ ResidualObject::validParams()
                 "Quadrature rule for the integration of this term. The default, automatic, uses "
                 "Gauss-Legendre with as many points per direction as the polynomial order of the "
                 "mesh plus one, which is two points on a linear mesh and three on a quadratic "
-                "one. The choices are gauss1 to gauss10 (Gauss-Legendre with that many points per "
+                "one. The choices are gauss1 to gauss20 (Gauss-Legendre with that many points per "
                 "direction), midpoint, trapezoid, simpson, nodal (a single point at the owning "
                 "node, which lumps the term), interface (a single point at the control domain "
                 "interface), and control_domain_trapezoid (the trapezoidal rule over the whole "
@@ -86,11 +100,6 @@ ResidualObject::validParams()
                 "transverse shear terms of a thin beam or plate and for the penalty term of an "
                 "incompressible flow, where it removes locking. Using it on a bending or "
                 "diffusion term degrades the accuracy.");
-  p.addOptional("scale_with_load",
-                ParameterKind::Boolean,
-                false,
-                "Multiply this contribution by the load factor during load stepping.");
-  return p;
 }
 
 bool
@@ -109,8 +118,10 @@ Object::parametersAreThreadSafe() const
 ResidualObject::ResidualObject(const InputParameters & params) : Object(params)
 {
   _var_name = params.getString("variable");
-  _quad =
-      QuadratureSpec::parse(params.getString("quadrature"), params.getBool("reduced_integration"));
+  // A nodal condition or load has no integral, and so no quadrature rule.
+  if (params.has("quadrature"))
+    _quad = QuadratureSpec::parse(params.getString("quadrature"),
+                                  params.getBool("reduced_integration"));
   _scale_with_load = params.getBool("scale_with_load");
 }
 
@@ -130,8 +141,9 @@ ResidualObject::initialSetup(Problem & problem)
     _quad.automatic = false;
   }
   _blocks.clear();
-  for (const auto & b : _params.getStringList("block"))
-    _blocks.insert(problem.mesh().blockId(b));
+  if (_params.has("block"))
+    for (const auto & b : _params.getStringList("block"))
+      _blocks.insert(problem.mesh().blockId(b));
 }
 
 int
@@ -144,7 +156,9 @@ ResidualObject::coupledVariable(Problem & problem, const std::string & param) co
 InputParameters
 Kernel::validParams()
 {
-  return ResidualObject::validParams();
+  InputParameters p = ResidualObject::validParams();
+  addIntegrationParams(p);
+  return p;
 }
 
 Kernel::Kernel(const InputParameters & params) : ResidualObject(params) {}
@@ -166,30 +180,14 @@ InputParameters
 IntegratedBC::validParams()
 {
   InputParameters p = ResidualObject::validParams();
+  addIntegrationParams(p);
   p.addRequired("boundary", ParameterKind::StringList, "Side sets where the condition applies.");
-  // A boundary condition may name one variable or, through 'variables',
-  // several, in which case Problem::addObject creates one copy per variable.
-  p.addOptional("variable",
-                ParameterKind::String,
-                std::string(),
-                "The variable (equation) this condition acts on. Give either 'variable' or "
-                "'variables'. The two define the same thing and must not be used together.");
-  p.addOptional("variables",
-                ParameterKind::StringList,
-                std::vector<std::string>{},
-                "Several variables on which the same condition is imposed, e.g., [u, v, w]. The "
-                "condition is then created once per variable, under the names <name>_<variable>, "
-                "with all its other parameters equal. Give either 'variable' or 'variables'. The "
-                "two define the same thing and must not be used together.");
   return p;
 }
 
 IntegratedBC::IntegratedBC(const InputParameters & params) : ResidualObject(params)
 {
   _boundaries = params.getStringList("boundary");
-  if (_var_name.empty())
-    throw InputError("Boundary condition '" + _name +
-                     "' needs 'variable' (or 'variables', a list of variables).");
 }
 
 void
@@ -250,29 +248,13 @@ NodalBC::validParams()
   p.addRequired("boundary",
                 ParameterKind::StringList,
                 "Node sets or side sets where the value is prescribed.");
-  // A boundary condition may name one variable or, through 'variables',
-  // several, in which case Problem::addObject creates one copy per variable.
-  p.addOptional("variable",
-                ParameterKind::String,
-                std::string(),
-                "The variable (equation) this condition acts on. Give either 'variable' or "
-                "'variables'. The two define the same thing and must not be used together.");
-  p.addOptional("variables",
-                ParameterKind::StringList,
-                std::vector<std::string>{},
-                "Several variables on which the same condition is imposed, e.g., [u, v, w]. The "
-                "condition is then created once per variable, under the names <name>_<variable>, "
-                "with all its other parameters equal. Give either 'variable' or 'variables'. The "
-                "two define the same thing and must not be used together.");
   return p;
 }
 
 NodalBC::NodalBC(const InputParameters & params) : ResidualObject(params)
 {
-  _boundaries = params.getStringList("boundary");
-  if (_var_name.empty())
-    throw InputError("Boundary condition '" + _name +
-                     "' needs 'variable' (or 'variables', a list of variables).");
+  if (params.has("boundary"))
+    _boundaries = params.getStringList("boundary");
 }
 
 void
@@ -338,7 +320,7 @@ NodalLoad::initialSetup(Problem & problem)
   _boundary_nodes.assign(ids.begin(), ids.end());
   _point_nodes.clear();
   const auto pts = _params.getRealList("points");
-  const int dim = problem.mesh().dimension();
+  const int dim = problem.mesh().spaceDimension();
   const int stride = dim == 1 ? 1 : 3;
   if (pts.size() % stride)
     throw InputError("NodalLoad '" + _name + "': 'points' must hold " + std::to_string(stride) +
@@ -419,7 +401,14 @@ PropertyRegistry::id(const std::string & name) const
       os << " " << n;
     throw InputError(os.str());
   }
+  _read.insert(it->second.first);
   return it->second.first;
+}
+
+void
+PropertyRegistry::markRead(const std::string & name) const
+{
+  id(name);
 }
 
 int
@@ -439,41 +428,27 @@ Property::validParams()
       std::vector<std::string>{},
       "Blocks (subdomains) where this property object applies. An empty list selects every "
       "block.");
-  p.addOptional(
-      "scaled_properties",
-      ParameterKind::StringList,
-      std::vector<std::string>{},
-      "Properties computed by this property object to multiply by the matching entries of "
-      "'property_factors', for sensitivity and uncertainty studies (for example "
-      "thermal_conductivity). Default none.");
   p.addOptional("property_factors",
-                ParameterKind::RealList,
-                std::vector<double>{},
-                "Factors on the 'scaled_properties', one each. Default none.");
+                ParameterKind::RealMap,
+                RealMap{},
+                "Factors on properties that this property object computes: name -> factor, for "
+                "sensitivity and uncertainty studies (for example {thermal_conductivity: 1.1}). "
+                "Default none.");
   return p;
 }
 
-Property::Property(const InputParameters & params) : Object(params)
-{
-  if (_params.getStringList("scaled_properties").size() !=
-      _params.getRealList("property_factors").size())
-    throw InputError("'" + name() +
-                     "': 'scaled_properties' and 'property_factors' must have the same length.");
-}
+Property::Property(const InputParameters & params) : Object(params) {}
 
 void
 Property::setupPropertyFactors(const PropertyRegistry & registry)
 {
   _property_factors.clear();
-  const auto & names = _params.getStringList("scaled_properties");
-  const auto & factors = _params.getRealList("property_factors");
-  for (std::size_t i = 0; i < names.size(); ++i)
+  for (const auto & [property, factor] : _params.getRealMap("property_factors"))
   {
-    if (!registry.has(names[i]))
-      throw InputError("'" + name() + "': cannot scale '" + names[i] +
+    if (!registry.has(property))
+      throw InputError("'" + name() + "': cannot scale '" + property +
                        "', which no property object declares.");
-    _property_factors.emplace_back(
-        registry.id(names[i]), registry.components(names[i]), factors[i]);
+    _property_factors.emplace_back(registry.id(property), registry.components(property), factor);
   }
 }
 
@@ -547,31 +522,7 @@ Factory::entry(const std::string & type) const
     std::vector<std::string> names;
     for (const auto & [n, _] : _entries)
       names.push_back(n);
-    // The names of 0.1 were CamelCase (DirichletBC); since 0.2 they are lower
-    // case with underscores, keeping the capitals of material and proper
-    // names (Dirichlet_boundary_condition, Robin_boundary_condition).  A 0.1 name is
-    // recognised by comparing the names without case and underscores.
-    const auto key = [](const std::string & n)
-    {
-      std::string k;
-      for (char c : n)
-        if (c != '_')
-          k += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-      if (k.size() > 2 && k.compare(k.size() - 2, 2, "bc") == 0)
-        k = k.substr(0, k.size() - 2) + "boundarycondition";
-      return k;
-    };
-    std::string renamed;
-    for (const auto & n : names)
-      if (key(n) == key(type))
-        renamed = n;
-    os << "Unknown object type '" << type << "'.";
-    if (!renamed.empty())
-      os << " Object types are written in lower case with underscores since dualmesh 0.2, "
-            "keeping the capitals of material and proper names: use '"
-         << renamed << "'.";
-    else
-      os << didYouMean(type, names);
+    os << "Unknown object type '" << type << "'." << didYouMean(type, names);
     os << " Registered types:";
     for (const auto & n : names)
       os << " " << n;
@@ -611,7 +562,14 @@ Factory::create(const std::string & type, const std::string & name, InputParamet
   }
   catch (const InputError & err)
   {
-    throw InputError(type + " '" + name + "': " + err.what());
+    // The message is prefixed with the type and the name of the object, once: a message that
+    // begins with the name alone gets the type before it.
+    const std::string prefix = type + " '" + name + "': ";
+    const std::string own = "'" + name + "': ";
+    const std::string what = err.what();
+    if (what.rfind(prefix, 0) == 0)
+      throw;
+    throw InputError(prefix + (what.rfind(own, 0) == 0 ? what.substr(own.size()) : what));
   }
 }
 
@@ -622,6 +580,82 @@ Factory::registeredTypes() const
   for (const auto & [n, _] : _entries)
     out.push_back(n);
   return out;
+}
+
+void
+addAdvectionSchemeParam(InputParameters & params)
+{
+  params.addOptional(
+      "advection_scheme",
+      ParameterKind::String,
+      std::string("central"),
+      "How the advective term is discretised: 'central' (the source v . grad u, for every "
+      "method), 'upwind' (the face flux with the upstream value, first order, for dmcdm, hfvm and "
+      "zfvm), 'linear_upwind' (the upstream value corrected by the upstream gradient, second "
+      "order, zfvm), 'limited' (the upstream value blended towards the central one by the van "
+      "Albada limiter, second order and bounded, zfvm). The streamline stabilisation of the "
+      "finite element method is the kernel heat_streamline_stabilization. Default central.");
+}
+
+const Kernel *
+massConservationKernel(const Problem & problem)
+{
+  for (const auto & k : problem.kernels())
+    if (k->isMassConservation())
+      return k.get();
+  return nullptr;
+}
+
+ADVector3
+advectingVelocity(const QpContext & ctx,
+                  const Kernel * mass,
+                  bool cells,
+                  const std::vector<int> & velocities)
+{
+  ADVector3 w{ADReal(0.0), ADReal(0.0), ADReal(0.0)};
+  if (mass && (cells || !ctx.on_boundary) && mass->conservedVelocity(ctx, w))
+    return w;
+  for (std::size_t d = 0; d < velocities.size(); ++d)
+    w[d] = ctx.coefficientValue(velocities[d]);
+  return w;
+}
+
+AdvectionScheme
+advectionScheme(const Problem & problem, const std::string & text, const std::string & owner)
+{
+  const Method m = problem.method();
+  const bool cells = m == Method::FiniteVolumeCell;
+  const bool nodes = m == Method::DualMesh || m == Method::FiniteVolumeVertex;
+  const auto refuse = [&](const std::string & allowed)
+  {
+    throw InputError("'" + owner + "': the advection scheme '" + text +
+                     "' is not available with this method, which takes " + allowed + ".");
+  };
+  const std::string choices = cells || nodes
+                                  ? "central, upwind, linear_upwind or limited"
+                                  : "central (the streamline stabilisation of the finite "
+                                    "element method is the kernel "
+                                    "heat_streamline_stabilization, which heat_transfer adds "
+                                    "with advection_scheme 'SUPG', and momentum_stabilization "
+                                    "for a flow)";
+  if (text == "central")
+    return AdvectionScheme::Central;
+  if (text == "upwind")
+  {
+    if (!cells && !nodes)
+      refuse(choices);
+    return AdvectionScheme::Upwind;
+  }
+  if (text == "linear_upwind" || text == "limited")
+  {
+    if (!cells && !nodes)
+      refuse(choices);
+    return text == "limited" ? AdvectionScheme::Limited : AdvectionScheme::LinearUpwind;
+  }
+  if (text == "SUPG" || text == "supg")
+    refuse(choices);
+  throw InputError("'" + owner + "': unknown advection scheme '" + text +
+                   "'. The schemes are central, upwind, linear_upwind and limited.");
 }
 
 } // namespace dualmesh

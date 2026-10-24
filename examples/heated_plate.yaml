@@ -1,0 +1,38 @@
+# A steel plate, 100 mm by 20 mm and 10 mm thick, heated inside by 1 MW/m^3, held at 300 K on its
+# left edge and cooled by air (h = 25 W/(m^2 K), 293 K) on its top edge; the other edges are
+# insulated.  The plate is clamped on the left and expands as it heats.  (An invented example: the
+# test checks that the heat generated leaves through the left and the top edges.)
+mesh:
+  generate: rectangle
+  x: [0.0, 0.1]
+  y: [0.0, 0.02]
+  num_elements: [40, 8]
+method: fem
+
+physics:
+  heat:
+    type: heat_transfer
+    thermal_conductivity: 20.0
+    heat_source: 1.0e6
+    conditions:
+      - {boundary: left, condition: "temperature = 300"}
+      - {boundary: top, condition: "heat_flux = h*(temperature - 293)", h: 25.0}
+  solid:
+    type: solid_mechanics
+    formulation: plane_stress
+    youngs_modulus: 2.0e11
+    poissons_ratio: 0.3
+    thickness: 0.01
+    conditions:
+      - {boundary: left, condition: fixed}
+
+couplings:
+  - {type: thermal_expansion, heat_transfer: heat, solid_mechanics: solid,
+     linear_expansion_coeff: 1.2e-5, stress_free_temperature: 293}
+
+solve:
+  study: steady
+  report: summary
+output:
+  fields: heated_plate.vtu
+  csv: heated_plate.csv

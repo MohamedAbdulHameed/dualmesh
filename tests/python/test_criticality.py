@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 """Reactor criticality with the generic PDE solver: neutron diffusion written
-with coefficient_form_PDE, and k from the eigenvalue study of any problem.
+with general_form_PDE, and k from the eigenvalue study of any problem.
 
 The fission source carries the symbol eigenvalue, which is 1 / k, so the
 smallest eigenvalue gives the largest k. The checks are the analytical
@@ -36,24 +36,18 @@ def one_group(mesh, method="fem", coordinates="cartesian", zero_flux=None, vacuu
     the vacuum condition -D dphi/dn = phi / ratio on every side set."""
     problem = dm.Problem(mesh, method=method, coordinates=coordinates)
     neutrons = problem.add_physics(
-        "coefficient_form_PDE",
-        "neutrons",
+        "general_form_PDE",
         variables=["phi"],
-        diffusion_coefficient=D,
-        absorption_coefficient=SIGMA_A,
-        source="eigenvalue*nu_sigma_f*phi",
-        constants={"nu_sigma_f": NU_SIGMA_F},
+        c=D,
+        a=SIGMA_A,
+        f="eigenvalue*nu_sigma_f*phi",
+        nu_sigma_f=NU_SIGMA_F,
     )
     if zero_flux:
-        neutrons.add_boundary_condition(
-            "Dirichlet_boundary_condition", "zero_flux", boundary=list(zero_flux), value=0.0
-        )
+        neutrons.add_boundary_condition("phi = 0", boundary=list(zero_flux))
     if vacuum_ratio:
         neutrons.add_boundary_condition(
-            "Robin_boundary_condition",
-            "vacuum",
-            boundary=list(mesh.sideset_names()),
-            transfer_coefficient=1.0 / vacuum_ratio,
+            "normal_flux = phi/ratio", boundary=list(mesh.sideset_names()), ratio=vacuum_ratio
         )
     return problem
 
@@ -139,15 +133,14 @@ def two_group(mesh, buckling=0.0):
     that adds D_g B^2 to the removal of each group."""
     problem = dm.Problem(mesh, method="fem")
     neutrons = problem.add_physics(
-        "coefficient_form_PDE",
-        "neutrons",
+        "general_form_PDE",
         variables=["phi1", "phi2"],
-        diffusion_coefficient={"phi1": 0.015, "phi2": 0.004},
-        absorption_coefficient={
+        c={"phi1": 0.015, "phi2": 0.004},
+        a={
             "phi1": 1.0 + 2.0 + 0.015 * buckling,
             "phi2": {"phi2": 8.0 + 0.004 * buckling, "phi1": -2.0},
         },
-        source={"phi1": "eigenvalue*13.5*phi2"},
+        f={"phi1": "eigenvalue*13.5*phi2"},
     )
     return problem, neutrons
 
@@ -173,14 +166,7 @@ def test_two_group_bare_core_with_a_transverse_buckling():
         x_min=0.0, x_max=side, y_min=0.0, y_max=side, num_x_elements=40, num_y_elements=40
     )
     problem, neutrons = two_group(mesh, buckling=transverse)
-    for flux in ("phi1", "phi2"):
-        neutrons.add_boundary_condition(
-            "Dirichlet_boundary_condition",
-            f"outer_{flux}",
-            variable=flux,
-            boundary=list(mesh.sideset_names()),
-            value=0.0,
-        )
+    neutrons.add_boundary_condition(["phi1 = 0", "phi2 = 0"], boundary=list(mesh.sideset_names()))
     b2 = 2 * (math.pi / side) ** 2 + transverse
     exact = 13.5 * 2.0 / ((1.0 + 2.0 + 0.015 * b2) * (8.0 + 0.004 * b2))
     assert k_effective(problem) == pytest.approx(exact, rel=1e-4)

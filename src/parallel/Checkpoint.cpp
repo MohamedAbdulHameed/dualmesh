@@ -139,6 +139,27 @@ recordShape(MPI_Comm comm, const Problem::StateSnapshot & state)
   return shape;
 }
 
+/// Stop every process of @p comm together when one of them found an error: a check that fails on
+/// one process alone, before a collective call, would leave the others waiting in it.  The
+/// process that found the error throws its message, and the others name the process.
+void
+stopTogether(MPI_Comm comm, const std::string & error)
+{
+  int failed = error.empty() ? -1 : 0;
+  int rank = 0;
+  MPI_Comm_rank(comm, &rank);
+  if (!error.empty())
+    failed = rank;
+  int first = -1;
+  MPI_Allreduce(&failed, &first, 1, MPI_INT, MPI_MAX, comm);
+  if (first < 0)
+    return;
+  if (!error.empty())
+    throw InputError(error);
+  throw InputError("The checkpoint stopped on process " + std::to_string(first) +
+                   ", whose message gives the reason.");
+}
+
 /// The header of a checkpoint, on every process of @p comm.
 std::vector<double>
 readHeader(PetscViewer viewer, MPI_Comm comm, const std::string & file)
@@ -181,16 +202,19 @@ writeCheckpoint(const std::string & file,
   MPI_Comm_rank(comm, &rank);
   const int nv = problem.numVariables();
   const auto state = problem.snapshotState();
+  std::string error;
   for (const auto & keys : state.keys[1])
     if (!keys.empty())
-      throw InputError("A checkpoint holds the history of the material at the elements; the "
-                       "history at the faces of the cell-centered method cannot be written yet.");
+      error = "A checkpoint holds the history of the material at the elements; the history at "
+              "the faces of the cell-centered method cannot be written yet.";
+  stopTogether(comm, error);
   const RecordShape shape = recordShape(comm, state);
   // The ghost elements of a distributed run follow the integrated ones and belong to another rank's part of the file.
   const std::size_t elements = layout.global_elements.size();
   if (shape.size() > 0 && elements > state.keys[0].size())
-    throw InputError("This problem has a history of the material, and its part of the mesh was "
-                     "built without the global numbers of its elements, which a checkpoint needs.");
+    error = "This problem has a history of the material, and its part of the mesh was built "
+            "without the global numbers of its elements, which a checkpoint needs.";
+  stopTogether(comm, error);
 
   const std::string temporary = file + ".writing";
   PetscViewer viewer = openViewer(comm, temporary, FILE_MODE_WRITE);
@@ -262,9 +286,8 @@ writeCheckpoint(const std::string & file,
   DM_PETSC(PetscViewerDestroy(&viewer));
   // The complete file replaces the previous checkpoint.
   if (rank == 0 && std::rename(temporary.c_str(), file.c_str()) != 0)
-    throw std::runtime_error("dualmesh: could not rename the checkpoint '" + temporary + "' to '" +
-                             file + "'.");
-  MPI_Barrier(comm);
+    error = "dualmesh: could not rename the checkpoint '" + temporary + "' to '" + file + "'.";
+  stopTogether(comm, error);
 }
 
 CheckpointTime
@@ -316,12 +339,14 @@ readCheckpoint(const std::string & file, Problem & problem, const CheckpointLayo
   if (shape.size() > 0)
   {
     auto state = problem.snapshotState();
+    std::string error;
     if (file_elements != layout.num_global_elements ||
         layout.global_elements.size() > state.keys[0].size())
-      throw InputError("'" + file + "' holds the history of the material of " +
-                       std::to_string(file_elements) +
-                       " elements, which does not fit this problem; a checkpoint restarts the "
-                       "problem that wrote it.");
+      error = "'" + file + "' holds the history of the material of " +
+              std::to_string(file_elements) +
+              " elements, which does not fit this problem; a checkpoint restarts the problem "
+              "that wrote it.";
+    stopTogether(comm, error);
     const int size = shape.size();
     Vec history;
     DM_PETSC(VecCreateMPI(

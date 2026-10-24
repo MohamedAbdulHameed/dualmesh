@@ -131,12 +131,18 @@ almost every problem, and the others are provided for control and for
 comparison.
 
 A distributed problem (one run on several MPI processes) is solved by PETSc.
-Its ``"automatic"`` takes GMRES with the algebraic multigrid of hypre
-(BoomerAMG), and the parallel direct solver MUMPS when multigrid does not
-converge or the system has a zero pressure block; ``"lu"`` takes MUMPS, and
-``petsc_options`` gives any other Krylov method and preconditioner of PETSc
-(see :doc:`/theory/parallel`).  The options below that are not PETSc's apply to
-problems on one process.
+Its ``"automatic"`` factorises a flow with the parallel direct solver MUMPS
+where that is inexpensive and splits it with the least squares commutator
+otherwise (``"lsc"`` below).  It takes PETSc's smoothed aggregation multigrid
+(GAMG) with the rigid body modes for a solid, the split by physics for a solid
+coupled to other physics, and GMRES with the algebraic multigrid of hypre
+(BoomerAMG) for any other system, with MUMPS when the iteration does not
+converge.  ``"lu"`` takes MUMPS.  ``preconditioner`` may be ``"lsc"``,
+``"pcd"``, ``"pressure_mass"``, ``"physics_blocks"`` or ``"amg"`` (GAMG with
+the rigid body modes), and ``petsc_options`` gives any other Krylov method and
+preconditioner of PETSc, or changes the block solvers of these (see
+:doc:`/theory/parallel`).  The other options below apply to problems on one
+process.
 
 ``"automatic"``
    The default.  It factorises the system directly where the factorisation is
@@ -144,7 +150,14 @@ problems on one process.
    gradient method for a symmetric matrix and BiCGSTAB otherwise, both
    preconditioned by algebraic multigrid (``"amg"`` below).  If the
    iteration fails, BiCGSTAB with ILU(0) is tried, and then the direct solver,
-   so that ``"automatic"`` is at least as robust as ``"lu"``.
+   so that ``"automatic"`` is at least as robust as ``"lu"``.  A flow (the
+   pressure-velocity formulation with the methods of the nodes) too large for
+   the direct solver is solved by flexible GMRES with the least squares
+   commutator (``"lsc"`` below) instead: multigrid and an incomplete
+   factorisation of a whole saddle point system fail or converge slowly.  On
+   the equal-order cavity at :math:`Re = 100` with 120 000 unknowns the least
+   squares commutator takes 11 s, the direct solver 21 s, and the attempts of
+   multigrid and ILU(0) that ended in the direct solver 56 s.
 
    The threshold between the two follows from the fill-in of a sparse
    factorisation.
@@ -314,9 +327,14 @@ to the right-hand side), ``linear_max_iterations`` (default 5000) and
 
    .. code-block:: python
 
-      split = "-pc_type fieldsplit -pc_fieldsplit_0_fields 0,1 -pc_fieldsplit_1_fields 2 -pc_fieldsplit_type schur -pc_fieldsplit_schur_fact_type upper -pc_fieldsplit_schur_precondition selfp"
-      blocks = "-fieldsplit_0_ksp_type preonly -fieldsplit_0_pc_type hypre -fieldsplit_1_ksp_type preonly -fieldsplit_1_pc_type hypre"
-      options = f"-ksp_type fgmres {split} {blocks}"
+      options = (
+          "-ksp_type fgmres"
+          " -pc_type fieldsplit -pc_fieldsplit_0_fields 0,1 -pc_fieldsplit_1_fields 2"
+          " -pc_fieldsplit_type schur -pc_fieldsplit_schur_fact_type upper"
+          " -pc_fieldsplit_schur_precondition selfp"
+          " -fieldsplit_0_ksp_type preonly -fieldsplit_0_pc_type hypre"
+          " -fieldsplit_1_ksp_type preonly -fieldsplit_1_pc_type hypre"
+      )
 
    On the cavity at :math:`Re = 100` on a :math:`64 \times 64` mesh it takes
    about 58 iterations per Newton step, on one process and on four.  The same
@@ -329,73 +347,234 @@ to the right-hand side), ``linear_max_iterations`` (default 5000) and
    tolerance of :math:`10^{-8}`, compared with 66 for the equal-order element
    at the same tolerance.  The ``selfp`` approximation of the Schur complement,
    :math:`\mathbf{B}\, \mathrm{diag}(\mathbf{A})^{-1} \mathbf{B}^T`, is better
-   suited to the stabilised element.  For both elements the pressure mass
-   matrix preconditioner described next converges in fewer iterations.
+   suited to the stabilised element.  For both elements the block
+   preconditioners described next, which build their approximation of the
+   Schur complement from the flow, converge in fewer iterations.
 
-``preconditioner="pressure_mass_schur"``
-   For pressure-velocity flow.  The Jacobian is a saddle point matrix
+``preconditioner="lsc"``, ``"pcd"`` and ``"pressure_mass"``
+   The block preconditioners of pressure-velocity flow.  The Jacobian is a
+   saddle point matrix
 
    .. math::
 
-      \begin{bmatrix} \mathbf{A} & \mathbf{G} \\ \mathbf{D} & \mathbf{C} \end{bmatrix}
+      \begin{bmatrix} \mathbf{F} & \mathbf{G} \\ \mathbf{D} & \mathbf{C} \end{bmatrix}
 
    (momentum block, pressure gradient, discrete divergence, and the pressure
    block, which is zero for the Taylor-Hood element and the pressure
-   Laplacian of the stabilisation for the equal-order element).  Its Schur
-   complement :math:`\mathbf{S} = \mathbf{C} - \mathbf{D}\mathbf{A}^{-1}\mathbf{G}`
-   is dense, but for the Stokes equations it is spectrally equivalent to the
-   pressure mass matrix scaled by the inverse viscosity, with bounds that do
-   not depend on the mesh size.  The preconditioner is the block upper
-   triangle
+   Laplacian of the stabilisation for the equal-order element).  The
+   preconditioner is the block upper triangle
 
    .. math::
 
-      \mathbf{P} = \begin{bmatrix} \mathbf{A} & \mathbf{G} \\ \mathbf{0} &
-      \hat{\mathbf{S}} \end{bmatrix}, \qquad
-      \hat{\mathbf{S}} = \mathbf{C}_{\mathrm{sym}} \pm \left(\tfrac{1}{\mu} q, \psi\right),
+      \mathbf{P} = \begin{bmatrix} \mathbf{F} & \mathbf{G} \\ \mathbf{0} &
+      \hat{\mathbf{S}} \end{bmatrix},
 
-   where the mass matrix is assembled with the pressure's own shape
-   functions (the corner functions of a Taylor-Hood element), the sign is
-   measured from the coupling blocks of the actual matrix, and
-   :math:`\mathbf{C}_{\mathrm{sym}}` is the symmetric part of the pressure
-   block.  With ``linear_solver="gmres"`` it runs in a built-in flexible
-   GMRES with exact factorisations of :math:`\mathbf{A}` and
-   :math:`\hat{\mathbf{S}}`.  With ``linear_solver="petsc"`` it sets up PETSc's
-   Schur complement field split with :math:`\hat{\mathbf{S}}` as the
-   preconditioning matrix, and ``petsc_options`` can replace the block
-   solvers, for instance ``"-fieldsplit_0_pc_type gamg"`` for algebraic
-   multigrid on the momentum block.
+   with which GMRES converges in a number of iterations that depends only on
+   how well :math:`\hat{\mathbf{S}}` approximates the Schur complement
+   :math:`\mathbf{S} = \mathbf{C} - \mathbf{D}\mathbf{F}^{-1}\mathbf{G}`, a
+   dense matrix.  Up to its sign, which is measured from the coupling blocks
+   of the actual matrix,
+   :math:`\mathbf{S} \approx \mathbf{G}^T \mathbf{F}^{-1} \mathbf{G}`.  The
+   three preconditioners differ in their approximation of it:
 
-   Measured on the lid-driven cavity, iterations per Newton step at a
-   relative tolerance of :math:`10^{-12}`:
+   ``"lsc"``, the least squares commutator [ElmanHowleShadidShuttleworthTuminaro2006]_:
+      :math:`\hat{\mathbf{S}}^{-1} = \mathbf{A}_p^{-1} (\mathbf{G}^T
+      \mathbf{Q}_v^{-1} \mathbf{F} \mathbf{Q}_v^{-1} \mathbf{G})
+      \mathbf{A}_p^{-1}` with :math:`\mathbf{A}_p = \mathbf{G}^T
+      \mathbf{Q}_v^{-1} \mathbf{G}` and :math:`\mathbf{Q}_v` the lumped
+      velocity mass matrix.  It is built from the blocks of the matrix alone.
+   ``"pcd"``, the pressure convection-diffusion preconditioner [KayLoghinWathen2002]_,
+      in the form of [ElmanTuminaro2009]_:
+      :math:`\hat{\mathbf{S}}^{-1} = \mathbf{A}_p^{-1} \mathbf{F}_p
+      \mathbf{Q}_p^{-1}`, where :math:`\mathbf{F}_p` is the operator of the
+      momentum equation on the pressure space,
+      :math:`(\rho/\Delta t) \mathbf{M}_p + \theta(\mu \mathbf{K}_p + \rho
+      \mathbf{N}_p(\mathbf{v}))` at the current velocity, with the Robin
+      condition :math:`\mu\, \partial p/\partial n = \rho (\mathbf{v} \cdot
+      \mathbf{n})\, p` on the boundaries where the velocity is prescribed
+      (it acts at an inflow, since :math:`\mathbf{v} \cdot \mathbf{n} = 0` on
+      a wall), and :math:`\mathbf{Q}_p` the lumped pressure mass matrix.
+   ``"pressure_mass"``:
+      :math:`\hat{\mathbf{S}} = \mathbf{C}_{\mathrm{sym}} \pm (\tfrac{1}{\mu}
+      q, \psi)`, the pressure mass matrix scaled by the inverse viscosity and
+      the symmetric part of the pressure block.  For the Stokes equations it
+      is spectrally equivalent to :math:`\mathbf{S}` with bounds that do not
+      depend on the mesh size, but it ignores convection.
+
+   For the stabilised equal-order element, :math:`\mathbf{G}^T
+   \mathbf{Q}_v^{-1} \mathbf{G}` has the spurious pressure modes of the
+   element in its null space, and :math:`\mathbf{A}_p` and the middle factor
+   of ``"lsc"`` take the element stabilisation of
+   [ElmanHowleShadidSilvesterTuminaro2007]_: the :math:`L^2` distance of the
+   pressure from its element mean, scaled by :math:`h^{-2}` and by
+   :math:`\theta\mu h^{-4} + \rho/(\Delta t\, h^2)`.  ``"pcd"`` applies
+   :math:`\mathbf{A}_p^{-1}` once, to a vector that keeps the spurious modes
+   at full size, and takes this stabilisation a hundred times larger:
+   measured, the iteration counts are three to four times higher with the
+   factor 1, and change by less than 15 % between the factors 100 and
+   :math:`10^5`.  An assembled pressure Laplacian in place of
+   :math:`\mathbf{A}_p` needs a Robin condition at an outflow whose weight
+   changes the counts fivefold, which is why :math:`\mathbf{A}_p` is taken
+   from the matrix.
+
+   With ``linear_solver="gmres"`` or ``"automatic"`` they run in a built-in
+   flexible GMRES [Saad1993]_ with exact factorisations of
+   :math:`\mathbf{F}` and of :math:`\mathbf{A}_p` (or of the scaled mass
+   matrix).  With ``linear_solver="petsc"``, and in a distributed problem,
+   PETSc's Schur complement field split applies them: the velocities (and any
+   other unknown, a temperature for instance) form the split ``0`` and the
+   pressure the split ``1``.  The defaults are flexible GMRES outside, the
+   upper block-triangular factorisation, and one V-cycle of hypre BoomerAMG
+   [FalgoutYang2002]_ for :math:`\mathbf{F}` and for :math:`\mathbf{A}_p`
+   (options prefix ``fieldsplit_1_laplacian_``), with the coarsening and the
+   interpolation of [DeSterckYangHeys2006]_ and
+   [DeSterckFalgoutNoltingYang2008]_.  With them the least squares
+   commutator solves the three-dimensional Taylor-Hood cavity below 3.2 to 4.3
+   times faster than with BoomerAMG's defaults, in twice the iterations.
+   ``petsc_options`` may change any of them, for instance
+   ``{"fieldsplit_0_pc_type": "lu"}`` for an exact momentum solve.  With
+   ``"pcd"`` and ``"lsc"`` the preconditioner of the split ``1`` is the
+   approximation itself, so the options ``pc_fieldsplit_schur_precondition``
+   and ``fieldsplit_1_pc_type`` do not apply.
+
+   Measured on the lid-driven cavity with the built-in solver, iterations per
+   Newton step (the Stokes start included) at a relative tolerance of
+   :math:`10^{-8}`, on meshes with
+   16, 32 and 64 elements per side (the Taylor-Hood meshes have half as
+   many elements per side, with the same nodes):
 
    .. list-table::
       :header-rows: 1
 
-      * - Element, flow
-        - :math:`8 \times 8`
-        - :math:`16 \times 16`
-        - :math:`32 \times 32`
-      * - Taylor-Hood (``Quad9``), Stokes
-        - 15
-        - 16
-        - 16
-      * - Stabilised equal order (``Quad4``), Stokes
-        - 16
-        - 18
-        - 19
+      * - Element, method
+        - :math:`Re`
+        - ``"pressure_mass"``
+        - ``"pcd"``
+        - ``"lsc"``
+      * - Taylor-Hood, ``fem``
+        - 1
+        - 14, 15, 15
+        - 17, 19, 20
+        - 10, 12, 12
+      * -
+        - 100
+        - 28, 30, 32
+        - 28, 34, 37
+        - 14, 15, 18
+      * -
+        - 400
+        - 63, 97, 108
+        - 50, 63, 68
+        - 29, 30, 30
+      * - Equal order, ``fem``
+        - 1
+        - 16, 18, 19
+        - 21, 22, 24
+        - 17, 17, 18
+      * -
+        - 100
+        - 32, 36, 37
+        - 34, 38, 40
+        - 26, 27, 24
+      * -
+        - 400
+        - none, 113, 126
+        - 68, 72, 68
+        - 51, 53, 50
+      * - Equal order, ``dmcdm``
+        - 1
+        - 17, 18, 20
+        - 24, 27, 28
+        - 21, 21, 21
+      * -
+        - 100
+        - 32, 36, 38
+        - 38, 43, 46
+        - 34, 36, 32
+      * -
+        - 400
+        - none, 114, 128
+        - 71, 79, 76
+        - 57, 70, 68
 
-   At :math:`Re = 100` the counts rise to about 40, because the Schur
-   complement then also carries convection, which the mass matrix does not
-   describe.  In three dimensions the preconditioner also reduces the solution
-   time: for Stokes flow on :math:`10^3` ``Tet10`` elements (29 000 unknowns) a
-   direct solve takes 21 s, the built-in preconditioned GMRES 13 s and PETSc
-   with algebraic multigrid on the momentum block (``gamg``) 5 s, in one
-   thread.  ``linear_solver="automatic"`` therefore uses the built-in version
-   for a Taylor-Hood system too large for an inexpensive direct factorisation
-   (more than 100 000 unknowns in two dimensions, 4000 in three), and reports
-   this choice in the full report.  The preconditioner is available for the
-   serial solver and the methods ``fem``, ``dmcdm`` and ``hfvm``.
+   ("none": no convergence in 2000 iterations.)  ``"lsc"`` takes the fewest
+   iterations in every case from :math:`Re = 100` on, except on the coarsest
+   ``dmcdm`` mesh at :math:`Re = 100` (34 against 33 for ``"pressure_mass"``).
+   In Stokes flow
+   (:math:`Re = 1`) ``"pressure_mass"`` takes about as many on the
+   equal-order element of ``fem`` and fewer on that of ``dmcdm``.  The counts
+   grow slowly as the mesh is refined, by at most 73 % over two refinements
+   (``"pressure_mass"`` at :math:`Re = 400`), and those of ``"lsc"`` at
+   :math:`Re = 400` by at most 18 %.  ``"pressure_mass"`` is the cheapest per
+   iteration and suits Stokes flow, and its counts rise steeply with the
+   Reynolds number.  On a channel with an inflow and an outflow it takes 21
+   iterations per Newton step at :math:`Re = 1` and 29 at :math:`Re = 10`, and
+   at :math:`Re = 100` it stagnates with the default restart of GMRES (176
+   iterations with ``gmres_restart=400``).  ``"pcd"`` keeps its counts on a channel with an inflow
+   and an outflow (Re = 100: 33 to 33 iterations for Taylor-Hood and 42 to 29
+   for equal order as the mesh is refined), but it needs an accurate momentum
+   solve: with one V-cycle of algebraic multigrid on :math:`\mathbf{F}` its
+   counts rise two- to threefold, and on the three-dimensional cavity at
+   :math:`Re = 400` it does not converge in 5000 iterations.  ``"lsc"`` is
+   therefore the automatic choice.
+
+   On a three-dimensional cavity at :math:`Re = 100` on two processes, with
+   the default block solvers, the least squares commutator against MUMPS (time
+   of the whole steady solve, five Newton iterations):
+
+   .. list-table::
+      :header-rows: 1
+
+      * - Element
+        - Unknowns
+        - MUMPS
+        - ``"lsc"``
+      * - Taylor-Hood (``Hex27``)
+        - 37 044
+        - 7.8 s
+        - 3.9 s
+      * -
+        - 97 556
+        - 22.2 s
+        - 13.3 s
+      * -
+        - 143 748
+        - 44.4 s
+        - 23.0 s
+
+   For the equal-order element (``Hex8``, 62 500 unknowns) it takes 8.1 s at
+   :math:`Re = 100` and 20.8 s at :math:`Re = 400`, where BoomerAMG on the
+   whole system with its defaults takes 29.9 s and 108 s.  BoomerAMG on the whole system with the coarsening of the block
+   solvers takes 3.3 s at :math:`Re = 100` but stagnates at :math:`Re = 400`.
+   The block preconditioners serve the methods ``fem``, ``dmcdm`` and
+   ``hfvm``.
+
+``preconditioner="physics_blocks"``
+   The split by physics: the unknowns of each physics form a block (the
+   displacements of a solid together, every other variable alone), and the
+   block lower-triangular preconditioner solves the blocks one after the
+   other, in the order in which the physics were added, each with one V-cycle
+   of algebraic multigrid on its diagonal block (smoothed aggregation with the
+   rigid body modes of a solid), the coupling to the earlier blocks moved to
+   the right-hand side.  A coupling that one physics drives, such as the
+   thermal expansion of a solid by a temperature, is then exact in the
+   preconditioner when that physics is added first.  It runs in the built-in
+   flexible GMRES and in PETSc (a multiplicative field split with GAMG on each
+   block).  On the heated plate of :doc:`/user_guide/case_files`, refined
+   from :math:`100 \times 20` to :math:`400 \times 80` elements, it converges
+   in 14 to 15 iterations in the built-in solver and 17 to 18 in PETSc, at a
+   relative tolerance of :math:`10^{-10}`.  A flow is refused: its velocity and pressure
+   need ``"lsc"`` or ``"pcd"``, which take any other unknown into their first
+   block.
+
+``preconditioner="amg"`` in a distributed problem
+   PETSc's smoothed aggregation multigrid (GAMG) [VanekMandelBrezina1996]_,
+   given the near null space described under ``"amg"`` above (the rigid body
+   modes of a solid).  GMRES is preconditioned from the right, so that it
+   measures the true residual.  On a three-dimensional cantilever on two
+   processes it takes 54 and 51 iterations on meshes of 4 and 8 elements
+   across, against 78 and 82 for BoomerAMG without the modes, and 28 % less
+   time.
 
 For use with an external solver, :meth:`~dualmesh.Problem.linear_system` returns
 the residual and the Jacobian of the current Newton step as a NumPy array and a
@@ -456,6 +635,17 @@ member of the family.
    the scheme is explicit and only conditionally stable.  For the slab problem
    of the test suite the critical step is between :math:`0.2 h^2` and
    :math:`0.3 h^2`, and above it the solution diverges within a few steps.
+
+An equation without a time derivative, such as the mass equation of an
+incompressible flow or the equilibrium of a quasi-static solid, is a
+constraint of the new time, so every :math:`\theta` takes it at
+:math:`t^{n+1}` only, with the weight 1, and so does the pressure gradient of
+a flow.  The pressure is then the pressure of the step.  Weighted between the
+two times, it would be an average of two steps, whose error comes back with the
+opposite sign at every step, and a material with creep would be evaluated at
+the old time without its history.  With :math:`\theta < 1` the pressure of a
+step lies between the two times, so a pressure that the conditions prescribe
+as a function of time is first-order accurate in time.
 
 ``start_time`` (default zero) sets the initial time. An
 :class:`~dualmesh.Output` group in the ``output`` parameter writes the fields at
@@ -542,26 +732,13 @@ step itself.
    problem.add_variable("temperature")
    problem.set_values("temperature", np.full(mesh.num_nodes, 300.0))
 
+   problem.add_kernel("heat_conduction", variable="temperature", thermal_conductivity=20.0)
    problem.add_kernel(
-       "heat_conduction", "conduction", variable="temperature", thermal_conductivity=20.0
+       "heat_conduction_time_derivative", variable="temperature", density=7800.0, specific_heat=460.0
    )
-   problem.add_kernel(
-       "heat_conduction_time_derivative",
-       "storage",
-       variable="temperature",
-       density=7800.0,
-       specific_heat=460.0,
-   )
+   problem.add_boundary_condition("Dirichlet", "left", variable="temperature", value=3000.0)
    problem.add_boundary_condition(
-       "Dirichlet_boundary_condition", "hot", variable="temperature", boundary="left", value=3000.0
-   )
-   problem.add_boundary_condition(
-       "radiative_heat_flux_boundary_condition",
-       "radiation",
-       variable="temperature",
-       boundary="right",
-       emissivity=0.9,
-       ambient_temperature=300.0,
+       "radiative_heat_flux", "right", variable="temperature", emissivity=0.9, ambient_temperature=300.0
    )
 
    result = problem.solve_transient(
@@ -578,7 +755,7 @@ step itself.
 Transient flow
 --------------
 
-``incompressible_flow`` advances a transient flow in one of two ways, chosen by
+``fluid_dynamics`` advances a transient flow in one of two ways, chosen by
 ``time_integration``.  ``"monolithic"``, the default, solves the velocity and the
 pressure together at every step, with the :math:`\theta` method above.
 ``"projection"`` is the splitting of Nek5000 and nekRS: every step solves a
@@ -603,24 +780,18 @@ Courant number of one half:
    mesh = dm.generate_rectangle_mesh(0.0, 2 * np.pi, 0.0, 2 * np.pi, 64, 64)
    problem = dm.Problem(mesh, method="fem")
    problem.add_physics(
-       "incompressible_flow",
-       "flow",
-       velocities=["u", "v"],
+       "fluid_dynamics",
        density=1.0,
        dynamic_viscosity=0.01,
        formulation="pressure",
        time_integration="projection",
    )
-   problem.add_boundary_condition(
-       "periodic_boundary_condition", "periodic_x", primary="left", secondary="right"
-   )
-   problem.add_boundary_condition(
-       "periodic_boundary_condition", "periodic_y", primary="bottom", secondary="top"
-   )
+   problem.add_boundary_condition("periodic", primary="left", secondary="right")
+   problem.add_boundary_condition("periodic", primary="bottom", secondary="top")
    problem.initialize()
    x, y = np.asarray(mesh.points())[:, 0], np.asarray(mesh.points())[:, 1]
-   problem.set_values("u", -np.cos(x) * np.sin(y))
-   problem.set_values("v", np.sin(x) * np.cos(y))
+   problem.set_values("velocity_x", -np.cos(x) * np.sin(y))
+   problem.set_values("velocity_y", np.sin(x) * np.cos(y))
    result = problem.solve_transient(
        end_time=10.0, time_step=0.01, time_stepper="cfl", courant_number=0.5
    )

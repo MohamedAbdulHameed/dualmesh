@@ -199,6 +199,7 @@ refineMarked(const Mesh & mesh, const std::vector<char> & marked, std::vector<In
 
   // ---- assemble the refined mesh ------------------------------------------
   Mesh out(mesh.dimension());
+  out.setSpaceDimension(mesh.spaceDimension());
   for (const auto & [block, name] : mesh.blockNames())
     out.setBlockName(block, name);
   for (const auto & p : nodes)
@@ -260,11 +261,11 @@ refineMarked(const Mesh & mesh, const std::vector<char> & marked, std::vector<In
     }
     out.addSideset(name, list);
   }
+  std::vector<std::pair<std::vector<Index>, Index>> added;
+  for (const auto & [edge, id] : midpoint)
+    added.push_back({{edge.first, edge.second}, id});
   for (const auto & [name, ids] : mesh.nodesets())
-  {
-    const auto members = closure(std::set<Index>(ids.begin(), ids.end()));
-    out.addNodeset(name, {members.begin(), members.end()});
-  }
+    out.addNodeset(name, grownNodeset(mesh, out, ids, added));
   return out;
 }
 

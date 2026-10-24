@@ -7,12 +7,10 @@ top of the hole.  The result is written as a VTK file with the stress
 components as cell data.
 """
 
-import math
-
 import dualmesh as dm
 import numpy as np
 
-HOLE_RADIUS, OUTER_RADIUS, APPLIED_STRESS = 1.0, 20.0, 1.0
+HOLE_RADIUS, OUTER_RADIUS = 1.0, 20.0
 
 
 def solve(num_radial_elements=30, num_angular_elements=30):
@@ -26,21 +24,16 @@ def solve(num_radial_elements=30, num_angular_elements=30):
     problem = dm.Problem(mesh)
     solid = problem.add_physics(
         "solid_mechanics",
-        "solid",
-        displacements=["u", "v"],
         formulation="plane_stress",
         youngs_modulus=1.0,
         poissons_ratio=0.3,
     )
     # Symmetry on the two straight edges.
-    solid.add_boundary_condition("symmetry_boundary_condition", "start")
-    solid.add_boundary_condition("symmetry_boundary_condition", "end")
+    solid.add_boundary_condition("symmetry", boundary="start")
+    solid.add_boundary_condition("symmetry", boundary="end")
     # Remote uniaxial tension on the outer arc: t = (sigma n_x, 0).
-    solid.add_boundary_condition(
-        "traction_boundary_condition",
-        "outer",
-        traction=[lambda x, y, z, t: APPLIED_STRESS * x / math.hypot(x, y), 0.0],
-    )
+    # The far-field stress sigma_xx = 1, applied on the outer circle.
+    solid.add_boundary_condition("traction = [x/sqrt(x^2 + y^2), 0]", boundary="outer")
     problem.solve()
     return problem
 

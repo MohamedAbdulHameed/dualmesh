@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
-"""Reddy, Example 5.3.1: a cooling fin, -u'' + 400 u = 0 on (0, 0.05).
+"""A cooling fin, -u'' + 400 u = 0 on (0, 0.05).
 
 u(0) = 300, and at x = L the fin loses heat to the surroundings:
 u'(L) + 2 u(L) = 0.  The example prints the nodal temperatures, the heat flow
@@ -15,15 +15,13 @@ def solve(num_elements, method="dmcdm"):
     problem = dm.Problem(mesh, method=method)
     problem.add_variable("temperature")
     problem.add_kernel("diffusion", variable="temperature")
-    problem.add_kernel("reaction", variable="temperature", coefficient=400.0)
+    problem.add_kernel("reaction", variable="temperature", coeff=400.0)
+    problem.add_boundary_condition("Dirichlet", "left", variable="temperature", value=300.0)
     problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", variable="temperature", boundary="left", value=300.0
-    )
-    problem.add_boundary_condition(
-        "Robin_boundary_condition",
+        "Robin",
+        "right",
         variable="temperature",
-        boundary="right",
-        transfer_coefficient=2.0,
+        transfer_coeff=2.0,
     )
     problem.solve(report="none")
     return problem
@@ -35,4 +33,4 @@ if __name__ == "__main__":
         values = problem.values("temperature")
         print(f"{method:6s} u = " + " ".join(f"{v:8.3f}" for v in values))
         print(f"{method:6s} Q(0) = {problem.total_reaction('temperature', 'left'):.1f}")
-    print("book (DMCDM): 300.00  257.62  225.59  202.64  187.83  180.57, Q(0) = 4817")
+    print("published (DMCDM): 300.00  257.62  225.59  202.64  187.83  180.57, Q(0) = 4817")

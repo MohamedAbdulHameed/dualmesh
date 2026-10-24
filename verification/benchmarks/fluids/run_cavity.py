@@ -45,7 +45,6 @@ def cavity(n, method, element_type="Quad4", formulation="pressure", projection=F
     mesh = dm.generate_rectangle_mesh(0, 1, 0, 1, n, n, element_type=element_type)
     problem = dm.Problem(mesh, method=method, distributed=False)
     parameters = dict(
-        velocities=["u", "v"],
         dynamic_viscosity=1.0,
         density=RE,
         formulation=formulation,
@@ -54,34 +53,21 @@ def cavity(n, method, element_type="Quad4", formulation="pressure", projection=F
         parameters["pressure_pin_point"] = (0.5, 0.0)
     if projection:
         parameters["time_integration"] = "projection"
-    problem.add_physics("incompressible_flow", "flow", **parameters)
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "lid",
-        variable="u",
-        boundary="top",
-        value=1.0,
-        scale_with_load=True,
-    )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", "lid_v", variable="v", boundary="top", value=0.0
+    flow = problem.add_physics("fluid_dynamics", **parameters)
+    flow.add_boundary_condition(
+        ["velocity_x = 1", "velocity_y = 0"], boundary="top", scale_with_load=True
     )
     # The walls are added last, so that the two top corners belong to the walls and the lid does not leak.
-    for variable in ("u", "v"):
-        problem.add_boundary_condition(
-            "Dirichlet_boundary_condition",
-            f"walls_{variable}",
-            variable=variable,
-            boundary=["left", "right", "bottom"],
-            value=0.0,
-        )
+    flow.add_boundary_condition(
+        ["velocity_x = 0", "velocity_y = 0"], boundary=["left", "right", "bottom"]
+    )
     return problem
 
 
 def profiles(problem):
     y, x = np.asarray(reference.Y), np.asarray(reference.X)
-    u = problem.sample("u", np.column_stack([np.full_like(y, 0.5), y]))
-    v = problem.sample("v", np.column_stack([x, np.full_like(x, 0.5)]))
+    u = problem.sample("velocity_x", np.column_stack([np.full_like(y, 0.5), y]))
+    v = problem.sample("velocity_y", np.column_stack([x, np.full_like(x, 0.5)]))
     return u, v
 
 
@@ -106,7 +92,7 @@ def projected(n, method):
             report="none",
         )
         total += 10.0
-        u = problem.values("u").copy()
+        u = problem.values("velocity_x").copy()
         if "u" in last and np.abs(u - last["u"]).max() / 10.0 < 1e-7:
             break
         last["u"] = u

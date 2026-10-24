@@ -16,8 +16,7 @@ cell-centred finite volume method (``"hfvm"``, ``"zfvm"``), or the dual mesh
 control domain method of J. N. Reddy (``"dmcdm"``), which enforces the balance
 law over node-centred control domains of a dual mesh.
 
-A minimal example (Reddy, *Computational Methods in Engineering*, Example
-5.3.1: a cooling fin governed by ``-u'' + 400 u = 0``)::
+A minimal example (a cooling fin governed by ``-u'' + 400 u = 0``)::
 
     import dualmesh as dm
 
@@ -25,16 +24,9 @@ A minimal example (Reddy, *Computational Methods in Engineering*, Example
     problem = dm.Problem(mesh, method="dmcdm")
     problem.add_variable("temperature")
     problem.add_kernel("diffusion", variable="temperature")
-    problem.add_kernel("reaction", variable="temperature", coefficient=400.0)
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", variable="temperature", boundary="left", value=300.0
-    )
-    problem.add_boundary_condition(
-        "Robin_boundary_condition",
-        variable="temperature",
-        boundary="right",
-        transfer_coefficient=2.0,
-    )
+    problem.add_kernel("reaction", variable="temperature", coeff=400.0)
+    problem.add_boundary_condition("Dirichlet", "left", variable="temperature", value=300.0)
+    problem.add_boundary_condition("Robin", "right", variable="temperature", transfer_coeff=2.0)
     problem.solve()
     print(problem.values("temperature"))
 """
@@ -66,6 +58,7 @@ from .adaptivity import (
     refine_marked,
     solve_with_adaptive_refinement,
 )
+from .case import Case, load_case, run_case
 from .expressions import Expression, ParsedFunction, parsed_function
 from .meshing import (
     annulus_coordinates,
@@ -96,13 +89,21 @@ from .parallel import (
     partition_mesh,
     petsc_version,
 )
-from .problem import Problem, SolveResult
+from .problem import Problem, SensitivityResult, SolveResult
+from .surfaces import (
+    generate_cylinder_surface_mesh,
+    generate_spherical_shell_mesh,
+    generate_surface_mesh,
+)
 from .tables import Table
 
 __version__ = "0.2.0"
 
 __all__ = [
     "SettableFunction",
+    "Case",
+    "load_case",
+    "run_case",
     "materials",
     "ADReal",
     "InputParameters",
@@ -119,6 +120,7 @@ __all__ = [
     "PythonProperty",
     "PythonNodalBoundaryCondition",
     "QpContext",
+    "SensitivityResult",
     "SolveResult",
     "Table",
     "AdaptivityResult",
@@ -130,6 +132,9 @@ __all__ = [
     "exp",
     "fgm",
     "generate_annulus_mesh",
+    "generate_cylinder_surface_mesh",
+    "generate_spherical_shell_mesh",
+    "generate_surface_mesh",
     "generate_box_mesh",
     "generate_line_mesh",
     "generate_rectangle_mesh",

@@ -16,35 +16,27 @@ def flow_problem(mesh, viscosity=1.0, density=0.0, penalty=PENALTY, method="dmcd
     problem.add_variable("u")
     problem.add_variable("v")
     velocities = ["u", "v"]
-    for component, variable in enumerate(velocities):
+    for variable in velocities:
         problem.add_kernel(
             "viscous_stress",
-            f"viscous_{variable}",
             variable=variable,
-            component=component,
             velocities=velocities,
             dynamic_viscosity=viscosity,
         )
         problem.add_kernel(
             "penalty_incompressibility",
-            f"penalty_{variable}",
             variable=variable,
-            component=component,
             velocities=velocities,
             penalty_parameter=penalty,
         )
         if density > 0.0:
             problem.add_kernel(
                 "convective_inertia",
-                f"inertia_{variable}",
                 variable=variable,
-                component=component,
                 velocities=velocities,
                 density=density,
             )
-    problem.add_property(
-        "penalty_pressure", "pressure", velocities=velocities, penalty_parameter=penalty
-    )
+    problem.add_property("penalty_pressure", velocities=velocities)
     return problem
 
 
@@ -59,19 +51,11 @@ def test_example_9_8_3_squeezed_flow():
     )
     problem = flow_problem(mesh)
     # Symmetry planes: v = 0 on y = 0 and u = 0 on x = 0.
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", variable="v", boundary="bottom", value=0.0
-    )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", variable="u", boundary="left", value=0.0
-    )
+    problem.add_boundary_condition("Dirichlet", "bottom", variable="v", value=0.0)
+    problem.add_boundary_condition("Dirichlet", "left", variable="u", value=0.0)
     # The plate at y = b moves down with velocity V0 and does not slip.
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", variable="u", boundary="top", value=0.0
-    )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", variable="v", boundary="top", value=-plate_velocity
-    )
+    problem.add_boundary_condition("Dirichlet", "top", variable="u", value=0.0)
+    problem.add_boundary_condition("Dirichlet", "top", variable="v", value=-plate_velocity)
     problem.solve(linear_solver="lu")
 
     y = np.arange(0.0, 2.0, 0.125)
@@ -154,23 +138,19 @@ def lid_driven_cavity(reynolds_number, method="dmcdm", ramp_lid=False, **solver_
     )
     for variable in ("u", "v"):
         problem.add_boundary_condition(
-            "Dirichlet_boundary_condition",
-            f"walls_{variable}",
+            "Dirichlet",
+            ["left", "right", "bottom"],
             variable=variable,
-            boundary=["left", "right", "bottom"],
             value=0.0,
         )
     problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "lid_u",
+        "Dirichlet",
+        "top",
         variable="u",
-        boundary="top",
         value=1.0,
         scale_with_load=ramp_lid,
     )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", "lid_v", variable="v", boundary="top", value=0.0
-    )
+    problem.add_boundary_condition("Dirichlet", "top", variable="v", value=0.0)
     problem.solve(**solver_options)
     return problem
 

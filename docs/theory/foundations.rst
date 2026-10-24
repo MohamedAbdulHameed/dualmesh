@@ -94,10 +94,9 @@ Consequently:
 
 * in one dimension the control domain of an interior node is the union of the
   two half-elements on either side of it,
-* for a rectangle the control domains are the bisecting rectangles used
-  throughout Chapter 5 of the book,
-* for a general quadrilateral or a triangle it is the construction of Section
-  9.9 of the book, and
+* for a rectangle the control domains are the bisecting rectangles,
+* for a general quadrilateral or a triangle they join the element centroids
+  to the midpoints of the sides, and
 * at a boundary node the control domain is truncated by the domain boundary
   (a half control domain in one dimension, a quarter of one at a corner).
 
@@ -172,8 +171,8 @@ variable, i.e., the *reaction*
 
 which :meth:`dualmesh.Problem.reactions` returns node by node and
 :meth:`dualmesh.Problem.total_reaction` returns summed over a boundary.  This
-is how the heat flow :math:`Q(0)` of Example 5.3.1, the heat flow through the
-surface of a cylinder in Example 5.3.2, and support reactions are obtained.
+is how the heat flow through the base of a fin, the heat flow through the
+surface of a cylinder, and support reactions are obtained.
 
 The finite element method for comparison
 ----------------------------------------
@@ -192,12 +191,10 @@ boundary conditions, and the same solvers.  Two consequences follow, and both
 are checked in the test suite:
 
 * for linear triangles and tetrahedra with constant coefficients the two
-  methods produce **identical** algebraic equations (Section 5.4 of the book and
-  the test
+  methods produce **identical** algebraic equations (the test
   ``test_triangles_make_the_dual_mesh_method_equal_the_finite_element_method``),
   and
-* for quadrilaterals the two differ slightly, and the dual mesh results are
-  usually the more accurate of the two (Tables 5.4.1–5.4.3 of the book).
+* for quadrilaterals the two differ slightly.
 
 Coordinate systems
 ------------------
@@ -222,7 +219,8 @@ system:
      - a one-dimensional radial mesh
 
 With ``"axisymmetric"`` the reaction returned at a boundary node is therefore a
-heat flow per unit length (or a force).  Example 5.3.2 of the book, where
+heat flow per unit length (or a force).  For a cylinder of radius :math:`R_0`
+with the heat generation :math:`g_0`, the heat flow through the surface,
 :math:`Q(R_0) = \pi R_0^2 g_0 = 2\pi\times 10^4\ \mathrm{W/m}`, is reproduced to
 machine precision.
 
@@ -233,9 +231,9 @@ Properties of the method
   and, by telescoping, over every union of control domains.
 * **Patch test.** A linear field is reproduced exactly on arbitrary distorted
   meshes of all supported element types (``test_patch_test_linear_field``).
-* **Exact nodal values in special cases.** For the radial conduction problem of
-  Example 5.3.2 the method reproduces the exact solution at the nodes.  For the
-  mixed beam models the bending moment at the load centre is exact on any mesh
-  (Table 7.5.2).
+* **Exact nodal values in special cases.** For radial conduction in a cylinder
+  with uniform heat generation the method reproduces the exact solution at the
+  nodes.  For the mixed beam models the bending moment at the load centre is
+  exact on any mesh.
 * **Equivalence with the finite element method** on simplicial meshes with
   constant coefficients, as described above.

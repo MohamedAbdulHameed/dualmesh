@@ -183,8 +183,6 @@ creates the three displacements :math:`u`, :math:`v` and :math:`w`:
 
    solid = problem.add_physics(
        "solid_mechanics",
-       "solid",
-       displacements=["u", "v", "w"],
        youngs_modulus=200.0e9,
        poissons_ratio=0.3,
    )
@@ -193,42 +191,30 @@ A boundary condition of the physics is defined by three choices: the side set
 it acts on, the type of condition, and its value, which for a vector quantity
 such as a force has one entry per displacement component.
 
-**The naming rule.**  A condition named after a side set acts on that side
-set, so the name ``jaws`` needs no ``boundary`` argument.  An explicit
-``boundary`` is given only when the name of the condition differs from the
-name of the side set, or when the condition acts on several side sets.
-
 **The jaws: a fixed constraint.**  The nut is taken as rigid and bonded to
 the jaws, as in the COMSOL model, so the three displacement components
 :math:`u`, :math:`v` and :math:`w` are zero on the jaws.  All three are needed.  With :math:`u` and :math:`v` alone the wrench
 could move freely along :math:`z`, and the stiffness matrix would be singular.
-The condition ``fixed_constraint`` sets every displacement it lists to zero:
+The word ``fixed`` sets every displacement to zero:
 
 .. code-block:: python
 
-   solid.add_boundary_condition("fixed_constraint", "jaws")
+   solid.add_boundary_condition("fixed", boundary="jaws")
 
-The same constraint can be written as a Dirichlet condition with a zero value
-for every component:
-
-.. code-block:: python
-
-   solid.add_boundary_condition("Dirichlet_boundary_condition", "jaws", value=[0.0, 0.0, 0.0])
-
-The two forms define the same constraint, so a boundary is given one of them
-and never both.  A component that is left free is given the value ``None``,
-e.g., ``value=[0.0, None, 0.0]``.
+The same constraint written out, one displacement at a time, is
+``solid.add_boundary_condition(["disp_x = 0", "disp_y = 0", "disp_z = 0"], boundary="jaws")``;
+a displacement left out of the list is free.
 
 **The grip: a traction given by its total force.**  The hand pulls the
 handle in the :math:`-y` direction.  The condition acts on the equation of
 the :math:`y` displacement, :math:`v`, and leaves :math:`u` and :math:`w`
-free of load.  The ``traction_boundary_condition`` accepts the total force on
-the side set, here :math:`\mathbf{F} = (0, -150, 0)\ \mathrm{N}`, and spreads
+free of load.  The condition ``total_force`` gives the total force on the
+side set, here :math:`\mathbf{F} = (0, -150, 0)\ \mathrm{N}`, and spreads
 each component uniformly over the area :math:`A` of the side set:
 
 .. code-block:: python
 
-   solid.add_boundary_condition("traction_boundary_condition", "grip", total_force=[0.0, -150.0, 0.0])
+   solid.add_boundary_condition("total_force = [0, -150, 0]", boundary="grip")
 
 The traction applied on every face of the grip is
 
@@ -243,10 +229,10 @@ same load can be given as the traction itself, in force per unit area:
 
 .. code-block:: python
 
-   solid.add_boundary_condition("traction_boundary_condition", "grip", traction=[0.0, -2.5e5, 0.0])
+   solid.add_boundary_condition("traction = [0, -2.5e5, 0]", boundary="grip")
 
-``traction`` and ``total_force`` define the same load, so a condition gives
-one of them and never both, and the code refuses a condition that gives both.
+``traction`` and ``total_force`` define the same load, so a boundary is given
+one of them.
 The total force is preferable when the force is the known quantity, because
 the area of the faces of an imported mesh is then never computed by hand.  A
 traction that varies over the faces is given as ``traction`` with a function

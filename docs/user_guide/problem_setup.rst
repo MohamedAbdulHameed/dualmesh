@@ -95,14 +95,13 @@ the variables.
 
 .. code-block:: python
 
-   heat = problem.add_physics("heat_transfer", "heat", thermal_conductivity=20.0, heat_source=1.0e6)
-   heat.add_boundary_condition("Dirichlet_boundary_condition", "left", value=40.0)
-   heat.add_boundary_condition(
-       "convective_heat_flux_boundary_condition", "top", heat_transfer_coefficient=75.0
-   )
+   heat = problem.add_physics("heat_transfer", thermal_conductivity=20.0, heat_source=1.0e6)
+   heat.add_boundary_condition("temperature = 40", boundary="left")
+   heat.add_boundary_condition("heat_flux = 75*(temperature - 293)", boundary="top")
 
-The first argument is the type of the physics, the second its name, which the
-couplings refer to.  The physics available are:
+The first argument is the type of the physics, and the keywords are its
+parameters.  The physics has no name: the variable it is assigned to, here
+``heat``, refers to it.  The physics available are:
 
 .. list-table::
    :header-rows: 1
@@ -113,106 +112,122 @@ couplings refer to.  The physics available are:
    * - ``heat_transfer``
      - Heat conduction with a heat source and a heat capacity,
        :math:`\rho c_p \partial T / \partial t - \nabla \cdot (k \nabla T) = q`.
-   * - ``coefficient_form_PDE``
-     - One or several equations written by their coefficients,
-       :math:`d \partial u / \partial t + \nabla \cdot (-c \nabla u - \boldsymbol{\alpha} u) + \boldsymbol{\beta} \cdot \nabla u + a u = f`,
-       for equations that no other physics names.
    * - ``general_form_PDE``
-     - A system of equations
-       :math:`d \partial u / \partial t + \nabla \cdot \boldsymbol{\Gamma} = f`
-       whose flux :math:`\boldsymbol{\Gamma}` and source :math:`f` are
-       expressions of the fields and their gradients.
+     - Equations that no other physics names, written as they are printed
+       (``"du/dt = div(k*grad(u)) + f"``) or by their coefficients,
+       :math:`d \partial u / \partial t + \nabla \cdot (-c \nabla u - \boldsymbol{\alpha} u + \boldsymbol{\gamma}) + \boldsymbol{\beta} \cdot \nabla u + a u = f`
+       (see :doc:`/user_guide/equations`).
    * - ``solid_mechanics``
      - Linear elasticity at small strain in plane stress, plane strain,
-       axisymmetric or three-dimensional form.
-   * - ``incompressible_flow``
+       axisymmetric or three-dimensional form, and the structural
+       formulations: a plate (first-order theory), a beam (Euler-Bernoulli
+       or Timoshenko) and an axisymmetric circular plate (classical or
+       first-order).
+   * - ``fluid_dynamics``
      - The Navier-Stokes or Stokes equations of an incompressible Newtonian
        fluid, in the penalty, pressure or Taylor-Hood formulation.
-   * - ``beam``
-     - The mixed Euler-Bernoulli, mixed Timoshenko and displacement Timoshenko
-       beam models.
-   * - ``plate``
-     - The first-order shear deformation theory of a rectangular plate.
-   * - ``circular_plate``
-     - The first-order and classical theories of an axisymmetric circular
-       plate.
 
 ``dualmesh describe <physics>`` lists the parameters of each one, with its
 unit, its default and the reason for the default.
 
-**Boundary conditions of a physics.**  ``add_boundary_condition`` takes the
-type names and the parameters of the boundary conditions of the object
-reference (:doc:`/objects`), and the name of the side set it acts on.  The
-physics fills in ``variable``.  For a physics with several components (the
-displacements of ``solid_mechanics``, the velocities of
-``incompressible_flow``), a vector value is given as a list with one entry per
-component:
+**Boundary conditions of a physics.**  A boundary condition is written as
+text and acts on the side sets or node sets named by ``boundary``, which is
+always given:
+
+* A variable of the physics on the left prescribes its value on the
+  boundary, for example ``"temperature = 300 + 10*y"`` or
+  ``"velocity_x = 1"``.
+* The name of the flux of the physics on the left prescribes the flux through
+  the boundary along the outward normal :math:`\mathbf{n}`.  The names are
+  ``heat_flux`` (:math:`\mathbf{n} \cdot \mathbf{q}`, the heat leaving the
+  body) for ``heat_transfer``, ``traction`` (:math:`\boldsymbol{\sigma}
+  \cdot \mathbf{n}`), ``total_force`` (a force spread over the boundary) and
+  ``pressure`` for ``solid_mechanics``, and ``normal_flux``
+  (:math:`\mathbf{n} \cdot \boldsymbol{\Gamma}`) for ``general_form_PDE``,
+  which also takes the flux written out, as ``-k*du/dn``.
+
+The right side is an expression of :math:`x`, :math:`y`, :math:`z`,
+:math:`t`, the fields, the registered functions and the properties, so a
+condition that depends on the solution (convection, radiation) is written as
+it is printed.  A list of texts adds several conditions on one boundary, and
+the words ``"fixed"`` (every displacement zero) and ``"symmetry"`` (the
+normal displacement zero) of a solid need no data:
 
 .. code-block:: python
 
-   solid.add_boundary_condition("fixed_constraint", "jaws")
-   solid.add_boundary_condition("symmetry_boundary_condition", "bottom")
-   solid.add_boundary_condition("traction_boundary_condition", "grip", total_force=[0.0, -150.0, 0.0])
-   solid.add_boundary_condition("Dirichlet_boundary_condition", "end", value=[0.001, None, None])
-   flow.add_boundary_condition("Dirichlet_boundary_condition", "inlet", value=[1.0, 0.0])
+   solid.add_boundary_condition("fixed", boundary="jaws")
+   solid.add_boundary_condition("symmetry", boundary="bottom")
+   solid.add_boundary_condition("total_force = [0, -150, 0]", boundary="grip")
+   solid.add_boundary_condition("disp_x = 0.001", boundary="end")
+   flow.add_boundary_condition(["velocity_x = 1", "velocity_y = 0"], boundary="inlet")
+   heat.add_boundary_condition("heat_flux = 5.67e-8*0.8*(temperature^4 - 293^4)", boundary="surface")
 
-``None`` leaves a component free.  ``fixed_constraint`` holds every
-displacement at zero, and ``symmetry_boundary_condition`` holds the
-displacement normal to a plane of symmetry at zero.  ``boundary`` is given
-when the condition acts on several side sets or when its name differs from
-the name of the side set.
+A boundary without a condition has a zero flux: it is insulated, free of
+traction, or a free outflow.
 
 **Properties from the property objects.**  A property of a physics that is not given
 as a number (``thermal_conductivity`` of ``heat_transfer``, ``youngs_modulus``
 and ``poissons_ratio`` of ``solid_mechanics``) is read from the
 property of the same name, so that a property object added to a block, such as
-``parsed_property`` or ``constant_property``, supplies it on that block:
+``parsed`` or ``constant``, supplies it on that block:
 
 .. code-block:: python
 
    problem.add_property(
-       "parsed_property",
-       "wall_conductivity",
+       "parsed",
        block=["wall"],
        property_name="thermal_conductivity",
-       expression="10.0 + 0.01 * temperature",
-       coupled_variables=["temperature"],
+       expression="10.0 + 0.01*temperature",
    )
-   problem.add_property(
-       "constant_property",
-       "water",
-       block=["coolant"],
-       property_names=["thermal_conductivity"],
-       property_values=[0.6],
-   )
-   heat = problem.add_physics("heat_transfer", "heat")
+   problem.add_property("constant", block=["coolant"], properties={"thermal_conductivity": 0.6})
+   heat = problem.add_physics("heat_transfer")
 
-**Couplings.**  Two physics are coupled by a coupling, which refers to them by
-name:
+**Couplings.**  Two physics are coupled by a coupling, which takes them as the
+objects that ``add_physics`` returned:
 
 .. code-block:: python
 
    problem.add_coupling(
        "thermal_expansion",
-       "expansion",
-       heat_transfer="heat",
-       solid_mechanics="solid",
-       thermal_expansion_coefficient=1.2e-5,
+       heat_transfer=heat,
+       solid_mechanics=solid,
+       linear_expansion_coeff=1.2e-5,
        stress_free_temperature=293.15,
    )
 
+A physics may be left out when the problem has only one physics of its type,
+so ``heat_transfer=heat`` and ``solid_mechanics=solid`` are optional here.
 The couplings are ``thermal_expansion`` (the thermal strain of a solid) and
 ``nonisothermal_flow`` (the transport of heat by a flow and, with ``gravity``
-and ``thermal_expansion_coefficient``, the buoyancy force that the
+and ``vol_expansion_coeff``, the buoyancy force that the
 temperature exerts on the flow).  ``dualmesh list --category coupling``
 lists them.
 
-**Extra terms.**  ``add_kernel`` adds a term of the object reference to the
-equations of a physics, e.g., a heat source on one block:
+**Convection-dominated transport.**  When a flow carries heat much faster than
+the heat conducts (a cell Péclet number above about 1), the central
+discretisation oscillates, so the heat that a ``nonisothermal_flow`` coupling
+carries is stabilised by default: with the streamline upwind Petrov-Galerkin
+term (SUPG) for FEM, DMCDM and HFVM, and with the bounded second-order face
+flux ``"limited"`` for ZFVM.  The inertia of the flow is treated the same way,
+with no option.  ``advection_scheme`` of ``heat_transfer`` chooses another
+scheme where the case calls for it, for example ``"central"`` where conduction
+matters as much as convection:
 
 .. code-block:: python
 
-   heat.add_kernel("heat_source", "joule_heating", heat_source=2.0e8, block=["wall"])
+   heat = problem.add_physics("heat_transfer", thermal_conductivity=1.0,
+                              advection_scheme="central")
+
+:doc:`../theory/finite_volume` and :doc:`../theory/heat_and_fluids` give the
+schemes with their measured order and bounds.
+
+**Extra terms.**  ``add_kernel`` adds a term of the object reference to the
+equations of a physics, e.g., a heat source on one block, for which
+``heat_transfer`` takes the word ``heat_source`` (the object ``body_force``):
+
+.. code-block:: python
+
+   heat.add_kernel("heat_source", heat_source=2.0e8, block=["wall"])
 
 The sections below describe the object level, i.e., the variables, kernels,
 property objects and boundary conditions that the physics generate.  A model whose
@@ -257,7 +272,7 @@ Taylor-Hood element, which combines a quadratic velocity with a linear pressure
    problem.add_variable("velocity_y")
    problem.add_variable("pressure", order="first")
 
-The ``incompressible_flow`` physics with ``formulation="Taylor_Hood"``
+The ``fluid_dynamics`` physics with ``formulation="Taylor_Hood"``
 declares the variables in this way itself.
 
 The number of variables is limited by the automatic differentiation budget: the
@@ -293,19 +308,19 @@ together, so that a convection-diffusion-reaction equation is assembled from
 three separate, independently tested kernels.
 
 An **integrated boundary condition** contributes a surface term, evaluated over
-the faces of a side set.  ``Neumann_boundary_condition`` prescribes the normal
-flux, ``Robin_boundary_condition`` and
-``convective_heat_flux_boundary_condition`` make it depend on the local value,
-and ``pressure_boundary_condition`` prescribes a traction that follows the
+the faces of a side set.  ``Neumann`` prescribes the normal
+flux, ``Robin`` and ``radiative_heat_flux`` make it depend on the local
+value,
+and ``pressure`` prescribes a traction that follows the
 surface normal.
 
 A **nodal boundary condition** replaces an equation, whereas an integrated
-boundary condition adds to it.  ``Dirichlet_boundary_condition`` is the only
+boundary condition adds to it.  ``Dirichlet`` is the only
 common one: the residual row of a constrained degree of freedom is replaced by
 :math:`u - g = 0`, and the corresponding Jacobian row by the identity.
 
 A **property** object computes properties at the integration points and makes them
-available to the kernels by name.  ``linear_elastic_stress`` computes ``stress``
+available to the kernels by name.  ``small_strain_stress`` computes ``stress``
 and ``strain`` from the displacement gradients, and
 ``constant_property`` declares named constants.  The property objects are
 evaluated before the kernels at every integration point, so a kernel may depend
@@ -315,15 +330,13 @@ carries the dependence through into the Jacobian without additional code.
 A **nodal load** applies a concentrated force or flux at a single node,
 identified either by node number or by the coordinates of the nearest node.
 
-A **constraint** joins degrees of freedom.  ``periodic_boundary_condition``
+A **constraint** joins degrees of freedom.  ``periodic``
 makes the field on a secondary boundary equal to the field on a primary
 boundary, carried over by a translation:
 
 .. code-block:: python
 
-   problem.add_boundary_condition(
-       "periodic_boundary_condition", "periodic_x", primary="left", secondary="right"
-   )
+   problem.add_boundary_condition("periodic", primary="left", secondary="right")
 
 Every node :math:`s` of the secondary boundary is joined to the node :math:`p`
 of the primary boundary at :math:`\mathbf{x}_s - \mathbf{t}`, where
@@ -337,34 +350,22 @@ domain periodic in two directions is joined to a single primary node.  The two
 boundaries must match node by node after the translation, and a value
 prescribed on a secondary node must also be prescribed on its primary.  The
 condition works with ``fem``, ``hfvm`` and ``dmcdm``, serially and on any
-number of processes; on a manufactured solution periodic in one direction and
+number of processes.  On a manufactured solution periodic in one direction and
 in two, every method converges at second order.
 
 .. code-block:: python
 
-   problem.add_kernel(
-       "heat_conduction", "conduction", variable="temperature", thermal_conductivity=20.0
-   )
-   problem.add_kernel("heat_source", "source", variable="temperature", heat_source=1.0e6)
+   problem.add_kernel("heat_conduction", variable="temperature", thermal_conductivity=20.0)
+   problem.add_kernel("body_force", variable="temperature", value=1.0e6)  # the heat source
+   problem.add_boundary_condition("Dirichlet", "left", variable="temperature", value=40.0)
    problem.add_boundary_condition(
-       "Dirichlet_boundary_condition", "cold", variable="temperature", boundary="left", value=40.0
-   )
-   problem.add_boundary_condition(
-       "convective_heat_flux_boundary_condition",
-       "film",
-       variable="temperature",
-       boundary="top",
-       heat_transfer_coefficient=75.0,
-       ambient_temperature=20.0,
+       "Robin", "top", variable="temperature", transfer_coeff=75.0, ambient_value=20.0
    )
 
-The second argument of each call is the object's name.  It is optional, and one
-is generated when it is omitted, but explicit names are recommended: the name
-appears in error messages, it is the argument that
-:meth:`~dualmesh.Problem.boundary_flux_integral` takes, and it makes a long
-problem definition readable.  When a boundary condition is given no
-``boundary`` parameter, its name is taken as its boundary, so that a condition
-named after a side set (e.g., ``"left"``) acts on that side set.
+The object level names each object by its type, as the C++ library does, and
+gives its data as keywords.  ``variable`` takes one variable or a list, which
+adds the object to each.  A call returns the object, which
+:meth:`~dualmesh.Problem.boundary_flux_integral` takes.
 
 Parameters every object accepts
 -------------------------------
@@ -381,11 +382,11 @@ kernel, boundary condition and property object.
    The rule used to integrate this object's contribution.  The default,
    ``"automatic"``, is Gauss-Legendre with one more point per direction than the
    polynomial order of the mesh: two points on a linear mesh and three on a
-   quadratic one.  The explicit choices are ``"gauss1"`` to ``"gauss10"``,
+   quadratic one.  The explicit choices are ``"gauss1"`` to ``"gauss20"``,
    ``"midpoint"``, ``"trapezoid"``, ``"simpson"``, and three rules that lump the
    integrand onto the nodes: ``"nodal"``, ``"interface"`` and
    ``"control_domain_trapezoid"``.  The lumped rules are provided because the
-   finite volume tables of Chapter 3 of [Reddy2024]_ use them, and because a
+   finite volume formulations of [Reddy2024]_ use them, and because a
    lumped capacity matrix makes an explicit time step stable.  They are
    described in :doc:`/theory/elements`.
 
@@ -411,20 +412,18 @@ Any parameter declared as a real number accepts four kinds of value.
 .. code-block:: python
 
    # 1. A constant.
-   problem.add_kernel("body_force", "constant", variable="u", value=2.5)
+   problem.add_kernel("body_force", variable="u", value=2.5)
 
    # 2. An expression in x, y, z and t, given as text or compiled first.
-   problem.add_kernel("body_force", "parsed", variable="u", value="sin(pi*x) * sin(pi*y)")
-   problem.add_kernel(
-       "body_force", "compiled", variable="u", value=dm.parsed_function("sin(pi*x) * sin(pi*y)")
-   )
+   problem.add_kernel("body_force", variable="u", value="sin(pi*x) * sin(pi*y)")
+   problem.add_kernel("body_force", variable="u", value=dm.parsed_function("sin(pi*x) * sin(pi*y)"))
 
    # 3. The name of a function registered on the problem.
    problem.add_function("ramp", lambda x, y, z, t: min(t, 1.0))
-   problem.add_kernel("body_force", "named", variable="u", value="ramp")
+   problem.add_kernel("body_force", variable="u", value="ramp")
 
    # 4. A Python callable of (x, y, z, t).
-   problem.add_kernel("body_force", "callable", variable="u", value=lambda x, y, z, t: x * x + y)
+   problem.add_kernel("body_force", variable="u", value=lambda x, y, z, t: x * x + y)
 
 The four kinds give the same values but differ greatly in computational cost.
 A constant and a parsed expression are evaluated in C++.  A Python callable,

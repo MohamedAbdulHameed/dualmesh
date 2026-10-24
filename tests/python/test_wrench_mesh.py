@@ -44,10 +44,6 @@ def test_boundary_condition_named_after_a_side_set():
     problem = dm.Problem(mesh, method="fem")
     for v in ("u", "v", "w"):
         problem.add_variable(v)
-    problem.add_boundary_condition(
-        "traction_boundary_condition", "grip", variable="v", traction=-2.5e5
-    )
-    with pytest.raises(ValueError, match="name the condition after a boundary"):
-        problem.add_boundary_condition(
-            "Dirichlet_boundary_condition", "nut", variable="u", value=0.0
-        )
+    problem.add_boundary_condition("traction", "grip", variable="v", traction=-2.5e5)
+    with pytest.raises(ValueError, match="the mesh has no boundary 'nut'"):
+        problem.add_boundary_condition("Dirichlet", "nut", variable="u", value=0.0)

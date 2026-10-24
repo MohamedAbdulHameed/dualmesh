@@ -181,7 +181,7 @@ def study_of(
     study = mms.ManufacturedSolution(
         fields, dimension=dimension, coordinates=coordinates, flux_boundaries=flux_boundaries
     )
-    study.add_physics(physics, "equations", **parameters)
+    study.add_physics(physics, **parameters)
     return study
 
 
@@ -191,7 +191,7 @@ def study_of(
 def test_the_manufactured_source_of_the_laplacian():
     """For -div(grad u) with u = x^2 y the source is -Laplacian(u) = -2 y."""
     x, y = sympy.symbols("x y", real=True)
-    study = study_of({"u": "x**2*y"}, 2, "coefficient_form_PDE", diffusion_coefficient=1.0)
+    study = study_of({"u": "x**2*y"}, 2, "general_form_PDE", variables="u", c=1.0)
     assert sympy.simplify(study.forcing()["u"] - (-2 * y)) == 0
 
 
@@ -201,12 +201,13 @@ def test_the_axisymmetric_and_spherical_divergences():
     axisymmetric = study_of(
         {"u": "x**2"},
         2,
-        "coefficient_form_PDE",
+        "general_form_PDE",
+        variables="u",
         coordinates="axisymmetric",
-        diffusion_coefficient=1.0,
+        c=1.0,
     )
     spherical = study_of(
-        {"u": "x**2"}, 1, "coefficient_form_PDE", coordinates="spherical", diffusion_coefficient=1.0
+        {"u": "x**2"}, 1, "general_form_PDE", variables="u", coordinates="spherical", c=1.0
     )
     assert sympy.simplify(axisymmetric.forcing()["u"] + 4) == 0
     assert sympy.simplify(spherical.forcing()["u"] + 6) == 0
@@ -217,9 +218,7 @@ def test_a_solution_in_the_space_is_reproduced_exactly():
     exactly, the error is round-off, for every method on its own terms: a
     linear field for the node-based methods on linear elements and for the
     cell-centred method's linear reconstruction."""
-    study = study_of(
-        {"u": "1 + 2*x - 3*y"}, 2, "coefficient_form_PDE", diffusion_coefficient="1 + x + y"
-    )
+    study = study_of({"u": "1 + 2*x - 3*y"}, 2, "general_form_PDE", variables="u", c="1 + x + y")
     for method in METHODS:
         problem = study.build(square_family("Quad4")(4), method=method)
         problem.solve()
@@ -233,17 +232,16 @@ def test_a_solution_in_the_space_is_reproduced_exactly():
 DIFFUSION_2D = study_of(
     {"u": "sin(pi*x)*cos(pi*y) + x*y"},
     2,
-    "coefficient_form_PDE",
-    diffusion_coefficient="1 + 0.5*x*y",
+    "general_form_PDE",
+    variables="u",
+    c="1 + 0.5*x*y",
 )
 
 
 @pytest.mark.parametrize("element_type", ["Edge2", "Edge3"])
 @pytest.mark.parametrize("method", METHODS)
 def test_one_dimensional_diffusion(method, element_type):
-    study = study_of(
-        {"u": "sin(2*x) + x**3"}, 1, "coefficient_form_PDE", diffusion_coefficient="1 + x**2"
-    )
+    study = study_of({"u": "sin(2*x) + x**3"}, 1, "general_form_PDE", variables="u", c="1 + x**2")
     result = study.convergence_study(line_family(element_type), [4, 8, 16, 32], method=method)
     check(result, "u", method, element_type)
 
@@ -262,8 +260,9 @@ def test_two_dimensional_diffusion(method, element_type):
 DIFFUSION_3D = study_of(
     {"u": "sin(pi*x)*cos(pi*y)*exp(z) + x*y*z"},
     3,
-    "coefficient_form_PDE",
-    diffusion_coefficient="1 + 0.5*x*z",
+    "general_form_PDE",
+    variables="u",
+    c="1 + 0.5*x*z",
 )
 
 
@@ -299,16 +298,15 @@ def test_advection_diffusion_reaction(method, element_type, advection_form):
     # The non-conservative form beta . grad u and the conservative flux
     # -alpha u of the same velocity (alpha = -velocity in the flux F = -v u).
     convection = (
-        {"convection_coefficient": [1.0, 0.5]}
-        if advection_form == "non_conservative"
-        else {"conservative_flux_convection_coefficient": [-1.0, -0.5]}
+        {"beta": [1.0, 0.5]} if advection_form == "non_conservative" else {"alpha": [-1.0, -0.5]}
     )
     study = study_of(
         {"u": "exp(x)*sin(pi*y) + 0.5*x"},
         2,
-        "coefficient_form_PDE",
-        diffusion_coefficient=0.5,
-        absorption_coefficient=2.0,
+        "general_form_PDE",
+        variables="u",
+        c=0.5,
+        a=2.0,
         **convection,
     )
     result = study.convergence_study(square_family(element_type), [4, 8, 16, 32], method=method)
@@ -325,9 +323,10 @@ def test_nonlinear_diffusion(method, element_type):
     study = study_of(
         {"u": "cos(pi*x)*sin(pi*y) + 1"},
         2,
-        "coefficient_form_PDE",
-        diffusion_coefficient="1 + 0.5*u + 0.2*u**2",
-        absorption_coefficient="0.5*u**2",
+        "general_form_PDE",
+        variables="u",
+        c="1 + 0.5*u + 0.2*u**2",
+        a="0.5*u**2",
     )
     result = study.convergence_study(square_family(element_type), [4, 8, 16, 32], method=method)
     check(result, "u", method, element_type)
@@ -343,9 +342,10 @@ def test_transient_diffusion_in_space_and_time(method):
     study = study_of(
         {"u": "exp(-t)*sin(pi*x)*sin(pi*y) + t*x"},
         2,
-        "coefficient_form_PDE",
-        time_derivative_coefficient=1.0,
-        diffusion_coefficient="1 + 0.5*x",
+        "general_form_PDE",
+        variables="u",
+        d=1.0,
+        c="1 + 0.5*x",
     )
     result = study.convergence_study(
         square_family("Quad4"),
@@ -367,9 +367,10 @@ def test_axisymmetric_diffusion(method, element_type):
     study = study_of(
         {"u": "sin(x)*cos(y) + x**2*y"},
         2,
-        "coefficient_form_PDE",
+        "general_form_PDE",
+        variables="u",
         coordinates="axisymmetric",
-        diffusion_coefficient="1 + 0.2*x",
+        c="1 + 0.2*x",
     )
     result = study.convergence_study(
         square_family(element_type, 0.5, 1.5), [4, 8, 16, 32], method=method
@@ -382,9 +383,10 @@ def test_spherical_diffusion(method):
     study = study_of(
         {"u": "exp(x)/x"},
         1,
-        "coefficient_form_PDE",
+        "general_form_PDE",
+        variables="u",
         coordinates="spherical",
-        diffusion_coefficient=1.0,
+        c=1.0,
     )
 
     def shell(n):
@@ -411,7 +413,6 @@ def test_plane_elasticity(method, element_type, formulation):
         ELASTIC_FIELDS_2D,
         2,
         "solid_mechanics",
-        displacements=["disp_x", "disp_y"],
         youngs_modulus=200.0,
         poissons_ratio=0.3,
         formulation=formulation,
@@ -427,18 +428,17 @@ def test_axisymmetric_elasticity(method, element_type):
     """The radial equation carries the hoop stress sigma_tt / r, which only an
     axisymmetric manufactured solution tests."""
     study = study_of(
-        {"disp_x": "0.01*x*sin(y) + 0.002*x**2", "disp_y": "0.01*cos(x)*y"},
+        {"disp_r": "0.01*x*sin(y) + 0.002*x**2", "disp_z": "0.01*cos(x)*y"},
         2,
         "solid_mechanics",
         coordinates="axisymmetric",
-        displacements=["disp_x", "disp_y"],
         youngs_modulus=200.0,
         poissons_ratio=0.3,
     )
     result = study.convergence_study(
         square_family(element_type, 0.5, 1.5), [4, 8, 16, 32], method=method
     )
-    for variable in ("disp_x", "disp_y"):
+    for variable in ("disp_r", "disp_z"):
         check(result, variable, method, element_type)
 
 
@@ -453,7 +453,6 @@ def test_three_dimensional_elasticity(method, element_type):
         },
         3,
         "solid_mechanics",
-        displacements=["disp_x", "disp_y", "disp_z"],
         youngs_modulus=200.0,
         poissons_ratio=0.3,
     )

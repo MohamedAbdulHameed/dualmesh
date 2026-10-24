@@ -57,14 +57,12 @@ def circular_plate(num_elements, power_law_index=0.0, support="hinged"):
     for variable in ("radial_displacement", "deflection", "rotation"):
         problem.add_kernel(
             "circular_plate_first_order",
-            f"bending_{variable}",
             variable=variable,
             shear_treatment="exclude",
             **common,
         )
         problem.add_kernel(
             "circular_plate_first_order",
-            f"shear_{variable}",
             variable=variable,
             shear_treatment="only",
             quadrature="midpoint",
@@ -73,36 +71,30 @@ def circular_plate(num_elements, power_law_index=0.0, support="hinged"):
         )
     # Symmetry at r = 0
     problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "centre_u",
+        "Dirichlet",
+        "left",
         variable="radial_displacement",
-        boundary="left",
         value=0.0,
     )
     problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "centre_rotation",
+        "Dirichlet",
+        "left",
         variable="rotation",
-        boundary="left",
         value=0.0,
     )
     # Edge conditions at r = a
     problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "edge_u",
+        "Dirichlet",
+        "right",
         variable="radial_displacement",
-        boundary="right",
         value=0.0,
     )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", "edge_w", variable="deflection", boundary="right", value=0.0
-    )
+    problem.add_boundary_condition("Dirichlet", "right", variable="deflection", value=0.0)
     if support == "clamped":
         problem.add_boundary_condition(
-            "Dirichlet_boundary_condition",
-            "edge_rotation",
+            "Dirichlet",
+            "right",
             variable="rotation",
-            boundary="right",
             value=0.0,
         )
     problem.solve()
@@ -216,14 +208,12 @@ def rectangular_plate(
     for variable in variables:
         problem.add_kernel(
             "plate_first_order",
-            f"bending_{variable}",
             variable=variable,
             shear_treatment="exclude",
             **common,
         )
         problem.add_kernel(
             "plate_first_order",
-            f"shear_{variable}",
             variable=variable,
             shear_treatment="only",
             quadrature="midpoint",
@@ -231,56 +221,38 @@ def rectangular_plate(
             **common,
         )
     # Symmetry: u = phi_x = 0 on x = 0 and v = phi_y = 0 on y = 0
+    problem.add_boundary_condition("Dirichlet", "left", variable="u", value=0.0)
+    problem.add_boundary_condition("Dirichlet", "left", variable="rotation_x", value=0.0)
+    problem.add_boundary_condition("Dirichlet", "bottom", variable="v", value=0.0)
     problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", "sym_u", variable="u", boundary="left", value=0.0
-    )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", "sym_px", variable="rotation_x", boundary="left", value=0.0
-    )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", "sym_v", variable="v", boundary="bottom", value=0.0
-    )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "sym_py",
+        "Dirichlet",
+        "bottom",
         variable="rotation_y",
-        boundary="bottom",
         value=0.0,
     )
     if support == "clamped":
         for name in variables:
             problem.add_boundary_condition(
-                "Dirichlet_boundary_condition",
-                f"clamped_{name}",
+                "Dirichlet",
+                ["right", "top"],
                 variable=name,
-                boundary=["right", "top"],
                 value=0.0,
             )
     else:  # simply supported (SS-1)
+        problem.add_boundary_condition("Dirichlet", "right", variable="v", value=0.0)
+        problem.add_boundary_condition("Dirichlet", "right", variable="w", value=0.0)
         problem.add_boundary_condition(
-            "Dirichlet_boundary_condition", "ss_v", variable="v", boundary="right", value=0.0
-        )
-        problem.add_boundary_condition(
-            "Dirichlet_boundary_condition", "ss_w_right", variable="w", boundary="right", value=0.0
-        )
-        problem.add_boundary_condition(
-            "Dirichlet_boundary_condition",
-            "ss_py",
+            "Dirichlet",
+            "right",
             variable="rotation_y",
-            boundary="right",
             value=0.0,
         )
+        problem.add_boundary_condition("Dirichlet", "top", variable="u", value=0.0)
+        problem.add_boundary_condition("Dirichlet", "top", variable="w", value=0.0)
         problem.add_boundary_condition(
-            "Dirichlet_boundary_condition", "ss_u", variable="u", boundary="top", value=0.0
-        )
-        problem.add_boundary_condition(
-            "Dirichlet_boundary_condition", "ss_w_top", variable="w", boundary="top", value=0.0
-        )
-        problem.add_boundary_condition(
-            "Dirichlet_boundary_condition",
-            "ss_px",
+            "Dirichlet",
+            "top",
             variable="rotation_x",
-            boundary="top",
             value=0.0,
         )
     return problem
@@ -336,7 +308,6 @@ def test_plate_reduced_integration_is_required_for_thin_plates():
     for variable in variables:
         problem.add_kernel(
             "plate_first_order",
-            f"plate_{variable}",
             variable=variable,
             in_plane_displacements=["u", "v"],
             transverse_displacement="w",
@@ -348,24 +319,15 @@ def test_plate_reduced_integration_is_required_for_thin_plates():
             poissons_ratio=POISSON,
             transverse_load=PLATE_LOAD,
         )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", "a", variable="u", boundary="left", value=0.0
-    )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", "b", variable="rotation_x", boundary="left", value=0.0
-    )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", "c", variable="v", boundary="bottom", value=0.0
-    )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", "d", variable="rotation_y", boundary="bottom", value=0.0
-    )
+    problem.add_boundary_condition("Dirichlet", "left", variable="u", value=0.0)
+    problem.add_boundary_condition("Dirichlet", "left", variable="rotation_x", value=0.0)
+    problem.add_boundary_condition("Dirichlet", "bottom", variable="v", value=0.0)
+    problem.add_boundary_condition("Dirichlet", "bottom", variable="rotation_y", value=0.0)
     for name in variables:
         problem.add_boundary_condition(
-            "Dirichlet_boundary_condition",
-            f"e_{name}",
+            "Dirichlet",
+            ["right", "top"],
             variable=name,
-            boundary=["right", "top"],
             value=0.0,
         )
     problem.solve()
@@ -387,13 +349,10 @@ def classical_circular_plate(
     s = circular_plate_stiffness(power_law_index)
     mesh = dm.generate_line_mesh(start=0.0, end=CIRCULAR_RADIUS, num_elements=num_elements)
     problem = dm.Problem(mesh, coordinates="axisymmetric")
-    problem.add_physics(
-        "circular_plate",
-        "plate",
+    plate = problem.add_physics(
+        "solid_mechanics",
+        formulation="circular_plate",
         theory="classical",
-        radial_displacement="radial_displacement",
-        transverse_displacement="deflection",
-        bending_moment="bending_moment",
         extensional_stiffness=s.extensional,
         coupling_stiffness=s.coupling,
         bending_stiffness=s.bending,
@@ -403,31 +362,12 @@ def classical_circular_plate(
     )
     # Symmetry at r = 0: u(0) = 0.  The slope dw/dr is the natural boundary
     # quantity of the moment equation, so dw/dr(0) = 0 needs no condition.
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "centre_u",
-        variable="radial_displacement",
-        boundary="left",
-        value=0.0,
-    )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "edge_u",
-        variable="radial_displacement",
-        boundary="right",
-        value=0.0,
-    )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", "edge_w", variable="deflection", boundary="right", value=0.0
-    )
+    plate.add_boundary_condition("disp_r = 0", boundary="left")
+    # A hinged edge holds the displacements, and the physics holds its moment at zero.
     if support == "hinged":
-        problem.add_boundary_condition(
-            "Dirichlet_boundary_condition",
-            "edge_m",
-            variable="bending_moment",
-            boundary="right",
-            value=0.0,
-        )
+        plate.add_boundary_condition(["disp_r = 0", "disp_z = 0"], boundary="right")
+    else:
+        plate.add_boundary_condition("fixed", boundary="right")
     if von_karman:
         problem.solve(load_factors=[0.1 * k for k in range(1, 11)])
     else:
@@ -440,7 +380,7 @@ def test_table_8_6_1_mixed_classical_plate():
     expected = [0.1149, 0.1156, 0.1158, 0.1159, 0.1159, 0.1159]
     for num_elements, reference in zip((2, 4, 8, 16, 32, 64), expected):
         problem = classical_circular_plate(num_elements)
-        centre = problem.values("deflection")[problem.node_at((0.0,))]
+        centre = problem.values("disp_z")[problem.node_at((0.0,))]
         assert centre == pytest.approx(reference, abs=1.1e-4)
 
 
@@ -463,7 +403,7 @@ def test_table_8_6_1_mixed_classical_plate():
 )
 def test_table_8_6_2_mixed_classical_plate(power_law_index, expected):
     problem = classical_circular_plate(32, power_law_index=power_law_index, support="clamped")
-    centre = problem.values("deflection")[problem.node_at((0.0,))]
+    centre = problem.values("disp_z")[problem.node_at((0.0,))]
     assert centre == pytest.approx(expected, abs=1.1e-4)
 
 
@@ -491,7 +431,7 @@ def test_mixed_classical_plate_agrees_with_shear_deformable_model():
     for support in ("hinged", "clamped"):
         classical = classical_circular_plate(32, support=support)
         shear = circular_plate(32, support="clamped" if support == "clamped" else "hinged")
-        centre_classical = classical.values("deflection")[classical.node_at((0.0,))]
+        centre_classical = classical.values("disp_z")[classical.node_at((0.0,))]
         centre_shear = shear.values("deflection")[0]
         assert centre_classical == pytest.approx(centre_shear, rel=3e-3)
 
@@ -508,7 +448,7 @@ def test_mixed_classical_plate_agrees_with_shear_deformable_model():
 )
 def test_mixed_classical_plate_von_karman(load, reference):
     problem = classical_circular_plate(32, support="clamped", von_karman=True, load=load)
-    centre = problem.values("deflection")[problem.node_at((0.0,))]
+    centre = problem.values("disp_z")[problem.node_at((0.0,))]
     assert centre == pytest.approx(reference, rel=6e-3)
     linear = CIRCULAR_RADIUS**4 * load / (64 * circular_plate_stiffness(0.0).bending)
     assert centre < linear  # membrane stretching stiffens the plate

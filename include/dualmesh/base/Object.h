@@ -70,6 +70,8 @@ class ResidualObject : public Object
 public:
   explicit ResidualObject(const InputParameters & params);
   static InputParameters validParams();
+  /// Add 'block', 'quadrature' and 'reduced_integration', the parameters of an object that is integrated over elements or sides.
+  static void addIntegrationParams(InputParameters & p);
 
   void initialSetup(Problem & problem) override;
 
@@ -82,6 +84,11 @@ public:
   const QuadratureSpec & quadrature() const { return _quad; }
   /// Whether the contribution is multiplied by the load factor (load stepping).
   bool scalesWithLoad() const { return _scale_with_load; }
+  /// Whether the term is taken at the new time only in a step of the theta method (weight 1 at
+  /// the new time, none at the old), as every term of an equation without a time derivative
+  /// is: the pressure gradient, through which the pressure, which has no time derivative, enters
+  /// the momentum equations (Problem::steadyWeight).
+  virtual bool atNewTime() const { return false; }
 
 protected:
   /// Resolve a coupled variable name given by parameter @p param.

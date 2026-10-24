@@ -34,34 +34,20 @@ computes at every step from its momentum equations.
 
    mesh = dm.read_mesh("dfg.msh")
    problem = dm.Problem(mesh, method="dmcdm")  # fem, hfvm
-   problem.add_physics(
-       "incompressible_flow",
-       "flow",
-       velocities=["u", "v"],
+   flow = problem.add_physics(
+       "fluid_dynamics",
        density=1.0,
        dynamic_viscosity=1e-3,
        formulation="pressure",
        time_integration="projection",
    )
-   problem.add_boundary_condition(
-       "Dirichlet_boundary_condition", "inflow_u", variable="u", boundary="inlet",
-       value="4*1.5*y*(0.41 - y)/0.41^2",
-   )
-   problem.add_boundary_condition(
-       "Dirichlet_boundary_condition", "inflow_v", variable="v", boundary="inlet", value=0.0
-   )
-   for variable in ("u", "v"):
-       problem.add_boundary_condition(
-           "Dirichlet_boundary_condition", f"no_slip_{variable}", variable=variable,
-           boundary=["walls", "cylinder"], value=0.0,
-       )
-   problem.add_boundary_condition(
-       "Dirichlet_boundary_condition", "outflow", variable="pressure", boundary="outlet", value=0.0
-   )
+   flow.add_boundary_condition(["velocity_x = 4*1.5*y*(0.41 - y)/0.41^2", "velocity_y = 0"], boundary="inlet")
+   flow.add_boundary_condition(["velocity_x = 0", "velocity_y = 0"], boundary=["walls", "cylinder"])
+   flow.add_boundary_condition("pressure = 0", boundary="outlet")
    forces = []
    problem.set_time_step_callback(
        lambda t, _: forces.append(
-           (t, -20 * problem.total_reaction("u", "cylinder"), -20 * problem.total_reaction("v", "cylinder"))
+           (t, -20 * problem.total_reaction("velocity_x", "cylinder"), -20 * problem.total_reaction("velocity_y", "cylinder"))
        )
    )
    problem.solve_transient(end_time=10.0, time_step=1e-3, time_stepper="cfl", courant_number=0.5)
@@ -72,6 +58,13 @@ and the largest drag and lift coefficients are taken over them.
 
 Results
 -------
+
+.. note::
+
+   The numbers on this page were measured before the stabilisation parameter
+   :math:`\tau` took the factor 9 on its viscous term (24 October 2026), which
+   lowered the errors of the stabilised methods on the cavity and the Kovasznay
+   flow by about half.  They are being measured again.
 
 .. list-table:: The largest drag and lift coefficients of a cycle and the
    Strouhal number, with their relative errors, and the wall time of one step on

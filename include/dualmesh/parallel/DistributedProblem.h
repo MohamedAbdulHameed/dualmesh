@@ -37,6 +37,7 @@
 
 #include "dualmesh/base/Problem.h"
 #include "dualmesh/linalg/PetscSolver.h"
+#include "dualmesh/linalg/SaddlePointSolver.h"
 #include "dualmesh/parallel/Communicator.h"
 #include "dualmesh/parallel/GatherScatter.h"
 #include "dualmesh/parallel/MeshDistribution.h"
@@ -62,7 +63,9 @@ struct DistributedOptions
   bool verbose = false;
 };
 
-class DistributedProblem
+/// A problem split among the processes.  It is the Parallel of its local problem: the local
+/// problem's own nonlinear and transient drivers solve the whole problem through it.
+class DistributedProblem : public Parallel
 {
 public:
   /// @param part this rank's part of the mesh.
@@ -87,8 +90,6 @@ public:
   int rank() const { return _comm.rank(); }
   int numRanks() const { return _comm.size(); }
 
-  /// Global index of a local node, or, for the cell-centered method, of a local cell or boundary face (the elements first, then the boundary faces; -1 for an outer face of the outermost ghost cells, which only this rank has).
-  Index globalNode(Index local_node) const { return _local_to_global[local_node]; }
   /// Whether this rank owns a local node, or cell or boundary face for the cell-centered method (and therefore its degrees of freedom).
   bool ownsNode(Index local_node) const { return _owned_node[local_node] != 0; }
   /// Number of degrees of freedom this rank owns.
@@ -122,7 +123,24 @@ public:
   Index numGlobalEntities() const { return _num_global_entities; }
   /// Write the prescribed values at the time of the local problem into @p U on every rank that holds them.
   void applyDirichlet(Vector & U, double load_factor = 1.0) const;
-  double norm(const Vector & a) const { return std::sqrt(dot(a, a)); }
+  double norm(const Vector & a) const override { return std::sqrt(dot(a, a)); }
+
+  // ---- the Parallel of the local problem ---------------------------------------------------
+  bool isRoot() const override { return _comm.isRoot(); }
+  double sum(double value) const override { return _comm.sum(value); }
+  bool any(bool value) const override { return _comm.any(value); }
+  void addShared(Vector & v) const override { addAcrossRanks(v); }
+  void shareDirichlet(Vector & U) const override;
+  Vector linearSolve(Problem & problem,
+                     const SparseMatrix & A,
+                     const Vector & b,
+                     const SolverOptions & options,
+                     int * iterations) const override;
+  bool checksSingularity() const override { return false; }
+  CheckpointLayout checkpointLayout(const Problem & problem) const override;
+  void writeFields(Problem & problem,
+                   const std::string & base,
+                   const std::vector<std::string> & fields) const override;
 
   /// Change the settings of the linear solver: everything in @p options except the partitioner, which is used at construction.
   void setLinearSolver(const DistributedOptions & options);
@@ -162,15 +180,21 @@ private:
     std::vector<char> owned_dof;
   };
   GlobalSystem globalSystem(const SparseMatrix & A, const Vector & b) const;
-  /// Solve with the PETSc options @p options; when @p must_converge is false, a failure returns an empty vector instead of an error.
-  Vector solveWithPetsc(const SparseMatrix & A,
-                        const Vector & b,
-                        const std::string & options,
+  /// Solve @p system with PETSc and @p settings (its options and block preconditioners; the tolerances are set here); when @p must_converge is false, a failure returns an empty vector instead of an error.
+  Vector solveWithPetsc(const GlobalSystem & system,
+                        petsc::Settings settings,
                         int * iterations,
                         bool must_converge = true) const;
-  SolveResult nonlinearSolve(const SolverOptions & options,
-                             Problem::AssemblyOptions base,
-                             const Vector * steady_old_residual);
+  /// Solve @p system with PETSc's Schur complement split of a flow, its Schur complement approximated by @p approximation; when @p must_converge is false, a failure returns an empty vector instead of an error.
+  Vector solveSchurSplit(const SparseMatrix & A,
+                         const GlobalSystem & system,
+                         SchurApproximation approximation,
+                         int * iterations,
+                         bool must_converge = true) const;
+  /// The owned global rows of every block of the split by physics (Problem::physicsBlocks).
+  std::vector<std::vector<Index>> physicsBlockRows(const GlobalSystem & system) const;
+  /// The near null space of the local problem on this rank's owned rows, in the order of the global numbering.
+  Eigen::MatrixXd ownedNearNullspace(const GlobalSystem & system) const;
 
   Communicator & _comm;
   DistributedOptions _options;

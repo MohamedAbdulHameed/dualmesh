@@ -28,6 +28,10 @@ CellMesh::CellMesh(const Mesh & mesh)
   _num_cells = mesh.numElements();
   if (_num_cells == 0)
     throw InputError("The cell-centred finite volume method needs a mesh with elements.");
+  if (mesh.spaceDimension() > mesh.dimension())
+    throw InputError("The cell-centred finite volume method is not available yet on a surface or "
+                     "a curve in space (a mesh of lower dimension than its space); use "
+                     "method=\"fem\".");
 
   // ---- cell centroids and volumes ------------------------------------------
   QuadratureSpec spec;
@@ -72,6 +76,12 @@ CellMesh::CellMesh(const Mesh & mesh)
       {
         // Interior face: this element is the neighbour.
         CellFace & f = _faces[it->second];
+        if (f.neighbor >= 0)
+          throw InputError("A face of elements " + std::to_string(f.owner) + ", " +
+                           std::to_string(f.neighbor) + " and " + std::to_string(c) +
+                           " is shared by more than two elements: the cell-centred finite "
+                           "volume method needs a mesh in which two cells meet at a face.  "
+                           "Check the mesh for overlapping or duplicated elements.");
         f.neighbor = c;
         _cell_faces[c].push_back(it->second);
         _side_to_face[{c, s}] = it->second;

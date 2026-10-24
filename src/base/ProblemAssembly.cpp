@@ -21,10 +21,12 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <exception>
 #include <iomanip>
 #include <iostream>
 #include <limits>
 #include <numeric>
+#include <optional>
 #include <set>
 #include <sstream>
 
@@ -100,7 +102,7 @@ Problem::assemble(const Vector & U, const AssemblyOptions & opts, Vector & R, Sp
   }
   const Index ndof = numDofs();
   const int nv = numVariables();
-  const int dim = _mesh->dimension();
+  const int dim = _mesh->spaceDimension();
   const bool dual = _method != Method::FiniteElement;
   // The vertex-centred finite volume method replaces the interpolated gradient
   // at a control-domain interface by the two-point difference along the edge
@@ -126,6 +128,8 @@ Problem::assemble(const Vector & U, const AssemblyOptions & opts, Vector & R, Sp
     s.ctx.dt = opts.dt;
     s.ctx.eigenvalue = _eigenvalue;
     s.ctx.load_factor = opts.load_factor;
+    s.ctx.inertia = opts.inertia;
+    s.ctx.theta = opts.include_time_kernels ? opts.theta : 1.0;
     s.ctx.mode = opts.mode;
     if (want_jac)
       s.triplets.reserve(static_cast<std::size_t>(_mesh->numElements()) * 16 * nv * nv * 4 /
@@ -221,10 +225,9 @@ Problem::assemble(const Vector & U, const AssemblyOptions & opts, Vector & R, Sp
 
       const auto weightOf = [&](const Kernel * k)
       {
-        double w = k->isTimeKernel() ? 1.0 : opts.theta;
-        if (k->scalesWithLoad())
-          w *= opts.load_factor;
-        return w;
+        if (!k->isTimeKernel())
+          return steadyWeight(*k, opts);
+        return k->scalesWithLoad() ? opts.load_factor : 1.0;
       };
       // The points were mapped when they were built; reuse those maps.
       const auto evaluateAt = [&](const IntegrationPoint & ip, std::size_t q)
@@ -321,6 +324,7 @@ Problem::assemble(const Vector & U, const AssemblyOptions & opts, Vector & R, Sp
           {
             const int v = k->variable();
             const double w = cf * weightOf(k);
+            ctx.time_weight = timeWeight(*k, opts);
             // The test functions of the equation of variable v: the element's
             // shape functions, or its corners' for a first-order variable.
             const bool corner = mixed && usesCornerShape(el, v);
@@ -368,17 +372,149 @@ Problem::assemble(const Vector & U, const AssemblyOptions & opts, Vector & R, Sp
       {
         buildElementPoints(*_mesh, e, dual, PointSet::Faces, group.spec, pts, &s.mapped);
         point_set = 1;
+        const bool sides =
+            std::any_of(ks.begin(), ks.end(), [](const Kernel * k) { return k->usesFaceSides(); });
         for (std::size_t q = 0; q < pts.size(); ++q)
         {
           const IntegrationPoint & ip = pts[q];
           const double cf = evaluateAt(ip, q);
+          if (sides)
+          {
+            // The two nodes of the face, for an advective flux: their values (with their
+            // derivatives), their positions, and the normal from the owner to the neighbour.
+            // The node methods have no gradient at a node, so the sides carry none.
+            ctx.on_face = true;
+            const int ends[2] = {ip.owner, ip.neighbor};
+            for (int side = 0; side < 2; ++side)
+            {
+              ctx.side_u[side].resize(nv);
+              ctx.side_grad[side].clear();
+              ctx.side_x[side] = _mesh->node(el.nodes[ends[side]]);
+              for (int v = 0; v < nv; ++v)
+              {
+                const int slot = ends[side] * nv + v;
+                ADReal value = ADReal::withZeroDerivatives(cur[slot], nd);
+                if (nd > 0)
+                  value.setDerivative(slot, 1.0);
+                ctx.side_u[side][v] = value;
+              }
+            }
+            ctx.side_weight = 0.5;
+            const double area = std::sqrt(dot(ip.area, ip.area));
+            ctx.normal = area > 0.0 ? (1.0 / area) * ip.area : Point{0, 0, 0};
+          }
           for (const Kernel * k : ks)
           {
             if (!k->hasFlux())
               continue;
             const int v = k->variable();
+            ctx.time_weight = timeWeight(*k, opts);
+            if (sides && k->needsSideGradients() && !_gradient_offsets.empty())
+            {
+              // The linear upwind and limited schemes take the gradient at the upstream node,
+              // reconstructed from the nodes around it, so the flux depends on those nodes too.
+              // They take the slots after the element's own; the two rows of the face go out
+              // here with those columns.
+              auto & columns = s.columns;
+              columns.assign(dofs.begin(), dofs.end());
+              const auto slotOf = [&](Index node)
+              {
+                const Index d = dof(node, v);
+                for (std::size_t i = 0; i < columns.size(); ++i)
+                  if (columns[i] == d)
+                    return static_cast<int>(i);
+                columns.push_back(d);
+                return static_cast<int>(columns.size()) - 1;
+              };
+              for (int side = 0; side < 2; ++side)
+              {
+                const Index node = el.nodes[side == 0 ? ip.owner : ip.neighbor];
+                ctx.side_grad[side].assign(nv, {ADReal(0.0), ADReal(0.0), ADReal(0.0)});
+                ADVector3 & g = ctx.side_grad[side][v];
+                const ADReal & ua = ctx.side_u[side][v];
+                const auto a = static_cast<std::size_t>(node);
+                for (Index i = _gradient_offsets[a]; i < _gradient_offsets[a + 1]; ++i)
+                {
+                  const Index b = _gradient_nodes[static_cast<std::size_t>(i)];
+                  ADReal ub(U[dof(b, v)]);
+                  if (want_jac)
+                  {
+                    const int slot = slotOf(b);
+                    ub = ADReal::withZeroDerivatives(U[dof(b, v)], slot + 1);
+                    ub.setDerivative(slot, 1.0);
+                  }
+                  const ADReal difference = ub - ua;
+                  const Point & w = _gradient_weights[static_cast<std::size_t>(i)];
+                  for (int c = 0; c < dim; ++c)
+                    g[c].addScaledBy(difference, w[c]);
+                }
+              }
+              if (static_cast<int>(columns.size()) > kMaxDerivatives)
+                throw InputError("The face flux of '" + k->name() + "' depends on " +
+                                 std::to_string(columns.size()) + " unknowns, more than the " +
+                                 std::to_string(kMaxDerivatives) +
+                                 " derivatives of this build. Use the upwind scheme here, or "
+                                 "the cell-centred method ZFVM.");
+              const bool per_side = k->nonConservativeFaceFlux();
+              ADVector3 F{ADReal(0.0), ADReal(0.0), ADReal(0.0)};
+              if (per_side)
+                ctx.reference_side = 0;
+              k->computeFlux(ctx, F);
+              ADVector3 FN = F;
+              if (per_side)
+              {
+                ctx.reference_side = 1;
+                FN = {ADReal(0.0), ADReal(0.0), ADReal(0.0)};
+                k->computeFlux(ctx, FN);
+                ctx.reference_side = -1;
+              }
+              ctx.side_grad[0].clear();
+              ctx.side_grad[1].clear();
+              const double scale = cf * weightOf(k);
+              ADReal ro(0.0), rn(0.0);
+              for (int d = 0; d < dim; ++d)
+                if (ip.area[d] != 0.0)
+                {
+                  ro.addScaledBy(F[d], -scale * ip.area[d]);
+                  rn.addScaledBy(FN[d], scale * ip.area[d]);
+                }
+              for (const auto & [row, r] :
+                   {std::pair<Index, const ADReal *>{dofs[ip.owner * nv + v], &ro},
+                    std::pair<Index, const ADReal *>{dofs[ip.neighbor * nv + v], &rn}})
+              {
+                double & target = R[row];
+                if (atomic)
+                {
+#pragma omp atomic
+                  target += r->value();
+                }
+                else
+                  target += r->value();
+                if (want_jac)
+                {
+                  const double * dr = r->derivatives();
+                  for (int j = 0; j < r->size(); ++j)
+                    if (dr[j] != 0.0)
+                      s.triplets.emplace_back(row, columns[static_cast<std::size_t>(j)], dr[j]);
+                }
+              }
+              continue;
+            }
             ADVector3 F{ADReal(0.0), ADReal(0.0), ADReal(0.0)};
+            // A non-conservative face flux differs between the two sides (Kernel::
+            // nonConservativeFaceFlux): FN is that of the neighbour's equation.
+            const bool per_side = sides && k->nonConservativeFaceFlux();
+            if (per_side)
+              ctx.reference_side = 0;
             k->computeFlux(ctx, F);
+            ADVector3 FN = F;
+            if (per_side)
+            {
+              ctx.reference_side = 1;
+              FN = {ADReal(0.0), ADReal(0.0), ADReal(0.0)};
+              k->computeFlux(ctx, FN);
+              ctx.reference_side = -1;
+            }
             // -\oint F.n over the boundary of CD_a; the same interface
             // enters CD_b with the opposite normal.
             const double scale = cf * weightOf(k);
@@ -388,12 +524,13 @@ Problem::assemble(const Vector & U, const AssemblyOptions & opts, Vector & R, Sp
               if (ip.area[d] != 0.0)
               {
                 ro.addScaledBy(F[d], -scale * ip.area[d]);
-                rn.addScaledBy(F[d], scale * ip.area[d]);
+                rn.addScaledBy(FN[d], scale * ip.area[d]);
               }
             touched[ip.owner * nv + v] = 1;
             touched[ip.neighbor * nv + v] = 1;
           }
         }
+        ctx.on_face = false;
       }
     }
     if (any)
@@ -406,7 +543,8 @@ Problem::assemble(const Vector & U, const AssemblyOptions & opts, Vector & R, Sp
   // Threading is disabled automatically when any object is defined in Python,
   // because calling back into the interpreter needs the global interpreter
   // lock (see Problem::initialize).
-  std::string thread_error;
+  // The first error of a thread, rethrown as it is, so that its type (InputError) is kept.
+  std::exception_ptr thread_error;
 #ifdef _OPENMP
 #pragma omp parallel num_threads(nthreads) if (nthreads > 1)
   {
@@ -418,11 +556,11 @@ Problem::assemble(const Vector & U, const AssemblyOptions & opts, Vector & R, Sp
       {
         assembleElement(s, e);
       }
-      catch (const std::exception & ex)
+      catch (...)
       {
 #pragma omp critical(dualmesh_thread_error)
-        if (thread_error.empty())
-          thread_error = ex.what();
+        if (!thread_error)
+          thread_error = std::current_exception();
       }
     }
   }
@@ -430,8 +568,8 @@ Problem::assemble(const Vector & U, const AssemblyOptions & opts, Vector & R, Sp
   for (Index e = 0; e < numIntegratedElements(); ++e)
     assembleElement(scratch[0], e);
 #endif
-  if (!thread_error.empty())
-    throw std::runtime_error(thread_error);
+  if (thread_error)
+    std::rethrow_exception(thread_error);
 
   // The boundary terms are a small fraction of the work and are assembled
   // serially, in the first thread's scratch space.
@@ -452,7 +590,7 @@ Problem::assemble(const Vector & U, const AssemblyOptions & opts, Vector & R, Sp
     for (const auto & bc : _ibcs)
     {
       const int v = bc->variable();
-      double wfac = opts.theta * (bc->scalesWithLoad() ? opts.load_factor : 1.0);
+      double wfac = steadyWeight(*bc, opts);
       if (const auto * ib = dynamic_cast<const InterfaceBC *>(bc.get()))
       {
         assembleInterface(*ib, U, opts, wfac, R, want_jac ? &s0.triplets : nullptr, s0);
@@ -518,12 +656,92 @@ Problem::assemble(const Vector & U, const AssemblyOptions & opts, Vector & R, Sp
         }
     }
 
+  // ---- advective flux through the boundary (dmcdm, hfvm) ----------------------
+  // A conservative advective flux with an advection scheme (advection with advection_form
+  // 'conservative') passes through the boundary of the domain.  It carries the value of the node
+  // whose control volume the face bounds: at an outflow that node is upstream, and at an inflow
+  // without a condition it holds the only value there is.  A boundary without a condition so has
+  // zero conductive flux, as it has with the source form of the term.  The non-conservative face
+  // form m (u_f - u_C) is zero there, because u_f is u_C.  The boundary is that of the side sets, which hold the boundary of the whole mesh (the
+  // part of a distributed run has none on its interfaces with the other parts).
+  if (dual && opts.include_steady_terms)
+  {
+    std::vector<const Kernel *> advective;
+    for (const auto & k : _kernels)
+      if (k->usesFaceSides() && !k->nonConservativeFaceFlux())
+        advective.push_back(k.get());
+    if (!advective.empty())
+    {
+      checkAdvectiveBoundary();
+      std::set<Side> sides;
+      for (const auto & [name, list] : _mesh->sidesets())
+        for (const Side & side : list)
+          if (side.first < numIntegratedElements())
+            sides.insert(side);
+      for (const Side & side : sides)
+      {
+        const Element & el = _mesh->element(side.first);
+        for (const Kernel * k : advective)
+        {
+          if (!k->activeOnBlock(el.block))
+            continue;
+          const int v = k->variable();
+          const auto & vb = _vars[v].blocks;
+          if (!vb.empty() && !vb.count(el.block))
+            continue;
+          const double wfac = steadyWeight(*k, opts);
+          const int ld = gatherLocal(s0, el);
+          const int nd = want_jac ? ld : 0;
+          ctx.element = side.first;
+          ctx.block = el.block;
+          ctx.on_boundary = true;
+          buildSidePoints(*_mesh, side, dual, k->quadrature(), pts);
+          for (const auto & ip : pts)
+          {
+            mapPoint(*_mesh, el, ip.xi, geo);
+            fillContext(ctx, el, geo, cur, use_lag ? &lag : nullptr, opts.old ? &old : nullptr, nd);
+            ctx.x = geo.x;
+            ctx.normal = (1.0 / ip.weight) * ip.area;
+            // Both sides are the owner node, so that every scheme takes its value.
+            ctx.on_face = true;
+            ctx.side_u[0].resize(nv);
+            for (int u = 0; u < nv; ++u)
+            {
+              const int slot = ip.owner * nv + u;
+              ctx.side_u[0][u] = ADReal::withZeroDerivatives(cur[slot], nd);
+              if (nd > 0)
+                ctx.side_u[0][u].setDerivative(slot, 1.0);
+            }
+            ctx.side_u[1] = ctx.side_u[0];
+            ctx.side_grad[0].clear();
+            ctx.side_grad[1].clear();
+            ctx.side_x[0] = ctx.side_x[1] = _mesh->node(el.nodes[ip.owner]);
+            ctx.side_weight = 0.5;
+            ctx.state_domain = 0;
+            ctx.state_owner = -1;
+            evaluateProperties(ctx);
+            ADVector3 F{ADReal(0.0), ADReal(0.0), ADReal(0.0)};
+            k->computeFlux(ctx, F);
+            ADReal Fn(0.0);
+            for (int d = 0; d < _mesh->spaceDimension(); ++d)
+              Fn += F[d] * ctx.normal[d];
+            const double w = ip.weight * coordFactor(geo.x) * wfac;
+            Rloc[ip.owner * nv + v].addScaledBy(Fn, -w);
+            touched[ip.owner * nv + v] = 1;
+          }
+          ctx.on_face = false;
+          scatter(Rloc, dofs, touched, R, want_jac ? &s0.triplets : nullptr, false);
+        }
+      }
+    }
+  }
+
   // ---- concentrated nodal loads ----------------------------------------------
   if (opts.include_steady_terms)
     for (const auto & load : _loads)
     {
       const int v = load->variable();
-      const double wfac = opts.theta * (load->scalesWithLoad() ? opts.load_factor : 1.0);
+      const double wfac = steadyWeight(*load, opts);
       for (Index n : load->nodes())
       {
         if (!_owned_entity.empty() && !_owned_entity[n])
@@ -563,7 +781,7 @@ Problem::assembleInterface(const InterfaceBC & bc,
   // side nodes are included, because the shape functions of every other node
   // vanish on a side, and at an interface point only values are needed.
   const int nv = numVariables();
-  const int dim = _mesh->dimension();
+  const int dim = _mesh->spaceDimension();
   const bool dual = _method != Method::FiniteElement;
   const bool want_jac = triplets != nullptr;
   const auto & coupled = bc.coupledVariables();
@@ -971,7 +1189,8 @@ preconditionedKrylov(const std::string & method,
     return krylovWith<Eigen::IdentityPreconditioner>(
         method, A, b, o, max_iterations, iterations, x);
   throw InputError("Unknown preconditioner '" + o.preconditioner +
-                   "' (use amg, ilu, ilut, jacobi, or none).");
+                   "' (use amg, ilu, ilut, jacobi or none, the block preconditioners of a flow "
+                   "lsc, pcd and pressure_mass, or physics_blocks).");
 }
 
 Vector
@@ -1008,74 +1227,152 @@ directSolve(const SparseMatrix & A, const Vector & b)
 }
 } // namespace
 
-SaddlePointBlocks
-Problem::saddlePointBlocks(const SparseMatrix & J) const
+double
+Problem::steadyWeight(const ResidualObject & object, const AssemblyOptions & options) const
 {
-  const_cast<Problem *>(this)->initialize();
-  if (_cells)
-    throw InputError("The pressure mass matrix preconditioner is not available for the "
-                     "cell-centred finite volume method yet; use it with fem, dmcdm or hfvm.");
-  // The constraint equation: the one kernel that provides a Schur mass
-  // coefficient.  A probe context at the first node asks each kernel.
-  QpContext probe;
-  probe.dim = _mesh->dimension();
-  probe.time = _time;
-  probe.x = _mesh->node(0);
+  // A step of the theta method weights the steady terms by theta at the new time and by 1 - theta
+  // at the old one.  An equation without a time derivative (the mass equation of a flow, the
+  // equilibrium of a quasi-static solid) is a constraint of the new time: weighting it between
+  // the two times would make its unknown (the pressure) an average of two steps, whose error
+  // comes back with the opposite sign at every step, and would evaluate a material history at
+  // the old time without it.  Such a term, and the pressure gradient, is taken at the new time.
+  const auto v = static_cast<std::size_t>(object.variable());
+  const bool new_time = object.atNewTime() || (v < _new_time_only.size() && _new_time_only[v]);
+  const double w = new_time ? (options.old_level ? 0.0 : 1.0) : options.theta;
+  return object.scalesWithLoad() ? w * options.load_factor : w;
+}
+
+double
+Problem::timeWeight(const Kernel & kernel, const AssemblyOptions & options) const
+{
+  if (!options.include_time_kernels || options.dt <= 0.0)
+    return 0.0;
+  const auto v = static_cast<std::size_t>(kernel.variable());
+  const bool new_time = kernel.atNewTime() || (v < _new_time_only.size() && _new_time_only[v]);
+  const double w = new_time ? 1.0 : options.theta;
+  return w > 0.0 ? 1.0 / w : 0.0;
+}
+
+bool
+Problem::flowAtRest() const
+{
+  const int nv = numVariables();
+  std::vector<char> inertial(static_cast<std::size_t>(nv), 0);
+  bool any = false;
+  for (const auto & k : _kernels)
+    if (k->isInertia())
+    {
+      inertial[static_cast<std::size_t>(k->variable())] = 1;
+      any = true;
+    }
+  if (!any)
+    return false;
+  const std::vector<char> fixed = constrainedDofs();
+  bool moving = false;
+  for (Index i = 0; i < numDofs() && !moving; ++i)
+    moving = inertial[static_cast<std::size_t>(i % nv)] && !fixed[i] && _U[i] != 0.0;
+  return !parallel().any(moving);
+}
+
+void
+Problem::checkAdvectiveBoundary() const
+{
+  // In a serial run every exterior side must be in a side set, or the advective flux would not
+  // leave through it (a part of a distributed run has exterior sides on its interfaces, which
+  // are rightly in no side set).
+  if (_parallel || _advective_boundary_checked)
+    return;
+  std::set<Side> named;
+  for (const auto & [name, list] : _mesh->sidesets())
+    named.insert(list.begin(), list.end());
+  for (const Side & side : _mesh->exteriorSides())
+    if (!named.count(side))
+      throw InputError("The conservative face flux of an advection scheme leaves the domain "
+                       "through its boundary, which is that of the side sets. The side " +
+                       std::to_string(side.second) + " of element " + std::to_string(side.first) +
+                       " is in none. Give the whole boundary side sets (generated meshes have "
+                       "them, and mesh.add_bounding_box_sidesets() adds them to others).");
+  _advective_boundary_checked = true;
+}
+
+const Kernel *
+Problem::flowConstraint() const
+{
   const Kernel * constraint = nullptr;
   for (const auto & k : _kernels)
-  {
-    double c = 0.0;
-    if (k->schurMassCoefficient(probe, c))
+    if (k->isMassConservation())
     {
       if (constraint && constraint->variable() != k->variable())
-        throw InputError("The pressure mass matrix preconditioner found two constraint "
+        throw InputError("The block preconditioner of the flow found two mass conservation "
                          "equations ('" +
                          constraint->name() + "' and '" + k->name() +
                          "') on different variables; it handles one pressure.");
       constraint = k.get();
     }
-  }
+  return constraint;
+}
+
+SaddlePointBlocks
+Problem::saddlePointBlocks(const SparseMatrix & J, SchurApproximation approximation) const
+{
+  const_cast<Problem *>(this)->initialize();
+  if (_cells)
+    throw InputError("The block preconditioners of a flow (pressure_mass, pcd, lsc) are not "
+                     "available for the cell-centred finite volume method yet; use them with "
+                     "fem, dmcdm or hfvm.");
+  const Kernel * constraint = flowConstraint();
+  QpContext probe;
+  probe.dim = _mesh->spaceDimension();
+  probe.time = _time;
+  probe.x = _mesh->node(0);
   if (!constraint)
-    throw InputError("The preconditioner 'pressure_mass_schur' is for pressure-velocity flow, "
-                     "and this problem has no mass conservation equation (mass_conservation). "
-                     "Use another preconditioner.");
+    throw InputError("The preconditioners pressure_mass, pcd and lsc are for pressure-velocity "
+                     "flow, and this problem has no mass conservation equation "
+                     "(mass_conservation). Use another preconditioner.");
   const int p = constraint->variable();
   const int nv = numVariables();
   SaddlePointBlocks blocks;
+  blocks.approximation = approximation;
   blocks.pressure_variable = _vars[p].name;
-  std::vector<Index> position(numDofs(), -1);
+  blocks.constrained = constrainedDofs();
+  std::vector<char> is_pressure(numDofs(), 0);
   for (Index d = 0; d < numDofs(); ++d)
     if (d % nv == p)
     {
-      position[d] = static_cast<Index>(blocks.pressure_dofs.size());
+      is_pressure[d] = 1;
       blocks.pressure_dofs.push_back(d);
     }
     else
       blocks.other_dofs.push_back(d);
 
-  // The sign of the Schur complement C - B A^{-1} B^T: with the gradient block
-  // G = J(u, p) and the divergence block D = J(p, u), the Frobenius product
-  // <G, D^T> is negative when G = -D^T, and then -D A^{-1} G = D A^{-1} D^T is
-  // positive definite.
+  // The sign of S = C - D F^{-1} G relative to G^T F^{-1} G: the Frobenius
+  // product <G, D^T> is negative when G = -D^T, and then -D F^{-1} G is
+  // G^T F^{-1} G.
   double product = 0.0;
   for (Index d : blocks.pressure_dofs)
     for (SparseMatrix::InnerIterator it(J, d); it; ++it)
-      if (position[it.row()] < 0)
+      if (!is_pressure[it.row()])
         product += it.value() * J.coeff(d, it.row());
-  if (product == 0.0)
-    throw InputError("The pressure '" + blocks.pressure_variable +
-                     "' is not coupled to the other variables in this system; the pressure mass "
-                     "matrix preconditioner does not apply.");
+  blocks.coupling = product;
   blocks.sign = product < 0.0 ? 1 : -1;
 
-  // The mass matrix (c q, psi) with the pressure's own shape functions and a
-  // Gauss rule one order above the element's.
-  const std::vector<char> constrained = constrainedDofs();
-  std::vector<Triplet> entries;
+  const bool pcd = approximation == SchurApproximation::ConvectionDiffusion;
+  const bool lsc = approximation == SchurApproximation::LeastSquaresCommutator;
+  // The time derivative and the weight theta of the steady terms of the
+  // equations whose Jacobian is solved (zero and one for a steady solve).
+  const double dt = _linear_dt;
+  const double theta = _linear_theta;
+  const int dim = _mesh->dimension();
+  blocks.lumped_mass = Eigen::VectorXd::Zero(numDofs());
+  const auto keep = [&](Index a, Index b)
+  { return !blocks.constrained[a] && !blocks.constrained[b]; };
+
   std::vector<IntegrationPoint> points;
   std::vector<MappedPoint> mapped;
   MappedPoint geo;
   QpContext context = probe;
+  FlowCoefficients c;
+  constexpr int kMax = kMaxElementNodes;
   for (Index e = 0; e < numIntegratedElements(); ++e)
   {
     const Element & el = _mesh->element(e);
@@ -1089,6 +1386,14 @@ Problem::saddlePointBlocks(const SparseMatrix & J) const
     spec.points = ReferenceElement::get(el.type).order() + 2;
     buildElementPoints(*_mesh, e, false, PointSet::Volume, spec, points, &mapped);
     const bool corner = usesCornerShape(el, p);
+    const int np = corner ? el.numCorners() : el.numNodes();
+    const int nn = el.numNodes();
+    // Element matrices on the pressure nodes: the mass M_k, the integrals m_k
+    // of the shape functions, (1/mu) M_k, and F_p; and the diagonal of the
+    // velocity mass matrix.
+    double M[kMax][kMax] = {}, Mmu[kMax][kMax] = {}, F[kMax][kMax] = {};
+    double m[kMax] = {}, velocity_diagonal[kMax] = {};
+    double volume = 0.0, area = 0.0, viscosity = 0.0, time_density = 0.0;
     for (std::size_t q = 0; q < points.size(); ++q)
     {
       if (q < mapped.size())
@@ -1098,55 +1403,165 @@ Problem::saddlePointBlocks(const SparseMatrix & J) const
       if (corner)
         mapCornerShape(el, geo);
       const double * N = corner ? geo.corner_shape : geo.N;
-      const int count = corner ? geo.num_corners : el.numNodes();
+      const Point * dN = corner ? geo.corner_gradient : geo.dN;
       context.x = geo.x;
       context.element = e;
       context.block = el.block;
-      double c = 0.0;
-      constraint->schurMassCoefficient(context, c);
-      const double w = points[q].weight * coordFactor(geo.x) * c * blocks.sign;
-      for (int a = 0; a < count; ++a)
+      constraint->flowCoefficients(context, c);
+      if (!(c.viscosity > 0.0))
+        blocks.refusal = "The block preconditioners of the flow (pressure_mass, pcd, lsc) scale "
+                         "their operators by the dynamic_viscosity, which must be positive "
+                         "everywhere.";
+      const double w = points[q].weight * coordFactor(geo.x);
+      // The measure of the element itself, without the factor of the
+      // coordinate system, gives its size.
+      area += points[q].weight;
+      volume += w;
+      viscosity += w * c.viscosity;
+      time_density += w * c.time_density;
+      // The current velocity, the wind of the convective term.
+      Point wind{0.0, 0.0, 0.0};
+      for (int d = 0; d < c.num_velocities; ++d)
+        for (int a = 0; a < nn; ++a)
+          wind[d] += geo.N[a] * _U[dof(el.nodes[a], c.velocities[d])];
+      for (int a = 0; a < nn; ++a)
+        velocity_diagonal[a] += w * geo.N[a] * geo.N[a];
+      const double mass_rate = dt > 0.0 ? c.time_density / dt : 0.0;
+      for (int a = 0; a < np; ++a)
       {
-        const Index da = dof(el.nodes[a], p);
-        if (constrained[da])
-          continue;
-        for (int b = 0; b < count; ++b)
+        m[a] += w * N[a];
+        for (int b = 0; b < np; ++b)
         {
-          const Index db = dof(el.nodes[b], p);
-          if (!constrained[db])
-            entries.emplace_back(position[da], position[db], w * N[a] * N[b]);
+          M[a][b] += w * N[a] * N[b];
+          Mmu[a][b] += w * N[a] * N[b] / c.viscosity;
+          if (pcd)
+          {
+            double diffusion = 0.0, convection = 0.0;
+            for (int d = 0; d < 3; ++d)
+            {
+              diffusion += dN[a][d] * dN[b][d];
+              convection += wind[d] * dN[b][d];
+            }
+            F[a][b] += w * (mass_rate * N[a] * N[b] +
+                            theta * (c.viscosity * diffusion + c.density * convection * N[a]));
+          }
         }
       }
     }
-  }
-  // The pressure block C of the system itself belongs to the Schur complement
-  // C - B A^{-1} B^T: zero for the Taylor-Hood element, the pressure Laplacian
-  // of the stabilisation for an equal-order element.  Its symmetric part is
-  // added, which keeps the approximation symmetric.
-  for (Index d : blocks.pressure_dofs)
-  {
-    if (constrained[d])
-      continue;
-    for (SparseMatrix::InnerIterator it(J, d); it; ++it)
-    {
-      const Index r = it.row();
-      if (position[r] >= 0 && !constrained[r] && it.value() != 0.0)
+    // Lumped masses, by the diagonal scaled to the element measure (Hinton,
+    // Rock and Zienkiewicz), which is positive for quadratic elements too.
+    double pressure_trace = 0.0, velocity_trace = 0.0;
+    for (int a = 0; a < np; ++a)
+      pressure_trace += M[a][a];
+    for (int a = 0; a < nn; ++a)
+      velocity_trace += velocity_diagonal[a];
+    for (int a = 0; a < np; ++a)
+      blocks.lumped_mass[dof(el.nodes[a], p)] += M[a][a] * volume / pressure_trace;
+    for (int d = 0; d < c.num_velocities; ++d)
+      for (int a = 0; a < nn; ++a)
+        blocks.lumped_mass[dof(el.nodes[a], c.velocities[d])] +=
+            velocity_diagonal[a] * volume / velocity_trace;
+    // The stabilisation of A_p and of the middle factor of lsc for an
+    // equal-order element: the L2 distance from the element mean, scaled.
+    const bool stabilized = c.stabilized;
+    const double h2 = std::pow(area, 2.0 / dim);
+    viscosity /= volume;
+    time_density /= volume;
+    // pcd applies A_p^{-1} to F_p Q_p^{-1} r, which holds the spurious modes at
+    // full size, and needs C_1 a hundred times larger than lsc does (see
+    // SaddlePointSolver.h).
+    const double c1 = (pcd ? 100.0 : 1.0) / h2;
+    const double c2 = theta * viscosity / (h2 * h2) + (dt > 0.0 ? time_density / (dt * h2) : 0.0);
+    for (int a = 0; a < np; ++a)
+      for (int b = 0; b < np; ++b)
       {
-        entries.emplace_back(position[r], position[d], 0.5 * it.value());
-        entries.emplace_back(position[d], position[r], 0.5 * it.value());
+        const Index da = dof(el.nodes[a], p), db = dof(el.nodes[b], p);
+        if (!keep(da, db))
+          continue;
+        if (approximation == SchurApproximation::PressureMass)
+          blocks.mass.emplace_back(da, db, Mmu[a][b]);
+        if (pcd)
+          blocks.convection_diffusion.emplace_back(da, db, F[a][b]);
+        const double distance = M[a][b] - m[a] * m[b] / volume;
+        if ((pcd || lsc) && stabilized)
+          blocks.stabilization.emplace_back(da, db, c1 * distance);
+        if (lsc && stabilized)
+          blocks.commutator_stabilization.emplace_back(da, db, c2 * distance);
       }
+  }
+
+  if (pcd)
+    addInflowRobin(*constraint, theta, blocks);
+  return blocks;
+}
+
+void
+Problem::addInflowRobin(const Kernel & constraint, double theta, SaddlePointBlocks & blocks) const
+{
+  // The Robin condition of F_p, mu dp/dn = rho (w . n) p, on the sides where
+  // every velocity is prescribed: it adds theta rho max(0, -w . n) (p, q) on
+  // the side, which is zero on a wall and acts at an inflow only.
+  const int p = constraint.variable();
+  QpContext context;
+  context.dim = _mesh->spaceDimension();
+  context.time = _time;
+  FlowCoefficients c;
+  std::vector<IntegrationPoint> points;
+  MappedPoint side_geo;
+  for (const Side & side : _mesh->exteriorSides())
+  {
+    if (side.first >= numIntegratedElements())
+      continue;
+    const Element & el = _mesh->element(side.first);
+    if (!constraint.activeOnBlock(el.block))
+      continue;
+    const auto & vb = _vars[p].blocks;
+    if (!vb.empty() && !vb.count(el.block))
+      continue;
+    context.element = side.first;
+    context.block = el.block;
+    context.x = _mesh->sideCentroid(side);
+    constraint.flowCoefficients(context, c);
+    bool prescribed = true;
+    for (Index node : _mesh->sideNodes(side))
+      for (int d = 0; d < c.num_velocities; ++d)
+        prescribed = prescribed && blocks.constrained[dof(node, c.velocities[d])];
+    if (!prescribed)
+      continue;
+    QuadratureSpec spec;
+    spec.kind = QuadratureSpec::Kind::Gauss;
+    spec.points = ReferenceElement::get(el.type).order() + 2;
+    buildSidePoints(*_mesh, side, false, spec, points);
+    const bool corner = usesCornerShape(el, p);
+    const int np = corner ? el.numCorners() : el.numNodes();
+    for (const auto & ip : points)
+    {
+      mapPoint(*_mesh, el, ip.xi, side_geo);
+      if (corner)
+        mapCornerShape(el, side_geo);
+      context.x = side_geo.x;
+      constraint.flowCoefficients(context, c);
+      double inflow = 0.0;
+      for (int d = 0; d < c.num_velocities; ++d)
+      {
+        double w_d = 0.0;
+        for (int a = 0; a < el.numNodes(); ++a)
+          w_d += side_geo.N[a] * _U[dof(el.nodes[a], c.velocities[d])];
+        inflow -= w_d * ip.area[d];
+      }
+      if (!(inflow > 0.0))
+        continue;
+      const double * N = corner ? side_geo.corner_shape : side_geo.N;
+      const double w = theta * c.density * inflow * coordFactor(side_geo.x);
+      for (int a = 0; a < np; ++a)
+        for (int b = 0; b < np; ++b)
+        {
+          const Index da = dof(el.nodes[a], p), db = dof(el.nodes[b], p);
+          if (!blocks.constrained[da] && !blocks.constrained[db] && N[a] * N[b] != 0.0)
+            blocks.convection_diffusion.emplace_back(da, db, w * N[a] * N[b]);
+        }
     }
   }
-  // Prescribed and inactive pressure unknowns: their equations are rows of the
-  // identity, whose Schur complement is exactly 1.
-  for (Index d : blocks.pressure_dofs)
-    if (constrained[d])
-      entries.emplace_back(position[d], position[d], 1.0);
-  const Index np = static_cast<Index>(blocks.pressure_dofs.size());
-  blocks.schur_approximation.resize(np, np);
-  blocks.schur_approximation.setFromTriplets(entries.begin(), entries.end());
-  blocks.schur_approximation.makeCompressed();
-  return blocks;
 }
 
 bool
@@ -1175,10 +1590,26 @@ Problem::preferDirectSolver(Index n) const
 struct Problem::LinearSolverCache
 {
   SparseMatrix matrix;
-  bool symmetric = false;
+  /// -1 not computed yet, 1 symmetric, 0 not.  The test costs a sparse
+  /// transpose and a subtraction, and a nonlinear problem stores a new matrix
+  /// with every Newton iteration, so the answer is computed only when a
+  /// solver asks for it (the conjugate gradient method and the automatic
+  /// choice with the multigrid) and then kept for the matrix it belongs to.
+  int symmetric_state = -1;
   std::shared_ptr<Eigen::SparseLU<SparseMatrix, Eigen::COLAMDOrdering<int>>> lu;
   std::shared_ptr<SmoothedAggregationAmg> amg;
   double amg_threshold = -1.0;
+
+  /// Whether the stored matrix is symmetric.
+  bool symmetric()
+  {
+    if (symmetric_state < 0)
+    {
+      const SparseMatrix difference = SparseMatrix(matrix.transpose()) - matrix;
+      symmetric_state = difference.norm() <= 1e-10 * matrix.norm() ? 1 : 0;
+    }
+    return symmetric_state == 1;
+  }
 
   /// Whether @p A equals the stored matrix, entry by entry.
   bool holds(const SparseMatrix & A) const
@@ -1197,18 +1628,14 @@ struct Problem::LinearSolverCache
     matrix = A;
     lu.reset();
     amg.reset();
-    const SparseMatrix difference = SparseMatrix(A.transpose()) - A;
-    symmetric = difference.norm() <= 1e-10 * A.norm();
+    symmetric_state = -1;
   }
 };
 
-Eigen::MatrixXd
-Problem::nearNullspace() const
+std::vector<std::vector<int>>
+Problem::displacementGroups() const
 {
   const int nv = numVariables();
-  const Index entities = numEntities();
-  const int dim = _mesh->dimension();
-  // The displacement variables of the elastic property objects, in component order.
   std::vector<std::vector<int>> groups;
   std::vector<char> grouped(nv, 0);
   for (const auto & material : _property_objects)
@@ -1227,6 +1654,61 @@ Problem::nearNullspace() const
       grouped[v] = 1;
     groups.push_back(group);
   }
+  return groups;
+}
+
+std::vector<std::vector<int>>
+Problem::physicsBlocks() const
+{
+  if (flowConstraint())
+    throw InputError("The preconditioner 'physics_blocks' solves each block with algebraic "
+                     "multigrid, which does not apply to the velocity and pressure of a flow. "
+                     "Use preconditioner 'LSC' or 'PCD', which split the flow itself and take "
+                     "the other unknowns (a temperature, for instance) into its first block.");
+  std::vector<std::vector<int>> blocks = displacementGroups();
+  std::vector<char> grouped(numVariables(), 0);
+  for (const auto & group : blocks)
+    for (int v : group)
+      grouped[v] = 1;
+  for (int v = 0; v < numVariables(); ++v)
+    if (!grouped[v])
+      blocks.push_back({v});
+  // In the order of the variables, which is the order in which the physics were added: a
+  // coupling that one physics drives (a temperature that expands a solid) is then solved first.
+  std::sort(blocks.begin(),
+            blocks.end(),
+            [](const std::vector<int> & a, const std::vector<int> & b) {
+              return *std::min_element(a.begin(), a.end()) < *std::min_element(b.begin(), b.end());
+            });
+  return blocks;
+}
+
+std::vector<std::vector<Index>>
+Problem::physicsBlockDofs() const
+{
+  const std::vector<std::vector<int>> groups = physicsBlocks();
+  std::vector<int> block_of(numVariables(), 0);
+  for (std::size_t k = 0; k < groups.size(); ++k)
+    for (int v : groups[k])
+      block_of[v] = static_cast<int>(k);
+  std::vector<std::vector<Index>> blocks(groups.size());
+  for (Index d = 0; d < numDofs(); ++d)
+    blocks[block_of[d % numVariables()]].push_back(d);
+  return blocks;
+}
+
+Eigen::MatrixXd
+Problem::nearNullspace() const
+{
+  const int nv = numVariables();
+  const Index entities = numEntities();
+  const int dim = _mesh->spaceDimension();
+  // The displacement variables of the elastic property objects, in component order.
+  const std::vector<std::vector<int>> groups = displacementGroups();
+  std::vector<char> grouped(nv, 0);
+  for (const auto & group : groups)
+    for (int v : group)
+      grouped[v] = 1;
   const bool cartesian = _coord == CoordinateSystem::Cartesian;
   int columns = 0;
   for (const auto & group : groups)
@@ -1326,10 +1808,10 @@ Problem::amgSolve(const SparseMatrix & A,
   auto & cache = *_solver_cache;
   if (!cache.holds(A))
     cache.store(A);
-  if (method == "cg" && !cache.symmetric)
-    throw InputError("linear_solver='cg' needs a symmetric matrix, which the Galerkin finite "
+  if (method == "cg" && !cache.symmetric())
+    throw InputError("linear_solver='CG' needs a symmetric matrix, which the Galerkin finite "
                      "element method gives but the dual mesh and finite volume methods do not. Use "
-                     "linear_solver='bicgstab' with preconditioner='amg' for those.");
+                     "linear_solver='BiCGStab' with preconditioner='AMG' for those.");
   const auto start = std::chrono::steady_clock::now();
   const auto seconds = [&start]
   { return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count(); };
@@ -1339,7 +1821,7 @@ Problem::amgSolve(const SparseMatrix & A,
     AmgOptions options;
     options.block_size = numVariables();
     options.strength_threshold = o.amg_strength_threshold;
-    options.symmetric = cache.symmetric;
+    options.symmetric = cache.symmetric();
     amg->setup(A, nearNullspace(), options);
     cache.amg = amg;
     cache.amg_threshold = o.amg_strength_threshold;
@@ -1348,7 +1830,7 @@ Problem::amgSolve(const SparseMatrix & A,
                 << " levels, set up in " << std::setprecision(3) << seconds() << " s\n"
                 << amg->summary();
   }
-  const bool symmetric = method == "cg" || (method == "automatic" && cache.symmetric);
+  const bool symmetric = method == "cg" || (method == "automatic" && cache.symmetric());
   x = Vector::Zero(b.size());
   const IterativeResult result =
       symmetric
@@ -1480,13 +1962,13 @@ Problem::checkSingularity(const SparseMatrix & J) const
          << " on a part of the mesh with " << entities.size()
          << (entities.size() == 1 ? " node" : " nodes") << " (";
       const char * axes = "xyz";
-      for (int d = 0; d < _mesh->dimension(); ++d)
+      for (int d = 0; d < _mesh->spaceDimension(); ++d)
         os << (d ? ", " : "") << axes[d] << " from " << lo[d] << " to " << hi[d];
       os << ") " << (variables.size() > 1 ? "are" : "is")
          << " not held by any boundary condition. A "
          << (variables.size() > 1 ? "rigid body motion" : "constant")
          << " can be added there without changing the equations, so the solution is not unique. "
-            "Give this part a Dirichlet condition (or fixed_constraint), or connect it to the rest "
+            "Give this part a Dirichlet condition (for a solid, the word fixed), or connect it to the rest "
             "of the mesh, e.g., by checking that the parts of an imported mesh share their nodes.";
       throw InputError(os.str());
     }
@@ -1501,16 +1983,26 @@ Problem::linearSolve(const SparseMatrix & A_in,
   SparseMatrix A = A_in;
   A.makeCompressed();
   const std::string & method = o.linear_solver;
-  if (o.preconditioner == "pressure_mass_schur")
+  if (const auto approximation = schurApproximation(o.preconditioner))
   {
-    const SaddlePointBlocks blocks = saddlePointBlocks(A);
+    const SaddlePointBlocks blocks = saddlePointBlocks(A, *approximation);
+    if (!blocks.refusal.empty())
+      throw InputError(blocks.refusal);
+    if (blocks.coupling == 0.0)
+      throw InputError("The pressure '" + blocks.pressure_variable +
+                       "' is not coupled to the other variables in this system; the block "
+                       "preconditioner of the flow does not apply.");
     if (method == "petsc")
     {
+      std::vector<Index> identity(static_cast<std::size_t>(numDofs()));
+      std::iota(identity.begin(), identity.end(), Index(0));
+      const petsc::SchurBlocks global =
+          petsc::globalSchurBlocks(blocks, identity, std::vector<char>(identity.size(), 1));
       petsc::Settings settings;
       settings.options = o.petsc_options;
       settings.relative_tolerance = o.linear_tolerance;
       settings.max_iterations = o.linear_max_iterations;
-      settings.saddle_point = &blocks;
+      settings.schur = &global;
       petsc::Result result;
       Vector x = petsc::solve(A, b, settings, result);
       if (iterations)
@@ -1522,9 +2014,9 @@ Problem::linearSolve(const SparseMatrix & A_in,
       return x;
     }
     if (method != "gmres" && method != "automatic")
-      throw InputError("The preconditioner 'pressure_mass_schur' works with linear_solver "
-                       "'gmres' or 'automatic' (the built-in flexible GMRES) and 'petsc'; it "
-                       "was given with '" +
+      throw InputError("The preconditioner '" + o.preconditioner +
+                       "' works with linear_solver 'GMRES' or 'automatic' (the built-in flexible "
+                       "GMRES) and 'PETSc'; it was given with '" +
                        method + "'.");
     SaddlePointSolver solver(A, blocks);
     Vector x = Vector::Zero(b.size());
@@ -1534,12 +2026,53 @@ Problem::linearSolve(const SparseMatrix & A_in,
       *iterations += result.iterations;
     if (!result.converged)
       throw std::runtime_error(
-          "dualmesh: flexible GMRES with the pressure mass matrix preconditioner did not "
-          "converge in " +
+          "dualmesh: flexible GMRES with the '" + o.preconditioner +
+          "' preconditioner did not converge in " + std::to_string(result.iterations) +
+          " iterations (relative residual " + std::to_string(result.relative_residual) +
+          "). Try linear_solver='LU'.");
+    return x;
+  }
+  if (o.preconditioner == "physics_blocks")
+  {
+    if (method != "gmres" && method != "automatic" && method != "petsc")
+      throw InputError(
+          "The preconditioner 'physics_blocks' works with linear_solver 'GMRES' or "
+          "'automatic' (the built-in flexible GMRES) and 'PETSc'; it was given with '" +
+          method + "'.");
+    const std::vector<std::vector<int>> groups = physicsBlocks();
+    const std::vector<std::vector<Index>> blocks = physicsBlockDofs();
+    if (method == "petsc")
+    {
+      petsc::Settings settings;
+      settings.options = o.petsc_options;
+      settings.relative_tolerance = o.linear_tolerance;
+      settings.max_iterations = o.linear_max_iterations;
+      settings.physics_blocks = blocks;
+      settings.near_nullspace = nearNullspace();
+      petsc::Result result;
+      Vector x = petsc::solve(A, b, settings, result);
+      if (iterations)
+        *iterations += result.iterations;
+      if (!result.converged)
+        throw std::runtime_error("dualmesh: the PETSc solve split by physics did not converge (" +
+                                 result.reason + ", " + std::to_string(result.iterations) +
+                                 " iterations).");
+      return x;
+    }
+    std::vector<int> sizes;
+    for (const auto & group : groups)
+      sizes.push_back(static_cast<int>(group.size()));
+    PhysicsBlockSolver solver(A, blocks, nearNullspace(), sizes);
+    Vector x;
+    const auto result =
+        solver.solve(b, x, o.linear_tolerance, o.linear_max_iterations, o.gmres_restart);
+    if (iterations)
+      *iterations += result.iterations;
+    if (!result.converged)
+      throw std::runtime_error(
+          "dualmesh: flexible GMRES with the 'physics_blocks' preconditioner did not converge in " +
           std::to_string(result.iterations) + " iterations (relative residual " +
-          std::to_string(result.relative_residual) +
-          "). A flow with strong inertia needs a better Schur complement approximation than the "
-          "mass matrix; try linear_solver='lu'.");
+          std::to_string(result.relative_residual) + "). Try linear_solver='LU'.");
     return x;
   }
   if (method == "lu")
@@ -1547,7 +2080,7 @@ Problem::linearSolve(const SparseMatrix & A_in,
   if (o.preconditioner == "amg" && method != "automatic")
   {
     if (method != "cg" && method != "bicgstab")
-      throw InputError("The preconditioner 'amg' works with linear_solver 'cg', 'bicgstab' or "
+      throw InputError("The preconditioner 'AMG' works with linear_solver 'CG', 'BiCGStab' or "
                        "'automatic'; it was given with '" +
                        method + "'.");
     Vector x;
@@ -1555,32 +2088,48 @@ Problem::linearSolve(const SparseMatrix & A_in,
       throw std::runtime_error("dualmesh: " + method +
                                " with the algebraic multigrid preconditioner did not converge in " +
                                std::to_string(o.linear_max_iterations) +
-                               " iterations. Try linear_solver='lu'.");
+                               " iterations. Try linear_solver='LU'.");
     return x;
   }
   if (method == "automatic")
   {
-    // A mixed-order (Taylor-Hood) flow problem is a saddle point problem whose
-    // pressure block is exactly zero, so an incomplete factorisation meets a
-    // zero pivot at once; factorise it directly.  Large ones are better
-    // served by PETSc with a Schur complement field split.
     if (preferDirectSolver(A.rows()))
       return cachedDirectSolve(A, b);
-    if (_mixed_order)
+    if (!_cells && flowConstraint())
     {
-      // A large Taylor-Hood system: flexible GMRES with the pressure mass
-      // matrix Schur preconditioner, whose iteration count does not grow with
-      // the mesh (measured: 13 per Newton step for Stokes flow on 8 x 8 to
-      // 32 x 32 Quad9 meshes), and which costs one factorisation of the
-      // momentum block instead of one of the whole system.
+      // A large flow: flexible GMRES with the least squares commutator, the
+      // block preconditioner with the fewest iterations in every case
+      // measured from Re = 100 on, which costs one factorisation of the
+      // momentum block instead of one of the whole system.  Multigrid and an
+      // incomplete factorisation of the whole saddle point system fail or
+      // crawl (a Taylor-Hood system has a zero pressure block, on which they
+      // cannot act): on an equal-order cavity of 120 000 unknowns the least
+      // squares commutator takes 11 s, the direct solver 21 s, and those
+      // attempts 56 s.  The iteration has a bounded budget and the direct
+      // solver is the fallback, as below.
       SolverOptions schur = o;
-      schur.preconditioner = "pressure_mass_schur";
+      schur.preconditioner = "lsc";
       schur.linear_solver = "gmres";
+      schur.linear_max_iterations = std::min(o.linear_max_iterations, 500);
       if (o.verbose)
-        std::cout << "  automatic linear solver: flexible GMRES with the pressure mass matrix "
-                     "Schur preconditioner ("
+        std::cout << "  automatic linear solver: flexible GMRES with the least squares "
+                     "commutator preconditioner ("
                   << A.rows() << " unknowns)\n";
-      return linearSolve(A, b, schur, iterations);
+      try
+      {
+        return linearSolve(A, b, schur, iterations);
+      }
+      catch (const InputError &)
+      {
+        throw;
+      }
+      catch (const std::runtime_error &)
+      {
+        if (o.verbose)
+          std::cout << "  the least squares commutator did not converge; using the direct "
+                       "solver\n";
+        return cachedDirectSolve(A, b);
+      }
     }
     // The iteration is given a bounded budget and the direct solver is the
     // fallback, so that "automatic" is never less robust than "lu": a system
@@ -1613,7 +2162,7 @@ Problem::linearSolve(const SparseMatrix & A_in,
       throw std::runtime_error("dualmesh: " + method + " with the " + o.preconditioner +
                                " preconditioner did not converge in " +
                                std::to_string(o.linear_max_iterations) +
-                               " iterations. Try linear_solver='lu', or another preconditioner.");
+                               " iterations. Try linear_solver='LU', or another preconditioner.");
     return x;
   }
   if (method == "petsc")
@@ -1623,6 +2172,10 @@ Problem::linearSolve(const SparseMatrix & A_in,
     settings.relative_tolerance = o.linear_tolerance;
     settings.max_iterations = o.linear_max_iterations;
     settings.block_size = numVariables();
+    // The rigid body modes of a solid, for GAMG; without a solid, GAMG's own constants per
+    // variable are the same.
+    if (!displacementGroups().empty())
+      settings.near_nullspace = nearNullspace();
     petsc::Result result;
     Vector x = petsc::solve(A, b, settings, result);
     if (iterations)
@@ -1642,7 +2195,7 @@ Problem::linearSolve(const SparseMatrix & A_in,
       throw std::runtime_error(
           "dualmesh: the conjugate gradient method did not converge. It requires a symmetric "
           "positive definite matrix, which the Galerkin finite element method gives but the "
-          "dual mesh and finite volume methods do not; use linear_solver = 'bicgstab' or 'lu' "
+          "dual mesh and finite volume methods do not; use linear_solver = 'BiCGStab' or 'LU' "
           "with those.");
     return x;
   }
@@ -1650,6 +2203,51 @@ Problem::linearSolve(const SparseMatrix & A_in,
                    "' (use automatic, lu, bicgstab, gmres, cg, or petsc).");
 }
 
+// ---------------------------------------------------------------------------
+// The serial identity of the parallel interface
+// ---------------------------------------------------------------------------
+Vector
+Parallel::linearSolve(Problem & problem,
+                      const SparseMatrix & A,
+                      const Vector & b,
+                      const SolverOptions & options,
+                      int * iterations) const
+{
+  return problem.linearSolve(A, b, options, iterations);
+}
+
+CheckpointLayout
+Parallel::checkpointLayout(const Problem & problem) const
+{
+  // One process holds the whole problem, numbered as it is.
+  CheckpointLayout layout;
+  layout.num_global_nodes = problem.numEntities();
+  layout.global_nodes.resize(static_cast<std::size_t>(problem.numEntities()));
+  std::iota(layout.global_nodes.begin(), layout.global_nodes.end(), 0);
+  layout.num_global_elements = problem.mesh().numElements();
+  layout.global_elements.resize(static_cast<std::size_t>(problem.mesh().numElements()));
+  std::iota(layout.global_elements.begin(), layout.global_elements.end(), 0);
+  return layout;
+}
+
+void
+Parallel::writeFields(Problem & problem,
+                      const std::string & base,
+                      const std::vector<std::string> & fields) const
+{
+  problem.writeVTU(base + ".vtu", {}, fields);
+}
+
+const Parallel &
+Problem::parallel() const
+{
+  static const Parallel serial;
+  return _parallel ? *_parallel : serial;
+}
+
+// ---------------------------------------------------------------------------
+// The nonlinear solve, serial or distributed
+// ---------------------------------------------------------------------------
 SolveResult
 Problem::nonlinearSolve(const SolverOptions & o, AssemblyOptions base, const Vector * steady_old)
 {
@@ -1657,11 +2255,35 @@ Problem::nonlinearSolve(const SolverOptions & o, AssemblyOptions base, const Vec
       o.nonlinear_solver != "linear")
     throw InputError("Unknown nonlinear solver '" + o.nonlinear_solver +
                      "' (use newton, picard, or linear).");
+  if (o.line_search != "automatic" && o.line_search != "none" && o.line_search != "backtracking")
+    throw InputError("Unknown line_search '" + o.line_search +
+                     "' (use automatic, none or backtracking).");
+  // The automatic choice: backtracking where the residual has kinks.
+  bool kinks = false;
+  for (const auto & k : _kernels)
+    kinks = kinks || k->hasKinks();
+  const bool line_search =
+      o.line_search == "backtracking" || (o.line_search == "automatic" && kinks);
+  const Parallel & par = parallel();
   const bool picard = o.nonlinear_solver == "picard";
   base.mode = picard ? LinearizationMode::Picard : LinearizationMode::Newton;
   std::vector<double> factors = o.load_factors;
   if (factors.empty())
     factors = {1.0};
+
+  // The residual at a state, summed over the processes, with the rows of the prescribed values.
+  const auto residualAt = [&](const Vector & U, double lf, Vector & R, SparseMatrix * J)
+  {
+    Vector lagged = U;
+    AssemblyOptions ao = base;
+    ao.lagged = &lagged;
+    assemble(U, ao, R, J);
+    if (steady_old)
+      R += *steady_old;
+    par.addShared(R);
+    _last_residual = R;
+    dirichletRows(U, lf, R, J);
+  };
 
   SolveResult result;
   Vector R;
@@ -1672,7 +2294,9 @@ Problem::nonlinearSolve(const SolverOptions & o, AssemblyOptions base, const Vec
     ++step_index;
     base.load_factor = lf;
     applyDirichlet(_U, lf);
-    if (o.verbose)
+    par.shareDirichlet(_U);
+    const bool print = o.verbose && par.isRoot();
+    if (print)
       console::nonlinearHeader(o.nonlinear_solver == "newton"
                                    ? "Newton"
                                    : (picard ? "Picard iteration" : "linear solve"),
@@ -1681,26 +2305,31 @@ Problem::nonlinearSolve(const SolverOptions & o, AssemblyOptions base, const Vec
                                lf);
     int linear_before = result.linear_iterations;
     double r0 = -1;
+    double r_previous = -1, last_step = 1.0;
     bool converged = false;
     bool diverged = false;
+    bool grew = false;
     bool have_residual_at_U = false;
     for (int it = 1; it <= o.max_iterations + 1; ++it)
     {
-      Vector lagU = _U;
-      base.lagged = &lagU;
-      assemble(_U, base, R, &J);
-      if (steady_old)
-        R += *steady_old;
-      _last_residual = R;
-      dirichletRows(_U, lf, R, &J);
-      if (!_singularity_checked)
+      residualAt(_U, lf, R, &J);
+      // The singularity check runs again when the pattern of the Jacobian
+      // changes, which the number of rows or entries is a cheap signature of:
+      // a constraint that appears folds rows into others, an interface
+      // condition starts to couple two bodies, and a re-initialization after
+      // a mesh change resets the check outright.  It needs the whole matrix.
+      if (par.checksSingularity() &&
+          (!_singularity_checked || _singularity_pattern_rows != J.rows() ||
+           _singularity_pattern_nonzeros != J.nonZeros()))
       {
         checkSingularity(J);
         _singularity_checked = true;
+        _singularity_pattern_rows = J.rows();
+        _singularity_pattern_nonzeros = J.nonZeros();
       }
-      const double rn = R.norm();
+      const double rn = par.norm(R);
       // An iterate that is no longer finite has diverged; going on would hand the linear solver a matrix of infinities.
-      if (!std::isfinite(rn) || !J.coeffs().allFinite())
+      if (!std::isfinite(rn) || par.any(!J.coeffs().allFinite()))
       {
         diverged = true;
         break;
@@ -1708,13 +2337,26 @@ Problem::nonlinearSolve(const SolverOptions & o, AssemblyOptions base, const Vec
       have_residual_at_U = true;
       if (r0 < 0)
         r0 = rn;
+      // A residual a million times the first is a diverged iteration: stop before the iterates
+      // grow into a matrix that the linear solver cannot factorise.
+      if (rn > 1e6 * r0)
+      {
+        diverged = true;
+        grew = true;
+        break;
+      }
       IterationRecord rec{step_index, lf, it, rn, 0.0};
+      const bool round_off =
+          !picard &&
+          newtonAtRoundOff(
+              it, rn, r_previous, last_step, std::sqrt(par.sum(J.squaredNorm())), par.norm(_U));
+      r_previous = rn;
       if (rn <= o.absolute_tolerance || (it > 1 && rn <= o.relative_tolerance * r0) ||
-          (o.nonlinear_solver == "linear" && it > 1))
+          (o.nonlinear_solver == "linear" && it > 1) || round_off)
       {
         converged = true;
         result.history.push_back(rec);
-        if (o.verbose)
+        if (print)
           console::nonlinearIteration(it, rn, r0, true);
         break;
       }
@@ -1723,30 +2365,28 @@ Problem::nonlinearSolve(const SolverOptions & o, AssemblyOptions base, const Vec
         result.history.push_back(rec);
         break;
       }
-      Vector delta = linearSolve(J, -R, o, &result.linear_iterations);
-      if (o.line_search != "none" && o.line_search != "backtracking")
-        throw InputError("Unknown line_search '" + o.line_search + "' (use none or backtracking).");
-      if (o.line_search == "backtracking" && o.nonlinear_solver == "newton")
+      _linear_dt = base.include_time_kernels ? base.dt : 0.0;
+      _linear_theta = base.include_steady_terms ? base.theta : 0.0;
+      Vector delta = par.linearSolve(*this, J, -R, o, &result.linear_iterations);
+      if (line_search && o.nonlinear_solver == "newton")
       {
         // Backtracking on the residual norm: accept the first step length
         // with ||R(U + a dU)|| <= (1 - 1e-4 a) ||R(U)||, or the best tried.
+        // A trial state where a property cannot be evaluated is rejected on
+        // every process together.
         double alpha = 1.0, best_alpha = 1.0, best = std::numeric_limits<double>::infinity();
         Vector Rt;
         for (int ls = 0; ls <= o.max_line_search_steps; ++ls)
         {
           Vector trial = _U + alpha * delta;
           updateDependentDofs(trial);
-          double rt = std::numeric_limits<double>::infinity();
+          bool failed = false;
+          Vector lagged = trial;
+          AssemblyOptions ao = base;
+          ao.lagged = &lagged;
           try
           {
-            Vector lagT = trial;
-            AssemblyOptions ao = base;
-            ao.lagged = &lagT;
             assemble(trial, ao, Rt, nullptr);
-            if (steady_old)
-              Rt += *steady_old;
-            dirichletRows(trial, lf, Rt, nullptr);
-            rt = Rt.norm();
           }
           catch (const InputError &)
           {
@@ -1754,7 +2394,16 @@ Problem::nonlinearSolve(const SolverOptions & o, AssemblyOptions base, const Vec
           }
           catch (const std::exception &)
           {
-            // A trial state where a property cannot be evaluated is rejected.
+            failed = true;
+          }
+          double rt = std::numeric_limits<double>::infinity();
+          if (!par.any(failed))
+          {
+            if (steady_old)
+              Rt += *steady_old;
+            par.addShared(Rt);
+            dirichletRows(trial, lf, Rt, nullptr);
+            rt = par.norm(Rt);
           }
           if (std::isfinite(rt) && rt < best)
           {
@@ -1771,14 +2420,15 @@ Problem::nonlinearSolve(const SolverOptions & o, AssemblyOptions base, const Vec
       Vector Unew = _U + delta;
       if (o.relaxation > 0 && it > 1)
         Unew = (1.0 - o.relaxation) * Unew + o.relaxation * _U;
-      const double un = Unew.norm();
-      rec.step_norm = (Unew - _U).norm() / (un > 0 ? un : 1.0);
+      const double un = par.norm(Unew);
+      rec.step_norm = par.norm(Vector(Unew - _U)) / (un > 0 ? un : 1.0);
+      last_step = rec.step_norm;
       _U = Unew;
       updateDependentDofs(_U);
       have_residual_at_U = false;
       result.history.push_back(rec);
       ++result.total_iterations;
-      if (o.verbose)
+      if (print)
         console::nonlinearIteration(
             it, rn, r0, false, rec.step_norm, result.linear_iterations - linear_before);
       linear_before = result.linear_iterations;
@@ -1788,14 +2438,12 @@ Problem::nonlinearSolve(const SolverOptions & o, AssemblyOptions base, const Vec
         break;
       }
     }
-    if (!have_residual_at_U)
+    // A solve that stopped on the size of its step holds the residual of the iterate before the
+    // last step: the reactions and the residual post-processors are taken at the solution.
+    if (!diverged && !have_residual_at_U)
     {
-      Vector lagU = _U;
-      base.lagged = &lagU;
-      assemble(_U, base, R, nullptr);
-      if (steady_old)
-        R += *steady_old;
-      _last_residual = R;
+      Vector unused;
+      residualAt(_U, lf, unused, nullptr);
     }
     if (!converged)
     {
@@ -1803,7 +2451,15 @@ Problem::nonlinearSolve(const SolverOptions & o, AssemblyOptions base, const Vec
       if (o.error_on_divergence)
       {
         std::ostringstream os;
-        if (diverged)
+        if (grew)
+          os << "dualmesh: Newton's method diverged at load factor " << lf
+             << ": the residual grew from " << r0
+             << " to more than 1e6 times that. Either "
+                "the start is too far from the solution, or the problem has no solution (check "
+                "the data). Take load steps (load_factors), start from a closer state, or use "
+                "nonlinear_solver 'Picard'. A flow at a high cell Reynolds number converges "
+                "better with advection_scheme 'upwind' or 'limited'.";
+        else if (diverged)
           os << "dualmesh: the nonlinear solve stopped at load factor " << lf
              << ": the residual or the Jacobian has NaN or infinite entries. Either Newton's "
                 "method diverged (take smaller load steps, start from a closer state, or refine "
@@ -1828,17 +2484,44 @@ Problem::solveSteady(const SolverOptions & options)
   AssemblyOptions base;
   base.include_time_kernels = false;
   base.theta = 1.0;
+  // A flow at rest starts from the Stokes solution, the same problem without the inertia.  The
+  // linearisation about the state at rest, whose prescribed velocities next to zero values make
+  // steep gradients, can send Newton's method far from the solution; the Stokes solution is the
+  // usual first guess of the Navier-Stokes equations.  The equations are unchanged.
+  SolveResult start;
+  if (options.nonlinear_solver != "linear" && flowAtRest())
+  {
+    if (options.verbose && parallel().isRoot())
+      std::cout << "  The flow is at rest: Newton's method starts from the Stokes solution, the "
+                   "same problem without the inertia.\n";
+    const Vector at_rest = _U;
+    AssemblyOptions stokes = base;
+    stokes.inertia = 0.0;
+    // At the first load factor, where the first load step of the flow starts.
+    SolverOptions quiet = options;
+    quiet.error_on_divergence = false;
+    if (!quiet.load_factors.empty())
+      quiet.load_factors = {quiet.load_factors.front()};
+    // The Schur complement of a Stokes problem is spectrally equivalent to the pressure mass
+    // matrix, so pressure_mass is its block preconditioner.  pcd and lsc approximate the
+    // convection that the Stokes problem does not have.
+    if (quiet.preconditioner == "pcd" || quiet.preconditioner == "lsc")
+      quiet.preconditioner = "pressure_mass";
+    start = nonlinearSolve(quiet, stokes, nullptr);
+    if (!start.converged)
+      _U = at_rest;
+  }
   SolveResult result = nonlinearSolve(options, base, nullptr);
+  result.total_iterations += start.total_iterations;
+  result.linear_iterations += start.linear_iterations;
+  result.history.insert(result.history.begin(), start.history.begin(), start.history.end());
   // A converged steady state is a state the history of stateful property objects
   // has reached: commit it, so that a following solve or time step starts
   // from it.  Without this, a transient run after a steady solve would
   // restart the history from the undeformed state and take the whole
   // steady deformation as its first increment.
   if (result.converged && hasState())
-  {
     commitState();
-    _state_committed_U = _U;
-  }
   return result;
 }
 
@@ -1858,12 +2541,20 @@ Problem::takeTimeStep(const Vector & old,
   // earlier version did, is consistent but only first-order accurate, which
   // the manufactured-solution tests exposed as a Crank-Nicolson run
   // converging at order one.
+  if (tr.theta <= 0.0)
+    for (const auto & k : _kernels)
+      if (k->residualHasTimeDerivative())
+        throw InputError("'" + k->name() +
+                         "' is a stabilisation whose residual holds the time derivative, which "
+                         "the explicit step (implicitness 0) cannot weight. Use an implicitness "
+                         "above 0.");
   Vector old_residual;
   if (tr.theta < 1.0)
   {
     AssemblyOptions ao;
     ao.include_time_kernels = false;
     ao.theta = 1.0 - tr.theta;
+    ao.old_level = true;
     ao.dt = dt;
     const double new_time = _time;
     _time = new_time - dt;
@@ -1883,7 +2574,10 @@ Problem::takeTimeStep(const Vector & old,
   base.dt = dt;
   base.theta = tr.theta;
   base.include_time_kernels = true;
-  base.include_steady_terms = tr.theta > 0;
+  // An explicit step still takes the equations without a time derivative at the new time.
+  base.include_steady_terms =
+      tr.theta > 0 ||
+      std::any_of(_new_time_only.begin(), _new_time_only.end(), [](char c) { return c != 0; });
   return nonlinearSolve(options, base, tr.theta < 1.0 ? &old_residual : nullptr);
 }
 
@@ -1892,13 +2586,15 @@ runTransient(const TransientOptions & tr,
              const SolverOptions & options,
              Vector & solution,
              double & current_time,
-             const std::function<SolveResult(const Vector &, double)> & take_step,
+             const std::function<SolveResult(const Vector &, double, bool)> & take_step,
              const std::function<void(int, double)> & on_accept,
              const std::function<void(int)> & write_output,
              bool verbose_root,
              const std::function<void(int, double)> & after_step,
-             const std::function<double(double)> & courant)
+             const std::function<double(double)> & courant,
+             const std::function<double(const Vector &)> & vector_norm)
 {
+  const auto measure = [&](const Vector & v) { return vector_norm ? vector_norm(v) : v.norm(); };
   if (tr.dt <= 0)
     throw InputError("Transient: the time step must be positive.");
   if (tr.theta < 0 || tr.theta > 1)
@@ -1982,7 +2678,7 @@ runTransient(const TransientOptions & tr,
     {
       // One coarse step.
       current_time = oldcurrent_time + step_size;
-      SolveResult coarse = take_step(old, step_size);
+      SolveResult coarse = take_step(old, step_size, true);
       record(coarse);
       const Vector coarse_solution = solution;
       SolveResult fine_a, fine_b;
@@ -1991,13 +2687,13 @@ runTransient(const TransientOptions & tr,
         // Two half steps from the same starting state.
         solution = old;
         current_time = oldcurrent_time + 0.5 * step_size;
-        fine_a = take_step(old, 0.5 * step_size);
+        fine_a = take_step(old, 0.5 * step_size, true);
         record(fine_a);
         if (fine_a.converged)
         {
           const Vector half = solution;
           current_time = oldcurrent_time + step_size;
-          fine_b = take_step(half, 0.5 * step_size);
+          fine_b = take_step(half, 0.5 * step_size, false);
           record(fine_b);
         }
       }
@@ -2012,9 +2708,9 @@ runTransient(const TransientOptions & tr,
       {
         // Richardson estimate of the error of the coarse step.  The two half
         // steps are the more accurate answer and are the one kept.
-        const double scale = std::max(solution.norm(), 1.0);
+        const double scale = std::max(measure(solution), 1.0);
         const double estimate =
-            (solution - coarse_solution).norm() / ((std::pow(2.0, order) - 1.0) * scale);
+            measure(Vector(solution - coarse_solution)) / ((std::pow(2.0, order) - 1.0) * scale);
         if (estimate > tr.error_tolerance)
         {
           accepted = false;
@@ -2034,7 +2730,7 @@ runTransient(const TransientOptions & tr,
     else
     {
       current_time = oldcurrent_time + step_size;
-      SolveResult r = take_step(old, step_size);
+      SolveResult r = take_step(old, step_size, true);
       record(r);
       iterations = r.total_iterations;
       accepted = r.converged;
@@ -2115,18 +2811,14 @@ SolveResult
 Problem::solveTransient(const TransientOptions & transient, const SolverOptions & options)
 {
   initialize();
+  if (transient.dt <= 0)
+    throw InputError("Transient: the time step must be positive.");
+  const Parallel & par = parallel();
   // The step is retried on failure, so the nonlinear solver must report a
   // failure rather than throw.
   SolverOptions attempt = options;
   attempt.error_on_divergence = false;
-  // One process holds the whole problem, numbered as it is.
-  CheckpointLayout layout;
-  layout.num_global_nodes = numEntities();
-  layout.global_nodes.resize(static_cast<std::size_t>(numEntities()));
-  std::iota(layout.global_nodes.begin(), layout.global_nodes.end(), 0);
-  layout.num_global_elements = _mesh->numElements();
-  layout.global_elements.resize(static_cast<std::size_t>(_mesh->numElements()));
-  std::iota(layout.global_elements.begin(), layout.global_elements.end(), 0);
+  const CheckpointLayout layout = par.checkpointLayout(*this);
   // A restart continues from the time, the step size and the state of its checkpoint.
   TransientOptions tr = transient;
   int first_step = 0;
@@ -2136,40 +2828,40 @@ Problem::solveTransient(const TransientOptions & transient, const SolverOptions 
     tr.start_time = point.time;
     tr.dt = point.dt > 0 ? point.dt : tr.dt;
     first_step = point.step;
-    _time = point.time;
   }
+  _time = tr.start_time;
   applyDirichlet(_U, 1.0);
+  par.shareDirichlet(_U);
   const auto write = [&](int index)
   {
     if (!tr.output_file_base.empty())
     {
       std::ostringstream os;
-      os << tr.output_file_base << "_" << std::setw(5) << std::setfill('0') << index << ".vtu";
-      writeVTU(os.str(), {}, tr.output_fields);
+      os << tr.output_file_base << "_" << std::setw(5) << std::setfill('0') << index;
+      par.writeFields(*this, os.str(), tr.output_fields);
     }
     if (_output_callback)
       _output_callback(index);
   };
-  // The history of stateful property objects follows the solution: a step starts
-  // from the committed history when it starts from the last accepted
-  // solution, and from the state its predecessor reached when it continues
-  // that predecessor (the second half of a doubled step).
-  _state_committed_U = _U;
   if (_time_integrator)
     _time_integrator->start(_U, _time);
+  // Every process runs the same controller on the same numbers, so they all take the same steps
+  // and accept or reject together: the residual norms that the decision rests on and the error
+  // estimate are global.
   return runTransient(
       tr,
       options,
       _U,
       _time,
-      [&](const Vector & old, double dt)
+      [&](const Vector & old, double dt, bool from_committed)
       {
         if (_time_integrator)
           return _time_integrator->step(_U, old, _time, dt);
+        // The history of stateful property objects follows the solution: a step starts from the
+        // committed history when it starts from the last accepted solution, and from the state
+        // its predecessor reached when it continues that predecessor.
         if (hasState())
         {
-          const bool from_committed = old.size() == _state_committed_U.size() &&
-                                      (old.array() == _state_committed_U.array()).all();
           if (from_committed)
             startStateFromCommitted();
           else
@@ -2177,19 +2869,16 @@ Problem::solveTransient(const TransientOptions & transient, const SolverOptions 
         }
         return takeTimeStep(old, dt, tr, attempt);
       },
-      [&](int step, double)
+      [&](int, double)
       {
         if (_time_integrator)
           _time_integrator->accept(_U, _time);
         if (hasState())
-        {
           commitState();
-          _state_committed_U = _U;
-        }
         notifyStepAccepted();
       },
       write,
-      true,
+      par.isRoot(),
       [&](int step, double next_dt)
       {
         if (tr.checkpoint_file.empty())
@@ -2200,7 +2889,8 @@ Problem::solveTransient(const TransientOptions & transient, const SolverOptions 
       },
       _time_integrator ? std::function<double(double)>(
                              [&](double dt) { return _time_integrator->courantNumber(_U, dt); })
-                       : std::function<double(double)>());
+                       : std::function<double(double)>(),
+      [&](const Vector & v) { return par.norm(v); });
 }
 
 } // namespace dualmesh

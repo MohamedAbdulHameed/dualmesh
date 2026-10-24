@@ -104,9 +104,10 @@ class TotalReaction(Postprocessor):
 
 @dataclass
 class BoundaryFluxIntegral(Postprocessor):
-    """The integral of the normal flux of one kernel over a side set."""
+    """The integral of the normal flux of one kernel over a side set: ``kernel`` is the
+    object that :meth:`~dualmesh.Problem.add_kernel` returned."""
 
-    kernel: str = ""
+    kernel: object = None
     boundary: str = ""
 
     def compute(self, problem) -> float:
@@ -125,21 +126,13 @@ TYPES = {
 like every object type."""
 
 
-def _name_key(name: str) -> str:
-    return name.replace("_", "").lower()
-
-
 def create(type_name: str, name: str, **parameters) -> Postprocessor:
     """A post-processor of the registered type ``type_name``."""
     if type_name not in TYPES:
-        renamed = [t for t in TYPES if _name_key(t) == _name_key(type_name)]
-        if _name_key(type_name) == "reaction":
-            renamed = ["total_reaction"]
-        hint = (
-            f" Object types are written in lower case with underscores since dualmesh 0.2: use '{renamed[0]}'."
-            if renamed
-            else ""
-        )
+        import difflib
+
+        close = difflib.get_close_matches(type_name, sorted(TYPES), n=1)
+        hint = f" Did you mean '{close[0]}'?" if close else ""
         raise ValueError(
             f"Unknown post-processor type '{type_name}'.{hint} Use one of: {', '.join(sorted(TYPES))}."
         )

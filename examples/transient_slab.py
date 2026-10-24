@@ -31,15 +31,12 @@ def solve(num_elements=40, time_step=0.001, implicitness=0.5):
     problem = dm.Problem(mesh)
     heat = problem.add_physics(
         "heat_transfer",
-        "heat",
         thermal_conductivity=DIFFUSIVITY,
         density=1.0,
         specific_heat=1.0,
         initial_condition=1.0,
     )
-    heat.add_boundary_condition(
-        "Dirichlet_boundary_condition", "ends", boundary=["left", "right"], value=0.0
-    )
+    heat.add_boundary_condition("temperature = 0", boundary=["left", "right"])
     problem.solve_transient(end_time=END_TIME, time_step=time_step, implicitness=implicitness)
     return problem
 

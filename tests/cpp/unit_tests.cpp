@@ -4,6 +4,7 @@
 // The extensive verification suite against Reddy's book lives in tests/python.
 #include "dualmesh/base/Problem.h"
 #include "dualmesh/core/ADReal.h"
+#include "dualmesh/core/Equation.h"
 #include "dualmesh/core/ParsedFunction.h"
 #include "dualmesh/fe/Assembly.h"
 #include "dualmesh/linalg/IncompleteLU.h"
@@ -127,6 +128,81 @@ TEST(parsed_expression_infinite_slope_times_zero_derivative)
   const ParsedExpression g("sqrt(x)", {"x"});
   const ADReal x[1] = {ADReal::independent(4.0, 0, 1)};
   CHECK_NEAR(g.value(x).derivative(0), 0.25, 1e-15);
+}
+
+TEST(equations_are_reduced_to_flux_source_and_time_coefficient)
+{
+  EquationScope scope;
+  scope.dimension = 2;
+  scope.fields = {{"T", 0}};
+  scope.constants = {"rho", "cp", "k", "q"};
+  const auto q = reduceEquations(scope, {"rho*cp*dT/dt = div(k*grad(T)) + q"});
+  CHECK(q.size() == 1);
+  CHECK(q[0].field == "T");
+  CHECK(q[0].flux.size() == 2);
+  CHECK(q[0].flux[0] == "-k*grad_x(T)");
+  CHECK(q[0].flux[1] == "-k*grad_y(T)");
+  CHECK(q[0].source == "q");
+  CHECK(q[0].time_coeff == "rho*cp");
+
+  // A vector equation and a constraint, matched to their fields.
+  EquationScope flow;
+  flow.dimension = 2;
+  flow.fields = {{"U", 1}, {"p", 0}};
+  flow.constants = {"mu"};
+  const auto f = reduceEquations(flow, {"div(U) = 0", "dU/dt = div(-p*I + mu*grad(U))"});
+  CHECK(f.size() == 3);
+  CHECK(f[0].field == "U_x" && f[1].field == "U_y" && f[2].field == "p");
+  CHECK(f[0].time_coeff == "1");
+  CHECK(f[2].flux.empty());
+  CHECK(f[2].source == "-(grad_x(U_x) + grad_y(U_y))");
+}
+
+TEST(equations_that_cannot_be_sorted_are_refused)
+{
+  EquationScope scope;
+  scope.dimension = 2;
+  scope.fields = {{"u", 0}};
+  for (const std::string bad :
+       {"x*laplacian(u) = 1", "sin(laplacian(u)) = 1", "laplacian(u) +", "du/dt = laplacian(w)"})
+  {
+    bool refused = false;
+    try
+    {
+      reduceEquations(scope, {bad});
+    }
+    catch (const InputError &)
+    {
+      refused = true;
+    }
+    CHECK(refused);
+  }
+}
+
+TEST(boundary_conditions_are_read_from_text)
+{
+  EquationScope scope;
+  scope.dimension = 2;
+  scope.fields = {{"T", 0}};
+  scope.constants = {"k", "h"};
+  scope.flux_names = {"normal_flux", "heat_flux"};
+  const auto q = reduceEquations(scope, {"-div(k*grad(T)) = 0"});
+  const auto value = reduceCondition(scope, q, "T = 300 + y");
+  CHECK(value.size() == 1 && value[0].dirichlet && value[0].value == "300 + y");
+  const auto robin = reduceCondition(scope, q, "-k*dT/dn = h*(T - 293)");
+  CHECK(robin.size() == 1 && !robin[0].dirichlet && robin[0].value == "h*(T - 293)");
+  const auto named = reduceCondition(scope, q, "heat_flux = -5000");
+  CHECK(named.size() == 1 && named[0].value == "-5000");
+  bool refused = false;
+  try
+  {
+    reduceCondition(scope, q, "k*dT/dn = 1");
+  }
+  catch (const InputError &)
+  {
+    refused = true;
+  }
+  CHECK(refused);
 }
 
 TEST(simplex_quadrature_is_exact)
@@ -575,21 +651,20 @@ TEST(reddy_example_5_3_1_linear_fin)
   Problem pb(mesh);
   pb.addVariable("u");
   pb.addObject("diffusion", "diff", params("diffusion", {{"variable", std::string("u")}}));
-  pb.addObject("reaction",
-               "react",
-               params("reaction", {{"variable", std::string("u")}, {"coefficient", 400.0}}));
-  pb.addObject("Dirichlet_boundary_condition",
+  pb.addObject(
+      "reaction", "react", params("reaction", {{"variable", std::string("u")}, {"coeff", 400.0}}));
+  pb.addObject("Dirichlet",
                "left",
-               params("Dirichlet_boundary_condition",
+               params("Dirichlet",
                       {{"variable", std::string("u")},
                        {"boundary", std::vector<std::string>{"left"}},
                        {"value", 300.0}}));
-  pb.addObject("Robin_boundary_condition",
+  pb.addObject("Robin",
                "right",
-               params("Robin_boundary_condition",
+               params("Robin",
                       {{"variable", std::string("u")},
                        {"boundary", std::vector<std::string>{"right"}},
-                       {"transfer_coefficient", 2.0}}));
+                       {"transfer_coeff", 2.0}}));
   pb.solveSteady();
   const auto u = pb.values("u");
   const double expected[] = {300.0, 257.62, 225.59, 202.64, 187.83, 180.57};
@@ -632,9 +707,9 @@ TEST(patch_test_linear_field)
         }
       };
       pb.addFunction("exact", std::make_shared<Lin>());
-      pb.addObject("Dirichlet_boundary_condition",
+      pb.addObject("Dirichlet",
                    "",
-                   params("Dirichlet_boundary_condition",
+                   params("Dirichlet",
                           {{"variable", std::string("u")},
                            {"boundary", all},
                            {"value", std::string("exact")}}));
@@ -643,6 +718,65 @@ TEST(patch_test_linear_field)
       for (Index n = 0; n < mesh->numNodes(); ++n)
         CHECK_NEAR(pb.solution()[n], exact.value(mesh->node(n), 0), 1e-10);
     }
+  }
+}
+
+TEST(every_side_is_wound_outward_and_its_area_vectors_close)
+{
+  // One element of every type, the reference element under a sheared map
+  // with a positive determinant.  The right-hand normal of each side, from
+  // the physical positions of its nodes in their stored order, points away
+  // from the element, and the side area vectors satisfy the divergence
+  // theorem: they sum to zero, and the integral of x . n over the boundary
+  // is the dimension times the measure.
+  const double A[3][3] = {{1.2, 0.3, 0.1}, {0.1, 0.9, 0.2}, {0.0, 0.2, 1.1}};
+  for (int k = 0; k < kNumElementTypes; ++k)
+  {
+    const auto type = static_cast<ElementType>(k);
+    const auto & ref = ReferenceElement::get(type);
+    const int dim = ref.dimension();
+    Mesh m(dim);
+    std::vector<Index> nodes;
+    for (int i = 0; i < ref.numNodes(); ++i)
+    {
+      Point x{0.5, -0.25, 0.75};
+      for (int r = 0; r < dim; ++r)
+        for (int c = 0; c < dim; ++c)
+          x[r] += A[r][c] * ref.node(i)[c];
+      for (int r = dim; r < 3; ++r)
+        x[r] = 0.0;
+      nodes.push_back(m.addNode(x));
+    }
+    m.addElement(type, nodes);
+    const Point centre = m.elementCentroid(0);
+    Point closure{0, 0, 0};
+    double flux_of_x = 0;
+    QuadratureSpec q;
+    q.points = 3;
+    std::vector<IntegrationPoint> pts;
+    MappedPoint mp;
+    for (int s = 0; s < ref.numSides(); ++s)
+    {
+      const auto sn = m.sideNodes({0, s});
+      const Point a = m.node(sn[0]);
+      Point n{0, 0, 0};
+      if (dim == 1)
+        n = a - centre;
+      else if (dim == 2)
+        n = {m.node(sn[1])[1] - a[1], a[0] - m.node(sn[1])[0], 0};
+      else
+        n = cross(m.node(sn[1]) - a, m.node(sn[2]) - a);
+      CHECK(dot(n, m.sideCentroid({0, s}) - centre) > 0);
+      buildSidePoints(m, {0, s}, false, q, pts);
+      for (const auto & p : pts)
+      {
+        mapPoint(m, m.element(0), p.xi, mp);
+        closure = closure + p.area;
+        flux_of_x += dot(mp.x, p.area);
+      }
+    }
+    CHECK_NEAR(norm(closure), 0.0, 1e-12);
+    CHECK_NEAR(flux_of_x, dim * elementMeasure(m, 0), 1e-12);
   }
 }
 

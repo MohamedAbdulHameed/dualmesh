@@ -2,7 +2,7 @@ Getting started
 ===============
 
 This page solves a complete problem and then explains each of its components.
-The problem is Example 5.4.3 of the book: a bus bar of 0.10 m by 0.05 m
+The problem is a bus bar of 0.10 m by 0.05 m
 carrying enough current to generate :math:`10^6\ \mathrm{W/m^3}`, held at
 :math:`40\ ^\circ\mathrm{C}` on the left and :math:`10\ ^\circ\mathrm{C}` on the
 right, insulated at the bottom, and cooled on top by air at
@@ -22,17 +22,12 @@ right, insulated at the bottom, and cooled on top by air at
    problem = dm.Problem(mesh, method="dmcdm")
 
    # 3. the physics: heat conduction with a heat source
-   heat = problem.add_physics("heat_transfer", "heat", thermal_conductivity=20.0, heat_source=1.0e6)
+   heat = problem.add_physics("heat_transfer", thermal_conductivity=20.0, heat_source=1.0e6)
 
-   # 4. the boundary conditions, named after the sides they act on
-   heat.add_boundary_condition("Dirichlet_boundary_condition", "left", value=40.0)
-   heat.add_boundary_condition("Dirichlet_boundary_condition", "right", value=10.0)
-   heat.add_boundary_condition(
-       "convective_heat_flux_boundary_condition",
-       "top",
-       heat_transfer_coefficient=75.0,
-       ambient_temperature=0.0,
-   )
+   # 4. the boundary conditions, written as text, on the sides of the mesh
+   heat.add_boundary_condition("temperature = 40", boundary="left")
+   heat.add_boundary_condition("temperature = 10", boundary="right")
+   heat.add_boundary_condition("heat_flux = 75*temperature", boundary="top")  # convection to air at 0
    # the bottom is insulated: a zero natural condition, so nothing to add
 
    # 5. solve
@@ -44,8 +39,7 @@ right, insulated at the bottom, and cooled on top by air at
    problem.write_vtu("bus_bar.vtu")
 
 The printed temperatures are :math:`83.142\ ^\circ\mathrm{C}` and
-:math:`76.859\ ^\circ\mathrm{C}`, which agree with the values of Table 5.4.3 of
-the book to every printed digit.
+:math:`76.859\ ^\circ\mathrm{C}`.
 
 Meshes
 ------
@@ -107,14 +101,13 @@ Physics, boundary conditions and objects
 
 A **physics** names a set of equations in physical terms and creates their
 unknowns: ``heat_transfer`` creates the variable ``temperature``,
-``solid_mechanics`` the displacements and ``incompressible_flow`` the
-velocities.  A **boundary condition** of a physics either prescribes the
-variable (``Dirichlet_boundary_condition``, ``fixed_constraint``,
-``symmetry_boundary_condition``) or prescribes the normal flux
-(``Neumann_boundary_condition``, ``Robin_boundary_condition``,
-``convective_heat_flux_boundary_condition``, ``traction_boundary_condition``,
-``pressure_boundary_condition``, ...), and it is named after the side set it
-acts on.  A **coupling** joins two physics, e.g., ``thermal_expansion``.
+``solid_mechanics`` the displacements and ``fluid_dynamics`` the
+velocities.  A **boundary condition** is written as text, on the side sets
+or node sets named by ``boundary``: a variable on the left prescribes its
+value (``"temperature = 300"``), and the name of the flux of the physics on
+the left prescribes the flux through the boundary along the outward normal
+(``"heat_flux = 75*(temperature - 293)"``, ``"traction = [0, -1e6]"``).  The
+words ``"fixed"`` and ``"symmetry"`` of a solid need no data.  A **coupling** joins two physics, e.g., ``thermal_expansion``.
 
 Each physics generates registered objects: **kernels**, which contribute a
 flux, a source, or both to the equation of one variable, and **property objects**,
@@ -134,14 +127,16 @@ closest name and the list of accepted parameters.  They are listed by:
 or, at the command line, by ``dualmesh list`` and ``dualmesh describe
 heat_transfer``.
 
-Coefficients can be numbers, named functions, or plain Python callables
-``f(x, y, z, t)``:
+The right side of a condition is an expression of :math:`x`, :math:`y`,
+:math:`z`, :math:`t`, the fields and the registered functions, and a Python
+callable ``f(x, y, z, t)`` is registered by name first:
 
 .. code-block:: python
 
-   heat.add_boundary_condition(
-       "Dirichlet_boundary_condition", "top", value=lambda x, y, z, t: 500.0 * (1.0 - 10.0 * x * x)
-   )
+   heat.add_boundary_condition("temperature = 500*(1 - 10*x^2)", boundary="top")
+
+   problem.add_function("profile", lambda x, y, z, t: 500.0 * (1.0 - 10.0 * x * x))
+   heat.add_boundary_condition("temperature = profile", boundary="top")
 
 Solving
 -------

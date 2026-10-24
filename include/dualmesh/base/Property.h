@@ -25,16 +25,25 @@ public:
   /// Declare a property; returns its id (storage offset).  Declaring the same
   /// name twice with the same size returns the existing id.
   int declare(const std::string & name, int components);
-  /// Look up a property; throws a helpful error if it does not exist.
+  /// Look up a property to read it; throws a helpful error if it does not exist.  The
+  /// property is marked as read (see isRead).
   int id(const std::string & name) const;
   int components(const std::string & name) const;
   bool has(const std::string & name) const { return _props.count(name) > 0; }
   int size() const { return _size; }
   const std::map<std::string, std::pair<int, int>> & all() const { return _props; }
+  /// Mark a property as read by an object that found it in all() (an expression).
+  void markRead(const std::string & name) const;
+  /// Whether some object reads the property at @p offset (its id).  Every reader finds a
+  /// property through id(), or, an expression, through all() and markRead(), so a property
+  /// object may skip an output that nobody reads.  The marks are made while objects are set up
+  /// and before a post-processor evaluates, never inside a threaded loop.
+  bool isRead(int offset) const { return _read.count(offset) > 0; }
 
 private:
   std::map<std::string, std::pair<int, int>> _props;
   int _size = 0;
+  mutable std::set<int> _read;
 };
 
 class Property : public Object
@@ -61,7 +70,7 @@ public:
   const std::set<int> & blocks() const { return _blocks; }
   bool activeOnBlock(int b) const { return _blocks.empty() || _blocks.count(b); }
 
-  /// Resolve 'scaled_properties' against the registry, once this property object
+  /// Resolve 'property_factors' against the registry, once this property object
   /// has declared its properties.
   void setupPropertyFactors(const PropertyRegistry & registry);
   /// Multiply the scaled properties by their factors; called by the problem

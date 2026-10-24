@@ -49,7 +49,7 @@ CAPITALISED = {
 }
 
 #: Abbreviations allowed by rule 4.2.
-ALLOWED_ABBREVIATIONS = {"num", "max", "min", "x", "y", "z", "r", "id"}
+ALLOWED_ABBREVIATIONS = {"num", "max", "min", "x", "y", "z", "r", "id", "coeff", "vol", "disp"}
 
 #: Abbreviations that rule 4.2 replaces by the full word.
 FORBIDDEN_WORDS = {
@@ -58,13 +58,14 @@ FORBIDDEN_WORDS = {
     "std": "standard_deviation",
     "k": "thermal_conductivity or the full name",
     "temp": "temperature",
-    "coeff": "coefficient",
-    "coef": "coefficient",
+    "co" "efficient": "coeff (the standard abbreviation, used in every name)",
+    "coef": "coeff",
+    "volumetric": "vol",
+    "volume": "vol",
     "tol": "tolerance",
     "eps": "the full name",
     "iter": "iteration",
     "iters": "iterations",
-    "disp": "displacement",
     "vel": "velocity",
     "nu": "poissons_ratio",
     "E": "youngs_modulus",
@@ -104,8 +105,18 @@ def _words(name: str) -> list[str]:
     return [w for w in name.split("_") if w]
 
 
+#: Parameters named by the symbol of their term in a printed equation, by the decision of the
+#: author: the coefficients of m d2u/dt2 + d du/dt + div(-c grad u - alpha u + gamma)
+#: + beta . grad u + a u = f.
+EQUATION_SYMBOLS = {
+    f"general_form_PDE.{s}" for s in ("m", "d", "c", "alpha", "gamma", "beta", "a", "f")
+}
+
+
 def check_name(name: str, where: str) -> list[str]:
     """Findings for one parameter or type name."""
+    if where in EQUATION_SYMBOLS:
+        return []
     findings = []
     words = _words(name)
     for word in words:

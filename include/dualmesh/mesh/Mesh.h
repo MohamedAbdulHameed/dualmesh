@@ -45,6 +45,10 @@ enum class ElementType
   Pyramid5
 };
 
+/// The number of element types (Pyramid5 is the last one: keep it last, or
+/// change this count with the list).
+inline constexpr int kNumElementTypes = static_cast<int>(ElementType::Pyramid5) + 1;
+
 /// The largest number of nodes any supported element has (Hex27).
 inline constexpr int kMaxElementNodes = 27;
 
@@ -94,7 +98,10 @@ public:
   Index addNode(const Point & p);
   Index addElement(ElementType type, const std::vector<Index> & nodes, int block = 0);
   void setBlockName(int block, const std::string & name) { _block_names[block] = name; }
-  void setDimension(int d) { _dim = d; }
+  /// Place the mesh in a space of higher dimension than its elements: 3 for
+  /// a surface (2-D elements, a shell) or a curve in space, 2 for a curve in
+  /// the plane.  By default the space has the dimension of the elements.
+  void setSpaceDimension(int d);
 
   /// Add (or extend) a side set from a list of boundary faces given by node ids.
   /// Faces not found on the boundary are reported as an error.
@@ -112,7 +119,13 @@ public:
   /// Apply x -> f(x) to every node (e.g. to bend a rectangle into an annulus).
   void transformNodes(const std::function<Point(const Point &)> & f);
   /// Fix element orientation so that every Jacobian determinant is positive.
-  void fixOrientation();
+  /// On a surface in space, orient the elements consistently instead, so the
+  /// normals of neighbours agree (a surface with one side is refused), and
+  /// choose the side of each connected part: the side most of @p preferred
+  /// (one normal per element) agree with when it is given, otherwise outward
+  /// on a closed surface and, on an open one, the side with the largest
+  /// component of the summed normal positive (+z for a plate in the xy plane).
+  void fixOrientation(const std::vector<Point> & preferred = {});
   /// Uniformly refine (every element is split into 2^dim children).
   Mesh refined() const;
   /// Return the same mesh with quadratic elements: Edge2 becomes Edge3, Tri3
@@ -125,7 +138,10 @@ public:
   Mesh secondOrder(bool serendipity = false) const;
 
   // ---- queries -----------------------------------------------------------
+  /// The dimension of the elements: 1, 2 or 3.
   int dimension() const { return _dim; }
+  /// The dimension of the space the nodes live in: at least dimension().
+  int spaceDimension() const { return _space_dim > _dim ? _space_dim : _dim; }
   Index numNodes() const { return static_cast<Index>(_nodes.size()); }
   Index numElements() const { return static_cast<Index>(_elements.size()); }
   const Point & node(Index i) const { return _nodes[i]; }
@@ -155,11 +171,23 @@ public:
   /// Build the default side sets (left/right/bottom/top/back/front) from the
   /// bounding box for meshes that are aligned with the coordinate axes.
   void addBoundingBoxSidesets(double tolerance = 1e-10);
-  /// Build the node sets that are implied by every side set.
+  /// A short report of the mesh: dimensions, counts, element types, blocks,
+  /// side sets and node sets, one item per line.
   std::string summary() const;
 
 private:
+  /// Orient the elements of a surface in space consistently (fixOrientation).
+  bool orientSurface(const std::vector<Point> * preferred);
+  /// The one place where the cached exterior sides and boundary node markers
+  /// are dropped, whenever the elements change.
+  void invalidateCaches()
+  {
+    _exterior_valid = false;
+    _boundary_valid = false;
+  }
+
   int _dim;
+  int _space_dim = 0;
   std::vector<Point> _nodes;
   std::vector<Element> _elements;
   std::map<int, std::string> _block_names;
@@ -168,7 +196,21 @@ private:
   mutable std::vector<Side> _exterior_cache;
   mutable bool _exterior_valid = false;
   mutable std::vector<char> _boundary_nodes;
+  mutable bool _boundary_valid = false;
 };
+
+/// The members of a node set of @p old once nodes have been added between
+/// nodes of @p old to make @p out (a refinement or a promotion to second
+/// order).  @p added lists every added node with the nodes it was made from.
+/// An added node joins when all the nodes it was made from are members; for
+/// a set that lies on the boundary of @p old it must also lie on the boundary
+/// of @p out, so that the midpoint of a chord between two boundary members
+/// stays out.  The rule is applied until nothing changes, so that nodes made
+/// from added nodes are covered too.
+std::vector<Index> grownNodeset(const Mesh & old,
+                                const Mesh & out,
+                                const std::vector<Index> & members,
+                                const std::vector<std::pair<std::vector<Index>, Index>> & added);
 
 // ---- mesh generators -------------------------------------------------------
 
@@ -178,8 +220,8 @@ Mesh generateLineMesh(const std::vector<double> & x);
 
 /// 2D structured mesh on the tensor grid x (columns) by y (rows).
 /// @param element "Quad4" or "Tri3".
-/// @param diagonal for triangles: "right" (/), "left" (\), "alternate", or "union"-free crossed not
-/// supported. Side sets: "left", "right", "bottom", "top".
+/// @param diagonal for triangles: "right" (/), "left" (\) or "alternate".
+/// Side sets: "left", "right", "bottom", "top".
 Mesh generateRectangleMesh(const std::vector<double> & x,
                            const std::vector<double> & y,
                            const std::string & element = "Quad4",

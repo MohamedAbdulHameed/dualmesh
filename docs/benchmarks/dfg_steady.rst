@@ -38,30 +38,20 @@ prescribed velocities:
 
    mesh = dm.read_mesh("dfg.msh")
    problem = dm.Problem(mesh, method="dmcdm")  # fem, hfvm, zfvm
-   problem.add_physics(
-       "incompressible_flow",
-       "flow",
-       velocities=["u", "v"],
+   flow = problem.add_physics(
+       "fluid_dynamics",
        density=1.0,
        dynamic_viscosity=1e-3,
        formulation="pressure",
        viscous_form="laplacian",
    )
-   problem.add_boundary_condition(
-       "Dirichlet_boundary_condition", "inflow_u", variable="u", boundary="inlet",
-       value="4*0.3*y*(0.41 - y)/0.41^2", scale_with_load=True,
+   flow.add_boundary_condition(
+       ["velocity_x = 4*0.3*y*(0.41 - y)/0.41^2", "velocity_y = 0"], boundary="inlet", scale_with_load=True
    )
-   problem.add_boundary_condition(
-       "Dirichlet_boundary_condition", "inflow_v", variable="v", boundary="inlet", value=0.0
-   )
-   for variable in ("u", "v"):
-       problem.add_boundary_condition(
-           "Dirichlet_boundary_condition", f"no_slip_{variable}", variable=variable,
-           boundary=["walls", "cylinder"], value=0.0,
-       )
+   flow.add_boundary_condition(["velocity_x = 0", "velocity_y = 0"], boundary=["walls", "cylinder"])
    problem.solve()  # zfvm: load_factors=[0.25, 0.5, 0.75, 1.0]
-   drag = -2 / (0.2**2 * 0.1) * problem.total_reaction("u", "cylinder")
-   lift = -2 / (0.2**2 * 0.1) * problem.total_reaction("v", "cylinder")
+   drag = -2 / (0.2**2 * 0.1) * problem.total_reaction("velocity_x", "cylinder")
+   lift = -2 / (0.2**2 * 0.1) * problem.total_reaction("velocity_y", "cylinder")
    p_front, p_back = problem.sample("pressure", [[0.15, 0.2], [0.25, 0.2]])
 
 The Taylor-Hood element takes ``formulation="Taylor_Hood"`` on quadratic
@@ -69,6 +59,13 @@ triangles twice as large, whose sides on the cylinder lie on the circle.
 
 Results
 -------
+
+.. note::
+
+   The numbers on this page were measured before the stabilisation parameter
+   :math:`\tau` took the factor 9 on its viscous term (24 October 2026), which
+   lowered the errors of the stabilised methods on the cavity and the Kovasznay
+   flow by about half.  They are being measured again.
 
 .. list-table:: The coefficients on the finest mesh of every method, and their
    relative errors

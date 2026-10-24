@@ -41,6 +41,44 @@ Whether the installed extension can talk to other processes is reported by
 every exchange is empty, so it reproduces the serial answer exactly.  The test suite uses this single-rank configuration to exercise the
 distributed code path without launching a parallel job.
 
+Collective and local methods
+----------------------------
+
+In a distributed run every process executes the same script.  A *collective*
+method combines the parts of all the processes, so every process must call it:
+a call that only some processes make waits for the others and never returns.
+Guard only the printing with :func:`~dualmesh.is_root`, never the call itself:
+
+.. code-block:: python
+
+   value = problem.integrate("temperature")  # every process
+   if dm.is_root():
+       print(value)
+
+A *local* method answers from the part of the process that calls it, so it may
+be called from one process alone.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 70
+
+   * - Kind
+     - Methods of :class:`~dualmesh.Problem`
+   * - Collective
+     - ``solve``, ``solve_transient``, ``solve_eigenvalue``, ``sample``,
+       ``integrate``, ``error_norms``, ``total_reaction``,
+       ``boundary_flux_integral``, ``nodal_extreme``, ``domain_volume``,
+       ``gathered_values``, ``write_vtu``, ``partition_summary``
+   * - Local
+     - ``values``, ``entity_points``, ``values_at_nodes``,
+       ``postprocessor_values`` (the same on every process), ``rank``,
+       ``num_ranks``, ``num_owned_dofs``
+
+The values of a collective method are those of the whole domain on every
+process.  ``values`` returns the part of the process, and ``gathered_values``
+the whole field in the global order.  Only the first process prints the
+report of a study and writes the ``.pvd`` index of a transient output.
+
 Threading the assembly
 ----------------------
 
@@ -266,7 +304,7 @@ global index of each of its nodes and nothing else, and the layer finds which
 ranks hold each index, which of them owns it (the smallest), and how to combine
 their values.  Two libraries can do this, chosen with the ``gather_scatter``
 argument of :class:`~dualmesh.Problem`, as the discretization is chosen with
-``method``; the answer is the same with either.
+``method``, and the answer is the same with either.
 
 ``"petsc"``
    PETSc's star forests (PetscSF) [PETSc2023]_.  At setup, each index has a
@@ -286,7 +324,7 @@ argument of :class:`~dualmesh.Problem`, as the discretization is chosen with
    their communication through it.
 
 Which one is faster depends on the number of ranks, on the pattern of shared
-nodes and on the network; the scaling studies compare them.
+nodes and on the network, which the scaling studies compare.
 
 Node ownership
 ^^^^^^^^^^^^^^
@@ -351,19 +389,32 @@ The Krylov method and the preconditioner
 
 PETSc solves the system, so every one of its Krylov methods and
 preconditioners is available through ``petsc_options``.  The default,
-``linear_solver="automatic"``, makes the choice that the serial automatic
-solver makes.  It takes GMRES preconditioned by the algebraic multigrid
-BoomerAMG of hypre [FalgoutYang2002]_, whose iteration count does not grow with the
-mesh or with the number of ranks.  When that does not converge within 500
-iterations, or when the system has a zero pressure block (the Taylor-Hood
-element), on which multigrid cannot act, it takes the parallel direct solver
-MUMPS [Amestoy2001]_.  ``linear_solver="lu"`` takes MUMPS directly.  Any other
-choice is a PETSc option string, for example ``"-ksp_type gmres -pc_type asm
--sub_pc_type ilu"`` for restricted additive Schwarz with incomplete subdomain
-solves [CaiSarkis1999]_, ``"-ksp_type cg -pc_type gamg"`` for the conjugate
-gradient method with PETSc's smoothed aggregation multigrid on the symmetric
-matrix of the finite element method, or a field split for a saddle point
-problem.
+``linear_solver="automatic"``, chooses by the structure of the problem, with
+the size limits of the serial automatic solver:
+
+* a flow (the pressure-velocity formulation with the methods of the nodes) is
+  factorised by the parallel direct solver MUMPS [Amestoy2001]_ where that is
+  inexpensive, and split by the least squares commutator otherwise, PETSc's
+  Schur complement field split with the operators that every rank assembles
+  on its part and sums in the global numbering (see
+  :doc:`/user_guide/solving`).
+* a solid takes GMRES with PETSc's smoothed aggregation multigrid (GAMG),
+  given the rigid body modes of the owned rows as its near null space, and a
+  solid coupled to other physics the split by physics.
+* any other system takes GMRES preconditioned by the algebraic multigrid
+  BoomerAMG of hypre [FalgoutYang2002]_, whose iteration count does not grow
+  with the mesh or with the number of ranks.
+* when an iteration does not converge within 500 iterations, MUMPS solves
+  the system.
+
+``linear_solver="lu"`` takes MUMPS directly.  ``preconditioner`` takes the
+block preconditioners by name (``"lsc"``, ``"pcd"``, ``"pressure_mass"``,
+``"physics_blocks"``, and ``"amg"`` for GAMG with the rigid body modes), and
+``petsc_options`` refines them.  Any other choice is a PETSc option string,
+for example ``"-ksp_type gmres -pc_type asm -sub_pc_type ilu"`` for restricted
+additive Schwarz with incomplete subdomain solves [CaiSarkis1999]_, or
+``"-ksp_type cg -pc_type gamg"`` for the conjugate gradient method with GAMG on
+the symmetric matrix of the finite element method.
 
 Measured iteration counts
 ^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -402,7 +453,7 @@ the cone of a cell, so that every element type, the quadratic ones included, is
 partitioned by its corners, and it builds the graph of the elements that share a
 face.  ``"ptscotch"`` (PT-Scotch [Chevalier2008]_) and ``"parmetis"``
 (ParMETIS, the parallel form of the multilevel :math:`k`-way algorithm of
-Karypis and Kumar [KarypisKumar1998]_) divide that graph so as to cut few faces;
+Karypis and Kumar [KarypisKumar1998]_) divide that graph so as to cut few faces.
 ``"simple"`` takes contiguous blocks of elements in their order.
 ``"automatic"``, the default, takes PT-Scotch, else ParMETIS.  The root rank
 holds the whole mesh, and ``DMPlexDistribute`` moves every element, with its
@@ -410,7 +461,7 @@ nodes, coordinates, block, sides and node sets, to the rank of its part, where
 the rank rebuilds the mesh it holds.
 
 On a structured :math:`20 \times 20` grid of ``Quad4`` elements, PT-Scotch cuts
-40 faces into four parts, ParMETIS 46 and contiguous blocks 60; on a
+40 faces into four parts, ParMETIS 46 and contiguous blocks 60.  On a
 triangulation of the same square into 800 ``Tri3`` elements the cuts are 40, 48
 and 60.  PT-Scotch and contiguous blocks give parts of equal size, and ParMETIS
 parts within 5 %.  The test suite requires no part to exceed the average by more
@@ -439,7 +490,7 @@ gradient of a cell comes from all its neighbors, so every part also holds the
 cells of other parts up to two layers away, which PETSc's ``DMPlexDistribute``
 sends with the part (its overlap).  A cell is numbered by its element and a
 boundary face after all cells, in the order of the elements, so that the
-numbering does not depend on the partition; the gather-scatter then works on
+numbering does not depend on the partition, and the gather-scatter then works on
 cells and faces as it works on nodes.  Every face is integrated by one process,
 the one whose cell on it has the smaller global number, and the pieces of the
 residual and of the Jacobian at the cells that several processes hold are
@@ -482,8 +533,8 @@ depends entirely on how expensive the linear solve is for the problem at hand.
 **Post-processors and reactions run on every process.**  Every element and
 every boundary side belongs to one process, so an integral, an average, a
 boundary flux or a reaction is the sum of what each process computes over its
-own elements, sides and owned nodes, reduced over the processes; a nodal
-extreme is the extreme over the processes; and a point value is taken from the
+own elements, sides and owned nodes, reduced over the processes.  A nodal
+extreme is the extreme over the processes, and a point value is taken from the
 process whose elements contain the point (the average of those that do, when
 the point lies on a partition boundary).  The test suite checks every
 post-processor type against the serial value on one to four processes.

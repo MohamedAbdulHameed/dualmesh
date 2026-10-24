@@ -35,9 +35,10 @@ mesh = ["meshio>=5.0"]
 plot = ["matplotlib>=3.5"]
 mms = ["sympy>=1.9"]
 linalg = ["scipy>=1.7"]
+yaml = ["pyyaml>=6.0"]
 docs = ["sphinx>=7.0", "furo", "myst-parser", "sphinx-copybutton"]
-test = ["pytest>=7.0", "meshio>=5.0", "sympy>=1.9", "scipy>=1.7"]
-all = ["meshio>=5.0", "matplotlib>=3.5", "sympy>=1.9", "scipy>=1.7"]
+test = ["pytest>=7.0", "meshio>=5.0", "sympy>=1.9", "scipy>=1.7", "pyyaml>=6.0"]
+all = ["meshio>=5.0", "matplotlib>=3.5", "sympy>=1.9", "scipy>=1.7", "pyyaml>=6.0"]
 
 [project.urls]
 Homepage = "https://github.com/MohamedAbdulHameed/dualmesh"

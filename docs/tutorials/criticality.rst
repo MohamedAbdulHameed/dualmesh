@@ -4,7 +4,7 @@ Reactor criticality with the generic solver
 ===========================================
 
 dualmesh has no neutronics module.  This tutorial writes the multigroup
-neutron diffusion equations with ``coefficient_form_PDE`` and finds the
+neutron diffusion equations with ``general_form_PDE`` and finds the
 effective multiplication factor with the eigenvalue study of any problem.
 The same steps apply to any eigenvalue problem that no physics names.  The
 physics follows J. C. Lee, *Nuclear Reactor Physics and Engineering*
@@ -49,33 +49,31 @@ Sect. 6.7.2).  It adds :math:`D_g B_z^2` to the removal cross section.
 Write the equations
 -------------------
 
-Each group is one field of ``coefficient_form_PDE``.  The removal is the
-absorption coefficient of the equation of the group, and the scattering from
-another group is an absorption coefficient that couples to that group, with
-the opposite sign.  The fission source carries the symbol ``eigenvalue``,
+Each group is one field of ``general_form_PDE``, and its equation is written
+as it is printed.  The fission source carries the symbol ``eigenvalue``,
 which is :math:`1/k`.  The eigenvalue study then finds the smallest
 eigenvalue, which gives the largest :math:`k`.  For two groups, with all
 fission neutrons born fast:
 
 .. code-block:: python
 
-   diffusion = {"phi1": "D1", "phi2": "D2"}
-   absorption = {
-       "phi1": "Sigma_a1 + Sigma_12",
-       "phi2": {"phi2": "Sigma_a2", "phi1": "-Sigma_12"},
-   }
-   fission = {"phi1": "eigenvalue*nu_Sigma_f2*phi2"}
+   cross_sections = dict(D1=0.015, D2=0.004, Sigma_a1=1.0, Sigma_a2=8.0, Sigma_12=2.0, nu_Sigma_f2=13.5)
    neutrons = problem.add_physics(
-       "coefficient_form_PDE",
-       "neutrons",
+       "general_form_PDE",
        variables=["phi1", "phi2"],
-       diffusion_coefficient=diffusion,
-       absorption_coefficient=absorption,
-       source=fission,
-       constants=cross_sections,
+       **cross_sections,
+       equations=[
+           "-div(D1*grad(phi1)) + (Sigma_a1 + Sigma_12)*phi1 = eigenvalue*nu_Sigma_f2*phi2",
+           "-div(D2*grad(phi2)) + Sigma_a2*phi2 - Sigma_12*phi1 = 0",
+       ],
    )
+   neutrons.add_boundary_condition(["phi1 = 0", "phi2 = 0"], boundary=["left", "right", "bottom", "top"])
    result = problem.solve_eigenvalue(num_modes=1)
    k = 1.0 / result.eigenvalues[0]
+
+The cross sections are definitions: every keyword of ``add_physics`` that is
+not a parameter is a named constant that the equations use.  Each equation
+is matched to its group by the flux whose divergence it holds.
 
 Give the cross sections in SI units, :math:`\mathrm{m}^{-1}`, and the
 diffusion coefficients in :math:`\mathrm{m}`.  The script
@@ -95,20 +93,19 @@ Regions with their own cross sections
 -------------------------------------
 
 A core has regions of different materials.  Give the cross sections of each
-region as properties of a ``constant_property`` object on its block, and name
-the properties in ``properties``.  Without a diffusion coefficient, the
-equation of a field ``phi1`` reads the property
-``diffusion_coefficient_phi1``:
+region as properties of a ``constant`` property object on its block, and use
+them in the equations by their names, which then take the values of the
+region at every point:
 
 .. code-block:: python
 
    problem.add_property(
-       "constant_property",
-       "fuel",
+       "constant",
        block=["fuel"],
-       property_names=["diffusion_coefficient_phi1", "diffusion_coefficient_phi2", "removal_1"],
-       property_values=[0.015, 0.004, 3.0],
+       properties={"diffusion_1": 0.015, "diffusion_2": 0.004, "removal_1": 3.0},
    )
+   # ... one object per region, then:
+   equation = "-div(diffusion_1*grad(phi1)) + removal_1*phi1 = eigenvalue*nu_fission_2*phi2"
 
 The script ``verification/benchmarks/neutronics/run_iaea_2d_pwr.py`` writes
 the IAEA PWR benchmark in this way.  :doc:`/verification` gives its results.
@@ -125,9 +122,16 @@ Eq. 5.2)
    -D_g \frac{\partial \phi_g}{\partial n} = \frac{\phi_g}{r} ,
 
 with :math:`r = 2`, where :math:`\mathbf{n}` is the outward normal.  Transport
-theory gives :math:`r = 2.1312` ([Lee2025]_, Sect. 5.1).  This condition is
-a ``Robin_boundary_condition`` with ``transfer_coefficient`` equal to
-:math:`1/r`.  An albedo :math:`\alpha`, the fraction of the outgoing partial
+theory gives :math:`r = 2.1312` ([Lee2025]_, Sect. 5.1).  The condition is
+written as it is printed:
+
+.. code-block:: python
+
+   neutrons.add_boundary_condition("-D1*dphi1/dn = phi1/2.1312", boundary="outer")
+   neutrons.add_boundary_condition("-D2*dphi2/dn = phi2/2.1312", boundary="outer")
+
+The flux on the left is checked against the flux of the equation of the
+group.  An albedo :math:`\alpha`, the fraction of the outgoing partial
 current that comes back, gives the transfer coefficient :math:`(1 -
 \alpha)/(2(1 + \alpha))`.  A boundary without a condition has no net
 current, which is the condition at a plane of symmetry.

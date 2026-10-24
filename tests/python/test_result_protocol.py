@@ -41,10 +41,8 @@ def _square(n=4):
 
 def test_a_solve_result_follows_the_protocol(tmp_path):
     problem = dm.Problem(_square(), method="fem")
-    pde = problem.add_physics(
-        "coefficient_form_PDE", "pde", diffusion_coefficient="1 + u", source=1.0
-    )
-    pde.add_boundary_condition("Dirichlet_boundary_condition", "left", value=0.0)
+    pde = problem.add_physics("general_form_PDE", variables="u", c="1 + u", f=1.0)
+    pde.add_boundary_condition("u = 0", boundary="left")
     numbers, rows = _check(problem.solve(), tmp_path, "solve")
     assert numbers["converged"] is True
     assert rows[0] == ["load_step", "load_factor", "iteration", "residual_norm", "step_norm"]
@@ -53,7 +51,7 @@ def test_a_solve_result_follows_the_protocol(tmp_path):
 
 def test_a_convergence_study_follows_the_protocol(tmp_path):
     study = mms.ManufacturedSolution({"u": "sin(x)*y"}, dimension=2)
-    study.add_physics("coefficient_form_PDE", "pde", diffusion_coefficient=1.0)
+    study.add_physics("general_form_PDE", variables="u", c=1.0)
     result = study.convergence_study(_square, [4, 8], method="fem")
     numbers, rows = _check(result, tmp_path, "convergence")
     assert numbers["orders"]["u l2"][0] == pytest.approx(2.0, abs=0.3)

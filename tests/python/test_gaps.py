@@ -116,26 +116,21 @@ def conduction_problem(mesh, method, coordinates="cartesian", distributed=False)
     problem.add_variable("temperature", initial_condition=T_COOL)
     problem.add_kernel(
         "heat_conduction",
-        "inner",
         variable="temperature",
         thermal_conductivity=K_INNER,
         block=["inner"],
     )
     problem.add_kernel(
         "heat_conduction",
-        "outer",
         variable="temperature",
         thermal_conductivity=K_OUTER,
         block=["outer"],
     )
-    problem.add_kernel(
-        "heat_source", "source", variable="temperature", heat_source=SOURCE, block=["inner"]
-    )
+    problem.add_kernel("body_force", variable="temperature", value=SOURCE, block=["inner"])
     problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "cooled",
+        "Dirichlet",
+        "right",
         variable="temperature",
-        boundary=["right"],
         value=T_COOL,
     )
     return problem
@@ -147,9 +142,8 @@ def given_conductance_problem(
     problem = conduction_problem(mesh, method, coordinates)
     problem.add_boundary_condition(
         "gap_heat_transfer",
-        "gap",
+        primary,
         variable="temperature",
-        boundary=[primary],
         secondary_boundary=[secondary],
         gap_conductance=CONDUCTANCE,
     )
@@ -301,7 +295,7 @@ def gas_gap_conductance(
     primary_temperature,
     secondary_temperature,
     width,
-    accommodation_coefficient=None,
+    accommodation_coeff=None,
     contact_pressure=0.0,
     primary_conductivity=K_INNER,
     secondary_conductivity=K_OUTER,
@@ -311,7 +305,7 @@ def gas_gap_conductance(
     gas_temperature = 0.5 * (primary_temperature + secondary_temperature)
     conductivity = gas.thermal_conductivity(COMPOSITION, gas_temperature)
     jump = gas.temperature_jump_distance(
-        COMPOSITION, gas_temperature, GAS_PRESSURE, accommodation_coefficient
+        COMPOSITION, gas_temperature, GAS_PRESSURE, accommodation_coeff
     )
     conductance = conductivity / (
         max(width, 0.0) + ROUGHNESS_COEFFICIENT * (PRIMARY_ROUGHNESS + SECONDARY_ROUGHNESS) + jump
@@ -357,31 +351,24 @@ def exact_gap_temperatures(width, secondary_temperature, **conductance_options):
     return primary, secondary_temperature
 
 
-@pytest.mark.parametrize("accommodation_coefficient", [None, 0.3])
+@pytest.mark.parametrize("accommodation_coeff", [None, 0.3])
 @pytest.mark.parametrize("method", VERTEX_METHODS)
-def test_a_gas_gap_carries_the_heat_at_the_conductance_of_its_gas(
-    method, accommodation_coefficient
-):
+def test_a_gas_gap_carries_the_heat_at_the_conductance_of_its_gas(method, accommodation_coeff):
     """The conductance depends on the temperatures of both surfaces, so the
     temperature drop across the gap follows from a nonlinear equation."""
-    options = (
-        {}
-        if accommodation_coefficient is None
-        else {"accommodation_coefficient": accommodation_coefficient}
-    )
+    options = {} if accommodation_coeff is None else {"accommodation_coeff": accommodation_coeff}
     problem = conduction_problem(two_slabs(2, 4, 2, 2), method)
     problem.add_boundary_condition(
         "gas_gap_heat_transfer",
-        "gap",
+        "primary",
         variable="temperature",
-        boundary=["primary"],
         secondary_boundary=["secondary"],
         **gas_gap_parameters(**options),
     )
     problem.solve()
     secondary_temperature = T_COOL + SOURCE * A * (C - B) / K_OUTER
     primary_temperature, _ = exact_gap_temperatures(
-        B - A, secondary_temperature, accommodation_coefficient=accommodation_coefficient
+        B - A, secondary_temperature, accommodation_coeff=accommodation_coeff
     )
     exact = slab_temperature(
         problem.entity_points()[:, 0], primary_temperature, secondary_temperature
@@ -396,14 +383,13 @@ def thermomechanical_problem(method, displacement, gap_options=None):
     (see :func:`test_the_contact_pressure_closes_the_gap_and_conducts_the_heat`)."""
     mesh = two_slabs(2, 4, 2, 2)
     problem = conduction_problem(mesh, method)
-    displacements = ["displacement_x", "displacement_y"]
+    displacements = ["disp_x", "disp_y"]
     for name in displacements:
         problem.add_variable(name)
     problem.add_boundary_condition(
         "gas_gap_heat_transfer",
-        "gap",
+        "primary",
         variable="temperature",
-        boundary=["primary"],
         secondary_boundary=["secondary"],
         displacements=displacements,
         **(gap_options or gas_gap_parameters()),
@@ -419,20 +405,18 @@ def test_the_gap_width_follows_the_displacements(method, shift):
     (where the gas term uses a zero width)."""
     problem, displacements = thermomechanical_problem(method, shift)
     for name in displacements:
-        problem.add_kernel("diffusion", f"smooth_{name}", variable=name)
+        problem.add_kernel("diffusion", variable=name)
     for side, value in (("left", 0.0), ("primary", 0.0), ("secondary", shift), ("right", shift)):
         problem.add_boundary_condition(
-            "Dirichlet_boundary_condition",
-            f"hold_{side}",
-            variable="displacement_x",
-            boundary=[side],
+            "Dirichlet",
+            side,
+            variable="disp_x",
             value=value,
         )
     problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "hold_y",
-        variable="displacement_y",
-        boundary=["left", "right"],
+        "Dirichlet",
+        ["left", "right"],
+        variable="disp_y",
         value=0.0,
     )
     problem.solve()
@@ -456,68 +440,55 @@ def test_the_contact_pressure_closes_the_gap_and_conducts_the_heat(method, condu
     with the plane-strain modulus E' = E / (1 - nu^2) and the penalty k, and
     it adds the solid contact conductance to the gas and the radiation."""
     youngs_modulus, poissons_ratio, push = 2.0e11, 0.3, 7.0e-5
-    gap_options = gas_gap_parameters(
-        contact_penalty=PENALTY, meyer_hardness=HARDNESS, secondary_conductivity=K_OUTER
-    )
+    gap_options = gas_gap_parameters(meyer_hardness=HARDNESS, secondary_conductivity=K_OUTER)
     if conductivity_source == "parameter":
         gap_options["primary_conductivity"] = K_INNER
     problem, displacements = thermomechanical_problem(method, None, gap_options)
     if conductivity_source == "property":
         problem.add_property(
-            "constant_property",
-            "inner_conductivity",
+            "constant",
             block=["inner"],
-            property_names=["thermal_conductivity"],
-            property_values=[K_INNER],
+            properties={"thermal_conductivity": K_INNER},
         )
     problem.add_property(
         "small_strain_stress",
-        "stress",
         displacements=displacements,
         formulation="plane_strain",
         youngs_modulus=youngs_modulus,
         poissons_ratio=poissons_ratio,
     )
-    for component, name in enumerate(displacements):
-        problem.add_kernel(
-            "stress_divergence", f"equilibrium_{name}", variable=name, component=component
-        )
-        problem.add_boundary_condition(
-            "gap_contact",
-            f"contact_{name}",
-            variable=name,
-            boundary=["primary"],
-            secondary_boundary=["secondary"],
-            displacements=displacements,
-            component=component,
-            penalty=PENALTY,
-        )
+    problem.add_kernel("stress_divergence", displacements=displacements)
+    # The gas gap reads the contact pressure from this condition on the same surfaces.
     problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "held",
-        variable="displacement_x",
-        boundary=["left"],
+        "gap_contact",
+        "primary",
+        secondary_boundary=["secondary"],
+        displacements=displacements,
+        penalty=PENALTY,
+    )
+    problem.add_boundary_condition(
+        "Dirichlet",
+        "left",
+        variable="disp_x",
         value=0.0,
     )
     problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "pushed",
-        variable="displacement_x",
-        boundary=["right"],
+        "Dirichlet",
+        "right",
+        variable="disp_x",
         value=-push,
     )
     problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "roller",
-        variable="displacement_y",
-        boundary=["bottom"],
+        "Dirichlet",
+        "bottom",
+        variable="disp_y",
         value=0.0,
     )
     problem.solve()
     plane_strain_modulus = youngs_modulus / (1 - poissons_ratio**2)
     pressure = (push - (B - A)) / ((A + C - B) / plane_strain_modulus + 1.0 / PENALTY)
     points = problem.entity_points()
-    displacement = problem.values("displacement_x")
+    displacement = problem.values("disp_x")
     primary_nodes = np.abs(points[:, 0] - A) < 1e-12
     assert displacement[primary_nodes] == pytest.approx(
         -pressure * A / plane_strain_modulus, rel=1e-9
@@ -536,21 +507,27 @@ def test_the_jacobian_of_the_gas_gap_agrees_with_finite_differences(method, clos
     """At a state that is not a solution, with a temperature and a gap width
     that vary along the surfaces, and with the gap open or closed."""
     gap_options = gas_gap_parameters(
-        contact_penalty=PENALTY,
         meyer_hardness=HARDNESS,
         primary_conductivity=K_INNER,
         secondary_conductivity=K_OUTER,
     )
     problem, displacements = thermomechanical_problem(method, None, gap_options)
     for name in displacements:
-        problem.add_kernel("diffusion", f"smooth_{name}", variable=name)
+        problem.add_kernel("diffusion", variable=name)
+    problem.add_boundary_condition(
+        "gap_contact",
+        "primary",
+        secondary_boundary=["secondary"],
+        displacements=displacements,
+        penalty=PENALTY,
+    )
     problem.initialize()
     points = problem.entity_points()
     x, y = points[:, 0], points[:, 1]
     problem.set_values("temperature", 700.0 + 3e3 * x + 2e3 * y**2 * (1 + x / C))
     shift = (-7e-5 if closed else -2e-5) * (1.0 + 20.0 * y)
-    problem.set_values("displacement_x", np.where(x > 0.5 * (A + B), shift, 1e-6 * y))
-    problem.set_values("displacement_y", 1e-6 * x)
+    problem.set_values("disp_x", np.where(x > 0.5 * (A + B), shift, 1e-6 * y))
+    problem.set_values("disp_y", 1e-6 * x)
     _, jacobian = problem.linear_system()
     assert compare(jacobian.toarray(), finite_difference_jacobian(problem, step=1e-9)) < 1e-5
 
@@ -564,34 +541,28 @@ def test_a_cold_initial_guess_still_converges(method):
     problem.add_variable("temperature")
     problem.add_kernel(
         "heat_conduction",
-        "inner",
         variable="temperature",
         thermal_conductivity=K_INNER,
         block=["inner"],
     )
     problem.add_kernel(
         "heat_conduction",
-        "outer",
         variable="temperature",
         thermal_conductivity=K_OUTER,
         block=["outer"],
     )
-    problem.add_kernel(
-        "heat_source", "source", variable="temperature", heat_source=SOURCE, block=["inner"]
-    )
+    problem.add_kernel("body_force", variable="temperature", value=SOURCE, block=["inner"])
     problem.add_boundary_condition(
         "gas_gap_heat_transfer",
-        "gap",
+        "primary",
         variable="temperature",
-        boundary=["primary"],
         secondary_boundary=["secondary"],
         **gas_gap_parameters(),
     )
     problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "cooled",
+        "Dirichlet",
+        "right",
         variable="temperature",
-        boundary=["right"],
         value=T_COOL,
     )
     problem.solve()
@@ -610,11 +581,11 @@ def test_a_cold_initial_guess_still_converges(method):
         ({"secondary_emissivity": None}, "secondary_emissivity"),
         ({"primary_emissivity": 1.5}, "emissivities must lie between 0 and 1"),
         ({"primary_roughness": -1e-6}, "roughnesses must not be negative"),
-        ({"accommodation_coefficient": 0.0}, r"accommodation_coefficient must lie in \(0, 1\]"),
-        ({"contact_penalty": 1e13}, "needs 'meyer_hardness'"),
-        ({"contact_penalty": 1e13, "meyer_hardness": 1e9}, "needs 'secondary_conductivity'"),
+        ({"accommodation_coeff": 0.0}, r"accommodation_coeff must lie in \(0, 1\]"),
+        ({"contact": True}, "needs 'meyer_hardness'"),
+        ({"contact": True, "meyer_hardness": 1e9}, "needs 'secondary_conductivity'"),
         (
-            {"contact_penalty": 1e13, "meyer_hardness": 1e9, "secondary_conductivity": 16.0},
+            {"contact": True, "meyer_hardness": 1e9, "secondary_conductivity": 16.0},
             "needs 'primary_conductivity'",
         ),
         ({"helium_fraction": 0.0, "xenon_fraction": 0.0}, "mole fractions add up to zero"),
@@ -622,16 +593,71 @@ def test_a_cold_initial_guess_still_converges(method):
 )
 def test_an_incomplete_or_unphysical_gas_gap_is_refused(changes, message):
     problem = conduction_problem(two_slabs(1, 2), "fem")
+    changes = dict(changes)
+    contact = changes.pop("contact", False)
     parameters = {
         name: value for name, value in gas_gap_parameters(**changes).items() if value is not None
     }
+    if contact:
+        # A gap that closes by contact needs the data of the solid contact conductance.
+        displacements = ["disp_x", "disp_y"]
+        for name in displacements:
+            problem.add_variable(name)
+        problem.add_boundary_condition(
+            "gap_contact",
+            "primary",
+            secondary_boundary=["secondary"],
+            displacements=displacements,
+            penalty=PENALTY,
+        )
+        parameters["displacements"] = displacements
     with pytest.raises(Exception, match=message):
         problem.add_boundary_condition(
             "gas_gap_heat_transfer",
-            "gap",
+            "primary",
             variable="temperature",
-            boundary=["primary"],
             secondary_boundary=["secondary"],
             **parameters,
         )
         problem.solve()
+
+
+@pytest.mark.parametrize("thickness", [1.0, 0.1])
+def test_the_contact_pressure_of_a_plane_problem_is_per_unit_area_at_any_thickness(thickness):
+    """Two plane-strain slabs pushed together across the gap, with the equations multiplied by the
+    thickness h.  The contact condition carries the same factor, so the compatibility relation
+
+        push - (B - A) = P (A + C - B) / E' + P / k
+
+    and the displacements do not depend on h."""
+    youngs_modulus, poissons_ratio, push = 2.0e11, 0.3, 7.0e-5
+    problem = dm.Problem(two_slabs(2, 4, 2, 2), method="fem")
+    displacements = ["disp_x", "disp_y"]
+    for name in displacements:
+        problem.add_variable(name)
+    problem.add_property(
+        "small_strain_stress",
+        displacements=displacements,
+        formulation="plane_strain",
+        youngs_modulus=youngs_modulus,
+        poissons_ratio=poissons_ratio,
+    )
+    problem.add_kernel("stress_divergence", displacements=displacements, thickness=thickness)
+    problem.add_boundary_condition(
+        "gap_contact",
+        "primary",
+        secondary_boundary=["secondary"],
+        displacements=displacements,
+        penalty=PENALTY,
+    )
+    problem.add_boundary_condition("Dirichlet", "left", variable="disp_x", value=0.0)
+    problem.add_boundary_condition("Dirichlet", "right", variable="disp_x", value=-push)
+    problem.add_boundary_condition("Dirichlet", "bottom", variable="disp_y", value=0.0)
+    problem.solve(report="none")
+    plane_strain_modulus = youngs_modulus / (1 - poissons_ratio**2)
+    pressure = (push - (B - A)) / ((A + C - B) / plane_strain_modulus + 1.0 / PENALTY)
+    points = problem.entity_points()
+    primary_nodes = np.abs(points[:, 0] - A) < 1e-12
+    assert problem.values("disp_x")[primary_nodes] == pytest.approx(
+        -pressure * A / plane_strain_modulus, rel=1e-9
+    )

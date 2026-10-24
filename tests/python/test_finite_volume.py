@@ -23,6 +23,7 @@ from __future__ import annotations
 import dualmesh as dm
 import numpy as np
 import pytest
+from dualmesh._core import InputError
 
 
 def cosine_source_problem(
@@ -36,16 +37,12 @@ def cosine_source_problem(
     mesh = dm.generate_line_mesh(start=0.0, end=1.0, num_elements=num_elements)
     problem = dm.Problem(mesh, method=method, boundary_gradient=boundary_gradient)
     problem.add_variable("u")
-    problem.add_kernel("diffusion", "diffusion", variable="u")
+    problem.add_kernel("diffusion", variable="u")
     problem.add_function("source", lambda x, y, z, t: 10.0 * np.cos(x))
-    problem.add_kernel("body_force", "source", variable="u", value="source", quadrature=quadrature)
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", "left", variable="u", boundary="left", value=0.0
-    )
+    problem.add_kernel("body_force", variable="u", value="source", quadrature=quadrature)
+    problem.add_boundary_condition("Dirichlet", "left", variable="u", value=0.0)
     if case == "dirichlet":
-        problem.add_boundary_condition(
-            "Dirichlet_boundary_condition", "right", variable="u", boundary="right", value=0.0
-        )
+        problem.add_boundary_condition("Dirichlet", "right", variable="u", value=0.0)
     problem.solve()
     return problem
 
@@ -133,14 +130,10 @@ def conduction_3a_by_2a(method, nx, ny):
     mesh = dm.generate_rectangle_mesh(0.0, 3.0, 0.0, 2.0, nx, ny)
     problem = dm.Problem(mesh, method=method)
     problem.add_variable("temperature")
-    problem.add_kernel("diffusion", "conduction", variable="temperature")
+    problem.add_kernel("diffusion", variable="temperature")
     problem.add_function("top", lambda x, y, z, t: np.cos(np.pi * x / 6.0))
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", "cold", variable="temperature", boundary="right", value=0.0
-    )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", "hot", variable="temperature", boundary="top", value="top"
-    )
+    problem.add_boundary_condition("Dirichlet", "right", variable="temperature", value=0.0)
+    problem.add_boundary_condition("Dirichlet", "top", variable="temperature", value="top")
     problem.solve()
     return problem
 
@@ -201,13 +194,12 @@ def test_patch_test(method, element_type, distorted):
         )
     problem = dm.Problem(mesh, method=method, boundary_gradient="second_order")
     problem.add_variable("u")
-    problem.add_kernel("diffusion", "diffusion", variable="u")
+    problem.add_kernel("diffusion", variable="u")
     problem.add_function("linear", lambda x, y, z, t: 1.0 + 2.0 * x - 3.0 * y)
     problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "all",
+        "Dirichlet",
+        ["left", "right", "bottom", "top"],
         variable="u",
-        boundary=["left", "right", "bottom", "top"],
         value="linear",
     )
     problem.solve()
@@ -221,13 +213,12 @@ def test_patch_test_three_dimensions(method):
     mesh = dm.generate_box_mesh(0, 1, 0, 1, 0, 1, 3, 3, 3)
     problem = dm.Problem(mesh, method=method)
     problem.add_variable("u")
-    problem.add_kernel("diffusion", "diffusion", variable="u")
+    problem.add_kernel("diffusion", variable="u")
     problem.add_function("linear", lambda x, y, z, t: 1.0 + 2.0 * x - 3.0 * y + 0.5 * z)
     problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "all",
+        "Dirichlet",
+        ["left", "right", "bottom", "top", "back", "front"],
         variable="u",
-        boundary=["left", "right", "bottom", "top", "back", "front"],
         value="linear",
     )
     problem.solve()
@@ -246,20 +237,18 @@ def test_second_order_convergence(method, element_type):
             mesh = dm.generate_rectangle_mesh(0.0, 3.0, 0.0, 2.0, 3 * n, 2 * n, element_type="Tri3")
             problem = dm.Problem(mesh, method=method)
             problem.add_variable("temperature")
-            problem.add_kernel("diffusion", "conduction", variable="temperature")
+            problem.add_kernel("diffusion", variable="temperature")
             problem.add_function("top", lambda x, y, z, t: np.cos(np.pi * x / 6.0))
             problem.add_boundary_condition(
-                "Dirichlet_boundary_condition",
-                "cold",
+                "Dirichlet",
+                "right",
                 variable="temperature",
-                boundary="right",
                 value=0.0,
             )
             problem.add_boundary_condition(
-                "Dirichlet_boundary_condition",
-                "hot",
+                "Dirichlet",
+                "top",
                 variable="temperature",
-                boundary="top",
                 value="top",
             )
             problem.solve()
@@ -287,17 +276,12 @@ def test_nonlinear_conduction(method, solver):
     problem.add_variable("temperature")
     problem.add_kernel(
         "heat_conduction",
-        "conduction",
         variable="temperature",
         thermal_conductivity=1.0,
         temperature_polynomial=[1.0, 0.5],
     )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", "left", variable="temperature", boundary="left", value=0.0
-    )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", "right", variable="temperature", boundary="right", value=1.0
-    )
+    problem.add_boundary_condition("Dirichlet", "left", variable="temperature", value=0.0)
+    problem.add_boundary_condition("Dirichlet", "right", variable="temperature", value=1.0)
     result = problem.solve(nonlinear_solver=solver)
     assert result.converged
     x = problem.entity_points()[:, 0]
@@ -311,13 +295,12 @@ def test_transient_slab(method):
     mesh = dm.generate_line_mesh(start=0.0, end=1.0, num_elements=40)
     problem = dm.Problem(mesh, method=method)
     problem.add_variable("temperature", initial_condition=lambda x, y, z, t: np.sin(np.pi * x))
-    problem.add_kernel("diffusion", "diffusion", variable="temperature")
-    problem.add_kernel("time_derivative", "time", variable="temperature")
+    problem.add_kernel("diffusion", variable="temperature")
+    problem.add_kernel("time_derivative", variable="temperature")
     problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "ends",
+        "Dirichlet",
+        ["left", "right"],
         variable="temperature",
-        boundary=["left", "right"],
         value=0.0,
     )
     problem.solve_transient(end_time=0.1, time_step=0.001, implicitness=0.5)
@@ -344,17 +327,14 @@ def test_convective_boundary_condition(method):
         mesh = dm.generate_line_mesh(start=0.0, end=length, num_elements=n)
         problem = dm.Problem(mesh, method=method)
         problem.add_variable("u")
-        problem.add_kernel("diffusion", "diffusion", variable="u", diffusivity=1.0)
-        problem.add_kernel("reaction", "convection", variable="u", coefficient=m * m)
+        problem.add_kernel("diffusion", variable="u", diffusivity=1.0)
+        problem.add_kernel("reaction", variable="u", coeff=m * m)
+        problem.add_boundary_condition("Dirichlet", "left", variable="u", value=base)
         problem.add_boundary_condition(
-            "Dirichlet_boundary_condition", "base", variable="u", boundary="left", value=base
-        )
-        problem.add_boundary_condition(
-            "Robin_boundary_condition",
-            "tip",
+            "Robin",
+            "right",
             variable="u",
-            boundary="right",
-            transfer_coefficient=transfer,
+            transfer_coeff=transfer,
         )
         problem.solve()
         errors.append(np.abs(problem.values("u") - exact(problem.entity_points()[:, 0])).max())
@@ -399,12 +379,11 @@ def test_the_cell_centred_jacobian_is_exact_on_a_skewed_mesh(boundary_gradient):
     mesh.transform_nodes(lambda x, y, z: [x + 0.2 * x * (1 - x) * y, y, z + 0.1 * z * (1 - z) * x])
     problem = dm.Problem(mesh, method="zfvm", boundary_gradient=boundary_gradient)
     problem.add_variable("u")
-    problem.add_kernel("diffusion", "diffusion", variable="u")
+    problem.add_kernel("diffusion", variable="u")
     problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "all",
+        "Dirichlet",
+        mesh.sideset_names(),
         variable="u",
-        boundary=mesh.sideset_names(),
         value=lambda x, y, z, t: 1.0 + 2.0 * x - 3.0 * y + 0.5 * z,
     )
     result = problem.solve()
@@ -444,23 +423,19 @@ def test_a_jump_of_the_conductivity_between_blocks_keeps_second_order(method):
     for n in (10, 20, 40):
         mesh = _two_block_line(n)
         problem = dm.Problem(mesh, method=method)
-        heat = problem.add_physics("heat_transfer", "heat", heat_source=1.0)
+        heat = problem.add_physics("heat_transfer", heat_source=1.0)
         problem.add_property(
-            "constant_property",
-            "inner",
+            "constant",
             block=["inner"],
-            property_names=["thermal_conductivity"],
-            property_values=[1.0],
+            properties={"thermal_conductivity": 1.0},
         )
         problem.add_property(
-            "constant_property",
-            "outer",
+            "constant",
             block=["outer"],
-            property_names=["thermal_conductivity"],
-            property_values=[3.0],
+            properties={"thermal_conductivity": 3.0},
         )
-        heat.add_boundary_condition("Dirichlet_boundary_condition", "left", value=0.0)
-        heat.add_boundary_condition("Dirichlet_boundary_condition", "right", value=0.0)
+        heat.add_boundary_condition("temperature = 0", boundary="left")
+        heat.add_boundary_condition("temperature = 0", boundary="right")
         problem.solve()
         x = problem.entity_points()[:, 0]
         exact = np.where(x < a, -(x**2) / 2.0 + c1 * x, -((x - 1.0) ** 2) / 6.0 + c2 * (x - 1.0))
@@ -481,28 +456,37 @@ def test_the_eigenvalue_of_a_reflected_slab_converges_at_second_order_with_zfvm(
     for n in (20, 40, 80, 160):
         mesh = _two_block_line(n)
         problem = dm.Problem(mesh, method="zfvm")
-        for name, block, values in (
-            ("fuel", "inner", [0.01, 2.0, 3.0]),
-            ("reflector", "outer", [0.03, 0.5, 0.0]),
+        for block, (diffusion, absorption, nu_fission) in (
+            ("inner", (0.01, 2.0, 3.0)),
+            ("outer", (0.03, 0.5, 0.0)),
         ):
             problem.add_property(
-                "constant_property",
-                name,
+                "constant",
                 block=[block],
-                property_names=["diffusion_coefficient", "absorption", "nu_fission"],
-                property_values=values,
+                properties={
+                    "diffusion": diffusion,
+                    "absorption": absorption,
+                    "nu_fission": nu_fission,
+                },
             )
         neutrons = problem.add_physics(
-            "coefficient_form_PDE",
-            "neutrons",
-            variables=["phi"],
-            absorption_coefficient="absorption",
-            source="eigenvalue*nu_fission*phi",
-            properties=["absorption", "nu_fission"],
+            "general_form_PDE",
+            variables="phi",
+            equations="-div(diffusion*grad(phi)) + absorption*phi = eigenvalue*nu_fission*phi",
         )
-        neutrons.add_boundary_condition(
-            "Dirichlet_boundary_condition", "ends", boundary=["left", "right"], value=0.0
-        )
+        neutrons.add_boundary_condition("phi = 0", boundary=["left", "right"])
         ks.append(1.0 / float(problem.solve_eigenvalue(report="none").eigenvalues[0]))
     differences = np.abs(np.diff(ks))
     assert differences[1] / differences[2] > 3.5, ks
+
+
+def test_a_face_of_three_cells_is_refused():
+    # Three triangles on the edge from (0, 0) to (1, 0): the third overlaps
+    # the first, so the edge has no single neighbour.
+    mesh = dm.mesh_from_arrays(
+        [[0.0, 0.0], [1.0, 0.0], [0.5, 1.0], [0.5, -1.0], [0.5, 0.5]],
+        [[0, 1, 2], [1, 0, 3], [0, 1, 4]],
+        element_type="Tri3",
+    )
+    with pytest.raises(InputError, match="shared by more than two elements"):
+        dm.Problem(mesh, method="zfvm")

@@ -36,10 +36,9 @@ def unit_square(n):
 def clamp(problem, variables=("u",)):
     for variable in variables:
         problem.add_boundary_condition(
-            "Dirichlet_boundary_condition",
-            f"walls_{variable}",
+            "Dirichlet",
+            list(problem.mesh.sideset_names()),
             variable=variable,
-            boundary=list(problem.mesh.sideset_names()),
             value=0.0,
         )
 
@@ -48,18 +47,16 @@ def laplacian_modes(method, n, source=None, near=0.0, num_modes=4):
     problem = dm.Problem(unit_square(n), method=method)
     if source is None:
         problem.add_physics(
-            "coefficient_form_PDE",
-            "pde",
-            diffusion_coefficient=1.0,
-            time_derivative_coefficient=1.0,
+            "general_form_PDE",
+            variables="u",
+            c=1.0,
+            d=1.0,
         )
     else:
         problem.add_physics(
             "general_form_PDE",
-            "pde",
-            variables=["u"],
-            flux={"u": ["-grad_x(u)", "-grad_y(u)"]},
-            source={"u": source},
+            variables="u",
+            equations=f"-laplacian(u) = {source}",
         )
     clamp(problem)
     return problem, problem.solve_eigenvalue(num_modes=num_modes, near=near, report="none")
@@ -118,17 +115,16 @@ def test_a_non_symmetric_operator_has_its_exact_eigenvalues(method):
     for n in (64, 128):
         problem = dm.Problem(dm.generate_line_mesh(0.0, 1.0, n), method=method)
         problem.add_physics(
-            "coefficient_form_PDE",
-            "pde",
-            diffusion_coefficient=1.0,
-            convection_coefficient=[c],
-            time_derivative_coefficient=1.0,
+            "general_form_PDE",
+            variables="u",
+            c=1.0,
+            beta=[c],
+            d=1.0,
         )
         problem.add_boundary_condition(
-            "Dirichlet_boundary_condition",
-            "ends",
+            "Dirichlet",
+            ["left", "right"],
             variable="u",
-            boundary=["left", "right"],
             value=0.0,
         )
         result = problem.solve_eigenvalue(num_modes=3, report="none")
@@ -144,12 +140,9 @@ def test_coupled_diffusion_with_a_rotation_has_complex_eigenvalues():
     problem = dm.Problem(unit_square(16), method="fem")
     problem.add_physics(
         "general_form_PDE",
-        "rotation",
         variables=["u", "v"],
-        flux={"u": ["-grad_x(u)", "-grad_y(u)"], "v": ["-grad_x(v)", "-grad_y(v)"]},
-        source={"u": "-w*v", "v": "w*u"},
-        time_derivative_coefficient={"u": 1.0, "v": 1.0},
-        constants={"w": omega},
+        w=omega,
+        equations=["du/dt - laplacian(u) = -w*v", "dv/dt - laplacian(v) = w*u"],
     )
     clamp(problem, ("u", "v"))
     result = problem.solve_eigenvalue(num_modes=2, near=20.0, report="none")
@@ -189,13 +182,8 @@ def test_the_result_writes_its_table(tmp_path):
 )
 def test_an_equation_without_a_proper_eigenvalue_is_refused(source, message):
     problem = dm.Problem(unit_square(4), method="fem")
-    sources = {} if source is None else {"u": source}
     problem.add_physics(
-        "general_form_PDE",
-        "pde",
-        variables=["u"],
-        flux={"u": ["-grad_x(u)", "-grad_y(u)"]},
-        source=sources,
+        "general_form_PDE", variables="u", equations=f"-laplacian(u) = {source or 0}"
     )
     clamp(problem)
     with pytest.raises(ValueError, match=message):
@@ -204,9 +192,7 @@ def test_an_equation_without_a_proper_eigenvalue_is_refused(source, message):
 
 def test_too_many_modes_are_refused():
     problem = dm.Problem(unit_square(2), method="fem")
-    problem.add_physics(
-        "coefficient_form_PDE", "pde", diffusion_coefficient=1.0, time_derivative_coefficient=1.0
-    )
+    problem.add_physics("general_form_PDE", variables="u", c=1.0, d=1.0)
     clamp(problem)
     with pytest.raises(ValueError, match="Ask for fewer modes"):
         problem.solve_eigenvalue(num_modes=5, report="none")

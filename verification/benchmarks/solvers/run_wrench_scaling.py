@@ -37,16 +37,14 @@ def solve(mesh_file, linear_solver):
     problem = dm.Problem(mesh, method="fem")
     problem.add_physics(
         "solid_mechanics",
-        "solid",
-        displacements=["u", "v", "w"],
         formulation="three_dimensional",
         youngs_modulus=wrench.YOUNGS_MODULUS,
         poissons_ratio=wrench.POISSONS_RATIO,
     )
-    problem.add_boundary_condition("fixed_constraint", "jaws", displacements=["u", "v", "w"])
     problem.add_boundary_condition(
-        "traction_boundary_condition", "grip", variable="v", total_force=-wrench.FORCE
+        "Dirichlet", "jaws", variable=["disp_x", "disp_y", "disp_z"], value=0.0
     )
+    problem.add_boundary_condition("traction", "grip", variable="disp_y", total_force=-wrench.FORCE)
     start = time.perf_counter()
     result = problem.solve(linear_solver=linear_solver, nonlinear_solver="linear")
     elapsed = time.perf_counter() - start

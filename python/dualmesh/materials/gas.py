@@ -37,16 +37,16 @@ def temperature_jump_distance(
     composition: dict[str, float],
     temperature: float,
     pressure: float,
-    accommodation_coefficient: float | None = None,
+    accommodation_coeff: float | None = None,
 ) -> float:
     """Return the sum of the temperature jump distances at the two walls of a
     gap, m, by the equation of Kennard as Lanning and Hann (BNWL-1894, 1975,
     Appendix B) write it.
 
-    Without an ``accommodation_coefficient``, the fits of Ullman et al. for
+    Without an ``accommodation_coeff``, the fits of Ullman et al. for
     helium and xenon are interpolated by the molar mass of the mixture."""
     return _gas.temperature_jump_distance(
-        dict(composition), temperature, pressure, accommodation_coefficient
+        dict(composition), temperature, pressure, accommodation_coeff
     )
 
 

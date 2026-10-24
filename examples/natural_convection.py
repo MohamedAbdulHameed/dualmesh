@@ -47,35 +47,31 @@ def cavity_mesh(num_elements=32):
     return dm.generate_rectangle_mesh(x_coordinates=list(x), y_coordinates=list(x))
 
 
-def solve(rayleigh_number=1.0e5, num_elements=32, method="dmcdm"):
+def solve(rayleigh_number=1.0e5, num_elements=32, method="DMCDM", advection_scheme=None):
     mesh = cavity_mesh(num_elements)
     problem = dm.Problem(mesh, method=method)
     flow = problem.add_physics(
-        "incompressible_flow",
-        "flow",
-        velocities=["u", "v"],
+        "fluid_dynamics",
         dynamic_viscosity=PRANDTL,
         density=1.0,
         penalty_parameter=1.0e7,
     )
-    heat = problem.add_physics("heat_transfer", "heat", thermal_conductivity=1.0)
+    heat = problem.add_physics(
+        "heat_transfer", thermal_conductivity=1.0, advection_scheme=advection_scheme
+    )
     problem.add_coupling(
         "nonisothermal_flow",
-        "coupling",
-        heat_transfer="heat",
-        incompressible_flow="flow",
+        heat_transfer=heat,
+        fluid_dynamics=flow,
         gravity=[0.0, -1.0],
-        thermal_expansion_coefficient=rayleigh_number * PRANDTL,
+        vol_expansion_coeff=rayleigh_number * PRANDTL,
         scale_with_load=True,
     )
     flow.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "no_slip",
-        boundary=["left", "right", "bottom", "top"],
-        value=[0.0, 0.0],
+        ["velocity_x = 0", "velocity_y = 0"], boundary=["left", "right", "bottom", "top"]
     )
-    heat.add_boundary_condition("Dirichlet_boundary_condition", "left", value=0.5)
-    heat.add_boundary_condition("Dirichlet_boundary_condition", "right", value=-0.5)
+    heat.add_boundary_condition("temperature = 0.5", boundary="left")
+    heat.add_boundary_condition("temperature = -0.5", boundary="right")
     # Continuation in the Rayleigh number, one decade at a time.
     steps = [ra / rayleigh_number for ra in (1e3, 1e4, 1e5, 1e6) if ra <= rayleigh_number]
     result = problem.solve(load_factors=steps, max_iterations=40, report="none")
@@ -85,8 +81,8 @@ def solve(rayleigh_number=1.0e5, num_elements=32, method="dmcdm"):
 def measure(problem):
     """The three benchmark quantities."""
     s = np.linspace(0.0, 1.0, 801)
-    u = problem.sample("u", np.column_stack([np.full_like(s, 0.5), s]))
-    v = problem.sample("v", np.column_stack([s, np.full_like(s, 0.5)]))
+    u = problem.sample("velocity_x", np.column_stack([np.full_like(s, 0.5), s]))
+    v = problem.sample("velocity_y", np.column_stack([s, np.full_like(s, 0.5)]))
     return {
         "nusselt": problem.total_reaction("temperature", "left"),
         "u_max": float(np.nanmax(u)),

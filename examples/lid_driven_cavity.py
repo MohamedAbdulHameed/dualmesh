@@ -1,15 +1,15 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
-"""Reddy, Example 9.8.4: flow in a lid-driven cavity by the penalty method.
+"""Flow in a lid-driven cavity by the penalty method.
 
 The velocity of the lid is applied in load steps, because Newton's method
 started from rest does not converge at Re = 1000.  The horizontal velocity
-along the vertical centreline is compared with the book's tabulated values.
+along the vertical centreline is compared with the published dual mesh values.
 """
 
 import dualmesh as dm
 import numpy as np
 
-BOOK_Y = [
+PUBLISHED_Y = [
     0.0625,
     0.125,
     0.1875,
@@ -30,7 +30,7 @@ BOOK_Y = [
     0.9375,
     0.9688,
 ]
-BOOK_U = [
+PUBLISHED_U = [
     -0.1430,
     -0.2177,
     -0.2502,
@@ -61,21 +61,16 @@ def solve(reynolds_number=1000.0):
     problem = dm.Problem(mesh)
     # Re = rho V0 a / mu with V0 = a = mu = 1, so the density is the Reynolds number.
     flow = problem.add_physics(
-        "incompressible_flow",
-        "flow",
-        velocities=["u", "v"],
+        "fluid_dynamics",
         dynamic_viscosity=1.0,
         density=reynolds_number,
         penalty_parameter=1.0e8,
     )
     flow.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "walls",
-        boundary=["left", "right", "bottom"],
-        value=[0.0, 0.0],
+        ["velocity_x = 0", "velocity_y = 0"], boundary=["left", "right", "bottom"]
     )
     flow.add_boundary_condition(
-        "Dirichlet_boundary_condition", "top", value=[1.0, 0.0], scale_with_load=True
+        ["velocity_x = 1", "velocity_y = 0"], boundary="top", scale_with_load=True
     )
     problem.solve(load_factors=[0.1, 0.25, 0.5, 0.75, 1.0], max_iterations=60)
     return problem
@@ -83,10 +78,10 @@ def solve(reynolds_number=1000.0):
 
 if __name__ == "__main__":
     problem = solve()
-    points = np.column_stack([np.full(len(BOOK_Y), 0.5), BOOK_Y])
-    computed = problem.sample("u", points)
-    print("    y      u (dualmesh)   u (book)")
-    for y, mine, book in zip(BOOK_Y, computed, BOOK_U):
-        print(f"{y:7.4f}  {mine:12.4f}  {book:9.4f}")
+    points = np.column_stack([np.full(len(PUBLISHED_Y), 0.5), PUBLISHED_Y])
+    computed = problem.sample("velocity_x", points)
+    print("    y      velocity_x (dualmesh)   velocity_x (published)")
+    for y, mine, published in zip(PUBLISHED_Y, computed, PUBLISHED_U):
+        print(f"{y:7.4f}  {mine:12.4f}  {published:9.4f}")
     problem.write_vtu("cavity.vtu", cell_properties=["pressure"])
     print("wrote cavity.vtu (velocity components and recovered pressure)")

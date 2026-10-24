@@ -40,3 +40,4 @@ verification/openfoam/run/
 
 # generated when the documentation is built
 docs/syntax/
+docs/reference/generated/

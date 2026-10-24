@@ -336,11 +336,6 @@ class InputResolution:
             if s.path.startswith(prefix) and "." not in s.path[len(prefix) :]
         }
 
-    def substituted_rows(self) -> list[list[str]]:
-        return [
-            [s.path, _value_text(s.value), s.unit, s.source, s.effect] for s in self.substituted
-        ]
-
     def unused_rows(self) -> list[list[str]]:
         return [[u.path, u.value, u.unit, f"read {u.condition}"] for u in self.unused]
 

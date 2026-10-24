@@ -44,16 +44,6 @@ class BeamStiffness:
         r"""The reduced bending stiffness :math:`D^{*} = D_{xx} A_{xx} - B_{xx}^2`."""
         return self.bending * self.extensional - self.coupling**2
 
-    @property
-    def effective_extensional(self) -> float:
-        r"""Reddy's :math:`\bar{A}_{xx} = D^{*} / D_{xx}` (mixed formulations)."""
-        return self.reduced_bending / self.bending
-
-    @property
-    def effective_coupling(self) -> float:
-        r"""Reddy's :math:`\bar{B}_{xx} = B_{xx} / D_{xx}` (mixed formulations)."""
-        return self.coupling / self.bending
-
 
 def beam_stiffness(
     modulus_top: float,
@@ -61,7 +51,7 @@ def beam_stiffness(
     power_law_index: float,
     height: float,
     width: float = 1.0,
-    poissons_ratio: float = 0.3,
+    poissons_ratio: float = 1.0 / 3.0,
     shear_correction_factor: float = 5.0 / 6.0,
     plate: bool = False,
 ) -> BeamStiffness:

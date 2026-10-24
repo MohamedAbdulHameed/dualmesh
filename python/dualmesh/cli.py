@@ -1,12 +1,14 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
-"""Command-line tools: the object reference and a check of the side sets of a
-mesh file.
+"""Command-line tools: running a case file, the object reference and a check
+of the side sets of a mesh file.
 
-A problem is described and solved in a Python script, which runs with
-``python script.py``, or with ``mpirun -n 4 python script.py`` on four
-processes.  The command ``dualmesh`` provides the
-tools that help to write such a script::
+A problem is described in a Python script, which runs with ``python
+script.py``, or in a case file (YAML) of the same physics-level input, which
+runs with ``dualmesh run case.yaml``.  ``mpirun -n 4`` before either runs it on
+four processes.  The command ``dualmesh`` also provides the tools that help to
+write them::
 
+    dualmesh run case.yaml                        # solve a case file
     dualmesh list --category physics              # the registered types
     dualmesh describe heat_conduction             # the parameters of one type
     dualmesh describe solid_mechanics             # the parameters of one physics
@@ -41,6 +43,11 @@ def main(argv: list[str] | None = None) -> int:
         "--module", help="framework, heat_transfer, solid_mechanics, fluids, ..."
     )
 
+    run_parser = subparsers.add_parser("run", help="build and solve a case file (YAML)")
+    run_parser.add_argument(
+        "case_file", help="a case file: mesh, physics, couplings, solve, output"
+    )
+
     describe_parser = subparsers.add_parser(
         "describe", help="describe one type (an object, physics or coupling)"
     )
@@ -59,6 +66,15 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     arguments = parser.parse_args(argv)
+    if arguments.command == "run":
+        from .case import run_case
+
+        try:
+            run_case(arguments.case_file)
+        except ValueError as error:
+            print(error)
+            return 1
+        return 0
     if arguments.command == "mesh":
         mesh = read_mesh(arguments.mesh_file)
         print(mesh.summary())

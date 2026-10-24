@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 #include "dualmesh/linalg/PetscSolver.h"
 
+#include <algorithm>
 #include <stdexcept>
 
 #ifndef DUALMESH_HAVE_PETSC
@@ -22,6 +23,47 @@ namespace dualmesh
 {
 namespace petsc
 {
+
+SchurBlocks
+globalSchurBlocks(const SaddlePointBlocks & blocks,
+                  const std::vector<Index> & global_dof,
+                  const std::vector<char> & owned)
+{
+  SchurBlocks g;
+  g.approximation = blocks.approximation;
+  g.sign = blocks.sign;
+  for (Index d : blocks.other_dofs)
+    if (owned[d])
+      g.other_rows.push_back(global_dof[d]);
+  for (Index d : blocks.pressure_dofs)
+    if (owned[d])
+    {
+      g.pressure_rows.push_back(global_dof[d]);
+      if (blocks.constrained[d])
+        g.constrained_pressure_rows.push_back(global_dof[d]);
+    }
+  for (auto * rows : {&g.other_rows, &g.pressure_rows, &g.constrained_pressure_rows})
+  {
+    std::sort(rows->begin(), rows->end());
+    rows->erase(std::unique(rows->begin(), rows->end()), rows->end());
+  }
+  const auto global = [&](const std::vector<Eigen::Triplet<double>> & local)
+  {
+    std::vector<GlobalEntry> entries;
+    entries.reserve(local.size());
+    for (const auto & e : local)
+      entries.push_back({global_dof[e.row()], global_dof[e.col()], e.value()});
+    return entries;
+  };
+  g.mass = global(blocks.mass);
+  g.stabilization = global(blocks.stabilization);
+  g.commutator_stabilization = global(blocks.commutator_stabilization);
+  g.convection_diffusion = global(blocks.convection_diffusion);
+  for (Index d = 0; d < blocks.lumped_mass.size(); ++d)
+    if (blocks.lumped_mass[d] != 0.0)
+      g.lumped_mass.push_back({global_dof[d], global_dof[d], blocks.lumped_mass[d]});
+  return g;
+}
 
 #ifndef DUALMESH_HAVE_PETSC
 
@@ -58,7 +100,7 @@ namespace
 missing()
 {
   throw std::runtime_error(
-      "dualmesh: linear_solver='petsc' needs a build with PETSc. Install PETSc (for example "
+      "dualmesh: linear_solver='PETSc' needs a build with PETSc. Install PETSc (for example "
       "the libpetsc-real-dev package, or 'pip install petsc') and configure with "
       "-DDUALMESH_ENABLE_PETSC=ON.");
 }
@@ -197,119 +239,378 @@ defaultOptions(bool parallel)
 #endif
 }
 
-/// The field split options of the pressure mass matrix Schur preconditioner.
-std::string
-saddlePointOptions()
+/// Check a solve that PETSc reports converged by its true residual |b - A x|.  PETSc measures
+/// the preconditioned residual by default, which a preconditioner that fails without an error
+/// (algebraic multigrid on rows whose diagonal is zero) makes zero.  A true residual above
+/// sqrt(rtol) |b| marks the solve as failed, so that the caller falls back or stops.
+void
+checkTrueResidual(Mat A, Vec b, Vec x, double relative_tolerance, Result & result)
 {
-  std::string solver = "";
-#ifdef PETSC_HAVE_MUMPS
-  solver = " -fieldsplit_0_pc_factor_mat_solver_type mumps";
-#endif
-  return "-ksp_type fgmres -pc_type fieldsplit -pc_fieldsplit_type schur "
-         "-pc_fieldsplit_schur_fact_type upper -fieldsplit_0_ksp_type preonly "
-         "-fieldsplit_0_pc_type lu" +
-         solver + " -fieldsplit_1_ksp_type preonly -fieldsplit_1_pc_type lu";
+  if (!result.converged)
+    return;
+  Vec r;
+  DM_PETSC(VecDuplicate(b, &r));
+  DM_PETSC(MatMult(A, x, r));
+  DM_PETSC(VecAYPX(r, -1.0, b));
+  PetscReal r_norm = 0, b_norm = 0;
+  DM_PETSC(VecNorm(r, NORM_2, &r_norm));
+  DM_PETSC(VecNorm(b, NORM_2, &b_norm));
+  VecDestroy(&r);
+  const double limit = std::sqrt(std::max(relative_tolerance, 1e-16)) * b_norm;
+  if (b_norm > 0 && !(r_norm <= limit))
+  {
+    std::ostringstream os;
+    os << "a true residual of " << r_norm / b_norm << " times the right-hand side, although "
+       << "PETSc reported " << result.reason;
+    result.converged = false;
+    result.reason = os.str();
+  }
 }
 
-/// Convert a sequential Eigen matrix to a PETSc SeqAIJ matrix.
-Mat
-toSequentialPetsc(const SparseMatrix & A_in)
+/// The options of one V-cycle of algebraic multigrid on the solver with options prefix
+/// @p prefix: hypre BoomerAMG with the coarsening and interpolation that keep the cost of a cycle
+/// low in three dimensions (HMIS coarsening, De Sterck, Yang and Heys 2006, aggressive on the
+/// first level, and extended+i interpolation with at most four entries per row, De Sterck,
+/// Falgout, Nolting and Yang 2008), or PETSc's own GAMG when PETSc has no hypre.  Measured on a
+/// three-dimensional Taylor-Hood cavity, these settings make lsc three to four times faster than
+/// BoomerAMG's defaults, at twice the iterations.
+std::string
+amgOptions(const std::string & prefix)
 {
-  Eigen::SparseMatrix<double, Eigen::RowMajor> A = A_in;
-  A.makeCompressed();
-  const Index n = A.rows();
-  Mat M;
-  DM_PETSC(MatCreate(PETSC_COMM_SELF, &M));
-  DM_PETSC(MatSetSizes(M, n, A.cols(), n, A.cols()));
-  DM_PETSC(MatSetType(M, MATSEQAIJ));
-  std::vector<PetscInt> nnz(n);
-  for (Index i = 0; i < n; ++i)
-    nnz[i] = static_cast<PetscInt>(A.outerIndexPtr()[i + 1] - A.outerIndexPtr()[i]);
-  DM_PETSC(MatSeqAIJSetPreallocation(M, 0, nnz.data()));
-  std::vector<PetscInt> cols;
-  for (Index i = 0; i < n; ++i)
+#ifdef PETSC_HAVE_HYPRE
+  return " -" + prefix + "pc_type hypre -" + prefix + "pc_hypre_boomeramg_coarsen_type HMIS -" +
+         prefix + "pc_hypre_boomeramg_interp_type ext+i -" + prefix +
+         "pc_hypre_boomeramg_P_max 4 -" + prefix + "pc_hypre_boomeramg_agg_nl 1";
+#else
+  return " -" + prefix + "pc_type gamg";
+#endif
+}
+
+/// The default options of a Schur complement field split; the user's options follow them and win.
+std::string
+schurOptions(SchurApproximation approximation)
+{
+  std::string o = "-ksp_type fgmres -ksp_gmres_restart 200 -pc_type fieldsplit "
+                  "-pc_fieldsplit_type schur -pc_fieldsplit_schur_fact_type upper "
+                  "-fieldsplit_0_ksp_type preonly" +
+                  amgOptions("fieldsplit_0_") + " -fieldsplit_1_ksp_type preonly";
+  if (approximation == SchurApproximation::PressureMass)
+    return o + " -pc_fieldsplit_schur_precondition user" + amgOptions("fieldsplit_1_");
+  return o + " -pc_fieldsplit_schur_precondition self -fieldsplit_1_laplacian_ksp_type preonly" +
+         amgOptions("fieldsplit_1_laplacian_");
+}
+
+/// The default options of a field split by physics, block "0", "1", ... one after the other.
+std::string
+physicsBlockOptions(std::size_t blocks)
+{
+  std::string o = "-ksp_type fgmres -ksp_gmres_restart 200 -pc_type fieldsplit "
+                  "-pc_fieldsplit_type multiplicative";
+  for (std::size_t b = 0; b < blocks; ++b)
+    o += " -fieldsplit_" + std::to_string(b) + "_ksp_type preonly -fieldsplit_" +
+         std::to_string(b) + "_pc_type gamg";
+  return o;
+}
+
+/// An index set of the given global rows of this process.
+IS
+indexSet(MPI_Comm comm, const std::vector<Index> & rows)
+{
+  std::vector<PetscInt> indices(rows.begin(), rows.end());
+  IS set;
+  DM_PETSC(ISCreateGeneral(
+      comm, static_cast<PetscInt>(indices.size()), indices.data(), PETSC_COPY_VALUES, &set));
+  return set;
+}
+
+/// A matrix of the layout of @p like from entries in the global numbering, summed, with an
+/// explicit diagonal on every owned row: zero, or one on the rows of @p ones.
+Mat
+assembledMatrix(Mat like, const std::vector<GlobalEntry> & entries, const std::vector<Index> & ones)
+{
+  MPI_Comm comm;
+  DM_PETSC(PetscObjectGetComm(reinterpret_cast<PetscObject>(like), &comm));
+  PetscInt lo = 0, hi = 0, size = 0;
+  DM_PETSC(MatGetOwnershipRange(like, &lo, &hi));
+  DM_PETSC(MatGetSize(like, &size, nullptr));
+  std::vector<PetscInt> rows, cols;
+  std::vector<PetscScalar> values;
+  const auto add = [&](PetscInt r, PetscInt c, double v)
   {
-    const auto begin = A.outerIndexPtr()[i];
-    const auto end = A.outerIndexPtr()[i + 1];
-    cols.assign(A.innerIndexPtr() + begin, A.innerIndexPtr() + end);
-    const PetscInt row = static_cast<PetscInt>(i);
-    DM_PETSC(MatSetValues(M,
-                          1,
-                          &row,
-                          static_cast<PetscInt>(end - begin),
-                          cols.data(),
-                          A.valuePtr() + begin,
-                          INSERT_VALUES));
-  }
-  DM_PETSC(MatAssemblyBegin(M, MAT_FINAL_ASSEMBLY));
-  DM_PETSC(MatAssemblyEnd(M, MAT_FINAL_ASSEMBLY));
+    rows.push_back(r);
+    cols.push_back(c);
+    values.push_back(v);
+  };
+  for (const auto & e : entries)
+    add(static_cast<PetscInt>(e.row), static_cast<PetscInt>(e.col), e.value);
+  for (PetscInt i = lo; i < hi; ++i)
+    add(i, i, 0.0);
+  for (Index r : ones)
+    add(static_cast<PetscInt>(r), static_cast<PetscInt>(r), 1.0);
+  Mat M;
+  DM_PETSC(MatCreate(comm, &M));
+  DM_PETSC(MatSetSizes(M, hi - lo, hi - lo, size, size));
+  DM_PETSC(MatSetType(M, MATAIJ));
+  DM_PETSC(
+      MatSetPreallocationCOO(M, static_cast<PetscCount>(rows.size()), rows.data(), cols.data()));
+  DM_PETSC(MatSetValuesCOO(M, values.data(), ADD_VALUES));
   return M;
 }
 
-/// Solve with a configured matrix and right-hand side, and destroy the solver.
-void
-runKsp(MPI_Comm comm, Mat A, Vec b, Vec x, const Settings & s, bool parallel, Result & result)
+/// The submatrix of @p full on the rows and columns of @p set; @p full is destroyed.
+Mat
+restricted(Mat full, IS set)
 {
-  const SaddlePointBlocks * saddle = s.saddle_point;
-  if (saddle && parallel)
-    throw std::runtime_error("dualmesh: the pressure mass matrix Schur preconditioner is "
-                             "available for serial solves only so far.");
-  const std::string base = saddle ? saddlePointOptions() : defaultOptions(parallel);
-  // With the saddle point preconditioner the user's options refine the
-  // defaults (the later value of an option wins); otherwise they replace them.
-  ScopedOptions scope(saddle ? base + " " + s.options : (s.options.empty() ? base : s.options));
-  KSP ksp;
-  DM_PETSC(KSPCreate(comm, &ksp));
-  DM_PETSC(KSPSetOperators(ksp, A, A));
-  DM_PETSC(KSPSetTolerances(ksp,
-                            s.relative_tolerance,
-                            s.absolute_tolerance,
-                            PETSC_DEFAULT,
-                            static_cast<PetscInt>(s.max_iterations)));
-  IS other_set = nullptr, pressure_set = nullptr;
-  Mat schur = nullptr;
-  if (saddle)
+  Mat part;
+  DM_PETSC(MatCreateSubMatrix(full, set, set, MAT_INITIAL_MATRIX, &part));
+  MatDestroy(&full);
+  return part;
+}
+
+/// The vector of the layout of @p like whose entries are the sums of the values of @p entries at their rows.
+Vec
+assembledVector(Mat like, const std::vector<GlobalEntry> & entries)
+{
+  Vec v;
+  DM_PETSC(MatCreateVecs(like, nullptr, &v));
+  DM_PETSC(VecSet(v, 0.0));
+  for (const auto & e : entries)
+    DM_PETSC(VecSetValue(v, static_cast<PetscInt>(e.row), e.value, ADD_VALUES));
+  DM_PETSC(VecAssemblyBegin(v));
+  DM_PETSC(VecAssemblyEnd(v));
+  return v;
+}
+
+/// The part of @p v on the rows of @p set, as a vector of its own.
+Vec
+subvector(Vec v, IS set)
+{
+  Vec part, copy;
+  DM_PETSC(VecGetSubVector(v, set, &part));
+  DM_PETSC(VecDuplicate(part, &copy));
+  DM_PETSC(VecCopy(part, copy));
+  DM_PETSC(VecRestoreSubVector(v, set, &part));
+  return copy;
+}
+
+/// Replace every positive entry of @p v by its reciprocal and every other by @p otherwise.
+void
+invert(Vec v, double otherwise)
+{
+  PetscScalar * a = nullptr;
+  PetscInt n = 0;
+  DM_PETSC(VecGetLocalSize(v, &n));
+  DM_PETSC(VecGetArray(v, &a));
+  for (PetscInt i = 0; i < n; ++i)
+    a[i] = a[i] > 0.0 ? 1.0 / a[i] : otherwise;
+  DM_PETSC(VecRestoreArray(v, &a));
+}
+
+/// The columns of @p modes (one row per owned row of @p like) as vectors, orthonormalised by the
+/// modified Gram-Schmidt process; a column that depends on the earlier ones is dropped.
+/// With @p set, the vectors are restricted to its rows first.
+std::vector<Vec>
+orthonormalModes(Mat like, const Eigen::MatrixXd & modes, IS set = nullptr)
+{
+  std::vector<Vec> basis;
+  for (Index c = 0; c < modes.cols(); ++c)
   {
-    PC pc;
-    DM_PETSC(KSPGetPC(ksp, &pc));
-    DM_PETSC(PCSetType(pc, PCFIELDSPLIT));
-    std::vector<PetscInt> other(saddle->other_dofs.begin(), saddle->other_dofs.end());
-    std::vector<PetscInt> pressure(saddle->pressure_dofs.begin(), saddle->pressure_dofs.end());
-    DM_PETSC(ISCreateGeneral(
-        comm, static_cast<PetscInt>(other.size()), other.data(), PETSC_COPY_VALUES, &other_set));
-    DM_PETSC(ISCreateGeneral(comm,
-                             static_cast<PetscInt>(pressure.size()),
-                             pressure.data(),
-                             PETSC_COPY_VALUES,
-                             &pressure_set));
-    DM_PETSC(PCFieldSplitSetIS(pc, "0", other_set));
-    DM_PETSC(PCFieldSplitSetIS(pc, "1", pressure_set));
-    schur = toSequentialPetsc(saddle->schur_approximation);
+    Vec v;
+    DM_PETSC(MatCreateVecs(like, nullptr, &v));
+    PetscScalar * a = nullptr;
+    DM_PETSC(VecGetArray(v, &a));
+    for (Index i = 0; i < modes.rows(); ++i)
+      a[i] = modes(i, c);
+    DM_PETSC(VecRestoreArray(v, &a));
+    if (set)
+    {
+      Vec part = subvector(v, set);
+      VecDestroy(&v);
+      v = part;
+    }
+    PetscReal before = 0;
+    DM_PETSC(VecNorm(v, NORM_2, &before));
+    for (Vec u : basis)
+    {
+      PetscScalar d = 0;
+      DM_PETSC(VecDot(v, u, &d));
+      DM_PETSC(VecAXPY(v, -d, u));
+    }
+    PetscReal after = 0;
+    DM_PETSC(VecNorm(v, NORM_2, &after));
+    if (!(after > 1e-10 * before) || before == 0.0)
+    {
+      VecDestroy(&v);
+      continue;
+    }
+    DM_PETSC(VecScale(v, 1.0 / after));
+    basis.push_back(v);
   }
-  DM_PETSC(KSPSetFromOptions(ksp));
-  if (saddle)
+  return basis;
+}
+
+/// The near null space spanned by @p modes, restricted to @p set when it is given.
+MatNullSpace
+nearNullSpace(Mat like, const Eigen::MatrixXd & modes, IS set = nullptr)
+{
+  MPI_Comm comm;
+  DM_PETSC(PetscObjectGetComm(reinterpret_cast<PetscObject>(like), &comm));
+  std::vector<Vec> basis = orthonormalModes(like, modes, set);
+  MatNullSpace space;
+  DM_PETSC(MatNullSpaceCreate(
+      comm, PETSC_FALSE, static_cast<PetscInt>(basis.size()), basis.data(), &space));
+  for (Vec & v : basis)
+    VecDestroy(&v);
+  return space;
+}
+
+/// The Schur complement preconditioner of pcd and lsc (SaddlePointSolver.h), applied by a shell.
+struct SchurShell
+{
+  SchurApproximation approximation = SchurApproximation::ConvectionDiffusion;
+  double sign = 1.0;
+  Mat gradient = nullptr, momentum = nullptr, laplacian = nullptr;
+  Mat convection_diffusion = nullptr, commutator_stabilization = nullptr;
+  KSP laplacian_solver = nullptr;
+  Vec inverse_velocity_mass = nullptr, inverse_pressure_mass = nullptr;
+  Vec prescribed = nullptr, free = nullptr;
+  Vec p1 = nullptr, p2 = nullptr, u1 = nullptr, u2 = nullptr;
+
+  ~SchurShell()
   {
-    PC pc;
-    DM_PETSC(KSPGetPC(ksp, &pc));
-    DM_PETSC(PCFieldSplitSetSchurPre(pc, PC_FIELDSPLIT_SCHUR_PRE_USER, schur));
+    if (!PetscInitializeCalled || PetscFinalizeCalled)
+      return;
+    KSPDestroy(&laplacian_solver);
+    for (Mat * m :
+         {&gradient, &momentum, &laplacian, &convection_diffusion, &commutator_stabilization})
+      MatDestroy(m);
+    for (Vec * v :
+         {&inverse_velocity_mass, &inverse_pressure_mass, &prescribed, &free, &p1, &p2, &u1, &u2})
+      VecDestroy(v);
   }
-  DM_PETSC(KSPSolve(ksp, b, x));
-  PetscInt its = 0;
-  KSPConvergedReason reason;
-  DM_PETSC(KSPGetIterationNumber(ksp, &its));
-  DM_PETSC(KSPGetConvergedReason(ksp, &reason));
-  const char * text = nullptr;
-  DM_PETSC(KSPGetConvergedReasonString(ksp, &text));
-  result.iterations = static_cast<int>(its);
-  result.converged = reason > 0;
-  result.reason = text ? text : "";
-  DM_PETSC(KSPDestroy(&ksp));
-  if (schur)
-    MatDestroy(&schur);
-  if (other_set)
-    ISDestroy(&other_set);
-  if (pressure_set)
-    ISDestroy(&pressure_set);
+};
+
+PetscErrorCode
+applySchurShell(PC pc, Vec r, Vec z)
+{
+  SchurShell * s = nullptr;
+  PetscFunctionBeginUser;
+  PetscCall(PCShellGetContext(pc, &s));
+  if (s->approximation == SchurApproximation::ConvectionDiffusion)
+  {
+    // z = A_p^{-1} F_p Q_p^{-1} r
+    PetscCall(VecPointwiseMult(s->p1, s->inverse_pressure_mass, r));
+    PetscCall(MatMult(s->convection_diffusion, s->p1, s->p2));
+    PetscCall(KSPSolve(s->laplacian_solver, s->p2, z));
+  }
+  else
+  {
+    // z = A_p^{-1} (G^T Q_v^{-1} F Q_v^{-1} G + C_2) A_p^{-1} r
+    PetscCall(KSPSolve(s->laplacian_solver, r, s->p1));
+    PetscCall(MatMult(s->gradient, s->p1, s->u1));
+    PetscCall(VecPointwiseMult(s->u1, s->u1, s->inverse_velocity_mass));
+    PetscCall(MatMult(s->momentum, s->u1, s->u2));
+    PetscCall(VecPointwiseMult(s->u2, s->u2, s->inverse_velocity_mass));
+    PetscCall(MatMultTranspose(s->gradient, s->u2, s->p2));
+    PetscCall(MatMultAdd(s->commutator_stabilization, s->p1, s->p2, s->p2));
+    PetscCall(KSPSolve(s->laplacian_solver, s->p2, z));
+  }
+  PetscCall(VecScale(z, s->sign));
+  // A prescribed pressure is a row of the identity, whose Schur complement is 1.
+  PetscCall(VecPointwiseMult(z, z, s->free));
+  PetscCall(VecPointwiseMult(s->p1, s->prescribed, r));
+  PetscCall(VecAXPY(z, 1.0, s->p1));
+  PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+/// Build the shell of pcd or lsc for the Schur split of @p ksp, set up, whose matrix is @p A.
+std::unique_ptr<SchurShell>
+makeSchurShell(KSP ksp, Mat A, IS other_set, IS pressure_set, const SchurBlocks & blocks)
+{
+  auto s = std::make_unique<SchurShell>();
+  s->approximation = blocks.approximation;
+  s->sign = blocks.sign;
+  MPI_Comm comm;
+  DM_PETSC(PetscObjectGetComm(reinterpret_cast<PetscObject>(A), &comm));
+  DM_PETSC(MatCreateSubMatrix(A, other_set, pressure_set, MAT_INITIAL_MATRIX, &s->gradient));
+  Vec lumped = assembledVector(A, blocks.lumped_mass);
+  s->inverse_velocity_mass = subvector(lumped, other_set);
+  invert(s->inverse_velocity_mass, 0.0);
+  s->inverse_pressure_mass = subvector(lumped, pressure_set);
+  invert(s->inverse_pressure_mass, 1.0);
+  VecDestroy(&lumped);
+  // A_p = G^T Q_v^{-1} G + C_1, with ones at the prescribed pressures.
+  Mat scaled;
+  DM_PETSC(MatDuplicate(s->gradient, MAT_COPY_VALUES, &scaled));
+  DM_PETSC(MatDiagonalScale(scaled, s->inverse_velocity_mass, nullptr));
+  DM_PETSC(
+      MatTransposeMatMult(s->gradient, scaled, MAT_INITIAL_MATRIX, PETSC_DETERMINE, &s->laplacian));
+  MatDestroy(&scaled);
+  Mat stabilization = restricted(
+      assembledMatrix(A, blocks.stabilization, blocks.constrained_pressure_rows), pressure_set);
+  DM_PETSC(MatAXPY(s->laplacian, 1.0, stabilization, DIFFERENT_NONZERO_PATTERN));
+  MatDestroy(&stabilization);
+  if (blocks.approximation == SchurApproximation::ConvectionDiffusion)
+    s->convection_diffusion = restricted(
+        assembledMatrix(A, blocks.convection_diffusion, blocks.constrained_pressure_rows),
+        pressure_set);
+  else
+  {
+    DM_PETSC(MatCreateSubMatrix(A, other_set, other_set, MAT_INITIAL_MATRIX, &s->momentum));
+    s->commutator_stabilization =
+        restricted(assembledMatrix(A, blocks.commutator_stabilization, {}), pressure_set);
+  }
+  std::vector<GlobalEntry> ones;
+  for (Index r : blocks.constrained_pressure_rows)
+    ones.push_back({r, r, 1.0});
+  Vec prescribed = assembledVector(A, ones);
+  s->prescribed = subvector(prescribed, pressure_set);
+  VecDestroy(&prescribed);
+  DM_PETSC(VecDuplicate(s->prescribed, &s->free));
+  DM_PETSC(VecSet(s->free, 1.0));
+  DM_PETSC(VecAXPY(s->free, -1.0, s->prescribed));
+  DM_PETSC(MatCreateVecs(s->gradient, &s->p1, &s->u1));
+  DM_PETSC(VecDuplicate(s->p1, &s->p2));
+  DM_PETSC(VecDuplicate(s->u1, &s->u2));
+
+  DM_PETSC(KSPCreate(comm, &s->laplacian_solver));
+  DM_PETSC(KSPSetOptionsPrefix(s->laplacian_solver, "fieldsplit_1_laplacian_"));
+  DM_PETSC(KSPSetOperators(s->laplacian_solver, s->laplacian, s->laplacian));
+  DM_PETSC(KSPSetFromOptions(s->laplacian_solver));
+  DM_PETSC(KSPSetUp(s->laplacian_solver));
+
+  PC pc;
+  DM_PETSC(KSPGetPC(ksp, &pc));
+  PetscInt count = 0;
+  KSP * sub = nullptr;
+  DM_PETSC(PCFieldSplitSchurGetSubKSP(pc, &count, &sub));
+  KSP schur_solver = sub[1];
+  DM_PETSC(PetscFree(sub));
+  PC shell;
+  DM_PETSC(KSPGetPC(schur_solver, &shell));
+  DM_PETSC(PCSetType(shell, PCSHELL));
+  DM_PETSC(PCShellSetContext(shell, s.get()));
+  DM_PETSC(PCShellSetApply(shell, applySchurShell));
+  DM_PETSC(PCShellSetName(shell,
+                          blocks.approximation == SchurApproximation::ConvectionDiffusion
+                              ? "dualmesh pressure convection-diffusion"
+                              : "dualmesh least squares commutator"));
+  return s;
+}
+
+/// Whether the preconditioner of @p ksp is a field split of the Schur complement type.
+bool
+isSchurSplit(KSP ksp)
+{
+  PC pc;
+  DM_PETSC(KSPGetPC(ksp, &pc));
+  PetscBool fieldsplit = PETSC_FALSE;
+  DM_PETSC(PetscObjectTypeCompare(reinterpret_cast<PetscObject>(pc), PCFIELDSPLIT, &fieldsplit));
+  if (!fieldsplit)
+    return false;
+  PCCompositeType type;
+  DM_PETSC(PCFieldSplitGetType(pc, &type));
+  return type == PC_COMPOSITE_SCHUR;
 }
 
 } // namespace
@@ -363,74 +664,13 @@ solve(const SparseMatrix & A_in, const Vector & b, const Settings & settings, Re
   if (A_in.cols() != n || b.size() != n)
     throw std::invalid_argument("dualmesh: petsc::solve needs a square matrix and a matching "
                                 "right-hand side.");
-  Eigen::SparseMatrix<double, Eigen::RowMajor> A = A_in;
-  A.makeCompressed();
-
-  Mat M;
-  DM_PETSC(MatCreate(PETSC_COMM_SELF, &M));
-  DM_PETSC(MatSetSizes(M, n, n, n, n));
-  DM_PETSC(MatSetType(M, MATSEQAIJ));
-  if (settings.block_size > 1 && n % settings.block_size == 0)
-    DM_PETSC(MatSetBlockSize(M, settings.block_size));
-  // Every diagonal entry is stored, as an explicit zero where the matrix has
-  // none: PETSc's factorisations and field splits need the diagonal in the
-  // sparsity pattern, and a saddle point system (the pressure rows of the
-  // Taylor-Hood element) has no diagonal of its own.
-  std::vector<PetscInt> nnz(n);
-  std::vector<char> has_diagonal(n, 0);
-  for (Index i = 0; i < n; ++i)
-  {
-    const auto begin = A.outerIndexPtr()[i];
-    const auto end = A.outerIndexPtr()[i + 1];
-    for (auto k = begin; k < end; ++k)
-      if (A.innerIndexPtr()[k] == i)
-        has_diagonal[i] = 1;
-    nnz[i] = static_cast<PetscInt>(end - begin) + (has_diagonal[i] ? 0 : 1);
-  }
-  DM_PETSC(MatSeqAIJSetPreallocation(M, 0, nnz.data()));
-  for (Index i = 0; i < n; ++i)
-    if (!has_diagonal[i])
-    {
-      const PetscInt row = static_cast<PetscInt>(i);
-      const PetscScalar zero = 0.0;
-      DM_PETSC(MatSetValues(M, 1, &row, 1, &row, &zero, INSERT_VALUES));
-    }
-  std::vector<PetscInt> cols;
-  for (Index i = 0; i < n; ++i)
-  {
-    const auto begin = A.outerIndexPtr()[i];
-    const auto end = A.outerIndexPtr()[i + 1];
-    cols.assign(A.innerIndexPtr() + begin, A.innerIndexPtr() + end);
-    const PetscInt row = static_cast<PetscInt>(i);
-    DM_PETSC(MatSetValues(M,
-                          1,
-                          &row,
-                          static_cast<PetscInt>(end - begin),
-                          cols.data(),
-                          A.valuePtr() + begin,
-                          INSERT_VALUES));
-  }
-  DM_PETSC(MatAssemblyBegin(M, MAT_FINAL_ASSEMBLY));
-  DM_PETSC(MatAssemblyEnd(M, MAT_FINAL_ASSEMBLY));
-
-  Vec vb, vx;
-  DM_PETSC(MatCreateVecs(M, &vx, &vb));
-  PetscScalar * data = nullptr;
-  DM_PETSC(VecGetArray(vb, &data));
-  std::copy(b.data(), b.data() + n, data);
-  DM_PETSC(VecRestoreArray(vb, &data));
-
-  runKsp(PETSC_COMM_SELF, M, vb, vx, settings, false, result);
-
-  Vector x(n);
-  const PetscScalar * xs = nullptr;
-  DM_PETSC(VecGetArrayRead(vx, &xs));
-  std::copy(xs, xs + n, x.data());
-  DM_PETSC(VecRestoreArrayRead(vx, &xs));
-  VecDestroy(&vb);
-  VecDestroy(&vx);
-  MatDestroy(&M);
-  return x;
+  std::vector<GlobalEntry> entries;
+  entries.reserve(static_cast<std::size_t>(A_in.nonZeros()));
+  for (Index col = 0; col < A_in.outerSize(); ++col)
+    for (SparseMatrix::InnerIterator it(A_in, col); it; ++it)
+      entries.push_back({it.row(), it.col(), it.value()});
+  const LinearSolver solver(false, n, 0, n, entries, settings);
+  return solver.solve(b, nullptr, result);
 }
 
 struct LinearSolver::Impl
@@ -446,12 +686,24 @@ struct LinearSolver::Impl
   bool symmetric = true;
   std::size_t num_entries = 0;
   std::vector<Vec> basis, images;
+  /// The splits of a field split preconditioner, the Schur complement
+  /// preconditioner of pressure_mass, and the shell of pcd and lsc.
+  std::vector<IS> splits;
+  Mat schur_preconditioner = nullptr;
+  std::unique_ptr<SchurShell> shell;
+  /// The options of this solver, made the default database again for every solve: the
+  /// preconditioners of the blocks are set up at the first solve, and again after setValues, and
+  /// read their options then.
+  std::string options;
 
   ~Impl()
   {
     // A solver may outlive PETSc at the exit of a program; there is then nothing left to free.
     if (!PetscInitializeCalled || PetscFinalizeCalled)
+    {
+      (void) shell.release();
       return;
+    }
     for (auto * list : {&basis, &images})
       for (Vec & v : *list)
         VecDestroy(&v);
@@ -460,6 +712,10 @@ struct LinearSolver::Impl
     VecDestroy(&r);
     VecDestroy(&w);
     KSPDestroy(&ksp);
+    shell.reset();
+    MatDestroy(&schur_preconditioner);
+    for (IS & set : splits)
+      ISDestroy(&set);
     MatDestroy(&matrix);
   }
 
@@ -562,8 +818,27 @@ LinearSolver::LinearSolver(bool distributed,
   if (static_cast<Index>(lo) != first_row || static_cast<Index>(hi - lo) != n_local)
     throw std::logic_error("dualmesh: PETSc chose a different row distribution.");
 
-  // The options are read, and the preconditioner is built, while this solver's options are the default database.
-  ScopedOptions scope(settings.options.empty() ? defaultOptions(size > 1) : settings.options);
+  if (settings.schur && !settings.physics_blocks.empty())
+    throw std::logic_error("dualmesh: a Schur complement split and a split by physics at once.");
+  if (settings.near_nullspace.cols() > 0)
+  {
+    if (settings.near_nullspace.rows() != n_local)
+      throw std::invalid_argument("dualmesh: the near null space needs one row per owned row.");
+    MatNullSpace space = nearNullSpace(s.matrix, settings.near_nullspace);
+    DM_PETSC(MatSetNearNullSpace(s.matrix, space));
+    MatNullSpaceDestroy(&space);
+  }
+
+  // The options are read, and the preconditioner is built, while this solver's options are the
+  // default database.  The options of a block preconditioner refine its defaults (the later
+  // value of an option wins); otherwise they replace the default.
+  std::string text = settings.options.empty() ? defaultOptions(size > 1) : settings.options;
+  if (settings.schur)
+    text = schurOptions(settings.schur->approximation) + " " + settings.options;
+  else if (!settings.physics_blocks.empty())
+    text = physicsBlockOptions(settings.physics_blocks.size()) + " " + settings.options;
+  s.options = text;
+  ScopedOptions scope(text);
   DM_PETSC(KSPCreate(s.comm, &s.ksp));
   DM_PETSC(KSPSetOperators(s.ksp, s.matrix, s.matrix));
   DM_PETSC(KSPSetTolerances(s.ksp,
@@ -571,8 +846,54 @@ LinearSolver::LinearSolver(bool distributed,
                             settings.absolute_tolerance,
                             PETSC_DEFAULT,
                             static_cast<PetscInt>(settings.max_iterations)));
+  PC pc;
+  DM_PETSC(KSPGetPC(s.ksp, &pc));
+  if (settings.schur)
+  {
+    DM_PETSC(PCSetType(pc, PCFIELDSPLIT));
+    s.splits = {indexSet(s.comm, settings.schur->other_rows),
+                indexSet(s.comm, settings.schur->pressure_rows)};
+    DM_PETSC(PCFieldSplitSetIS(pc, "0", s.splits[0]));
+    DM_PETSC(PCFieldSplitSetIS(pc, "1", s.splits[1]));
+  }
+  for (std::size_t k = 0; k < settings.physics_blocks.size(); ++k)
+  {
+    if (k == 0)
+      DM_PETSC(PCSetType(pc, PCFIELDSPLIT));
+    IS set = indexSet(s.comm, settings.physics_blocks[k]);
+    s.splits.push_back(set);
+    // The field split gives the near null space composed with a block's rows to its matrix.
+    if (settings.near_nullspace.cols() > 0)
+    {
+      MatNullSpace space = nearNullSpace(s.matrix, settings.near_nullspace, set);
+      DM_PETSC(PetscObjectCompose(reinterpret_cast<PetscObject>(set),
+                                  "nearnullspace",
+                                  reinterpret_cast<PetscObject>(space)));
+      MatNullSpaceDestroy(&space);
+    }
+    DM_PETSC(PCFieldSplitSetIS(pc, std::to_string(k).c_str(), set));
+  }
   DM_PETSC(KSPSetFromOptions(s.ksp));
+  const bool schur_split = settings.schur && isSchurSplit(s.ksp);
+  if (schur_split && settings.schur->approximation == SchurApproximation::PressureMass)
+  {
+    // sign (1/mu) M_p plus the symmetric part of the pressure block of the matrix, whose
+    // prescribed rows are rows of the identity already.
+    Mat block;
+    DM_PETSC(MatCreateSubMatrix(s.matrix, s.splits[1], s.splits[1], MAT_INITIAL_MATRIX, &block));
+    DM_PETSC(MatTranspose(block, MAT_INITIAL_MATRIX, &s.schur_preconditioner));
+    DM_PETSC(MatAXPY(s.schur_preconditioner, 1.0, block, DIFFERENT_NONZERO_PATTERN));
+    DM_PETSC(MatScale(s.schur_preconditioner, 0.5));
+    MatDestroy(&block);
+    Mat mass = restricted(assembledMatrix(s.matrix, settings.schur->mass, {}), s.splits[1]);
+    DM_PETSC(
+        MatAXPY(s.schur_preconditioner, settings.schur->sign, mass, DIFFERENT_NONZERO_PATTERN));
+    MatDestroy(&mass);
+    DM_PETSC(PCFieldSplitSetSchurPre(pc, PC_FIELDSPLIT_SCHUR_PRE_USER, s.schur_preconditioner));
+  }
   DM_PETSC(KSPSetUp(s.ksp));
+  if (schur_split && settings.schur->approximation != SchurApproximation::PressureMass)
+    s.shell = makeSchurShell(s.ksp, s.matrix, s.splits[0], s.splits[1], *settings.schur);
 }
 
 LinearSolver::~LinearSolver() = default;
@@ -583,6 +904,9 @@ LinearSolver::setValues(const std::vector<double> & values)
   Impl & s = *_impl;
   if (values.size() != s.num_entries)
     throw std::invalid_argument("dualmesh: new values for a different number of entries.");
+  if (s.shell || s.schur_preconditioner)
+    throw std::logic_error("dualmesh: the operators of a Schur complement split belong to the "
+                           "first values of the matrix; make a new solver.");
   // The zeros on the diagonal of every owned row follow the entries, as in the constructor.
   std::vector<PetscScalar> all(values.begin(), values.end());
   all.resize(values.size() + static_cast<std::size_t>(s.n_local), 0.0);
@@ -603,6 +927,7 @@ LinearSolver::solve(const Vector & b_owned, const Vector * guess, Result & resul
   Impl & s = *_impl;
   if (b_owned.size() != s.n_local || (guess && guess->size() != s.n_local))
     throw std::invalid_argument("dualmesh: a right-hand side of the wrong size.");
+  const ScopedOptions scope(s.options);
   PetscScalar * data = nullptr;
   DM_PETSC(VecGetArray(s.b, &data));
   std::copy(b_owned.data(), b_owned.data() + s.n_local, data);
@@ -665,6 +990,7 @@ LinearSolver::solve(const Vector & b_owned, const Vector * guess, Result & resul
   result.iterations = solved ? static_cast<int>(its) : 0;
   result.converged = !solved || reason > 0;
   result.reason = solved ? (text ? text : "") : "the projection of the earlier solutions is exact";
+  checkTrueResidual(s.matrix, s.b, s.x, s.relative_tolerance, result);
   Vector x(s.n_local);
   const PetscScalar * xs = nullptr;
   DM_PETSC(VecGetArrayRead(s.x, &xs));

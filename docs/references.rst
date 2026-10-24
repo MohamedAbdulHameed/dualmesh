@@ -371,6 +371,41 @@ Solvers
    multiplication and permuted transposition", *ACM Transactions on
    Mathematical Software*, 4(3):250–269, 1978.  DOI: 10.1145/355791.355796.
 
+.. [KayLoghinWathen2002] D. Kay, D. Loghin and A. Wathen, "A preconditioner
+   for the steady-state Navier-Stokes equations", *SIAM Journal on Scientific
+   Computing*, 24(1):237–256, 2002.  DOI: 10.1137/S106482759935808X.
+
+.. [ElmanHowleShadidShuttleworthTuminaro2006] H. Elman, V. E. Howle, J.
+   Shadid, R. Shuttleworth and R. Tuminaro, "Block preconditioners based on
+   approximate commutators", *SIAM Journal on Scientific Computing*,
+   27(5):1651–1668, 2006.  DOI: 10.1137/040608817.
+
+.. [ElmanHowleShadidSilvesterTuminaro2007] H. Elman, V. E. Howle, J. Shadid,
+   D. Silvester and R. Tuminaro, "Least squares preconditioners for
+   stabilized discretizations of the Navier-Stokes equations", *SIAM Journal
+   on Scientific Computing*, 30(1):290–311, 2007.  DOI: 10.1137/060655742.
+
+.. [Saad1993] Y. Saad, "A flexible inner-outer preconditioned GMRES
+   algorithm", *SIAM Journal on Scientific Computing*, 14(2):461–469, 1993.
+   DOI: 10.1137/0914028.
+
+.. [DeSterckYangHeys2006] H. De Sterck, U. M. Yang and J. J. Heys, "Reducing
+   complexity in parallel algebraic multigrid preconditioners", *SIAM Journal
+   on Matrix Analysis and Applications*, 27(4):1019–1039, 2006.
+   DOI: 10.1137/040615729.
+
+.. [DeSterckFalgoutNoltingYang2008] H. De Sterck, R. D. Falgout, J. W.
+   Nolting and U. M. Yang, "Distance-two interpolation for parallel algebraic
+   multigrid", *Numerical Linear Algebra with Applications*, 15(2–3):115–139,
+   2008.  DOI: 10.1002/nla.559.
+
+.. [ElmanTuminaro2009] H. C. Elman and R. S. Tuminaro, "Boundary conditions
+   in approximate commutator preconditioners for the Navier-Stokes
+   equations", *Electronic Transactions on Numerical Analysis*, 35:257–280,
+   2009.  https://etna.math.kent.edu/vol.35.2009/pp257-280.dir/pp257-280.pdf.
+   The form of the pressure convection-diffusion preconditioner that dualmesh
+   uses, with the Robin condition at an inflow.
+
 .. [Saad1994] Y. Saad, "ILUT: a dual threshold incomplete LU factorization",
    *Numerical Linear Algebra with Applications*, 1(4):387–402, 1994.
    DOI: 10.1002/nla.1680010405.  The threshold preconditioner offered as

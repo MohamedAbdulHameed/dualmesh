@@ -146,22 +146,22 @@ defineConduction(Problem & problem)
       params("heat_conduction",
              {{"variable", std::string("temperature")}, {"thermal_conductivity", 2.5}}));
   problem.addObject(
-      "heat_source",
+      "body_force",
       "source",
-      params("heat_source", {{"variable", std::string("temperature")}, {"heat_source", 40.0}}));
-  problem.addObject("Dirichlet_boundary_condition",
+      params("body_force", {{"variable", std::string("temperature")}, {"value", 40.0}}));
+  problem.addObject("Dirichlet",
                     "cold",
-                    params("Dirichlet_boundary_condition",
+                    params("Dirichlet",
                            {{"variable", std::string("temperature")},
                             {"boundary", std::vector<std::string>{"left", "bottom"}},
                             {"value", 20.0}}));
-  problem.addObject("convective_heat_flux_boundary_condition",
+  problem.addObject("Robin",
                     "convection",
-                    params("convective_heat_flux_boundary_condition",
+                    params("Robin",
                            {{"variable", std::string("temperature")},
                             {"boundary", std::vector<std::string>{"right", "top"}},
-                            {"heat_transfer_coefficient", 15.0},
-                            {"ambient_temperature", 5.0}}));
+                            {"transfer_coeff", 15.0},
+                            {"ambient_value", 5.0}}));
 }
 } // namespace
 
@@ -569,9 +569,9 @@ main()
                                 {"value", 3.0},
                                 {"points", std::vector<double>{0.5, 0.5, 0.0}}}));
       problem.addObject(
-          "Dirichlet_boundary_condition",
+          "Dirichlet",
           "edges",
-          params("Dirichlet_boundary_condition",
+          params("Dirichlet",
                  {{"variable", std::string("u")},
                   {"boundary", std::vector<std::string>{"left", "right", "bottom", "top"}},
                   {"value", 0.0}}));
@@ -607,10 +607,11 @@ main()
     {
       problem.addVariable("disp_x");
       problem.addVariable("disp_y");
-      problem.addObject("linear_elastic_stress",
+      problem.addObject("small_strain_stress",
                         "stress",
-                        params("linear_elastic_stress",
+                        params("small_strain_stress",
                                {{"displacements", std::vector<std::string>{"disp_x", "disp_y"}},
+                                {"formulation", std::string("plane_stress")},
                                 {"youngs_modulus", 200.0},
                                 {"poissons_ratio", 0.3}}));
       for (int c = 0; c < 2; ++c)
@@ -619,17 +620,19 @@ main()
         problem.addObject(
             "stress_divergence",
             "equilibrium_" + v,
-            params("stress_divergence", {{"variable", v}, {"component", static_cast<long>(c)}}));
+            params("stress_divergence",
+                   {{"variable", v},
+                    {"displacements", std::vector<std::string>{"disp_x", "disp_y"}}}));
         problem.addObject(
-            "Dirichlet_boundary_condition",
+            "Dirichlet",
             "clamp_" + v,
             params(
-                "Dirichlet_boundary_condition",
+                "Dirichlet",
                 {{"variable", v}, {"boundary", std::vector<std::string>{"left"}}, {"value", 0.0}}));
       }
-      problem.addObject("traction_boundary_condition",
+      problem.addObject("traction",
                         "load",
-                        params("traction_boundary_condition",
+                        params("traction",
                                {{"variable", std::string("disp_y")},
                                 {"boundary", std::vector<std::string>{"right"}},
                                 {"traction", -1.0}}));
@@ -676,10 +679,11 @@ main()
     {
       problem.addVariable("disp_x");
       problem.addVariable("disp_y");
-      problem.addObject("linear_elastic_stress",
+      problem.addObject("small_strain_stress",
                         "stress",
-                        params("linear_elastic_stress",
+                        params("small_strain_stress",
                                {{"displacements", std::vector<std::string>{"disp_x", "disp_y"}},
+                                {"formulation", std::string("plane_stress")},
                                 {"youngs_modulus", 200.0},
                                 {"poissons_ratio", 0.3}}));
       for (int c = 0; c < 2; ++c)
@@ -688,17 +692,19 @@ main()
         problem.addObject(
             "stress_divergence",
             "equilibrium_" + v,
-            params("stress_divergence", {{"variable", v}, {"component", static_cast<long>(c)}}));
-        problem.addObject("Dirichlet_boundary_condition",
+            params("stress_divergence",
+                   {{"variable", v},
+                    {"displacements", std::vector<std::string>{"disp_x", "disp_y"}}}));
+        problem.addObject("Dirichlet",
                           "clamp_" + v,
-                          params("Dirichlet_boundary_condition",
+                          params("Dirichlet",
                                  {{"variable", v},
                                   {"boundary", std::vector<std::string>{"left", "bottom"}},
                                   {"value", 0.0}}));
       }
-      problem.addObject("traction_boundary_condition",
+      problem.addObject("traction",
                         "load",
-                        params("traction_boundary_condition",
+                        params("traction",
                                {{"variable", std::string("disp_y")},
                                 {"boundary", std::vector<std::string>{"right", "top"}},
                                 {"total_force", -3.0}}));
@@ -809,24 +815,24 @@ main()
           "source",
           params("body_force", {{"variable", std::string("u")}, {"value", std::string("source")}}));
       problem.addObject(
-          "periodic_boundary_condition",
+          "periodic",
           "periodic_x",
-          params("periodic_boundary_condition",
+          params("periodic",
                  {{"primary", std::string("left")}, {"secondary", std::string("right")}}));
       if (doubly)
       {
         problem.addObject(
             "reaction", "reaction", params("reaction", {{"variable", std::string("u")}}));
         problem.addObject(
-            "periodic_boundary_condition",
+            "periodic",
             "periodic_y",
-            params("periodic_boundary_condition",
+            params("periodic",
                    {{"primary", std::string("bottom")}, {"secondary", std::string("top")}}));
       }
       else
-        problem.addObject("Dirichlet_boundary_condition",
+        problem.addObject("Dirichlet",
                           "walls",
-                          params("Dirichlet_boundary_condition",
+                          params("Dirichlet",
                                  {{"variable", std::string("u")},
                                   {"boundary", std::vector<std::string>{"bottom"}},
                                   {"value", 0.0}}));
@@ -922,15 +928,15 @@ main()
                                {{"variable", std::string("temperature")},
                                 {"thermal_conductivity", 16.0},
                                 {"block", std::vector<std::string>{"outer"}}}));
-      problem.addObject("heat_source",
+      problem.addObject("body_force",
                         "source",
-                        params("heat_source",
+                        params("body_force",
                                {{"variable", std::string("temperature")},
-                                {"heat_source", 100.0},
+                                {"value", 100.0},
                                 {"block", std::vector<std::string>{"inner"}}}));
-      problem.addObject("Dirichlet_boundary_condition",
+      problem.addObject("Dirichlet",
                         "cooled",
-                        params("Dirichlet_boundary_condition",
+                        params("Dirichlet",
                                {{"variable", std::string("temperature")},
                                 {"boundary", std::vector<std::string>{"right"}},
                                 {"value", 10.0}}));
@@ -1023,9 +1029,9 @@ main()
           "body_force",
           "source",
           params("body_force", {{"variable", std::string("temperature")}, {"value", 300.0}}));
-      problem.addObject("Dirichlet_boundary_condition",
+      problem.addObject("Dirichlet",
                         "cold",
-                        params("Dirichlet_boundary_condition",
+                        params("Dirichlet",
                                {{"variable", std::string("temperature")},
                                 {"boundary", std::vector<std::string>{"left", "bottom"}},
                                 {"value", 1.0}}));
@@ -1110,9 +1116,9 @@ main()
           "body_force",
           "source",
           params("body_force", {{"variable", std::string("u")}, {"value", std::string("bump")}}));
-      problem.addObject("Dirichlet_boundary_condition",
+      problem.addObject("Dirichlet",
                         "walls",
-                        params("Dirichlet_boundary_condition",
+                        params("Dirichlet",
                                {{"variable", std::string("u")},
                                 {"boundary", std::vector<std::string>{"left", "right"}},
                                 {"value", 0.0}}));
@@ -1206,9 +1212,9 @@ main()
             problem.addObject("diffusion", name, params("diffusion", {{"variable", name}}));
             if (!periodic)
               problem.addObject(
-                  "Dirichlet_boundary_condition",
+                  "Dirichlet",
                   name + "_walls",
-                  params("Dirichlet_boundary_condition",
+                  params("Dirichlet",
                          {{"variable", name},
                           {"boundary", std::vector<std::string>{"left", "right", "bottom", "top"}},
                           {"value", name + "_exact"}}));
@@ -1221,10 +1227,10 @@ main()
             for (const auto & [name, primary, secondary] :
                  std::vector<std::tuple<std::string, std::string, std::string>>{
                      {"periodic_x", "left", "right"}, {"periodic_y", "bottom", "top"}})
-              problem.addObject("periodic_boundary_condition",
-                                name,
-                                params("periodic_boundary_condition",
-                                       {{"primary", primary}, {"secondary", secondary}}));
+              problem.addObject(
+                  "periodic",
+                  name,
+                  params("periodic", {{"primary", primary}, {"secondary", secondary}}));
         };
         TransientOptions transient;
         transient.end_time = 0.4;
@@ -1315,9 +1321,9 @@ main()
                       "source",
                       params("body_force", {{"variable", std::string("u")}, {"value", 1.0}}));
     problem.addObject(
-        "Dirichlet_boundary_condition",
+        "Dirichlet",
         "walls",
-        params("Dirichlet_boundary_condition",
+        params("Dirichlet",
                {{"variable", std::string("u")},
                 {"boundary", std::vector<std::string>{"left", "right", "bottom", "top"}},
                 {"value", 0.0}}));
@@ -1348,9 +1354,9 @@ main()
                         "time",
                         params("time_derivative", {{"variable", std::string("temperature")}}));
       problem.addObject(
-          "Dirichlet_boundary_condition",
+          "Dirichlet",
           "edges",
-          params("Dirichlet_boundary_condition",
+          params("Dirichlet",
                  {{"variable", std::string("temperature")},
                   {"boundary", std::vector<std::string>{"left", "right", "bottom", "top"}},
                   {"value", 0.0}}));

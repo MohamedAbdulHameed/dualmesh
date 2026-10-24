@@ -128,12 +128,46 @@ def _axis_coordinates(
     name: str,
 ) -> list[float]:
     if coordinates is not None:
+        if minimum is not None or maximum is not None:
+            raise ValueError(
+                f"Give {name}_coordinates or the bounds of {name}, not both: the coordinates hold the bounds."
+            )
         return [float(c) for c in coordinates]
     if minimum is None or maximum is None or num_elements is None:
         raise ValueError(
             f"Give either {name}_coordinates or ({name}_min, {name}_max, num_{name}_elements)."
         )
     return graded_coordinates(minimum, maximum, num_elements, bias)
+
+
+def _bounds(pair, minimum, maximum, name: str, where: str) -> tuple:
+    """The bounds of an axis from ``x=[x_min, x_max]`` or from ``x_min`` and ``x_max``; giving
+    both is refused."""
+    if pair is None:
+        return minimum, maximum
+    if minimum is not None or maximum is not None:
+        raise ValueError(
+            f"{where}: give {name}=[{name}_min, {name}_max] or {name}_min and {name}_max, not both."
+        )
+    values = [float(v) for v in pair]
+    if len(values) != 2 or not values[1] > values[0]:
+        raise ValueError(
+            f"{where}: {name} is the pair [{name}_min, {name}_max] with {name}_max > {name}_min, not {list(pair)}."
+        )
+    return values[0], values[1]
+
+
+def _element_counts(num_elements, per_axis: tuple, name: str) -> tuple:
+    """The element counts from ``num_elements=[n_x, n_y(, n_z)]`` or from the
+    per-axis counts; giving both is refused."""
+    if num_elements is None:
+        return per_axis
+    if any(n is not None for n in per_axis):
+        raise ValueError(f"{name}: give num_elements or the per-axis counts, not both.")
+    counts = [int(n) for n in num_elements]
+    if len(counts) != len(per_axis):
+        raise ValueError(f"{name}: num_elements needs {len(per_axis)} counts, got {len(counts)}.")
+    return tuple(counts)
 
 
 def generate_line_mesh(
@@ -167,6 +201,9 @@ def generate_rectangle_mesh(
     y_bias: float = 1.0,
     x_coordinates: Sequence[float] | None = None,
     y_coordinates: Sequence[float] | None = None,
+    num_elements: Sequence[int] | None = None,
+    x: Sequence[float] | None = None,
+    y: Sequence[float] | None = None,
 ) -> Mesh:
     """Structured two-dimensional mesh of ``Quad4``, ``Tri3``, ``Quad8``,
     ``Quad9`` or ``Tri6`` elements.  ``Quad8`` works with ``method="fem"`` and
@@ -174,11 +211,20 @@ def generate_rectangle_mesh(
 
     Side sets ``"left"``, ``"right"``, ``"bottom"`` and ``"top"`` are created
     automatically.  Pass ``x_coordinates``/``y_coordinates`` for a fully
-    non-uniform grid, or the bounds together with the element counts and an
-    optional geometric ``bias``.  The element counts always count elements, so
+    non-uniform grid, or the bounds (``x=[x_min, x_max]`` and ``y=[y_min,
+    y_max]``, or ``x_min``, ``x_max``, ``y_min`` and ``y_max``) together with
+    the element counts
+    (``num_elements=[n_x, n_y]``, or ``num_x_elements`` and
+    ``num_y_elements``) and an optional geometric ``bias``.  The element counts always count elements, so
     asking for a quadratic type gives the same number of elements and more
     nodes, not fewer elements.
     """
+    where = "generate_rectangle_mesh"
+    num_x_elements, num_y_elements = _element_counts(
+        num_elements, (num_x_elements, num_y_elements), where
+    )
+    x_min, x_max = _bounds(x, x_min, x_max, "x", where)
+    y_min, y_max = _bounds(y, y_min, y_max, "y", where)
     x = _axis_coordinates(x_coordinates, x_min, x_max, num_x_elements, x_bias, "x")
     y = _axis_coordinates(y_coordinates, y_min, y_max, num_y_elements, y_bias, "y")
     linear = _core.generate_rectangle_mesh(x, y, _corner_type(element_type), diagonal)
@@ -202,6 +248,10 @@ def generate_box_mesh(
     x_coordinates: Sequence[float] | None = None,
     y_coordinates: Sequence[float] | None = None,
     z_coordinates: Sequence[float] | None = None,
+    num_elements: Sequence[int] | None = None,
+    x: Sequence[float] | None = None,
+    y: Sequence[float] | None = None,
+    z: Sequence[float] | None = None,
 ) -> Mesh:
     """Structured three-dimensional mesh of ``Hex8``, ``Tet4``, ``Wedge6``,
     ``Pyramid5``, ``Hex20``, ``Hex27`` or ``Tet10`` elements.  A ``Tet4`` mesh
@@ -211,8 +261,18 @@ def generate_box_mesh(
     ``method="zfvm"`` only.
 
     Side sets ``"left"``, ``"right"``, ``"bottom"``, ``"top"``, ``"back"`` and
-    ``"front"`` are created automatically.
+    ``"front"`` are created automatically.  The bounds are ``x=[x_min,
+    x_max]``, ``y`` and ``z``, or ``x_min``, ``x_max`` and so on, and the
+    element counts are ``num_elements=[n_x, n_y, n_z]``, or
+    ``num_x_elements``, ``num_y_elements`` and ``num_z_elements``.
     """
+    where = "generate_box_mesh"
+    num_x_elements, num_y_elements, num_z_elements = _element_counts(
+        num_elements, (num_x_elements, num_y_elements, num_z_elements), where
+    )
+    x_min, x_max = _bounds(x, x_min, x_max, "x", where)
+    y_min, y_max = _bounds(y, y_min, y_max, "y", where)
+    z_min, z_max = _bounds(z, z_min, z_max, "z", where)
     x = _axis_coordinates(x_coordinates, x_min, x_max, num_x_elements, x_bias, "x")
     y = _axis_coordinates(y_coordinates, y_min, y_max, num_y_elements, y_bias, "y")
     z = _axis_coordinates(z_coordinates, z_min, z_max, num_z_elements, z_bias, "z")
@@ -274,6 +334,22 @@ def generate_annulus_mesh(
     return mesh
 
 
+def _space_dimension(points, dim: int) -> int:
+    """The dimension of the space the nodes occupy: the element dimension,
+    raised when the nodes spread along a further axis by more than round-off
+    at the size of the mesh (2-D elements whose z varies form a surface in
+    3-D space, a shell).  A coordinate that is constant along a further axis,
+    zero or not, keeps the mesh in its plane; ``dimension=3`` places a flat
+    plate in space."""
+    points = np.atleast_2d(np.asarray(points, dtype=float))
+    size = float(np.ptp(points, axis=0).max()) if len(points) else 0.0
+    space = dim
+    for axis in range(dim, min(3, points.shape[1])):
+        if np.ptp(points[:, axis]) > 1e-12 * size:
+            space = axis + 1
+    return space
+
+
 def mesh_from_arrays(
     points, cells, element_type: str | None = None, blocks=None, dimension: int | None = None
 ) -> Mesh:
@@ -281,10 +357,33 @@ def mesh_from_arrays(
 
     ``points`` has shape ``(num_nodes, 1..3)``.  ``cells`` is either an array of
     shape ``(num_elements, nodes_per_element)`` with a single ``element_type``,
-    or a list of ``(element_type, connectivity)`` pairs.  ``blocks`` optionally
-    gives one subdomain id per element.
+    a list of ``(element_type, connectivity)`` pairs, or the
+    ``(element_type, nodes, block)`` triples of :meth:`Mesh.cells`, one per
+    element, which carry the blocks themselves.  ``blocks`` optionally gives
+    one subdomain id per element.
+
+    The mesh lies in the space its coordinates use: 2-D elements whose z
+    varies form a surface in 3-D space (a shell), 1-D elements whose y varies
+    a curve in the plane.  A constant coordinate, zero or not, keeps the mesh
+    in its plane.  ``dimension`` raises the space dimension
+    explicitly, for instance ``dimension=3`` for a flat plate meant as a
+    shell.
     """
     points = np.atleast_2d(np.asarray(points, dtype=float))
+    if (
+        isinstance(cells, (list, tuple))
+        and cells
+        and isinstance(cells[0], (tuple, list))
+        and len(cells[0]) == 3
+        and isinstance(cells[0][0], str)
+    ):
+        # The triples of Mesh.cells(): one element each, with its block.
+        if blocks is not None:
+            raise ValueError(
+                "mesh_from_arrays: the (element_type, nodes, block) triples carry the blocks, so blocks is not given with them."
+            )
+        blocks = [int(block) for _, _, block in cells]
+        cells = [(element_type_name, [list(nodes)]) for element_type_name, nodes, _ in cells]
     if isinstance(cells, np.ndarray) or (cells and not isinstance(cells[0], (tuple, list))):
         if element_type is None:
             raise ValueError("Give element_type when cells is a plain connectivity array.")
@@ -296,8 +395,15 @@ def mesh_from_arrays(
             raise ValueError("Give element_type when cells is a plain connectivity array.")
         cell_groups = [(element_type, np.asarray(cells, dtype=np.int64))]
 
-    dim = dimension or max(_DIMENSION[t] for t, _ in cell_groups)
-    mesh = Mesh(dim)
+    dim = max(_DIMENSION[t] for t, _ in cell_groups)
+    space = _space_dimension(points, dim)
+    if dimension is not None:
+        if not dim <= dimension <= 3:
+            raise ValueError(
+                f"mesh_from_arrays: dimension (the space the nodes live in) must be between the element dimension {dim} and 3, got {dimension}."
+            )
+        space = max(space, int(dimension))
+    mesh = Mesh(dim, space_dimension=space)
     for p in points:
         coordinates = list(p) + [0.0] * (3 - len(p))
         mesh.add_node([float(coordinates[0]), float(coordinates[1]), float(coordinates[2])])
@@ -338,7 +444,7 @@ def read_mesh(
         )
     dim = max(volume_types.values())
 
-    mesh = Mesh(dim)
+    mesh = Mesh(dim, space_dimension=_space_dimension(m.points, dim))
     for p in m.points:
         coordinates = list(p) + [0.0] * (3 - len(p))
         mesh.add_node([float(coordinates[0]), float(coordinates[1]), float(coordinates[2])])
@@ -371,11 +477,24 @@ def read_mesh(
                 faces_by_tag.setdefault(tag, []).append([int(i) for i in row])
     mesh.fix_orientation()
 
+    # Gmsh numbers its physical groups per dimension, so a name is found by
+    # its tag and its dimension: the element blocks are named from the groups
+    # of the mesh's dimension and the side sets from those one below.
     physical_names = {}
-    for name, (tag, _dimension) in getattr(m, "field_data", {}).items():
-        physical_names[int(tag)] = name
+    for name, data in getattr(m, "field_data", {}).items():
+        data = np.atleast_1d(data)
+        group_dimension = int(data[1]) if len(data) > 1 else None
+        physical_names[(int(data[0]), group_dimension)] = name
+
+    def physical_name(tag: int, dimension: int):
+        return physical_names.get((tag, dimension), physical_names.get((tag, None)))
+
+    for block_id in mesh.block_ids():
+        block_name = physical_name(block_id, dim)
+        if block_name is not None:
+            mesh.set_block_name(block_id, block_name)
     for tag, faces in faces_by_tag.items():
-        name = physical_names.get(tag, f"boundary_{tag}")
+        name = physical_name(tag, dim - 1) or f"boundary_{tag}"
         if boundary_names:
             name = boundary_names.get(name, name)
         mesh.add_sideset_from_faces(name, faces)
@@ -418,7 +537,7 @@ def sideset_summary(mesh: Mesh) -> str:
         nodes = sorted({n for face in mesh.side_nodes(sides) for n in face})
         lo, hi = points[nodes].min(axis=0), points[nodes].max(axis=0)
         extent = "  ".join(
-            f"{'xyz'[k]} {lo[k]:.4g} to {hi[k]:.4g}" for k in range(max(mesh.dimension, 1))
+            f"{'xyz'[k]} {lo[k]:.4g} to {hi[k]:.4g}" for k in range(max(mesh.space_dimension, 1))
         )
         measure = mesh.sideset_measure([name]) if mesh.dimension > 1 else float("nan")
         rows.append((name, len(sides), len(nodes), measure, extent))
@@ -435,7 +554,14 @@ def sideset_summary(mesh: Mesh) -> str:
 
 
 #: VTK cell types of the linear boundary faces, by number of corners.
-_VTK_FACE_TYPES = {1: 1, 2: 3, 3: 5, 4: 9}
+_MESHIO_FACE_TYPES = {1: "vertex", 2: "line", 3: "triangle", 4: "quad"}
+
+
+def _face_corners(dimension: int, num_nodes: int) -> int:
+    """The number of corner nodes of a side of an element of this dimension."""
+    if dimension < 3:
+        return dimension
+    return 3 if num_nodes in (3, 6) else 4
 
 
 def write_sidesets(mesh: Mesh, filename: str) -> None:
@@ -448,62 +574,39 @@ def write_sidesets(mesh: Mesh, filename: str) -> None:
     no side set, and the last match for a face in several).  Each side set
     also has a field of its own name, equal to 1 on its faces and 0 elsewhere,
     so that overlapping side sets can be shown one at a time."""
-    from xml.sax.saxutils import quoteattr
+    import meshio
 
     names = list(mesh.sideset_names())
     exterior = [tuple(side) for side in mesh.exterior_sides()]
     index = {side: k for k, side in enumerate(exterior)}
-    corners = {1: 1, 2: 2, 3: 3}[mesh.dimension]
-    faces = []
-    for nodes in mesh.side_nodes(exterior):
-        if mesh.dimension == 3:
-            corners = 3 if len(nodes) in (3, 6) else 4
-        faces.append(nodes[:corners])
     membership = np.zeros((len(names), len(exterior)), dtype=np.int8)
-    side_set = np.zeros(len(exterior), dtype=np.int32)
     for k, name in enumerate(names):
         for side in mesh.sideset(name):
             row = index.get(tuple(side))
             if row is not None:
                 membership[k, row] = 1
-                side_set[row] = k + 1
+    # The last side set that holds a face, or 0 for none.
+    numbered = membership * np.arange(1, len(names) + 1)[:, None]
+    side_set = numbered.max(axis=0, initial=0).astype(np.int32)
+
+    # The corner nodes of each face, in one cell block per face shape.
+    faces = [
+        nodes[: _face_corners(mesh.dimension, len(nodes))] for nodes in mesh.side_nodes(exterior)
+    ]
     used = sorted({n for face in faces for n in face})
     renumber = {n: i for i, n in enumerate(used)}
     points = np.asarray(mesh.points())[used]
-    connectivity = [renumber[n] for face in faces for n in face]
-    offsets = np.cumsum([len(face) for face in faces])
-    types = [_VTK_FACE_TYPES[len(face)] for face in faces]
-
-    def array(values, fmt):
-        return " ".join(fmt % v for v in np.ravel(values))
-
-    fields = [("side_set", "Int32", side_set)] + [
-        (name, "Int8", membership[k]) for k, name in enumerate(names)
-    ]
-    with open(filename, "w") as out:
-        out.write(
-            '<?xml version="1.0"?>\n<VTKFile type="UnstructuredGrid" version="0.1" byte_order="LittleEndian">\n<UnstructuredGrid>\n'
+    cells, cell_data = [], {"side_set": []}
+    cell_data.update({name: [] for name in names})
+    for corners in sorted({len(face) for face in faces}):
+        rows = [r for r, face in enumerate(faces) if len(face) == corners]
+        cells.append(
+            (_MESHIO_FACE_TYPES[corners], np.array([[renumber[n] for n in faces[r]] for r in rows]))
         )
-        out.write(f'<Piece NumberOfPoints="{len(points)}" NumberOfCells="{len(faces)}">\n')
-        out.write(
-            f'<Points><DataArray type="Float64" NumberOfComponents="3" format="ascii">{array(points, "%.10g")}</DataArray></Points>\n'
-        )
-        out.write("<Cells>\n")
-        out.write(
-            f'<DataArray type="Int64" Name="connectivity" format="ascii">{array(connectivity, "%d")}</DataArray>\n'
-        )
-        out.write(
-            f'<DataArray type="Int64" Name="offsets" format="ascii">{array(offsets, "%d")}</DataArray>\n'
-        )
-        out.write(
-            f'<DataArray type="UInt8" Name="types" format="ascii">{array(types, "%d")}</DataArray>\n'
-        )
-        out.write('</Cells>\n<CellData Scalars="side_set">\n')
-        for name, kind, values in fields:
-            out.write(
-                f'<DataArray type="{kind}" Name={quoteattr(name)} format="ascii">{array(values, "%d")}</DataArray>\n'
-            )
-        out.write("</CellData>\n</Piece>\n</UnstructuredGrid>\n</VTKFile>\n")
+        cell_data["side_set"].append(side_set[rows])
+        for k, name in enumerate(names):
+            cell_data[name].append(membership[k, rows])
+    meshio.write(filename, meshio.Mesh(points, cells, cell_data=cell_data), file_format="vtu")
 
 
 def mesh_summary(mesh: Mesh) -> str:

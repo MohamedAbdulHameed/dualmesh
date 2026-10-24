@@ -27,15 +27,15 @@ for any nonlinearity, including nonlinear boundary conditions.
 previous iterate.  A kernel asks for the lagged value with
 ``ctx.coefficient_value(variable)``.  In Newton mode the same call returns the
 current AD value, so one kernel serves both schemes.  With
-``nonlinear_solver="picard"`` the iteration is that of Section 6.2 of the book,
-and the acceleration (relaxation) parameter of Eq. (6.2.15),
+``nonlinear_solver="picard"`` the iteration is direct iteration, and its
+acceleration (relaxation) parameter :math:`\gamma`,
 
 .. math::
 
    \bar{U} = (1-\gamma)\,U^{r} + \gamma\, U^{r-1} , \qquad 0 \le \gamma < 1 ,
 
-is the ``relaxation`` option.  The nonlinear beam problems of Section 7.6 use
-:math:`\gamma = 0.35`, and the lid-driven cavity at :math:`Re = 1000` converges
+is the ``relaxation`` option.  The von Kármán beams of the verification suite
+use :math:`\gamma = 0.35`, and the lid-driven cavity at :math:`Re = 1000` converges
 with :math:`\gamma = 0.5`.
 
 **Load stepping** applies the loads in increments, taking the converged
@@ -44,8 +44,8 @@ contribution scales with the load (body forces, tractions, distributed loads,
 point loads) are multiplied by the load factor.  A Dirichlet condition can be
 ramped as well by setting ``scale_with_load=True``.  The lid-driven cavity at
 :math:`Re = 1000` does not converge from rest with Newton's method but does
-converge in a few load steps, and the nonlinear beams of Table 7.6.1 use
-increments of :math:`\Delta q_0 = 1`.
+converge in a few load steps, and the von Kármán beams use increments of
+:math:`\Delta q_0 = 1`.
 
 Convergence is declared when the residual norm drops below
 ``absolute_tolerance``, or below ``relative_tolerance`` times its initial
@@ -55,7 +55,7 @@ value, or when the relative solution increment
 
    \frac{\lVert U^{r+1} - U^{r}\rVert}{\lVert U^{r+1}\rVert} \le \varepsilon
 
-falls below ``step_tolerance``, which is the criterion used in the book.
+falls below ``step_tolerance``.
 
 Time integration
 ----------------

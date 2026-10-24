@@ -31,6 +31,12 @@ parameterKindName(ParameterKind kind)
     return "list of strings";
   case ParameterKind::Function:
     return "real or function";
+  case ParameterKind::Names:
+    return "string or list of strings";
+  case ParameterKind::RealMap:
+    return "mapping of names to reals";
+  case ParameterKind::StringMap:
+    return "mapping of names to strings";
   }
   return "unknown";
 }
@@ -63,6 +69,28 @@ InputParameters::addOptional(const std::string & name,
 
 namespace
 {
+/// A number as the shortest text that reads back as the same number.
+std::string
+numberText(double d)
+{
+  std::ostringstream os;
+  os.precision(17);
+  os << d;
+  std::string text = os.str();
+  for (int digits = 1; digits < 17; ++digits)
+  {
+    std::ostringstream shorter;
+    shorter.precision(digits);
+    shorter << d;
+    if (std::stod(shorter.str()) == d)
+    {
+      text = shorter.str();
+      break;
+    }
+  }
+  return text;
+}
+
 std::string
 valueTypeName(const ParameterValue & v)
 {
@@ -74,7 +102,9 @@ valueTypeName(const ParameterValue & v)
                                  "list of reals",
                                  "list of integers",
                                  "list of strings",
-                                 "function"};
+                                 "function",
+                                 "mapping of names to reals",
+                                 "mapping of names to strings"};
   return names[v.index()];
 }
 } // namespace
@@ -158,7 +188,24 @@ InputParameters::set(const std::string & name, ParameterValue v)
     if (!std::holds_alternative<std::vector<long>>(v))
       bad();
     break;
+  case ParameterKind::Names:
   case ParameterKind::StringList:
+    // A list of numbers is kept as their texts, so that a list of expressions may hold plain numbers.
+    if (std::holds_alternative<std::vector<double>>(v) && !std::get<std::vector<double>>(v).empty())
+    {
+      std::vector<std::string> texts;
+      for (double d : std::get<std::vector<double>>(v))
+        texts.push_back(numberText(d));
+      v = texts;
+    }
+    else if (std::holds_alternative<std::vector<long>>(v) &&
+             !std::get<std::vector<long>>(v).empty())
+    {
+      std::vector<std::string> texts;
+      for (long l : std::get<std::vector<long>>(v))
+        texts.push_back(std::to_string(l));
+      v = texts;
+    }
     if ((std::holds_alternative<std::vector<double>>(v) &&
          std::get<std::vector<double>>(v).empty()) ||
         (std::holds_alternative<std::vector<long>>(v) && std::get<std::vector<long>>(v).empty()))
@@ -175,6 +222,21 @@ InputParameters::set(const std::string & name, ParameterValue v)
           std::holds_alternative<std::shared_ptr<Function>>(v)))
       bad();
     break;
+  case ParameterKind::RealMap:
+    if (!std::holds_alternative<RealMap>(v))
+      bad();
+    break;
+  case ParameterKind::StringMap:
+    if (std::holds_alternative<RealMap>(v))
+    {
+      StringMap texts;
+      for (const auto & [key, d] : std::get<RealMap>(v))
+        texts[key] = numberText(d);
+      v = texts;
+    }
+    if (!std::holds_alternative<StringMap>(v))
+      bad();
+    break;
   }
   p.value = std::move(v);
   p.set_by_user = true;
@@ -189,12 +251,54 @@ InputParameters::setPrivate(const std::string & name, ParameterValue value)
 }
 
 void
+InputParameters::replaceDefault(const std::string & name, ParameterValue value)
+{
+  auto it = _params.find(name);
+  if (it == _params.end())
+    throw std::logic_error("dualmesh: replaceDefault of the undeclared parameter '" + name + "'.");
+  if (!it->second.set_by_user)
+    it->second.value = std::move(value);
+}
+
+void
+InputParameters::setRange(const std::string & name, ParameterRange range)
+{
+  const auto it = _params.find(name);
+  if (it == _params.end())
+    throw std::logic_error("dualmesh: setRange of the undeclared parameter '" + name + "'.");
+  it->second.range = range;
+}
+
+void
 InputParameters::validate(const std::string & object_description) const
 {
   for (const auto & [name, p] : _params)
     if (p.required && !p.set_by_user)
       throw InputError("Missing required parameter '" + name + "' (" + p.description + ") for " +
                        object_description + ".");
+  for (const auto & [name, p] : _params)
+  {
+    // A default is the object's own choice; only a value the user gave is checked.
+    if (p.range == ParameterRange::Any || !p.set_by_user)
+      continue;
+    std::vector<double> numbers;
+    if (const auto * x = std::get_if<double>(&p.value))
+      numbers.push_back(*x);
+    else if (const auto * list = std::get_if<std::vector<double>>(&p.value))
+      numbers = *list;
+    for (double x : numbers)
+    {
+      const bool ok = p.range == ParameterRange::Positive ? x > 0.0 : x >= 0.0;
+      if (!ok)
+      {
+        std::ostringstream os;
+        os << object_description << ": '" << name << "' must be "
+           << (p.range == ParameterRange::Positive ? "positive" : "non-negative") << ", and is "
+           << x << ".";
+        throw InputError(os.str());
+      }
+    }
+  }
 }
 
 bool
@@ -246,7 +350,16 @@ InputParameters::getReal(const std::string & name) const
 std::string
 InputParameters::getString(const std::string & name) const
 {
-  return std::get<std::string>(info(name).value);
+  const auto & v = info(name).value;
+  // A list of names (ParameterKind::Names) reads as its single name.
+  if (const auto * names = std::get_if<std::vector<std::string>>(&v))
+  {
+    if (names->size() > 1)
+      throw InputError("Parameter '" + name + "' names " + std::to_string(names->size()) +
+                       " items here, and one is expected.");
+    return names->empty() ? std::string() : names->front();
+  }
+  return std::get<std::string>(v);
 }
 std::vector<double>
 InputParameters::getRealList(const std::string & name) const
@@ -262,6 +375,16 @@ std::vector<std::string>
 InputParameters::getStringList(const std::string & name) const
 {
   return std::get<std::vector<std::string>>(info(name).value);
+}
+RealMap
+InputParameters::getRealMap(const std::string & name) const
+{
+  return std::get<RealMap>(info(name).value);
+}
+StringMap
+InputParameters::getStringMap(const std::string & name) const
+{
+  return std::get<StringMap>(info(name).value);
 }
 const ParameterValue &
 InputParameters::getRaw(const std::string & name) const

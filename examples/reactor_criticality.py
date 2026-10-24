@@ -2,7 +2,7 @@
 """The criticality of a bare reactor, written as a system of two diffusion equations.
 
 dualmesh has no neutronics module.
-This example writes two-group neutron diffusion with coefficient_form_PDE and finds the effective multiplication factor k with the eigenvalue study of any problem.
+This example writes two-group neutron diffusion with general_form_PDE and finds the effective multiplication factor k with the eigenvalue study of any problem.
 The equations of the fast flux phi1 and the thermal flux phi2 are
 
     -div(D1 grad phi1) + (Sigma_a1 + Sigma_12) phi1 = (1 / k) nu Sigma_f2 phi2,
@@ -46,30 +46,21 @@ def criticality(num_elements: int = 40, method: str = "fem") -> float:
         num_y_elements=num_elements,
     )
     problem = dm.Problem(mesh, method=method)
-    diffusion = {"phi1": "D1", "phi2": "D2"}
-    absorption = {
-        "phi1": "Sigma_a1 + Sigma_12",
-        "phi2": {"phi2": "Sigma_a2", "phi1": "-Sigma_12"},
-    }
-    fission = {"phi1": "eigenvalue*nu_Sigma_f2*phi2"}
+    # The two equations as they are printed; the cross sections are definitions that the
+    # equations use by their names.
     neutrons = problem.add_physics(
-        "coefficient_form_PDE",
-        "neutrons",
+        "general_form_PDE",
         variables=["phi1", "phi2"],
-        diffusion_coefficient=diffusion,
-        absorption_coefficient=absorption,
-        source=fission,
-        constants=CROSS_SECTIONS,
+        **CROSS_SECTIONS,
+        equations=[
+            "-div(D1*grad(phi1)) + (Sigma_a1 + Sigma_12)*phi1 = eigenvalue*nu_Sigma_f2*phi2",
+            "-div(D2*grad(phi2)) + Sigma_a2*phi2 - Sigma_12*phi1 = 0",
+        ],
         units={"phi1": "1/(m^2 s)", "phi2": "1/(m^2 s)"},
     )
-    for flux in ("phi1", "phi2"):
-        neutrons.add_boundary_condition(
-            "Dirichlet_boundary_condition",
-            f"zero_{flux}",
-            variable=flux,
-            boundary=list(mesh.sideset_names()),
-            value=0.0,
-        )
+    boundary = list(mesh.sideset_names())
+    neutrons.add_boundary_condition("phi1 = 0", boundary=boundary)
+    neutrons.add_boundary_condition("phi2 = 0", boundary=boundary)
     result = problem.solve_eigenvalue(num_modes=1, report="none")
     return 1.0 / float(result.eigenvalues[0])
 

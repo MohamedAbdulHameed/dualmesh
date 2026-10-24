@@ -7,7 +7,7 @@ compositions, nine fully rodded assemblies (four of them in the quarter, two
 of them halved by the planes of symmetry) and a water reflector of 20 cm, in
 two-group diffusion theory with an axial buckling of 0.8e-4 /cm^2 in every
 region and group (Source Situation 11, Fig. 1, and problem 11-A2).  The
-diffusion equations are written with the generic coefficient_form_PDE and
+diffusion equations are written with the generic general_form_PDE and
 solved by the eigenvalue study of any problem.  The
 external boundary has no incoming current, which the benchmark states for
 diffusion codes as d phi_g / d n = -0.4692 phi_g / D_g, i.e., the
@@ -179,49 +179,41 @@ def core_mesh(divisions: int):
 
 
 def solve(method: str, divisions: int) -> dict:
-    """Two-group diffusion written with coefficient_form_PDE: the fast flux
-    phi1 and the thermal flux phi2, with the cross sections of every region
-    as properties on its block and the transverse buckling B^2 added to the
-    removal of each group as D_g B^2.  The fission source carries the symbol
-    eigenvalue, which is 1 / k.  The vacuum condition is the Robin condition
+    """Two-group diffusion in general form: the fast flux phi1 and the thermal
+    flux phi2, with the cross sections of every region as properties on its
+    block and the transverse buckling B^2 added to the removal of each group
+    as D_g B^2.  The fission source carries the symbol eigenvalue, which is
+    1 / k.  The vacuum condition is the Robin condition
     n . D grad phi = -phi / 2.1312."""
     mesh = core_mesh(divisions)
     problem = dm.Problem(mesh, method=method)
     buckling = AXIAL_BUCKLING / CM**2
-    properties = ["removal_1", "removal_2", "scattering_12", "nu_fission_2"]
     for name, (d1, d2, s12, a1, a2, nf2) in CONSTANTS.items():
         d1, d2, s12, a1, a2, nf2 = d1 * CM, d2 * CM, s12 / CM, a1 / CM, a2 / CM, nf2 / CM
         problem.add_property(
-            "constant_property",
-            name,
+            "constant",
             block=[name],
-            property_names=[
-                "diffusion_coefficient_phi1",
-                "diffusion_coefficient_phi2",
-                *properties,
-            ],
-            property_values=[d1, d2, a1 + s12 + d1 * buckling, a2 + d2 * buckling, s12, nf2],
+            properties={
+                "diffusion_1": d1,
+                "diffusion_2": d2,
+                "removal_1": a1 + s12 + d1 * buckling,
+                "removal_2": a2 + d2 * buckling,
+                "scattering_12": s12,
+                "nu_fission_2": nf2,
+            },
         )
-    absorption = {
-        "phi1": "removal_1",
-        "phi2": {"phi2": "removal_2", "phi1": "-scattering_12"},
-    }
+    # The cross sections are the properties of the blocks, used by their names.
     neutrons = problem.add_physics(
-        "coefficient_form_PDE",
-        "neutrons",
+        "general_form_PDE",
         variables=["phi1", "phi2"],
-        absorption_coefficient=absorption,
-        source={"phi1": "eigenvalue*nu_fission_2*phi2"},
-        properties=properties,
+        equations=[
+            "-div(diffusion_1*grad(phi1)) + removal_1*phi1 = eigenvalue*nu_fission_2*phi2",
+            "-div(diffusion_2*grad(phi2)) + removal_2*phi2 = scattering_12*phi1",
+        ],
     )
-    for flux in ("phi1", "phi2"):
-        neutrons.add_boundary_condition(
-            "Robin_boundary_condition",
-            f"vacuum_{flux}",
-            variable=flux,
-            boundary=["outer"],
-            transfer_coefficient=1.0 / 2.1312,
-        )
+    # No incoming current: the extrapolation distance 2.1312 D_g.
+    neutrons.add_boundary_condition("-diffusion_1*dphi1/dn = phi1/2.1312", boundary="outer")
+    neutrons.add_boundary_condition("-diffusion_2*dphi2/dn = phi2/2.1312", boundary="outer")
     start = time.perf_counter()
     result = problem.solve_eigenvalue(num_modes=1, report="none")
     seconds = time.perf_counter() - start

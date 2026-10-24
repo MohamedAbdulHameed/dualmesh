@@ -30,16 +30,10 @@ def _periodic_in_x(method, n):
     mesh = dm.generate_rectangle_mesh(0.0, 1.0, 0.0, 1.0, n, n)
     problem = dm.Problem(mesh, method=method, distributed=False)
     problem.add_variable("u")
-    problem.add_kernel("diffusion", "diffusion", variable="u")
-    problem.add_kernel(
-        "body_force", "source", variable="u", value="5*pi^2*cos(2*pi*x + 0.3)*sin(pi*y)"
-    )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", "walls", variable="u", boundary=["bottom", "top"], value=0.0
-    )
-    problem.add_boundary_condition(
-        "periodic_boundary_condition", "periodic_x", primary="left", secondary="right"
-    )
+    problem.add_kernel("diffusion", variable="u")
+    problem.add_kernel("body_force", variable="u", value="5*pi^2*cos(2*pi*x + 0.3)*sin(pi*y)")
+    problem.add_boundary_condition("Dirichlet", ["bottom", "top"], variable="u", value=0.0)
+    problem.add_boundary_condition("periodic", primary="left", secondary="right")
     problem.solve(report="none")
     return _nodal_error(problem, mesh, lambda x, y: np.cos(2 * np.pi * x + 0.3) * np.sin(np.pi * y))
 
@@ -56,20 +50,15 @@ def _doubly_periodic(method, n):
     mesh = dm.generate_rectangle_mesh(0.0, 1.0, 0.0, 1.0, n, n)
     problem = dm.Problem(mesh, method=method, distributed=False)
     problem.add_variable("u")
-    problem.add_kernel("diffusion", "diffusion", variable="u")
-    problem.add_kernel("reaction", "reaction", variable="u")
+    problem.add_kernel("diffusion", variable="u")
+    problem.add_kernel("reaction", variable="u")
     problem.add_kernel(
         "body_force",
-        "source",
         variable="u",
         value="(8*pi^2 + 1)*cos(2*pi*(x + y)) + (4*pi^2 + 1)*sin(2*pi*x)/2",
     )
-    problem.add_boundary_condition(
-        "periodic_boundary_condition", "periodic_x", primary="left", secondary="right"
-    )
-    problem.add_boundary_condition(
-        "periodic_boundary_condition", "periodic_y", primary="bottom", secondary="top"
-    )
+    problem.add_boundary_condition("periodic", primary="left", secondary="right")
+    problem.add_boundary_condition("periodic", primary="bottom", secondary="top")
     problem.solve(report="none")
     return _nodal_error(
         problem, mesh, lambda x, y: np.cos(2 * np.pi * (x + y)) + 0.5 * np.sin(2 * np.pi * x)
@@ -87,14 +76,10 @@ def test_the_secondary_nodes_equal_their_primaries():
     mesh = dm.generate_rectangle_mesh(0.0, 1.0, 0.0, 1.0, 6, 6)
     problem = dm.Problem(mesh, distributed=False)
     problem.add_variable("u")
-    problem.add_kernel("diffusion", "diffusion", variable="u")
-    problem.add_kernel("body_force", "source", variable="u", value="x*(1 - y)")
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", "walls", variable="u", boundary=["bottom", "top"], value=0.0
-    )
-    problem.add_boundary_condition(
-        "periodic_boundary_condition", "periodic_x", primary="left", secondary="right"
-    )
+    problem.add_kernel("diffusion", variable="u")
+    problem.add_kernel("body_force", variable="u", value="x*(1 - y)")
+    problem.add_boundary_condition("Dirichlet", ["bottom", "top"], variable="u", value=0.0)
+    problem.add_boundary_condition("periodic", primary="left", secondary="right")
     problem.solve(report="none")
     points = np.asarray(mesh.points())
     u = problem.values("u")
@@ -110,10 +95,9 @@ def test_boundaries_that_do_not_match_are_refused():
     mesh = dm.generate_rectangle_mesh(0.0, 1.0, 0.0, 1.0, 4, 4)
     problem = dm.Problem(mesh, distributed=False)
     problem.add_variable("u")
-    problem.add_kernel("diffusion", "diffusion", variable="u")
+    problem.add_kernel("diffusion", variable="u")
     problem.add_boundary_condition(
-        "periodic_boundary_condition",
-        "periodic_x",
+        "periodic",
         primary="left",
         secondary="right",
         translation=[1.0, 0.1],
@@ -126,11 +110,9 @@ def test_a_value_prescribed_on_the_secondary_boundary_only_is_refused():
     mesh = dm.generate_rectangle_mesh(0.0, 1.0, 0.0, 1.0, 4, 4)
     problem = dm.Problem(mesh, distributed=False)
     problem.add_variable("u")
-    problem.add_kernel("diffusion", "diffusion", variable="u")
-    problem.add_boundary_condition("Dirichlet_boundary_condition", "right", variable="u", value=1.0)
-    problem.add_boundary_condition(
-        "periodic_boundary_condition", "periodic_x", primary="left", secondary="right"
-    )
+    problem.add_kernel("diffusion", variable="u")
+    problem.add_boundary_condition("Dirichlet", "right", variable="u", value=1.0)
+    problem.add_boundary_condition("periodic", primary="left", secondary="right")
     with pytest.raises(ValueError, match="prescribed value that its primary node does not"):
         problem.solve(report="none")
 
@@ -139,9 +121,7 @@ def test_the_cell_centred_method_is_refused():
     mesh = dm.generate_rectangle_mesh(0.0, 1.0, 0.0, 1.0, 4, 4)
     problem = dm.Problem(mesh, method="zfvm", distributed=False)
     problem.add_variable("u")
-    problem.add_kernel("diffusion", "diffusion", variable="u")
-    problem.add_boundary_condition(
-        "periodic_boundary_condition", "periodic_x", primary="left", secondary="right"
-    )
+    problem.add_kernel("diffusion", variable="u")
+    problem.add_boundary_condition("periodic", primary="left", secondary="right")
     with pytest.raises(ValueError, match="zfvm"):
         problem.solve(report="none")

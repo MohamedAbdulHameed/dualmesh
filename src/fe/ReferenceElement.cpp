@@ -3,16 +3,19 @@
 #include "dualmesh/core/InputParameters.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <map>
 #include <memory>
-#include <mutex>
 #include <set>
 #include <stdexcept>
 
 namespace dualmesh
 {
+
+/// The largest Gauss-Legendre rule in the table (points per direction).
+constexpr int kMaxGaussPoints = 20;
 
 namespace
 {
@@ -130,13 +133,17 @@ Patch::map(const Point & s, std::array<Point, 3> * tangents) const
 const ReferenceElement &
 ReferenceElement::get(ElementType type)
 {
-  static std::map<ElementType, std::unique_ptr<ReferenceElement>> cache;
-  static std::mutex m;
-  std::lock_guard<std::mutex> lock(m);
-  auto & p = cache[type];
-  if (!p)
-    p.reset(new ReferenceElement(type));
-  return *p;
+  // Every reference element is built once, on the first call.  The language
+  // makes the initialization of a local static thread safe, so later calls
+  // only read the table.
+  static const auto table = []
+  {
+    std::array<std::unique_ptr<ReferenceElement>, kNumElementTypes> all;
+    for (int k = 0; k < kNumElementTypes; ++k)
+      all[k].reset(new ReferenceElement(static_cast<ElementType>(k)));
+    return all;
+  }();
+  return *table[static_cast<int>(type)];
 }
 
 ReferenceElement::ReferenceElement(ElementType type) : _type(type), _dim(elementDimension(type))
@@ -154,32 +161,27 @@ ReferenceElement::ReferenceElement(ElementType type) : _type(type), _dim(element
   case ElementType::Edge2:
     _nodes = {{-1, 0, 0}, {1, 0, 0}};
     _sides = {{0}, {1}};
-    _side_type = ElementType::Edge2; // sides are points
     grid = {-1, 1};
     break;
   case ElementType::Edge3:
     _nodes = {{-1, 0, 0}, {1, 0, 0}, {0, 0, 0}};
     _sides = {{0}, {1}};
-    _side_type = ElementType::Edge2; // sides are points
     grid = {-1, 0, 1};
     break;
   case ElementType::Tri3:
     _nodes = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}};
     _sides = {{0, 1}, {1, 2}, {2, 0}};
-    _side_type = ElementType::Edge2;
     sub_simplices = {{0, 1, 2}};
     break;
   case ElementType::Tri6:
     _nodes = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0.5, 0, 0}, {0.5, 0.5, 0}, {0, 0.5, 0}};
     _sides = {{0, 1, 3}, {1, 2, 4}, {2, 0, 5}};
-    _side_type = ElementType::Edge3;
     // Red refinement: three corner triangles and the central one.
     sub_simplices = {{0, 3, 5}, {3, 1, 4}, {5, 4, 2}, {3, 4, 5}};
     break;
   case ElementType::Quad4:
     _nodes = {{-1, -1, 0}, {1, -1, 0}, {1, 1, 0}, {-1, 1, 0}};
     _sides = {{0, 1}, {1, 2}, {2, 3}, {3, 0}};
-    _side_type = ElementType::Edge2;
     grid = {-1, 1};
     break;
   case ElementType::Quad9:
@@ -193,13 +195,11 @@ ReferenceElement::ReferenceElement(ElementType type) : _type(type), _dim(element
               {-1, 0, 0},
               {0, 0, 0}};
     _sides = {{0, 1, 4}, {1, 2, 5}, {2, 3, 6}, {3, 0, 7}};
-    _side_type = ElementType::Edge3;
     grid = {-1, 0, 1};
     break;
   case ElementType::Tet4:
     _nodes = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
     _sides = {{0, 1, 3}, {1, 2, 3}, {0, 3, 2}, {0, 2, 1}};
-    _side_type = ElementType::Tri3;
     sub_simplices = {{0, 1, 2, 3}};
     break;
   case ElementType::Tet10:
@@ -214,7 +214,6 @@ ReferenceElement::ReferenceElement(ElementType type) : _type(type), _dim(element
               {0.5, 0, 0.5},
               {0, 0.5, 0.5}};
     _sides = {{0, 1, 3, 4, 8, 7}, {1, 2, 3, 5, 9, 8}, {0, 3, 2, 7, 9, 6}, {0, 2, 1, 6, 5, 4}};
-    _side_type = ElementType::Tri6;
     // Red refinement: four corner tetrahedra and the four tetrahedra that
     // tile the inner octahedron, split along its diagonal 4-9.
     sub_simplices = {{0, 4, 6, 7},
@@ -236,7 +235,6 @@ ReferenceElement::ReferenceElement(ElementType type) : _type(type), _dim(element
               {1, 1, 1},
               {-1, 1, 1}};
     _sides = {{0, 1, 5, 4}, {1, 2, 6, 5}, {2, 3, 7, 6}, {0, 4, 7, 3}, {0, 3, 2, 1}, {4, 5, 6, 7}};
-    _side_type = ElementType::Quad4;
     grid = {-1, 1};
     break;
   case ElementType::Hex27:
@@ -254,7 +252,6 @@ ReferenceElement::ReferenceElement(ElementType type) : _type(type), _dim(element
               {0, 4, 7, 3, 16, 15, 19, 11, 20},
               {0, 3, 2, 1, 11, 10, 9, 8, 24},
               {4, 5, 6, 7, 12, 13, 14, 15, 25}};
-    _side_type = ElementType::Quad9;
     grid = {-1, 0, 1};
     break;
   case ElementType::Quad8:
@@ -267,7 +264,6 @@ ReferenceElement::ReferenceElement(ElementType type) : _type(type), _dim(element
               {0, 1, 0},
               {-1, 0, 0}};
     _sides = {{0, 1, 4}, {1, 2, 5}, {2, 3, 6}, {3, 0, 7}};
-    _side_type = ElementType::Edge3;
     break;
   case ElementType::Hex20:
     // VTK order: mid-edge nodes 8-11 on the bottom face, 12-15 on the top
@@ -282,23 +278,21 @@ ReferenceElement::ReferenceElement(ElementType type) : _type(type), _dim(element
               {0, 4, 7, 3, 16, 15, 19, 11},
               {0, 3, 2, 1, 11, 10, 9, 8},
               {4, 5, 6, 7, 12, 13, 14, 15}};
-    _side_type = ElementType::Quad8;
     break;
   case ElementType::Wedge6:
     // VTK order: the base triangle 0, 1, 2 at zeta = -1, numbered so that its
     // right-hand normal points away from the top triangle 3, 4, 5.
     _nodes = {{0, 0, -1}, {0, 1, -1}, {1, 0, -1}, {0, 0, 1}, {0, 1, 1}, {1, 0, 1}};
-    _sides = {{0, 1, 4, 3}, {1, 2, 5, 4}, {2, 0, 3, 5}, {0, 1, 2}, {3, 4, 5}};
-    _side_type = ElementType::Quad4;
+    _sides = {{0, 3, 4, 1}, {1, 4, 5, 2}, {2, 5, 3, 0}, {0, 1, 2}, {3, 5, 4}};
     break;
   case ElementType::Pyramid5:
     // VTK order: the base 0, 1, 2, 3 anticlockwise seen from the apex 4.
     _nodes = {{-1, -1, 0}, {1, -1, 0}, {1, 1, 0}, {-1, 1, 0}, {0, 0, 1}};
     _sides = {{0, 3, 2, 1}, {0, 1, 4}, {1, 2, 4}, {2, 3, 4}, {3, 0, 4}};
-    _side_type = ElementType::Tri3;
     break;
   }
   _centroid = average(_nodes);
+  buildSideNormals();
   switch (type)
   {
   case ElementType::Quad8:
@@ -314,6 +308,35 @@ ReferenceElement::ReferenceElement(ElementType type) : _type(type), _dim(element
       buildTensorDual(grid);
     else
       buildSubdividedSimplexDual(sub_simplices);
+  }
+}
+
+void
+ReferenceElement::buildSideNormals()
+{
+  _side_normals.clear();
+  for (const auto & sn : _sides)
+  {
+    const Point & a = _nodes[sn[0]];
+    Point n{0, 0, 0};
+    if (_dim == 1)
+      n = a - _centroid;
+    else if (_dim == 2)
+    {
+      const Point t = _nodes[sn[1]] - a;
+      n = {t[1], -t[0], 0};
+    }
+    else
+      n = cross(_nodes[sn[1]] - a, _nodes[sn[2]] - a);
+    n = (1.0 / norm(n)) * n;
+    Point side_centre{0, 0, 0};
+    for (int k : sn)
+      side_centre = side_centre + _nodes[k];
+    side_centre = (1.0 / sn.size()) * side_centre;
+    if (dot(n, side_centre - _centroid) <= 0)
+      throw std::logic_error("dualmesh: a side of the reference " + elementTypeName(_type) +
+                             " is wound inward.");
+    _side_normals.push_back(n);
   }
 }
 
@@ -1107,13 +1130,21 @@ QuadratureSpec::parse(const std::string & text_in, bool reduced)
   {
     q.kind = Kind::Gauss;
     const std::string rest = text.substr(5);
+    const bool digits =
+        !rest.empty() &&
+        std::all_of(rest.begin(), rest.end(), [](char c) { return c >= '0' && c <= '9'; });
+    if (!rest.empty() && (!digits || rest.size() > 2))
+      throw InputError("Unknown quadrature '" + text_in +
+                       "'. Gauss rules are written gauss1 to gauss" +
+                       std::to_string(kMaxGaussPoints) + ".");
     q.points = rest.empty() ? 2 : std::stoi(rest);
-    if (q.points < 1 || q.points > 10)
-      throw InputError("Gauss quadrature supports 1 to 10 points per direction.");
+    if (q.points < 1 || q.points > kMaxGaussPoints)
+      throw InputError("Gauss quadrature supports 1 to " + std::to_string(kMaxGaussPoints) +
+                       " points per direction.");
   }
   else
     throw InputError("Unknown quadrature '" + text_in +
-                     "'. Use automatic, gauss1..gauss10, midpoint, trapezoid, simpson, nodal, "
+                     "'. Use automatic, gauss1..gauss20, midpoint, trapezoid, simpson, nodal, "
                      "interface, or control_domain_trapezoid.");
   return q;
 }
@@ -1144,11 +1175,6 @@ QuadratureSpec::str() const
     break;
   }
   return reduced ? s + "(reduced)" : s;
-}
-
-namespace
-{
-constexpr int kMaxGaussPoints = 20;
 }
 
 void

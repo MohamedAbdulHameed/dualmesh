@@ -10,9 +10,11 @@
 
 #include "dualmesh/base/Factory.h"
 #include "dualmesh/base/Problem.h"
+#include "dualmesh/core/Equation.h"
 #include "dualmesh/core/ParsedFunction.h"
 #include "dualmesh/fe/Assembly.h"
 #include "dualmesh/linalg/PetscSolver.h"
+#include "dualmesh/linalg/SaddlePointSolver.h"
 #include "dualmesh/materials/Gases.h"
 #include "dualmesh/mesh/Adapt.h"
 #include "dualmesh/modules/Framework.h"
@@ -87,6 +89,26 @@ toParameter(const py::handle & v)
   if (py::isinstance<py::function>(v))
     return std::static_pointer_cast<Function>(
         std::make_shared<PythonFunction>(py::cast<py::function>(v)));
+  if (py::isinstance<py::dict>(v))
+  {
+    // Names with a value each: numbers give a RealMap, and texts (or numbers among texts) a StringMap.
+    auto d = py::cast<py::dict>(v);
+    bool all_num = true;
+    for (const auto & item : d)
+      all_num = all_num && !py::isinstance<py::bool_>(item.second) &&
+                (py::isinstance<py::int_>(item.second) || py::isinstance<py::float_>(item.second));
+    if (all_num)
+    {
+      RealMap map;
+      for (const auto & item : d)
+        map[py::cast<std::string>(item.first)] = py::cast<double>(item.second);
+      return map;
+    }
+    StringMap map;
+    for (const auto & item : d)
+      map[py::cast<std::string>(item.first)] = py::cast<std::string>(py::str(item.second));
+    return map;
+  }
   if (py::isinstance<py::sequence>(v) && !py::isinstance<py::str>(v))
   {
     auto seq = py::cast<py::sequence>(v);
@@ -99,6 +121,20 @@ toParameter(const py::handle & v)
     }
     if (py::len(seq) > 0 && all_str)
       return py::cast<std::vector<std::string>>(seq);
+    // Numbers and texts together (a vector of expressions, some of them constants): all as texts.
+    bool all_text_or_number = py::len(seq) > 0;
+    for (const auto & item : seq)
+      all_text_or_number = all_text_or_number &&
+                           (py::isinstance<py::str>(item) || py::isinstance<py::int_>(item) ||
+                            py::isinstance<py::float_>(item)) &&
+                           !py::isinstance<py::bool_>(item);
+    if (all_text_or_number && !all_num)
+    {
+      std::vector<std::string> texts;
+      for (const auto & item : seq)
+        texts.push_back(py::cast<std::string>(py::str(item)));
+      return texts;
+    }
     if (all_int && py::len(seq) > 0)
       return py::cast<std::vector<long>>(seq);
     if (all_num)
@@ -234,17 +270,18 @@ public:
 Method
 methodFromString(const std::string & s)
 {
-  if (s == "dmcdm" || s == "dual_mesh" || s == "dual mesh")
+  // One name per method: "finite volume" alone names two methods.
+  if (s == "dmcdm")
     return Method::DualMesh;
-  if (s == "fem" || s == "finite_element")
+  if (s == "fem")
     return Method::FiniteElement;
-  if (s == "hfvm" || s == "fvm" || s == "finite_volume" || s == "vertex_finite_volume")
+  if (s == "hfvm")
     return Method::FiniteVolumeVertex;
-  if (s == "zfvm" || s == "cell_finite_volume" || s == "cell_centered_finite_volume")
+  if (s == "zfvm")
     return Method::FiniteVolumeCell;
   throw InputError("Unknown method '" + s +
-                   "' (use 'dmcdm', 'fem', 'hfvm' for the vertex-centred finite volume "
-                   "method, or 'zfvm' for the cell-centred finite volume method).");
+                   "' (use 'DMCDM', 'FEM', 'HFVM' for the vertex-centred finite volume "
+                   "method, or 'ZFVM' for the cell-centred finite volume method).");
 }
 
 BoundaryGradient
@@ -310,6 +347,17 @@ parameterText(const ParameterValue & value)
           for (std::size_t i = 0; i < v.size(); ++i)
             text += (i ? ", " : "") + v[i];
         }
+        else if constexpr (std::is_same_v<T, RealMap> || std::is_same_v<T, StringMap>)
+        {
+          std::ostringstream os;
+          bool first = true;
+          for (const auto & [key, item] : v)
+          {
+            os << (first ? "" : ", ") << key << ": " << item;
+            first = false;
+          }
+          text = os.str();
+        }
         else
           text = "function";
       },
@@ -346,6 +394,102 @@ PYBIND11_MODULE(_core, m)
       .def(-py::self)
       .def("__pow__", [](const ADReal & a, double p) { return pow(a, p); })
       .def("__pow__", [](const ADReal & a, const ADReal & b) { return pow(a, b); });
+  // ---- equations written as text ----------------------------------------
+  const auto equationScope =
+      [](int dimension,
+         bool axisymmetric,
+         const std::vector<std::pair<std::string, int>> & fields,
+         const std::vector<std::string> & constants,
+         const std::vector<std::pair<std::string, std::string>> & definitions,
+         const std::vector<std::string> & flux_names)
+  {
+    EquationScope scope;
+    scope.dimension = dimension;
+    scope.axisymmetric = axisymmetric;
+    scope.fields = fields;
+    scope.constants = constants;
+    scope.definitions = definitions;
+    if (!flux_names.empty())
+      scope.flux_names = flux_names;
+    return scope;
+  };
+  const auto equationDict = [](const ScalarEquation & q)
+  {
+    py::dict d;
+    d["field"] = q.field;
+    d["equation"] = q.equation;
+    d["flux"] = q.flux;
+    d["source"] = q.source;
+    d["time_coeff"] = q.time_coeff;
+    d["second_time_coeff"] = q.second_time_coeff;
+    return d;
+  };
+  m.def(
+      "reduce_equations",
+      [=](int dimension,
+          bool axisymmetric,
+          const std::vector<std::pair<std::string, int>> & fields,
+          const std::vector<std::string> & constants,
+          const std::vector<std::pair<std::string, std::string>> & definitions,
+          const std::vector<std::string> & equations,
+          const std::vector<std::string> & keys)
+      {
+        py::list out;
+        for (const auto & q : reduceEquations(
+                 equationScope(dimension, axisymmetric, fields, constants, definitions, {}),
+                 equations,
+                 keys))
+          out.append(equationDict(q));
+        return out;
+      },
+      py::arg("dimension"),
+      py::arg("axisymmetric"),
+      py::arg("fields"),
+      py::arg("constants"),
+      py::arg("definitions"),
+      py::arg("equations"),
+      py::arg("keys") = std::vector<std::string>{},
+      "Reduce equations written as text to one scalar equation m d2u/dt2 + d du/dt + div(Gamma) "
+      "= f per scalar unknown: a list of dicts with field, equation, flux, source, time_coeff and "
+      "second_time_coeff.");
+  m.def(
+      "reduce_condition",
+      [=](int dimension,
+          bool axisymmetric,
+          const std::vector<std::pair<std::string, int>> & fields,
+          const std::vector<std::string> & constants,
+          const std::vector<std::pair<std::string, std::string>> & definitions,
+          const std::vector<std::string> & equations,
+          const std::vector<std::string> & keys,
+          const std::string & condition,
+          const std::vector<std::string> & flux_names)
+      {
+        const EquationScope scope =
+            equationScope(dimension, axisymmetric, fields, constants, definitions, flux_names);
+        const auto reduced = reduceEquations(scope, equations, keys);
+        py::list out;
+        for (const auto & c : reduceCondition(scope, reduced, condition))
+        {
+          py::dict d;
+          d["field"] = c.field;
+          d["dirichlet"] = c.dirichlet;
+          d["value"] = c.value;
+          out.append(d);
+        }
+        return out;
+      },
+      py::arg("dimension"),
+      py::arg("axisymmetric"),
+      py::arg("fields"),
+      py::arg("constants"),
+      py::arg("definitions"),
+      py::arg("equations"),
+      py::arg("keys"),
+      py::arg("condition"),
+      py::arg("flux_names") = std::vector<std::string>{},
+      "Read a boundary condition written as text: a list of dicts with field, dirichlet (u = "
+      "value) or not (n . Gamma = value), and value.");
+
   m.def("sqrt", [](const ADReal & a) { return sqrt(a); });
   m.def("exp", [](const ADReal & a) { return exp(a); });
   m.def("log", [](const ADReal & a) { return log(a); });
@@ -407,6 +551,9 @@ PYBIND11_MODULE(_core, m)
               if (e.index(key) < 0)
                 throw InputError("Expression \"" + e.text() + "\" has no variable '" + key + "'.");
             }
+            // An expression of no variables is a number.
+            if (names.empty())
+              return py::float_(e.value(static_cast<const double *>(nullptr)));
             // Broadcast every argument to one shape.
             py::module_ np = py::module_::import("numpy");
             py::list items;
@@ -415,7 +562,7 @@ PYBIND11_MODULE(_core, m)
             py::tuple broadcast = np.attr("broadcast_arrays")(*items);
             const std::size_t n = names.size();
             py::array_t<double> first = py::array_t<double>::ensure(broadcast[0]);
-            const py::ssize_t count = n == 0 ? 1 : first.size();
+            const py::ssize_t count = first.size();
             std::vector<py::array_t<double>> flat;
             for (std::size_t k = 0; k < n; ++k)
               flat.push_back(py::array_t<double, py::array::c_style | py::array::forcecast>::ensure(
@@ -429,7 +576,7 @@ PYBIND11_MODULE(_core, m)
                 values[k] = flat[k].data()[i];
               o(i) = e.value(values.data());
             }
-            if (n == 0 || first.ndim() == 0)
+            if (first.ndim() == 0)
               return py::float_(o(0));
             return out.attr("reshape")(first.attr("shape"));
           },
@@ -465,7 +612,6 @@ PYBIND11_MODULE(_core, m)
       .def(py::init<double>(), py::arg("value") = 0.0)
       .def("set", &SettableFunction::set, py::arg("value"))
       .def("get", &SettableFunction::get);
-  m.def("make_function", &toFunction);
 
   // ---- material properties ---------------------------------------------
   {
@@ -509,20 +655,20 @@ PYBIND11_MODULE(_core, m)
         [mole_fractions](const std::map<std::string, double> & composition,
                          double temperature,
                          double pressure,
-                         std::optional<double> accommodation_coefficient)
+                         std::optional<double> accommodation_coeff)
         {
           const auto x = mole_fractions(composition);
           const double k = materials::gasMixtureConductivity(x.data(), temperature);
           return materials::gasJumpDistance(
-              x.data(), temperature, pressure, k, accommodation_coefficient.value_or(0.0));
+              x.data(), temperature, pressure, k, accommodation_coeff.value_or(0.0));
         },
         py::arg("composition"),
         py::arg("temperature"),
         py::arg("pressure"),
-        py::arg("accommodation_coefficient") = py::none(),
+        py::arg("accommodation_coeff") = py::none(),
         "Sum of the temperature jump distances of a gas mixture at the two walls of a gap, m "
         "(Kennard, as Lanning and Hann, BNWL-1894, 1975, write it). Without an "
-        "accommodation_coefficient, the fits of Ullman et al. for helium and xenon are "
+        "accommodation_coeff, the fits of Ullman et al. for helium and xenon are "
         "interpolated by the mixture molar mass.");
   }
 
@@ -534,12 +680,39 @@ PYBIND11_MODULE(_core, m)
       "(which may be mixed), element blocks, side sets and node sets. Meshes are usually "
       "made by the generators (generate_rectangle_mesh and the others) or read from a file "
       "(read_mesh), but can be built node by node with add_node and add_element.")
-      .def(py::init<int>(),
+      .def(py::init(
+               [](int dimension, int space_dimension)
+               {
+                 Mesh m(dimension);
+                 if (space_dimension)
+                   m.setSpaceDimension(space_dimension);
+                 return m;
+               }),
            py::arg("dimension") = 2,
-           "An empty mesh of the given spatial dimension (1, 2 or 3).")
-      .def_property_readonly("dimension", &Mesh::dimension, "The spatial dimension, 1, 2 or 3.")
+           py::arg("space_dimension") = 0,
+           "An empty mesh whose elements have the given dimension (1, 2 or 3).  "
+           "space_dimension places it in a space of higher dimension: 3 for a surface "
+           "(a shell) or a curve in space; by default the space has the dimension of the "
+           "elements.")
+      .def_property_readonly(
+          "dimension", &Mesh::dimension, "The dimension of the elements, 1, 2 or 3.")
+      .def_property("space_dimension",
+                    &Mesh::spaceDimension,
+                    &Mesh::setSpaceDimension,
+                    "The dimension of the space the nodes live in: 3 for a surface in space, "
+                    "otherwise the dimension of the elements.")
       .def_property_readonly("num_nodes", &Mesh::numNodes, "The number of nodes.")
       .def_property_readonly("num_elements", &Mesh::numElements, "The number of elements.")
+      .def(
+          "element_measures",
+          [](const Mesh & mesh)
+          {
+            std::vector<double> out(mesh.numElements());
+            for (Index e = 0; e < mesh.numElements(); ++e)
+              out[e] = elementMeasure(mesh, e);
+            return out;
+          },
+          "The length, area or volume of every element.")
       .def("add_node",
            &Mesh::addNode,
            py::arg("point"),
@@ -593,11 +766,6 @@ PYBIND11_MODULE(_core, m)
           },
           py::arg("element"),
           "The node indices of an element.")
-      .def(
-          "element_block",
-          [](const Mesh & mesh, Index e) { return mesh.element(e).block; },
-          py::arg("element"),
-          "The block id of an element.")
       .def(
           "element_type",
           [](const Mesh & mesh, Index e) { return elementTypeName(mesh.element(e).type); },
@@ -674,10 +842,29 @@ PYBIND11_MODULE(_core, m)
           "Move every node: map(x, y, z) returns the new coordinates. Promote a mesh to "
           "second order before mapping it onto a curved domain, so that the mid-side nodes "
           "land on the curve.")
-      .def("fix_orientation",
-           &Mesh::fixOrientation,
-           "Renumber the nodes of every element whose Jacobian determinant is negative, so "
-           "that all elements are wound consistently. The readers call it.")
+      .def(
+          "fix_orientation",
+          [](Mesh & mesh, std::optional<py::array_t<double>> preferred)
+          {
+            std::vector<Point> normals;
+            if (preferred)
+            {
+              const auto a = preferred->unchecked<2>();
+              if (a.shape(1) != 3)
+                throw InputError("preferred must have shape (num_elements, 3).");
+              for (py::ssize_t i = 0; i < a.shape(0); ++i)
+                normals.push_back({a(i, 0), a(i, 1), a(i, 2)});
+            }
+            mesh.fixOrientation(normals);
+          },
+          py::arg("preferred") = py::none(),
+          "Wind every element consistently.  A mesh that fills its space gets positive "
+          "Jacobian determinants.  A surface in space is oriented so that the normals of "
+          "neighbours agree (a surface with one side is refused); each connected part then "
+          "takes the side most of ``preferred`` (one normal per element, shape "
+          "(num_elements, 3)) agree with, or, without it, points outward when closed and "
+          "has the largest component of its summed normal positive when open.  The readers "
+          "call it.")
       .def("refined",
            &Mesh::refined,
            "A uniformly refined copy: every element is split into 2^dim children, and the "
@@ -772,24 +959,14 @@ PYBIND11_MODULE(_core, m)
             return out;
           },
           "The names of the node sets.")
-      .def("bounding_box",
-           &Mesh::boundingBox,
-           "The smallest and the largest coordinates, as two points.")
-      .def(
-          "element_measures",
-          [](const Mesh & mesh)
-          {
-            std::vector<double> out(mesh.numElements());
-            for (Index e = 0; e < mesh.numElements(); ++e)
-              out[e] = elementMeasure(mesh, e);
-            return out;
-          },
-          "The length, area or volume of every element.")
       .def("element_centroid",
            &Mesh::elementCentroid,
            py::arg("element"),
            "The mean of the coordinates of an element's nodes.")
-      .def("summary", &Mesh::summary, "A one-line description of the mesh.")
+      .def(
+          "summary",
+          &Mesh::summary,
+          "A short report of the mesh: dimensions, counts, element types, blocks, side sets and node sets.")
       .def("__repr__", [](const Mesh & mesh) { return "<dualmesh.Mesh " + mesh.summary() + ">"; });
 
   m.def("generate_line_mesh", &generateLineMesh, py::arg("x"));
@@ -829,6 +1006,7 @@ PYBIND11_MODULE(_core, m)
       .def("set",
            [](InputParameters & p, const std::string & n, const py::object & v)
            { p.set(n, toParameter(v)); })
+      .def("has", &InputParameters::has, py::arg("name"))
       .def("describe", &InputParameters::describe);
 
   py::class_<QpContext>(m, "QpContext", "State at one integration point.")
@@ -1172,8 +1350,6 @@ PYBIND11_MODULE(_core, m)
       .def("num_ranks", &DistributedProblem::numRanks)
       .def("num_owned_dofs", &DistributedProblem::numOwnedDofs)
       .def("num_global_dofs", &DistributedProblem::numGlobalDofs)
-      .def("global_node", &DistributedProblem::globalNode, py::arg("local_node"))
-      .def("owns_node", &DistributedProblem::ownsNode, py::arg("local_node"))
       .def("set_linear_solver", &DistributedProblem::setLinearSolver, py::arg("options"))
       .def("solve_steady", &DistributedProblem::solveSteady, py::arg("options") = SolverOptions{})
       .def("solve_transient",
@@ -1201,10 +1377,6 @@ PYBIND11_MODULE(_core, m)
       .def_readwrite("dynamic_viscosity", &ProjectionSettings::dynamic_viscosity)
       .def_readwrite("order", &ProjectionSettings::order)
       .def_readwrite("own_objects", &ProjectionSettings::own_objects)
-      .def_readwrite("pressure_solver", &ProjectionSettings::pressure_solver)
-      .def_readwrite("velocity_solver", &ProjectionSettings::velocity_solver)
-      .def_readwrite("pressure_tolerance", &ProjectionSettings::pressure_tolerance)
-      .def_readwrite("velocity_tolerance", &ProjectionSettings::velocity_tolerance)
       .def(
           "set_body_force",
           [](ProjectionSettings & s, const std::vector<py::object> & force)
@@ -1215,8 +1387,6 @@ PYBIND11_MODULE(_core, m)
           },
           py::arg("force"));
   py::class_<ProjectionSolver, std::shared_ptr<ProjectionSolver>>(m, "ProjectionSolver")
-      .def("last_pressure_iterations", &ProjectionSolver::lastPressureIterations)
-      .def("last_velocity_iterations", &ProjectionSolver::lastVelocityIterations)
       .def_static(
           "coefficients",
           [](const std::vector<double> & times)
@@ -1240,7 +1410,7 @@ PYBIND11_MODULE(_core, m)
       "Advance the transient solves of @p problem with the projection time integration of a flow.");
 
   // ---- problem -----------------------------------------------------------
-  py::class_<Problem::StateSnapshot>(m, "StateSnapshot");
+
   py::class_<Problem>(m, "Problem")
       .def(py::init(
                [](std::shared_ptr<Mesh> mesh,
@@ -1258,6 +1428,66 @@ PYBIND11_MODULE(_core, m)
           [](Problem & p, const std::string & s)
           { p.setBoundaryGradient(boundaryGradientFromString(s)); },
           py::arg("order"))
+      .def(
+          "_flow_operators",
+          [](Problem & p, const std::string & preconditioner)
+          {
+            // The operators of a flow preconditioner (SaddlePointSolver.h) at the current
+            // solution, for the tests: each operator as (rows, columns, values) in the problem's
+            // numbering, and the lumped masses per unknown.
+            const auto approximation = schurApproximation(preconditioner);
+            if (!approximation)
+              throw InputError("_flow_operators takes pressure_mass, pcd or lsc.");
+            SaddlePointBlocks blocks;
+            {
+              py::gil_scoped_release release;
+              p.initialize();
+              p.applyDirichlet(p.solution(), 1.0);
+              Problem::AssemblyOptions options;
+              Vector lagged = p.solution();
+              options.lagged = &lagged;
+              Vector R;
+              SparseMatrix J;
+              p.assemble(p.solution(), options, R, &J);
+              p.dirichletRows(p.solution(), 1.0, R, &J);
+              J.makeCompressed();
+              blocks = p.saddlePointBlocks(J, *approximation);
+            }
+            const auto triplets = [](const std::vector<Eigen::Triplet<double>> & entries)
+            {
+              std::vector<Index> rows, cols;
+              std::vector<double> values;
+              for (const auto & e : entries)
+              {
+                rows.push_back(e.row());
+                cols.push_back(e.col());
+                values.push_back(e.value());
+              }
+              return py::make_tuple(py::array_t<Index>(rows.size(), rows.data()),
+                                    py::array_t<Index>(cols.size(), cols.data()),
+                                    py::array_t<double>(values.size(), values.data()));
+            };
+            std::vector<int> constrained(blocks.constrained.begin(), blocks.constrained.end());
+            py::dict out;
+            out["pressure_dofs"] =
+                py::array_t<Index>(blocks.pressure_dofs.size(), blocks.pressure_dofs.data());
+            out["other_dofs"] =
+                py::array_t<Index>(blocks.other_dofs.size(), blocks.other_dofs.data());
+            out["constrained"] = py::array_t<int>(constrained.size(), constrained.data());
+            out["lumped_mass"] =
+                py::array_t<double>(blocks.lumped_mass.size(), blocks.lumped_mass.data());
+            out["sign"] = blocks.sign;
+            out["coupling"] = blocks.coupling;
+            out["refusal"] = blocks.refusal;
+            out["mass"] = triplets(blocks.mass);
+            out["stabilization"] = triplets(blocks.stabilization);
+            out["commutator_stabilization"] = triplets(blocks.commutator_stabilization);
+            out["convection_diffusion"] = triplets(blocks.convection_diffusion);
+            return out;
+          },
+          py::arg("preconditioner"))
+      .def("_linearization",
+           [](const Problem & p) { return py::make_tuple(p.linearDt(), p.linearTheta()); })
       .def("_linear_system",
            [](Problem & p)
            {
@@ -1299,6 +1529,14 @@ PYBIND11_MODULE(_core, m)
             {
               py::gil_scoped_release release;
               p.initialize();
+              // A residual-based stabilisation holds the time derivative inside a steady kernel,
+              // which the time kernels of the mass operator do not include.
+              if (time_kernels && !steady_terms)
+                for (const auto & k : p.kernels())
+                  if (k->residualHasTimeDerivative())
+                    throw InputError("The modes have no mass operator for '" + k->name() +
+                                     "', a stabilisation whose residual holds the time "
+                                     "derivative. Solve the modes without it.");
               const double saved = p.eigenvalue();
               p.setEigenvalue(eigenvalue);
               Problem::AssemblyOptions options;
@@ -1339,6 +1577,11 @@ PYBIND11_MODULE(_core, m)
              return std::vector<double>{x[0], x[1], x[2]};
            })
       .def("boundary_entities", &Problem::boundaryEntities, py::arg("boundary"))
+      .def("extend_variable_blocks",
+           &Problem::extendVariableBlocks,
+           py::arg("name"),
+           py::arg("blocks"),
+           "Let a variable also live on these blocks (an empty list: everywhere).")
       .def(
           "add_variable",
           [](Problem & p,
@@ -1347,7 +1590,15 @@ PYBIND11_MODULE(_core, m)
              const py::object & initial_condition,
              const std::string & order)
           {
-            FunctionPtr ic = initial_condition.is_none() ? nullptr : toFunction(initial_condition);
+            // A text is the name of a registered function or an expression of (x, y, z, t).
+            FunctionPtr ic;
+            if (py::isinstance<py::str>(initial_condition))
+            {
+              const auto text = py::cast<std::string>(initial_condition);
+              ic = p.hasFunction(text) ? p.function(text) : std::make_shared<ParsedFunction>(text);
+            }
+            else if (!initial_condition.is_none())
+              ic = toFunction(initial_condition);
             VariableOrder o;
             if (order == "mesh")
               o = VariableOrder::Mesh;
@@ -1378,7 +1629,6 @@ PYBIND11_MODULE(_core, m)
           [](const Problem & p, const std::string & name)
           { return p.variable(p.variableIndex(name)).unit; },
           py::arg("name"))
-      .def("has_mixed_order", &Problem::hasMixedOrder)
       .def("add_function",
            [](Problem & p, const std::string & name, const py::object & f)
            { p.addFunction(name, toFunction(f)); })
@@ -1391,30 +1641,13 @@ PYBIND11_MODULE(_core, m)
           "element_field",
           [](Problem & p, const std::string & name) { return p.elementField(name); },
           py::arg("name"))
-      .def("element_field_names", &Problem::elementFieldNames)
-      .def("has_state", &Problem::hasState, "Whether a property object keeps a history.")
-      .def("save_state",
-           &Problem::snapshotState,
-           "A copy of the committed history of the stateful property objects.")
-      .def("restore_state",
-           &Problem::restoreState,
-           py::arg("snapshot"),
-           "Restore a history saved with save_state().")
-      .def("state_at_elements",
-           &Problem::stateAtElements,
-           "The committed history averaged over each element's volume points.")
       .def(
           "add_object",
-          [](Problem & p,
-             const std::string & type,
-             const std::string & name,
-             const py::kwargs & kwargs)
-          {
+          [](Problem & p, const std::string & type, const py::kwargs & kwargs) {
             return p.addObject(
-                type, name, paramsFromKwargs(Factory::instance().validParams(type), kwargs));
+                type, "", paramsFromKwargs(Factory::instance().validParams(type), kwargs));
           },
-          py::arg("type"),
-          py::arg("name") = "")
+          py::arg("type"))
       .def("add_kernel", &Problem::addKernel)
       .def("add_integrated_bc", &Problem::addIntegratedBC)
       .def("add_nodal_bc", &Problem::addNodalBC)
@@ -1459,10 +1692,6 @@ PYBIND11_MODULE(_core, m)
       .def_property_readonly("num_variables", &Problem::numVariables)
       .def("variable_index", &Problem::variableIndex)
       .def("variable_name", [](const Problem & p, int i) { return p.variable(i).name; })
-      .def(
-          "property_registry",
-          [](Problem & p) -> PropertyRegistry & { return p.propertyRegistry(); },
-          py::return_value_policy::reference_internal)
       .def("property_id",
            [](Problem & p, const std::string & n) { return p.propertyRegistry().id(n); })
       .def_property("time", &Problem::time, &Problem::setTime)
@@ -1491,6 +1720,50 @@ PYBIND11_MODULE(_core, m)
           py::arg("values"))
       .def("apply_initial_conditions", &Problem::applyInitialConditions)
       .def("solve_steady", &Problem::solveSteady, py::arg("options") = SolverOptions())
+      .def("add_parameter",
+           &Problem::addParameter,
+           py::arg("name"),
+           py::arg("value"),
+           "Register a named settable constant: a parameter that sensitivities() differentiates "
+           "with respect to. Give its name wherever a coefficient, a source or a boundary value "
+           "takes a function.")
+      .def("set_parameter",
+           &Problem::setParameter,
+           py::arg("name"),
+           py::arg("value"),
+           "Assign a registered parameter; solve() gives the solution of the new value.")
+      .def("parameter_value", &Problem::parameterValue, py::arg("name"))
+      .def(
+          "objective_value",
+          [](const Problem & p, const std::string & variable, const std::string & boundary)
+          {
+            Problem::Objective objective{variable, boundary};
+            return p.objectiveValue(objective);
+          },
+          py::arg("variable"),
+          py::arg("boundary") = "",
+          "The integral of a variable over the whole domain (an empty boundary) or over one "
+          "side set, with the coordinate factor: the value of the objective of sensitivities().")
+      .def(
+          "sensitivities",
+          [](Problem & p,
+             const std::string & variable,
+             const std::string & boundary,
+             const std::vector<std::string> & parameters,
+             const SolverOptions & options)
+          {
+            py::gil_scoped_release release;
+            Problem::Objective objective{variable, boundary};
+            return p.sensitivities(objective, parameters, options);
+          },
+          py::arg("variable"),
+          py::arg("boundary") = "",
+          py::arg("parameters"),
+          py::arg("options") = SolverOptions(),
+          "d(objective)/d(parameter) of every named settable constant, by one adjoint solve "
+          "with the exact Jacobian of the converged solution. The objective is the integral of "
+          "the variable over the whole domain (an empty boundary) or over one side set. The "
+          "problem must hold a converged solution (solve_steady leaves one).")
       .def("solve_transient",
            &Problem::solveTransient,
            py::arg("transient"),
@@ -1530,6 +1803,7 @@ PYBIND11_MODULE(_core, m)
            "One error indicator per element, from gradient recovery.")
       .def("property_at_centroids", &Problem::propertyAtCentroids)
       .def("kernel_flux_at_centroids", &Problem::kernelFluxAtCentroids)
+      .def("section_stress_at_centroids", &Problem::sectionStressAtCentroids)
       .def("integrate", &Problem::integrate)
       .def("element_integrals", &Problem::elementIntegrals)
       .def(

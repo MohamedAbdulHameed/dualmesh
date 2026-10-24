@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 #include "dualmesh/parallel/DistributedProblem.h"
+
 #include "dualmesh/base/Console.h"
 #include "dualmesh/linalg/PetscSolver.h"
+#include "dualmesh/linalg/SaddlePointSolver.h"
 #include "dualmesh/modules/Framework.h"
 #include "dualmesh/parallel/Checkpoint.h"
 #include "dualmesh/parallel/Partition.h"
@@ -172,6 +174,8 @@ DistributedProblem::DistributedProblem(LocalMesh part,
   }
 
   _local = std::make_unique<Problem>(_mesh, method, coord);
+  // The local problem's drivers solve the whole problem through this object.
+  _local->setParallel(this);
   _local->setConstraintsHandledOutside(true);
   if (part.num_ghost_elements > 0)
     _local->setGhostElements(_num_owned_elements);
@@ -763,34 +767,25 @@ DistributedProblem::globalSystem(const SparseMatrix & A, const Vector & b) const
 }
 
 Vector
-DistributedProblem::solveWithPetsc(const SparseMatrix & A,
-                                   const Vector & b,
-                                   const std::string & options,
+DistributedProblem::solveWithPetsc(const GlobalSystem & system,
+                                   petsc::Settings settings,
                                    int * iterations,
                                    bool must_converge) const
 {
-  const GlobalSystem system = globalSystem(A, b);
-  const auto & entries = system.entries;
-  const auto & b_owned = system.b_owned;
-  const auto & owned_dof = system.owned_dof;
-  const int nv = _local->numVariables();
-
-  petsc::Settings settings;
-  settings.options = options;
   settings.relative_tolerance = _options.linear_tolerance;
   // An attempt that may fail stops early, so that the fallback is not delayed.
   settings.max_iterations = must_converge ? _options.linear_max_iterations
                                           : std::min(_options.linear_max_iterations, 500);
-  settings.block_size = nv;
+  settings.block_size = _local->numVariables();
   petsc::Result result;
   const Vector x_owned = petsc::solveDistributed(
-      _num_global_dofs, _first_owned_dof, entries, b_owned, settings, result);
+      _num_global_dofs, _first_owned_dof, system.entries, system.b_owned, settings, result);
   if (iterations)
     *iterations += result.iterations;
   if (!must_converge && _comm.any(!result.converged))
   {
     if (_options.verbose && _comm.isRoot())
-      std::cout << "  PETSc (" << options << "): " << result.reason
+      std::cout << "  PETSc (" << settings.options << "): " << result.reason
                 << ", falling back to the direct solver\n";
     return Vector();
   }
@@ -800,12 +795,67 @@ DistributedProblem::solveWithPetsc(const SparseMatrix & A,
                              " iterations). Adjust petsc_options.");
   Vector x = Vector::Zero(_local->numDofs());
   for (Index i = 0; i < _local->numDofs(); ++i)
-    if (owned_dof[i])
+    if (system.owned_dof[i])
       x[i] = x_owned[_global_dof[i] - _first_owned_dof];
   copyFromOwners(x);
   if (_options.verbose && _comm.isRoot())
     std::cout << "  PETSc: " << result.iterations << " iterations, " << result.reason << "\n";
   return x;
+}
+
+Vector
+DistributedProblem::solveSchurSplit(const SparseMatrix & A,
+                                    const GlobalSystem & system,
+                                    SchurApproximation approximation,
+                                    int * iterations,
+                                    bool must_converge) const
+{
+  SaddlePointBlocks blocks = _local->saddlePointBlocks(A, approximation);
+  if (_comm.any(!blocks.refusal.empty()))
+    throw InputError("The block preconditioners of the flow (pressure_mass, pcd, lsc) scale their "
+                     "operators by the dynamic_viscosity, which must be positive everywhere.");
+  // The sign of the Schur complement, from the sum over the parts of their products of the
+  // coupling blocks.  It is not the product of the summed blocks, but it has its sign: each part
+  // couples the pressure to the velocity with the same sign.
+  const double coupling = _comm.sum(blocks.coupling);
+  if (coupling == 0.0)
+    throw InputError("The pressure '" + blocks.pressure_variable +
+                     "' is not coupled to the other variables in this system; the block "
+                     "preconditioner of the flow does not apply.");
+  blocks.sign = coupling < 0.0 ? 1 : -1;
+  const petsc::SchurBlocks global = petsc::globalSchurBlocks(blocks, _global_dof, system.owned_dof);
+  petsc::Settings settings;
+  settings.options = _options.petsc_options;
+  settings.schur = &global;
+  return solveWithPetsc(system, settings, iterations, must_converge);
+}
+
+std::vector<std::vector<Index>>
+DistributedProblem::physicsBlockRows(const GlobalSystem & system) const
+{
+  const std::vector<std::vector<Index>> blocks = _local->physicsBlockDofs();
+  std::vector<std::vector<Index>> rows(blocks.size());
+  for (std::size_t k = 0; k < blocks.size(); ++k)
+    for (Index i : blocks[k])
+      if (system.owned_dof[i])
+        rows[k].push_back(_global_dof[i]);
+  for (auto & block : rows)
+  {
+    std::sort(block.begin(), block.end());
+    block.erase(std::unique(block.begin(), block.end()), block.end());
+  }
+  return rows;
+}
+
+Eigen::MatrixXd
+DistributedProblem::ownedNearNullspace(const GlobalSystem & system) const
+{
+  const Eigen::MatrixXd local = _local->nearNullspace();
+  Eigen::MatrixXd owned = Eigen::MatrixXd::Zero(numOwnedDofs(), local.cols());
+  for (Index i = 0; i < _local->numDofs(); ++i)
+    if (system.owned_dof[i])
+      owned.row(_global_dof[i] - _first_owned_dof) = local.row(i);
+  return owned;
 }
 
 Vector
@@ -835,155 +885,104 @@ DistributedProblem::solveLinearSystem(const SparseMatrix & A,
     copyFromOwners(x);
     return x;
   }
+  const GlobalSystem system = globalSystem(A, b);
+  petsc::Settings settings;
+  settings.options = _options.petsc_options;
+  // The block preconditioners: the Schur complement split of a flow, and the split by physics.
+  if (const auto approximation = schurApproximation(o.preconditioner))
+    return solveSchurSplit(A, system, *approximation, iterations);
+  if (o.preconditioner == "physics_blocks")
+  {
+    settings.near_nullspace = ownedNearNullspace(system);
+    settings.physics_blocks = physicsBlockRows(system);
+    return solveWithPetsc(system, settings, iterations);
+  }
+  // PETSc's smoothed aggregation, which takes the rigid body modes of a solid.  GMRES is
+  // preconditioned from the right, so that it measures the true residual: the equations of a
+  // coupled problem differ in scale by many orders of magnitude, and a preconditioned residual
+  // can then be small while the true one is not.
+  const std::string gamg =
+      "-ksp_type gmres -ksp_gmres_restart 100 -ksp_pc_side right -pc_type gamg";
+  if (o.preconditioner == "amg")
+  {
+    settings.near_nullspace = ownedNearNullspace(system);
+    settings.options = gamg + " " + _options.petsc_options;
+    return solveWithPetsc(system, settings, iterations);
+  }
+  // The user's options may choose GAMG, which takes the rigid body modes of a solid.
   if (!_options.petsc_options.empty())
-    return solveWithPetsc(A, b, _options.petsc_options, iterations);
-  // The automatic choice, as the serial "automatic" solver makes it: algebraic multigrid (hypre BoomerAMG) inside GMRES, which scales with the number of processes, and a parallel direct factorisation (the PETSc default, MUMPS) when multigrid fails or cannot apply.
-  // A Taylor-Hood system has a zero pressure block, on which multigrid cannot apply.
-  if (!_local->hasMixedOrder())
   {
-    const Vector x = solveWithPetsc(A,
-                                    b,
-                                    "-ksp_type gmres -ksp_gmres_restart 100 -pc_type hypre "
-                                    "-pc_hypre_type boomeramg",
-                                    iterations,
-                                    false);
-    if (x.size() == b.size())
-      return x;
+    if (!_local->displacementGroups().empty())
+      settings.near_nullspace = ownedNearNullspace(system);
+    return solveWithPetsc(system, settings, iterations);
   }
-  return solveWithPetsc(A, b, "", iterations);
-}
-
-SolveResult
-DistributedProblem::nonlinearSolve(const SolverOptions & o,
-                                   Problem::AssemblyOptions base,
-                                   const Vector * steady_old)
-{
-  prepare();
-  const bool picard = o.nonlinear_solver == "picard";
-  base.mode = picard ? LinearizationMode::Picard : LinearizationMode::Newton;
-  std::vector<double> factors = o.load_factors;
-  if (factors.empty())
-    factors = {1.0};
-
-  SolveResult result;
-  Vector R;
-  SparseMatrix J;
-  Vector & U = _local->solution();
-  int step_index = 0;
-  for (double lf : factors)
+  // The automatic choice.  A flow (the methods of the nodes) is factorised by MUMPS where that is
+  // cheap, as the serial automatic solver decides it, and split by the least squares commutator
+  // otherwise: on a three-dimensional cavity it is about twice as fast as MUMPS from 37 000
+  // Taylor-Hood unknowns on, and three to five times as fast as BoomerAMG on the whole
+  // equal-order system at Re = 100 and 400.  A solid takes PETSc's smoothed aggregation with its
+  // rigid body modes, a solid coupled to other physics the split by physics, and any other
+  // system algebraic multigrid (hypre BoomerAMG) inside GMRES, which scales with the number of
+  // processes; MUMPS when the iteration fails.
+  const bool flow = !_local->isCellCentered() && _local->flowConstraint();
+  if (flow || _local->hasMixedOrder())
   {
-    ++step_index;
-    base.load_factor = lf;
-    _local->applyDirichlet(U, lf);
-    shareDirichletValues(U);
-    copyFromOwners(U);
-    const bool print = o.verbose && _comm.isRoot();
-    if (print)
-      console::nonlinearHeader(
-          picard ? "Picard iteration" : "Newton", step_index, static_cast<int>(factors.size()), lf);
-    int linear_before = result.linear_iterations;
-    double r0 = -1;
-    bool converged = false;
-    bool diverged = false;
-    for (int it = 1; it <= o.max_iterations + 1; ++it)
+    if (flow && !_local->preferDirectSolver(_num_global_dofs))
     {
-      Vector lagU = U;
-      base.lagged = &lagU;
-      _local->assemble(U, base, R, &J);
-      if (steady_old)
-        R += *steady_old;
-      addAcrossRanks(R);
-      _local->setLastResidual(R);
-      _local->dirichletRows(U, lf, R, &J);
-      const double rn = norm(R);
-      // An iterate that is no longer finite has diverged; going on would hand the linear solver a matrix of infinities.
-      if (!std::isfinite(rn) || _comm.any(!J.coeffs().allFinite()))
-      {
-        diverged = true;
-        break;
-      }
-      if (r0 < 0)
-        r0 = rn;
-      IterationRecord record{step_index, lf, it, rn, 0.0};
-      if (rn <= o.absolute_tolerance || (it > 1 && rn <= o.relative_tolerance * r0) ||
-          (o.nonlinear_solver == "linear" && it > 1))
-      {
-        converged = true;
-        result.history.push_back(record);
-        if (print)
-          console::nonlinearIteration(it, rn, r0, true);
-        break;
-      }
-      if (it > o.max_iterations)
-      {
-        result.history.push_back(record);
-        break;
-      }
-      Vector delta = solveLinearSystem(J, -R, o, &result.linear_iterations);
-      copyFromOwners(delta);
-      Vector Unew = U + delta;
-      if (o.relaxation > 0 && it > 1)
-        Unew = (1.0 - o.relaxation) * Unew + o.relaxation * U;
-      const double un = norm(Unew);
-      record.step_norm = norm(Vector(Unew - U)) / (un > 0 ? un : 1.0);
-      U = Unew;
-      _local->updateDependentDofs(U);
-      result.history.push_back(record);
-      ++result.total_iterations;
-      if (print)
-        console::nonlinearIteration(
-            it, rn, r0, false, record.step_norm, result.linear_iterations - linear_before);
-      linear_before = result.linear_iterations;
-      if (o.nonlinear_solver == "linear" || (it > 1 && record.step_norm <= o.step_tolerance))
-      {
-        converged = true;
-        break;
-      }
+      const Vector x =
+          solveSchurSplit(A, system, SchurApproximation::LeastSquaresCommutator, iterations, false);
+      if (x.size() == b.size())
+        return x;
     }
-    if (!converged)
-    {
-      result.converged = false;
-      if (o.error_on_divergence)
-      {
-        std::ostringstream os;
-        if (diverged)
-          os << "dualmesh: the distributed nonlinear solve stopped at load factor " << lf
-             << ": the residual or the Jacobian has NaN or infinite entries. Either Newton's "
-                "method diverged (take smaller load steps, start from a closer state, or refine "
-                "the mesh), or a property or its derivative is not finite at the current "
-                "solution (for example log(0), 1/0, or x^p with p < 1 at x = 0).";
-        else
-          os << "dualmesh: the distributed nonlinear solve did not converge at load factor " << lf
-             << " within " << o.max_iterations << " iterations.";
-        throw std::runtime_error(os.str());
-      }
-      return result;
-    }
+    settings.options = "";
+    return solveWithPetsc(system, settings, iterations);
   }
-  result.converged = true;
-  return result;
+  const auto groups = _local->displacementGroups();
+  std::size_t displacements = 0;
+  for (const auto & group : groups)
+    displacements += group.size();
+  petsc::Settings attempt = settings;
+  if (groups.empty())
+    attempt.options =
+        "-ksp_type gmres -ksp_gmres_restart 100 -pc_type hypre -pc_hypre_type boomeramg";
+  else
+  {
+    attempt.near_nullspace = ownedNearNullspace(system);
+    if (displacements == static_cast<std::size_t>(_local->numVariables()))
+      attempt.options = gamg;
+    else
+      attempt.physics_blocks = physicsBlockRows(system);
+  }
+  const Vector x = solveWithPetsc(system, attempt, iterations, false);
+  if (x.size() == b.size())
+    return x;
+  settings.options = "";
+  return solveWithPetsc(system, settings, iterations);
 }
 
-SolveResult
-DistributedProblem::solveSteady(const SolverOptions & options)
+// ---- the Parallel of the local problem -----------------------------------------------------
+void
+DistributedProblem::shareDirichlet(Vector & U) const
 {
-  prepare();
-  Problem::AssemblyOptions base;
-  base.include_time_kernels = false;
-  base.theta = 1.0;
-  return nonlinearSolve(options, base, nullptr);
+  shareDirichletValues(U);
+  copyFromOwners(U);
 }
 
-SolveResult
-DistributedProblem::solveTransient(const TransientOptions & transient,
-                                   const SolverOptions & options)
+Vector
+DistributedProblem::linearSolve(Problem &,
+                                const SparseMatrix & A,
+                                const Vector & b,
+                                const SolverOptions & options,
+                                int * iterations) const
 {
-  prepare();
-  if (transient.dt <= 0)
-    throw InputError("Transient: the time step must be positive.");
-  SolverOptions attempt = options;
-  attempt.error_on_divergence = false;
-  Vector & U = _local->solution();
+  Vector x = solveLinearSystem(A, b, options, iterations);
+  copyFromOwners(x);
+  return x;
+}
+
+CheckpointLayout
+DistributedProblem::checkpointLayout(const Problem &) const
+{
   CheckpointLayout layout;
   layout.distributed = true;
   layout.global_nodes = _local_to_global;
@@ -998,103 +997,31 @@ DistributedProblem::solveTransient(const TransientOptions & transient,
   for (Index e : _global_elements)
     largest_element = std::max(largest_element, e);
   layout.num_global_elements = _comm.max(largest_element) + 1;
-  // A restart continues from the time, the step size and the state of its checkpoint.
-  TransientOptions tr = transient;
-  int first_step = 0;
-  if (!tr.restart_file.empty())
-  {
-    const CheckpointTime point = readCheckpoint(tr.restart_file, *_local, layout);
-    tr.start_time = point.time;
-    tr.dt = point.dt > 0 ? point.dt : tr.dt;
-    first_step = point.step;
-  }
-  _local->setTime(tr.start_time);
-  _local->applyDirichlet(U, 1.0);
-  shareDirichletValues(U);
-  copyFromOwners(U);
-  double time = tr.start_time;
-  Vector committed = U;
-  const auto & integrator = _local->timeIntegrator();
-  if (integrator)
-    integrator->start(U, time);
-  const auto write = [&](int index)
-  {
-    if (tr.output_file_base.empty())
-      return;
-    std::ostringstream os;
-    os << tr.output_file_base << "_" << std::setw(5) << std::setfill('0') << index;
-    writeVTU(os.str(), {}, tr.output_fields);
-  };
-  // Every rank runs the same controller on the same numbers, so they all take
-  // the same steps and accept or reject together: the residual norms that the
-  // decision rests on are global reductions, and the error estimate is formed
-  // from the global norm as well.
-  return runTransient(
-      tr,
-      options,
-      U,
-      time,
-      [&](const Vector & old, double dt)
-      {
-        _local->setTime(time);
-        if (integrator)
-          return integrator->step(U, old, time, dt);
-        // The history of the material follows the solution, as in a serial run.
-        if (_local->hasState())
-        {
-          const bool from_committed =
-              old.size() == committed.size() && (old.array() == committed.array()).all();
-          if (from_committed)
-            _local->startStateFromCommitted();
-          else
-            _local->startStateFromTrial();
-        }
-        Vector old_residual;
-        if (tr.theta < 1.0)
-        {
-          Problem::AssemblyOptions ao;
-          ao.include_time_kernels = false;
-          ao.theta = 1.0 - tr.theta;
-          ao.dt = dt;
-          // The old part of the theta method at the old time; see
-          // Problem::takeTimeStep.
-          _local->setTime(time - dt);
-          _local->assemble(old, ao, old_residual, nullptr);
-          _local->setTime(time);
-        }
-        Problem::AssemblyOptions base;
-        base.old = &old;
-        base.dt = dt;
-        base.theta = tr.theta;
-        base.include_time_kernels = true;
-        base.include_steady_terms = tr.theta > 0;
-        return nonlinearSolve(attempt, base, tr.theta < 1.0 ? &old_residual : nullptr);
-      },
-      [&](int, double)
-      {
-        if (integrator)
-          integrator->accept(U, time);
-        if (_local->hasState())
-        {
-          _local->commitState();
-          committed = U;
-        }
-        _local->setTime(time);
-        _local->notifyStepAccepted();
-      },
-      write,
-      _comm.isRoot(),
-      [&](int step, double next_dt)
-      {
-        if (tr.checkpoint_file.empty())
-          return;
-        const bool last = time >= tr.end_time - 1e-12 * std::abs(tr.end_time - tr.start_time);
-        if ((tr.checkpoint_interval > 0 && step % tr.checkpoint_interval == 0) || last)
-          writeCheckpoint(tr.checkpoint_file, *_local, layout, {time, next_dt, first_step + step});
-      },
-      integrator ? std::function<double(double)>([&](double dt)
-                                                 { return integrator->courantNumber(U, dt); })
-                 : std::function<double(double)>());
+  return layout;
+}
+
+void
+DistributedProblem::writeFields(Problem &,
+                                const std::string & base,
+                                const std::vector<std::string> & fields) const
+{
+  writeVTU(base, {}, fields);
+}
+
+// ---- the solves: the drivers of the local problem, through this object --------------------
+SolveResult
+DistributedProblem::solveSteady(const SolverOptions & options)
+{
+  prepare();
+  return _local->solveSteady(options);
+}
+
+SolveResult
+DistributedProblem::solveTransient(const TransientOptions & transient,
+                                   const SolverOptions & options)
+{
+  prepare();
+  return _local->solveTransient(transient, options);
 }
 
 std::vector<double>

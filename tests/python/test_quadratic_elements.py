@@ -160,7 +160,7 @@ def test_the_serendipity_elements_are_refused_by_the_dual_mesh_methods_only():
         element_type="Quad8",
     )
     for method in ("dmcdm", "hfvm"):
-        with pytest.raises(ValueError, match="no interior node.*method='fem'"):
+        with pytest.raises(ValueError, match="no interior node.*method='FEM'"):
             dm.Problem(mesh, method=method)
     for method in ("fem", "zfvm"):
         dm.Problem(mesh, method=method)
@@ -188,12 +188,11 @@ def test_linear_field_is_exact_in_two_dimensions(element_type, method):
 
     problem = dm.Problem(mesh, method=method)
     problem.add_variable("u")
-    problem.add_kernel("diffusion", "diffusion", variable="u")
+    problem.add_kernel("diffusion", variable="u")
     problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "all",
+        "Dirichlet",
+        mesh.sideset_names(),
         variable="u",
-        boundary=mesh.sideset_names(),
         value=exact,
     )
     problem.solve()
@@ -213,12 +212,11 @@ def test_linear_field_is_exact_in_three_dimensions(element_type, method):
 
     problem = dm.Problem(mesh, method=method)
     problem.add_variable("u")
-    problem.add_kernel("diffusion", "diffusion", variable="u")
+    problem.add_kernel("diffusion", variable="u")
     problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "all",
+        "Dirichlet",
+        mesh.sideset_names(),
         variable="u",
-        boundary=mesh.sideset_names(),
         value=exact,
     )
     problem.solve()
@@ -245,19 +243,17 @@ def poisson_error(num_elements, element_type, method, quadrature="automatic"):
     )
     problem = dm.Problem(mesh, method=method)
     problem.add_variable("u")
-    problem.add_kernel("diffusion", "diffusion", variable="u", quadrature=quadrature)
+    problem.add_kernel("diffusion", variable="u", quadrature=quadrature)
     problem.add_kernel(
         "body_force",
-        "source",
         variable="u",
         value=lambda x, y, z, t: 2.0 * np.pi**2 * np.sin(np.pi * x) * np.sin(np.pi * y),
         quadrature=quadrature,
     )
     problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "walls",
+        "Dirichlet",
+        mesh.sideset_names(),
         variable="u",
-        boundary=mesh.sideset_names(),
         value=0.0,
     )
     problem.solve()
@@ -336,19 +332,17 @@ def test_one_dimensional_dual_mesh_on_quadratic_elements_equals_the_refined_line
         )
         problem = dm.Problem(mesh, method="dmcdm")
         problem.add_variable("u")
-        problem.add_kernel("diffusion", "diffusion", variable="u", quadrature="gauss8")
+        problem.add_kernel("diffusion", variable="u", quadrature="gauss8")
         problem.add_kernel(
             "body_force",
-            "source",
             variable="u",
             value=lambda x, y, z, t: np.pi**2 * np.sin(np.pi * x),
             quadrature="gauss8",
         )
         problem.add_boundary_condition(
-            "Dirichlet_boundary_condition",
-            "ends",
+            "Dirichlet",
+            ["left", "right"],
             variable="u",
-            boundary=["left", "right"],
             value=0.0,
         )
         problem.solve()
@@ -418,13 +412,12 @@ def test_a_quadratic_solution_is_reproduced_exactly(element_type, method):
 
     problem = dm.Problem(mesh, method=method)
     problem.add_variable("u")
-    problem.add_kernel("diffusion", "diffusion", variable="u")
-    problem.add_kernel("body_force", "source", variable="u", value=-8.0)
+    problem.add_kernel("diffusion", variable="u")
+    problem.add_kernel("body_force", variable="u", value=-8.0)
     problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "all",
+        "Dirichlet",
+        mesh.sideset_names(),
         variable="u",
-        boundary=mesh.sideset_names(),
         value=exact,
     )
     problem.solve()
@@ -471,7 +464,7 @@ def test_too_many_variables_for_the_derivative_budget_is_reported_clearly():
     obscurely later."""
     mesh = distorted_cube(num_elements=1, element_type="Hex27")
     problem = dm.Problem(mesh)
-    for name in ("displacement_x", "displacement_y", "temperature"):
+    for name in ("disp_x", "disp_y", "temperature"):
         problem.add_variable(name)
     with pytest.raises(Exception, match="Hex27.*DUALMESH_MAX_AD_DERIVATIVES"):
         problem.add_variable("pressure")

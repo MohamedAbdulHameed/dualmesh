@@ -26,7 +26,10 @@ A :class:`dualmesh.Mesh` holds five kinds of data.
 
 **Nodes** are points in space.  Every node carries three coordinates whatever
 the dimension of the mesh, with the unused ones set to zero, so a
-one-dimensional mesh still reports :math:`y = z = 0`.  Nodes are numbered from
+one-dimensional mesh still reports :math:`y = z = 0`.  The space the nodes
+live in may have more dimensions than the elements: a surface of
+two-dimensional elements in three-dimensional space is the mesh of a shell
+(see :ref:`surface-meshes`).  Nodes are numbered from
 zero, and that numbering is the numbering of the degrees of freedom for every
 method except the cell-centred finite volume method.
 
@@ -45,14 +48,13 @@ named.
 **Side sets** are lists of boundary *faces*, each stored as a pair
 ``(element, local side)``, so that a side set records the element to which each
 face belongs and therefore the direction of its outward normal.  Every boundary
-condition that prescribes a *flux* (``Neumann_boundary_condition``,
-``Robin_boundary_condition``, ``convective_heat_flux_boundary_condition``,
-``traction_boundary_condition`` and ``pressure_boundary_condition``) needs a
+condition that prescribes a *flux* (``Neumann``, ``Robin``,
+``radiative_heat_flux``, ``traction`` and ``pressure``) needs a
 side set, because a flux must be integrated over an area and that integral
 needs the face, its Jacobian and its normal.
 
 **Node sets** are plain lists of node numbers and carry no geometry.  A
-condition that prescribes a *value*, such as ``Dirichlet_boundary_condition``,
+condition that prescribes a *value*, such as ``Dirichlet``,
 needs nothing more and so accepts either kind.  Every place that asks for a
 boundary name looks first for a node set of that name and then for a side set,
 taking the nodes of its faces, which is what ``mesh.boundary_nodes(name)``
@@ -158,7 +160,9 @@ linear mesh, and eleven nodes compared with six.  Side sets and node sets
 
    print(quads.num_elements, triangles.num_elements)  # 200 400
 
-The four bounds and two element counts define a tensor grid.  ``element_type``
+The four bounds and two element counts define a tensor grid.  The counts may
+also be given as one list, ``num_elements=[20, 10]``, and the box generator
+below takes ``num_elements=[n_x, n_y, n_z]`` the same way.  ``element_type``
 is ``"Quad4"`` by default and may be ``"Tri3"``, ``"Quad8"``, ``"Quad9"`` or
 ``"Tri6"``.  A quadratic type is built by generating the linear mesh and
 promoting it, so the element count is unchanged and only the node count grows.
@@ -293,6 +297,165 @@ that a ``Quad9`` annulus is isoparametric: the mid-side nodes lie on the exact
 circle.  The same order of operations is needed when a mesh is transformed by
 hand (see :ref:`transforming`).
 
+.. _surface-meshes:
+
+Surface meshes
+--------------
+
+A mesh of two-dimensional elements whose nodes lie in three-dimensional space
+is a *surface*: the mesh of a shell, flat plates included.  Its
+:attr:`~dualmesh.Mesh.dimension` is 2 (the dimension of the elements) and its
+:attr:`~dualmesh.Mesh.space_dimension` is 3 (the dimension of the space).  A
+surface element is mapped by its :math:`3 \times 2` Jacobian :math:`J`, whose
+columns are the two tangents.  Its area element is
+:math:`\sqrt{\det(J^T J)}`, its gradients are tangential,
+:math:`\nabla N = J (J^T J)^{-1} \partial N / \partial \xi`, and the normal of
+an edge is the conormal :math:`t \times n`, which lies in the surface.  An
+equation solved on a surface is therefore solved *in* the surface: conduction
+in a thin curved sheet, or the Laplace-Beltrami problem.  A rectangle tilted in
+space gives exactly the solution of the flat rectangle, and on the unit sphere
+:math:`-\Delta_S u + u = 3z` converges to its exact solution :math:`u = z` at
+second order (``tests/python/test_surfaces.py``).  The finite element and dual
+mesh control domain methods run on surfaces.  The cell-centred finite volume
+method, flow and the continuum formulations of ``solid_mechanics`` refuse
+them, and shells are the next step of :doc:`/scope`.
+
+The elements of a surface are oriented consistently: the normals of
+neighbouring elements agree.  :meth:`~dualmesh.Mesh.fix_orientation` makes
+them point outward on a closed surface, and on an open one makes the largest
+component of their sum positive (:math:`+z` for a plate in the :math:`xy`
+plane).  Each connected part of the surface is oriented separately.  To choose
+the side, pass ``preferred``, an array of shape ``(num_elements, 3)`` with one
+normal per element.  Each part then takes the side that agrees best with these
+normals, weighted by the element areas.  An edge shared by more than two elements, as at a stiffener, does
+not tie the orientations of these elements.  A surface with only one side, such
+as a Moebius strip, is refused.  Refinement keeps the orientation of the coarse
+surface.  The generators below orient them as each one states.  Angles are
+given in degrees.  Inside an equation the trigonometric functions take radians,
+as everywhere in ``dualmesh``.  An edge that closes up (at a pole, or along a
+360-degree seam) has no name.
+
+``generate_cylinder_surface_mesh``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+.. code-block:: python
+
+   # The Scordelis-Lo roof: 80 degrees of a cylinder of radius 25, 50 long.
+   roof = dm.generate_cylinder_surface_mesh(
+       radius=25.0, length=50.0, arc_angle=80.0, num_elements=[16, 16]
+   )
+   print(roof.dimension, roof.space_dimension, roof.num_elements)  # 2 3 256
+   print(roof.sideset_names())
+   # ['far_curved_edge', 'left_straight_edge', 'near_curved_edge', 'right_straight_edge']
+
+The axis is along :math:`y`, from :math:`y = 0` to :math:`y` = ``length``, and
+the arc of ``arc_angle`` degrees (360 by default) is centred on the
+:math:`+z` direction, the crown.  ``num_elements`` is ``[around the arc,
+along the axis]``.  ``near_curved_edge`` is the curved edge at :math:`y = 0`
+and ``far_curved_edge`` the one at :math:`y` = ``length``.
+``left_straight_edge`` is the straight edge on the :math:`-x` side and
+``right_straight_edge`` the one on the :math:`+x` side.  The normals point
+away from the axis.
+
+``generate_spherical_shell_mesh``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+.. code-block:: python
+
+   # A quadrant of a hemisphere with an 18-degree hole at the top.
+   shell = dm.generate_spherical_shell_mesh(
+       radius=10.0, polar_angle=[18, 90], azimuth=[0, 90], num_elements=[8, 8]
+   )
+   print(shell.sideset_names())
+   # ['end_meridian_edge', 'lower_circular_edge', 'start_meridian_edge', 'upper_circular_edge']
+
+   # A closed hemisphere: the cap at the pole is a butterfly of quadrilaterals.
+   cap = dm.generate_spherical_shell_mesh(radius=10.0, polar_angle=[0, 90], num_elements=[8, 16])
+   print(cap.num_elements, cap.sideset_names())  # 112 ['lower_circular_edge']
+
+``polar_angle=[from, to]`` is measured from the :math:`+z` axis, the pole (90 is
+the equator, 180 the opposite pole), and ``azimuth=[from, to]`` from
+:math:`+x` towards :math:`+y`.  The whole sphere is the default.
+``num_elements`` is ``[along a meridian, around the circle]``, and ``center``
+moves the sphere.  ``upper_circular_edge`` and ``lower_circular_edge`` are the
+edges of constant polar angle (upper is nearer the pole), and
+``start_meridian_edge`` and ``end_meridian_edge`` are the edges of constant
+azimuth.  Where the zone closes at a pole no element collapses: each sector of
+at most 90 degrees of the cap is a rhombus at the pole and two ring patches
+(a butterfly), as in a cubed sphere, which is why the number of elements around
+the circle must then be a multiple of twice the number of sectors.  The
+normals point away from the centre.  A quadratic sphere (``"Quad9"``,
+``"Tri6"``) has every node on the sphere.
+
+``generate_surface_mesh``
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Any other surface is written as equations, with the definitions they use given
+as keywords, numbers or text in terms of earlier definitions.  A definition
+that is not used is refused.  The keywords that come with the equation decide
+how the surface is built:
+
+.. code-block:: python
+
+   # A height surface z = f(x, y) over a rectangle.
+   saddle = dm.generate_surface_mesh(
+       surface="z = c*(x^2 - y^2)", c=0.1,
+       x_min=-5, x_max=5, y_min=-5, y_max=5, num_elements=[10, 10],
+   )
+   print(saddle.sideset_names())  # ['x_max_edge', 'x_min_edge', 'y_max_edge', 'y_min_edge']
+
+   # A parametric surface x(u, v), y(u, v), z(u, v): a torus, whose seams close.
+   torus = dm.generate_surface_mesh(
+       surface=["x = (R + a*cos(v))*cos(u)", "y = (R + a*cos(v))*sin(u)", "z = a*sin(v)"],
+       R=2.0, a=0.5, u_min=0, u_max="2*pi", v_min=0, v_max="2*pi", num_elements=[32, 12],
+   )
+   print(torus.num_elements, torus.sideset_names())  # 384 []
+
+   # f(x, y, z) = c seen from a centre: structured quadrilaterals.
+   ellipsoid = dm.generate_surface_mesh(
+       surface="x^2/a^2 + y^2/b^2 + z^2/c^2 = 1", a=2.0, b=1.5, c=1.0,
+       center=[0, 0, 0], num_elements=[8, 16],
+   )
+
+   # Any f(x, y, z) = c, cut out of a box: here half a torus.
+   half_torus = dm.generate_surface_mesh(
+       surface="(sqrt(x^2 + y^2) - R)^2 + z^2 = a^2", R=2.0, a=0.5,
+       box=[[-3, 0, -1], [3, 3, 1]], element_size=0.2,
+   )
+   print(half_torus.sideset_names())  # ['box_edge']
+
+* **A height surface**: one coordinate as a function of the other two, with
+  the bounds of those two and ``num_elements``.  The edges are named after the
+  bounds (``x_min_edge`` and so on) and the normals point towards increasing
+  height.
+* **A parametric surface**: three equations in the parameters ``u`` and
+  ``v``, with ``u_min``, ``u_max``, ``v_min``, ``v_max`` (numbers or text) and
+  ``num_elements``.  Seams that close are merged.  The edges are
+  ``u_min_edge`` and so on, and the normals point along
+  :math:`r_u \times r_v`.
+* **f(x, y, z) = c seen from a centre**: ``center`` and ``num_elements`` give
+  the mesh of a sphere moved along its rays from the centre onto the surface,
+  so the quadrilaterals keep the quality of the sphere's.  Every ray from the
+  centre must meet the surface once (an ellipsoid, a rounded vessel, a
+  dented sphere, but a torus fails), which the generator checks.  ``polar_angle``
+  and ``azimuth`` take a part of the surface, with the edge names of the
+  sphere.  The normals point away from the centre.
+* **Any f(x, y, z) = c**: ``box=[[x_min, y_min, z_min], [x_max, y_max,
+  z_max]]`` and ``element_size`` mesh the part of the surface inside the box
+  with quadrilaterals by *surface nets*: on a regular grid of that spacing, one
+  vertex in each cell the surface crosses and one quadrilateral for each grid
+  edge it crosses, joining the four cells around that edge.  Where the box cuts
+  the surface, a net of the box face closes it, so the cut, ``box_edge``, lies
+  on the box.  Every node is then moved onto :math:`f = c` and the mesh is
+  smoothed along the surface (corner angles between about 50 and 135 degrees
+  in the tests).  ``element_type="Tri3"`` splits the quadrilaterals.  The
+  normals point towards :math:`f > c`.
+
+On :math:`f = c` the gradient of :math:`f` must not vanish: an apex or a
+crossing is not a smooth surface and is refused.  Every node of a generated
+surface lies on the exact surface to round-off, and a quadratic element type
+places its mid-side nodes on it too.
+
 Building a mesh from arrays
 ---------------------------
 
@@ -325,10 +488,17 @@ mesh of mixed element types is built:
 
 ``blocks`` gives one block number per element in the order in which the
 elements are added, and when it is omitted every element goes into block 0.
-``dimension`` overrides the spatial dimension, which is otherwise the largest
-among the element types given.  Set it when a mesh of ``Edge2`` elements
-represents a plane truss, which the default would treat as a one-dimensional
-bar.  :meth:`~dualmesh.Mesh.fix_orientation` is called automatically, so the
+The mesh lies in the space its coordinates use: a mesh of ``Edge2``
+elements whose :math:`y` varies is a curve in the plane (a plane truss), and a
+mesh of two-dimensional elements whose :math:`z` varies is a surface in
+three-dimensional space (a shell, see :ref:`surface-meshes`).  A coordinate
+varies when its range is larger than :math:`10^{-12}` times the size of the
+mesh, so that round-off does not move a plane mesh into space.  A constant
+coordinate, zero or not, keeps the mesh in its plane: a plate at
+:math:`z = 0.5` is a plane mesh.
+``dimension`` raises the space dimension explicitly, for instance
+``dimension=3`` for a flat plate in the :math:`xy` plane that is meant as a
+shell.  :meth:`~dualmesh.Mesh.fix_orientation` is called automatically, so the
 winding order of the connectivity is irrelevant.
 
 A mesh built this way has **no** side sets and no node sets, so nothing can be
@@ -336,8 +506,9 @@ prescribed on it yet.  When the domain is a box, the simplest remedy is
 :meth:`~dualmesh.Mesh.add_bounding_box_sidesets`, which computes the bounding
 box and creates the standard ``left``/``right``/``bottom``/``top`` (and, in
 three dimensions, ``back``/``front``) side sets from the exterior faces whose
-centroids lie on each face of that box, within a ``tolerance`` defaulting to
-:math:`10^{-10}`.  It is useful only for a domain aligned with the axes.  On a
+nodes all lie on each face of that box, within a ``tolerance`` defaulting to
+:math:`10^{-10}`.  On a surface or a curve, it uses the axes of the space and
+skips each axis along which the mesh is flat.  It is useful only for a domain aligned with the axes.  On a
 curved or inclined boundary, use the predicates described below.
 
 .. code-block:: python
@@ -376,10 +547,15 @@ Gmsh model transfers its boundary names.  Reading applies these rules:
 
 * The physical or material tag of a volume cell, taken from the
   ``gmsh:physical``, ``medit:ref``, ``cell_tags`` or ``material`` cell data,
-  becomes the element's block number.  Untagged cells go into block 0.
+  becomes the element's block number.  When the file gives that tag a
+  physical name, the name becomes the block name (``mesh.block_names()``).
+  Untagged cells go into block 0.
 * Each group of lower-dimensional cells sharing a tag becomes one side set and
   one node set, named after the physical name the file gives that tag, or
-  ``"boundary_<tag>"`` when the file gives the tag no name.
+  ``"boundary_<tag>"`` when the file gives the tag no name.  Gmsh numbers its
+  physical groups separately in each dimension, so a name is found by its tag
+  and its dimension.  A volume group and a boundary group with the same tag
+  keep their own names.
 * ``boundary_names`` renames them during reading, as a mapping from the name
   in the file to the new name.
 * If the file carries no boundary cells, or if
@@ -530,8 +706,11 @@ in :doc:`/theory/adaptivity`.
 either cannot be promoted.  The corner nodes keep their numbers and positions,
 so the domain does not change shape and any node index recorded earlier is
 still valid.  Side sets carry over
-unchanged, since they refer to element sides, which still exist, and node sets
-gain the added nodes lying between two members.
+unchanged, since they refer to element sides, which still exist.  A node set
+gains each added node whose parent nodes are all members of the set.  When all
+members of a node set lie on the boundary, the set gains only the added nodes
+on the boundary, so that the midpoint of a diagonal between two boundary nodes
+stays out of it.  Uniform and adaptive refinement use the same rule.
 
 Orientation
 -----------

@@ -4,7 +4,7 @@ The finite volume methods
 Besides the dual mesh control domain method and the Galerkin finite element
 method, ``dualmesh`` implements the two finite volume discretisations that
 Chapter 3 of [Reddy2024]_ develops.  The code calls them ``"hfvm"`` and
-``"zfvm"``, after the book's names for them: the *half control volume*
+``"zfvm"``, after the names of [Reddy2024]_: the *half control volume*
 formulation, whose unknowns sit at the mesh nodes, and the *zero-thickness
 control volume* formulation, whose unknowns sit at the cell centroids.  They
 are available through the ``method`` argument of :class:`dualmesh.Problem` and
@@ -92,7 +92,7 @@ Control volumes
 The control volumes of the vertex-centred method *are* the control domains of
 the dual mesh.  Nothing is recomputed: the same reference-element description
 of the sub-cells and of the interfaces, and the same assembly loop, serve both
-methods (``src/base/ProblemAssembly.cpp``).  In the book's language the control
+methods (``src/base/ProblemAssembly.cpp``).  The control
 volume of an interior node in one dimension is the union of the two half
 elements on either side of it, which is where the name *half control volume*
 comes from.  At a boundary node the control volume is truncated by
@@ -212,8 +212,8 @@ volume formulation in one dimension.
 
 In two dimensions the two methods differ, because the interpolated gradient
 along an edge of a quadrilateral generally differs from the two-point
-difference.  On the
-:math:`3a \times 2a` conduction problem of Example 3.4.1 of [Reddy2024]_,
+difference.  On a
+:math:`3a \times 2a` conduction problem,
 discretised with a :math:`3 \times 2` mesh, the largest difference between the
 two nodal solutions is :math:`1.7 \times 10^{-2}` on a solution whose range is
 one.  Both converge at second order: on that problem, refined through
@@ -476,7 +476,7 @@ which on a uniform one-dimensional mesh of spacing :math:`h`, where
 :math:`s_1 = h/2` and :math:`s_2 = 3h/2`, reduces to the familiar
 :math:`(8 U_b - 9 U_O + U_2)/(3h)`, Eq. (3.2.14) of [Reddy2024]_.
 
-The tildes in :eq:`zfvm_second_order` mark an extension of the book's formula,
+The tildes in :eq:`zfvm_second_order` mark an extension of that formula,
 and this extension is essential.  Equation (3.2.14) is derived for a
 one-dimensional mesh, in which the two cell centres lie on the normal through
 the face centre.  On an unstructured mesh a cell centroid is displaced sideways
@@ -524,12 +524,165 @@ first-order boundary gradient to :math:`1.2 \times 10^{-3}` with the
 second-order one, a factor of fifteen with the same number of unknowns.  The
 test suite asserts a factor of at least :math:`2.5`
 (``test_second_order_boundary_gradient_is_more_accurate``).  Both variants are
-verified against Example 3.3.1 of [Reddy2024]_ node by node: with four cells
-the book's Eq. (7) gives cell values :math:`0.5686, 1.0906, 1.0356, 0.4777` for
-the first-order boundary gradient and its Eq. (8) gives
-:math:`0.4951, 1.0240, 0.9757, 0.4246` for the second-order one, and the code
-reproduces both to :math:`1.1 \times 10^{-4}`, which is the precision to which
-the book prints them.
+verified node by node on :math:`-u'' = 10\cos x` with four cells against the
+published cell values [Reddy2024]_, :math:`0.5686, 1.0906, 1.0356, 0.4777` for
+the first-order boundary gradient and :math:`0.4951, 1.0240, 0.9757, 0.4246`
+for the second-order one, and the code reproduces both to
+:math:`1.1 \times 10^{-4}`, the precision to which they are published.
+
+Advection schemes
+-----------------
+
+An advective term (``advection``, the heat that a flow carries and the inertia
+of a flow) has two statements in the control volume methods.  With
+``advection_scheme="central"``, the default, it is the source
+:math:`\mathbf{v} \cdot \nabla \phi` integrated over the control volume, with
+the interpolated field, as the finite element method does.  Every other scheme
+writes it with the faces of the control volume and a face value
+:math:`\phi_f` that the scheme chooses.  With :math:`m = \mathbf{v} \cdot
+\mathbf{A}` the normal velocity times the face area, outward from the control
+volume :math:`V`, the term is
+
+.. math::
+
+   \int_V \mathbf{v} \cdot \nabla \phi \, dV \approx \sum_f m\, (\phi_f - \phi_V)
+
+in the non-conservative form, and :math:`\sum_f m\, \phi_f` in the conservative
+form :math:`\nabla \cdot (\mathbf{v} \phi)`.  The two differ by
+:math:`\phi_V \sum_f m`, the discrete divergence of the velocity times the
+value.  The interpolated velocity of a discrete flow is not exactly divergence
+free, so its conservative form would add the source
+:math:`T \nabla \cdot \mathbf{v}`, which depends on the temperature scale: on a
+channel at :math:`\mathrm{Re} = 100` that develops from a uniform inflow
+(16 by 16 elements), it moved the temperature by 13 K with DMCDM and by 253 K
+with ZFVM when every temperature was raised by 300 K, and it took the
+temperature to 1.67 on a problem bounded by :math:`[0, 1]`.
+
+``heat_convection`` and ``convective_inertia`` therefore carry the velocity
+whose flux the mass equation conserves, :math:`\mathbf{w} = \mathbf{v} - \tau
+\mathbf{r}_m` through the faces between control volumes and :math:`\mathbf{v}`
+through the boundary of the node-based methods, as the mass equation takes
+them, with :math:`m = \mathbf{w} \cdot \mathbf{A}`.  Its flux sums to zero over
+every control volume whose mass equation is solved, so the two forms coincide:
+the heat and the momentum are conserved exactly, the solution does not depend
+on the temperature scale, and upwind is bounded.  In a closed cavity driven by
+its lid, the heat entering at the hot wall leaves at the cold one to
+round-off.  Without a mass equation (the penalty formulation, or a velocity
+that conditions prescribe), they take the non-conservative form with the
+interpolated velocity.  ``advection`` takes the form of ``advection_form``, the
+non-conservative one by default.
+
+Let :math:`C` be the upstream side of the face, the owner when
+:math:`\mathbf{v} \cdot \mathbf{n} \ge 0` and the neighbour otherwise, and
+:math:`D` the downstream side.  The schemes are
+
+* ``"upwind"``: :math:`\phi_f = \phi_C`.  It is bounded and first order.  It
+  is available with dmcdm, hfvm and zfvm.
+* ``"linear_upwind"``: :math:`\phi_f = \phi_C + (\mathbf{x}_f - \mathbf{x}_C)
+  \cdot \nabla \phi_C`, with the least-squares gradient of the upstream cell
+  [Jasak1996]_.  It is second order but not bounded.  It is available with
+  zfvm.
+* ``"limited"``: :math:`\phi_f = \phi_C + \psi(r)\,(\phi_f^{CD} - \phi_C)`, the
+  upwind value blended towards the central value :math:`\phi_f^{CD} = w\,
+  \phi_O + (1 - w)\,\phi_N` by a limiter, in the form of Eq. (3.66) of
+  [Jasak1996]_.  The ratio of consecutive differences is
+  :math:`r = 2\, \mathbf{d} \cdot \nabla \phi_C / (\phi_D - \phi_C) - 1`, with
+  :math:`\mathbf{d}` the vector from the upstream to the downstream centroid,
+  as the TVD schemes of OpenFOAM [OpenFOAM1998]_ compute it, and the limiter
+  is that of van Albada, :math:`\psi(r) = r (r + 1) / (r^2 + 1)` for
+  :math:`r > 0` and zero otherwise.  dualmesh evaluates it as
+  :math:`\psi = 2a (2a - b) / ((2a - b)^2 + b^2)` with :math:`a = \mathbf{d}
+  \cdot \nabla \phi_C` and :math:`b = \phi_D - \phi_C`, which has no division
+  by :math:`b`.  It tends to 1 when :math:`b` tends to zero with the sign of
+  :math:`a`, and the face value is continuous where the limiter switches to
+  upwind, because there :math:`\phi_f^{CD} - \phi_C` tends to zero as well.
+  It is second order where the solution is smooth and bounded at a jump.  It
+  is available with zfvm.
+
+The limiter is a differentiable function of the cell values away from
+:math:`r = 0`, and the automatic differentiation of the residual includes it,
+so Newton's method keeps its fast convergence: four iterations on the boundary
+layer below.  It is not differentiable at :math:`r = 0`, where it switches to
+upwind, and a solution with many such switches takes more iterations (16 on the
+skew jump below).  Newton's method can also cycle between the two sides of the
+kink.  On cells of alternating size it does so from a zero start (the residual
+goes from :math:`2 \times 10^{-2}` to 0.45 and back for ever), and the
+backtracking line search makes it converge in 7 iterations to round-off.  The
+default ``line_search="automatic"`` therefore turns backtracking on when a
+kernel uses the limited scheme, and ``line_search="none"`` turns it off.
+
+The node-based methods (DMCDM and HFVM) have no gradient at a node of their
+own, so they reconstruct it by least squares over the nodes of the elements
+around the node, :math:`\nabla \phi_a = \sum_b \mathbf{w}_{ab} (\phi_b -
+\phi_a)` with :math:`\mathbf{w}_{ab} = \mathbf{G}_a^{-1} (\mathbf{x}_b -
+\mathbf{x}_a)` and :math:`\mathbf{G}_a = \sum_b (\mathbf{x}_b -
+\mathbf{x}_a)(\mathbf{x}_b - \mathbf{x}_a)^T`, which is exact for a linear
+field.  The flux of a face then depends on the nodes around its two nodes, and
+the Jacobian holds those derivatives exactly: linear upwind, which is linear in
+:math:`\phi`, converges in one Newton step.  On the boundary layer below,
+limited is bounded and converges at order 2.05 with the node methods.  A part
+of a distributed mesh does not hold the nodes around its interface nodes, so
+these two schemes of the node methods are refused there for now.
+
+**At the boundary.**  In the non-conservative form a face on the boundary of
+the domain takes :math:`m (\phi_f - \phi_V)`: zero at an outflow, where the
+upstream value is :math:`\phi_V`, and for zfvm :math:`m (\phi_b - \phi_V)` at an
+inflow, with the value :math:`\phi_b` of the boundary face.  The conservative
+flux through the boundary carries the value of the control volume that the face
+bounds: at an outflow this value is upstream, and at an inflow without a
+condition it is the only value there is.  A boundary without a condition
+therefore has a zero conductive flux in both forms and passes the advected
+field out of the domain unchanged.  For zfvm the advective flux does not enter
+the equation of a boundary face, which keeps its own condition.
+
+**Between blocks.**  At a face between two blocks of zfvm, an advective flux
+takes the coefficients of the upstream block (a conductive flux takes the
+harmonic mean of the two conductances).  With a speed of 1 in one block and 2
+in the next, the conservative flux :math:`v \phi` is the same on both sides,
+and :math:`\phi` halves at the face, as :math:`\nabla \cdot (v \phi) = 0`
+requires.  In the non-conservative form :math:`\phi` stays constant, as
+:math:`v\, \phi' = 0` requires.
+
+**Measurements.**  On :math:`\phi' = \phi'' / \mathrm{Pe}` over
+:math:`(0, 1)` with :math:`\phi(0) = 0` and :math:`\phi(1) = 1`, with
+:math:`\mathrm{Pe} = 100` and 20 elements (a cell Péclet number of 5):
+
+.. list-table::
+   :header-rows: 1
+
+   * - Method and scheme
+     - Range of :math:`\phi`
+     - Order at :math:`\mathrm{Pe} = 5`
+   * - dmcdm, hfvm central
+     - :math:`[-0.43, 1]`
+     - 2
+   * - dmcdm, hfvm upwind
+     - :math:`[0, 1]`
+     - 0.9
+   * - zfvm central
+     - :math:`[-1.5, 1]`
+     - 2
+   * - zfvm upwind
+     - :math:`[0, 1]`
+     - 0.9
+   * - zfvm linear_upwind
+     - :math:`[-0.086, 1]`
+     - 1.8 to 1.9
+   * - zfvm limited
+     - :math:`[0, 1]`
+     - 1.7 to 1.9
+
+The limited scheme of zfvm has the smallest maximum error of the six, 0.130.
+
+On the skew jump of [BrooksHughes1982]_ (a jump of the inflow value carried
+across the unit square at 30 degrees to a :math:`24 \times 24` mesh, with
+:math:`k = 10^{-6}`), upwind and limited stay in :math:`[0, 1]` with every
+method, central reaches :math:`[-0.41, 1.09]` with zfvm and
+:math:`[-0.29, 1.02]` with dmcdm and hfvm, and linear_upwind
+:math:`[-0.083, 1.06]`.  On the Kovasznay flow at :math:`\mathrm{Re} = 40`, the
+velocity of zfvm converges at order 1.1 with upwind, and at order 2 with
+linear_upwind and limited.  ``tests/python/test_advection_schemes.py`` checks
+these properties.
 
 Choosing between them
 ---------------------
@@ -549,11 +702,10 @@ the Galerkin finite element method.  Its limitation is stated in
 The **vertex-centred finite volume method** has the same cost as the dual mesh
 control domain method (the same unknowns, the same sparsity, the same assembly
 loop) and differs only in :eq:`hfvm_correction`.  The reason to choose it is
-that it is the scheme of Chapter 3 of [Reddy2024]_ and of the classical finite
-volume literature, so it is the right method to run when the object is to
-reproduce those results or to compare against a code that uses them.  Its
-accuracy is at best equal to that of the dual mesh control domain method: on
-the conduction problem of Example 3.4.1, refined through three meshes, the
+that it is the scheme of the classical finite volume literature, so it is the
+right method to run when the object is to compare against a code that uses it.
+Its accuracy is at best equal to that of the dual mesh control domain method:
+on the :math:`3a \times 2a` conduction problem, refined through three meshes, the
 maximum nodal error
 of the vertex-centred method is about twice that of the dual mesh control
 domain method on the same mesh (:math:`1.13\times10^{-2}` against
@@ -593,15 +745,15 @@ conjugate gradient solver is requested and fails.
 Verification
 ------------
 
-The two finite volume methods are checked against Chapter 3 of [Reddy2024]_ in
-``tests/python/test_finite_volume.py``.  The one-dimensional problem of Example
-3.3.1 is reproduced node by node for both formulations and for both boundary
-gradients, including the secondary variables at the two ends, which
-Table 3.3.1 of the book gives as :math:`-q(0) = 4.5898` and :math:`q(1) =
-3.7888` for the half control volume formulation with four subdivisions.  The
-two-dimensional conduction problem of Example 3.4.1 is reproduced for the
-:math:`3 \times 2` mesh of the book's Eqs. (9) and (14).  Beyond the book, the
-tests check the patch test on distorted meshes in two and three dimensions,
+The two finite volume methods are checked in
+``tests/python/test_finite_volume.py``.  The one-dimensional problem
+:math:`-u'' = 10\cos x` is reproduced node by node against the published
+values [Reddy2024]_ for both formulations and for both boundary gradients,
+including the secondary variables at the two ends,
+:math:`-q(0) = 4.5898` and :math:`q(1) = 3.7888` for the half control volume
+formulation with four subdivisions.  The two-dimensional :math:`3a \times 2a`
+conduction problem is reproduced on a :math:`3 \times 2` mesh.  The tests
+also check the patch test on distorted meshes in two and three dimensions,
 second-order convergence in the maximum nodal error, a nonlinear conduction
 problem against its closed-form Kirchhoff solution with both Newton and Picard
 iteration, a transient slab against its analytical decay, and a convecting fin,

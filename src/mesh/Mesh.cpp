@@ -4,6 +4,7 @@
 #include "dualmesh/fe/ReferenceElement.h"
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 #include <map>
 #include <set>
@@ -282,6 +283,7 @@ Index
 Mesh::addNode(const Point & p)
 {
   _nodes.push_back(p);
+  invalidateCaches();
   return static_cast<Index>(_nodes.size()) - 1;
 }
 
@@ -305,7 +307,7 @@ Mesh::addElement(ElementType type, const std::vector<Index> & nodes, int block)
   }
   e.block = block;
   _elements.push_back(e);
-  _exterior_valid = false;
+  invalidateCaches();
   return static_cast<Index>(_elements.size()) - 1;
 }
 
@@ -352,13 +354,14 @@ Mesh::exteriorSides() const
 const std::vector<char> &
 Mesh::boundaryNodeMarkers() const
 {
-  if (_exterior_valid && _boundary_nodes.size() == static_cast<std::size_t>(numNodes()))
+  if (_boundary_valid)
     return _boundary_nodes;
   const auto & sides = exteriorSides();
   _boundary_nodes.assign(numNodes(), 0);
   for (const auto & s : sides)
     for (Index n : sideNodes(s))
       _boundary_nodes[n] = 1;
+  _boundary_valid = true;
   return _boundary_nodes;
 }
 
@@ -372,7 +375,7 @@ Mesh::addSidesetFromFaces(const std::string & name, const std::vector<std::vecto
     std::sort(key.begin(), key.end());
     lookup[key] = s;
   }
-  auto & list = _sidesets[name];
+  std::vector<Side> list;
   std::size_t missing = 0;
   for (auto f : faces)
   {
@@ -384,10 +387,10 @@ Mesh::addSidesetFromFaces(const std::string & name, const std::vector<std::vecto
       list.push_back(it->second);
   }
   if (missing)
-    throw InputError("Side set '" + name + "': " + std::to_string(missing) +
+    throw InputError("Side set '" + name + "': " + std::to_string(missing) + " of " +
+                     std::to_string(faces.size()) +
                      " faces are not on the exterior boundary of the mesh.");
-  std::sort(list.begin(), list.end());
-  list.erase(std::unique(list.begin(), list.end()), list.end());
+  addSideset(name, list);
 }
 
 void
@@ -469,9 +472,95 @@ detAtCentroid(const Mesh & mesh, const Element & el)
 }
 } // namespace
 
-void
-Mesh::fixOrientation()
+namespace
 {
+/// Reverse the orientation of an element by a swap of corners (and of the
+/// nodes on the edges and faces that the swap exchanges).
+void
+flipElement(Element & el)
+{
+  switch (el.type)
+  {
+  case ElementType::Edge2:
+  case ElementType::Tri3:
+    std::swap(el.nodes[0], el.nodes[1]);
+    break;
+  case ElementType::Quad4:
+    std::swap(el.nodes[1], el.nodes[3]);
+    break;
+  case ElementType::Tet4:
+    std::swap(el.nodes[1], el.nodes[2]);
+    break;
+  case ElementType::Hex8:
+    std::swap(el.nodes[1], el.nodes[3]);
+    std::swap(el.nodes[5], el.nodes[7]);
+    break;
+  // The quadratic elements are flipped by the same corner swap; the
+  // mid-edge, mid-face and interior nodes follow their corners, so the
+  // nodes that sit on edges or faces that the swap exchanges are exchanged
+  // with them.
+  case ElementType::Edge3:
+    std::swap(el.nodes[0], el.nodes[1]);
+    break;
+  case ElementType::Tri6:
+    std::swap(el.nodes[0], el.nodes[1]);
+    std::swap(el.nodes[4], el.nodes[5]);
+    break;
+  case ElementType::Quad9:
+    std::swap(el.nodes[1], el.nodes[3]);
+    std::swap(el.nodes[4], el.nodes[7]);
+    std::swap(el.nodes[5], el.nodes[6]);
+    break;
+  case ElementType::Tet10:
+    std::swap(el.nodes[1], el.nodes[2]);
+    std::swap(el.nodes[4], el.nodes[6]);
+    std::swap(el.nodes[8], el.nodes[9]);
+    break;
+  case ElementType::Hex27:
+  case ElementType::Hex20:
+    // Swapping corners 1 and 3 (and 5 and 7) mirrors the element in the
+    // plane x = y, which also exchanges the edges and faces that the mirror
+    // exchanges: the bottom edges (0,1) and (3,0), (1,2) and (2,3), the top
+    // edges likewise, the vertical edges through 1 and 3, and the face
+    // centres of x = -1 and y = -1, and of x = +1 and y = +1.
+    std::swap(el.nodes[1], el.nodes[3]);
+    std::swap(el.nodes[5], el.nodes[7]);
+    std::swap(el.nodes[8], el.nodes[11]);
+    std::swap(el.nodes[9], el.nodes[10]);
+    std::swap(el.nodes[12], el.nodes[15]);
+    std::swap(el.nodes[13], el.nodes[14]);
+    std::swap(el.nodes[17], el.nodes[19]);
+    if (el.type == ElementType::Hex27)
+    {
+      std::swap(el.nodes[20], el.nodes[22]);
+      std::swap(el.nodes[21], el.nodes[23]);
+    }
+    break;
+  case ElementType::Quad8:
+    std::swap(el.nodes[1], el.nodes[3]);
+    std::swap(el.nodes[4], el.nodes[7]);
+    std::swap(el.nodes[5], el.nodes[6]);
+    break;
+  case ElementType::Wedge6:
+    std::swap(el.nodes[1], el.nodes[2]);
+    std::swap(el.nodes[4], el.nodes[5]);
+    break;
+  case ElementType::Pyramid5:
+    std::swap(el.nodes[1], el.nodes[3]);
+    break;
+  }
+}
+} // namespace
+
+void
+Mesh::fixOrientation(const std::vector<Point> & preferred)
+{
+  if (!preferred.empty() && (spaceDimension() == _dim || _dim != 2))
+    throw InputError("Preferred normals orient a surface (two-dimensional elements in "
+                     "three-dimensional space) only.");
+  if (!preferred.empty() && static_cast<Index>(preferred.size()) != numElements())
+    throw InputError("Give one preferred normal per element (" + std::to_string(numElements()) +
+                     "), not " + std::to_string(preferred.size()) + ".");
   // Remember side sets as node lists (independent of local numbering).
   std::map<std::string, std::vector<std::vector<Index>>> faces;
   for (const auto & [name, sides] : _sidesets)
@@ -479,88 +568,201 @@ Mesh::fixOrientation()
       faces[name].push_back(sideNodes(s));
 
   bool changed = false;
-  for (auto & el : _elements)
+  if (spaceDimension() > _dim)
   {
-    if (detAtCentroid(*this, el) >= 0)
-      continue;
-    changed = true;
-    switch (el.type)
-    {
-    case ElementType::Edge2:
-    case ElementType::Tri3:
-      std::swap(el.nodes[0], el.nodes[1]);
-      break;
-    case ElementType::Quad4:
-      std::swap(el.nodes[1], el.nodes[3]);
-      break;
-    case ElementType::Tet4:
-      std::swap(el.nodes[1], el.nodes[2]);
-      break;
-    case ElementType::Hex8:
-      std::swap(el.nodes[1], el.nodes[3]);
-      std::swap(el.nodes[5], el.nodes[7]);
-      break;
-    // The quadratic elements are flipped by the same corner swap; the
-    // mid-edge, mid-face and interior nodes follow their corners, so the
-    // nodes that sit on edges or faces that the swap exchanges are exchanged
-    // with them.
-    case ElementType::Edge3:
-      std::swap(el.nodes[0], el.nodes[1]);
-      break;
-    case ElementType::Tri6:
-      std::swap(el.nodes[0], el.nodes[1]);
-      std::swap(el.nodes[4], el.nodes[5]);
-      break;
-    case ElementType::Quad9:
-      std::swap(el.nodes[1], el.nodes[3]);
-      std::swap(el.nodes[4], el.nodes[7]);
-      std::swap(el.nodes[5], el.nodes[6]);
-      break;
-    case ElementType::Tet10:
-      std::swap(el.nodes[1], el.nodes[2]);
-      std::swap(el.nodes[4], el.nodes[6]);
-      std::swap(el.nodes[8], el.nodes[9]);
-      break;
-    case ElementType::Hex27:
-    case ElementType::Hex20:
-      // Swapping corners 1 and 3 (and 5 and 7) mirrors the element in the
-      // plane x = y, which also exchanges the edges and faces that the mirror
-      // exchanges: the bottom edges (0,1) and (3,0), (1,2) and (2,3), the top
-      // edges likewise, the vertical edges through 1 and 3, and the face
-      // centres of x = -1 and y = -1, and of x = +1 and y = +1.
-      std::swap(el.nodes[1], el.nodes[3]);
-      std::swap(el.nodes[5], el.nodes[7]);
-      std::swap(el.nodes[8], el.nodes[11]);
-      std::swap(el.nodes[9], el.nodes[10]);
-      std::swap(el.nodes[12], el.nodes[15]);
-      std::swap(el.nodes[13], el.nodes[14]);
-      std::swap(el.nodes[17], el.nodes[19]);
-      if (el.type == ElementType::Hex27)
-      {
-        std::swap(el.nodes[20], el.nodes[22]);
-        std::swap(el.nodes[21], el.nodes[23]);
-      }
-      break;
-    case ElementType::Quad8:
-      std::swap(el.nodes[1], el.nodes[3]);
-      std::swap(el.nodes[4], el.nodes[7]);
-      std::swap(el.nodes[5], el.nodes[6]);
-      break;
-    case ElementType::Wedge6:
-      std::swap(el.nodes[1], el.nodes[2]);
-      std::swap(el.nodes[4], el.nodes[5]);
-      break;
-    case ElementType::Pyramid5:
-      std::swap(el.nodes[1], el.nodes[3]);
-      break;
-    }
+    // A curve in space has no orientation to fix; a surface is oriented
+    // consistently.
+    if (_dim == 2)
+      changed = orientSurface(preferred.empty() ? nullptr : &preferred);
   }
+  else
+    for (auto & el : _elements)
+    {
+      if (detAtCentroid(*this, el) >= 0)
+        continue;
+      changed = true;
+      flipElement(el);
+    }
   if (!changed)
     return;
-  _exterior_valid = false;
+  invalidateCaches();
   _sidesets.clear();
   for (const auto & [name, list] : faces)
     addSidesetFromFaces(name, list);
+}
+
+namespace
+{
+/// t1 x t2 at the centroid of a surface element: its normal times the area
+/// per unit reference area.
+Point
+surfaceAreaVector(const Mesh & mesh, const Element & el)
+{
+  const auto & ref = ReferenceElement::get(el.type);
+  double N[kMaxElementNodes];
+  Point dN[kMaxElementNodes];
+  ref.shape(ref.centroid(), N, dN);
+  Point t1{0, 0, 0}, t2{0, 0, 0};
+  for (int k = 0; k < ref.numNodes(); ++k)
+    for (int i = 0; i < 3; ++i)
+    {
+      t1[i] += mesh.node(el.nodes[k])[i] * dN[k][0];
+      t2[i] += mesh.node(el.nodes[k])[i] * dN[k][1];
+    }
+  return cross(t1, t2);
+}
+} // namespace
+
+void
+Mesh::setSpaceDimension(int d)
+{
+  if (d < 1 || d > 3)
+    throw InputError("The space dimension must be 1, 2 or 3, not " + std::to_string(d) + ".");
+  _space_dim = d;
+}
+
+bool
+Mesh::orientSurface(const std::vector<Point> * preferred)
+{
+  // Two neighbours are oriented alike when they traverse their common edge in
+  // opposite directions.  Each edge is found by its two corner nodes.
+  const Index ne = numElements();
+  std::map<std::pair<Index, Index>, std::vector<std::pair<Index, bool>>> edges;
+  for (Index e = 0; e < ne; ++e)
+  {
+    const auto & el = _elements[e];
+    const auto & ref = ReferenceElement::get(el.type);
+    for (int k = 0; k < ref.numSides(); ++k)
+    {
+      const Index a = el.nodes[ref.sideNodes(k)[0]];
+      const Index b = el.nodes[ref.sideNodes(k)[1]];
+      edges[{std::min(a, b), std::max(a, b)}].push_back({e, a < b});
+    }
+  }
+  // neighbours[e]: (f, the two must have opposite flips).  An edge with more
+  // than two elements is a junction (a stiffener, a folded plate) and does
+  // not tie the orientations; an edge with one is on the boundary.
+  std::vector<std::vector<std::pair<Index, bool>>> neighbours(ne);
+  std::vector<char> on_boundary(ne, 0), at_junction(ne, 0);
+  for (const auto & [key, users] : edges)
+  {
+    if (users.size() == 1)
+      on_boundary[users[0].first] = 1;
+    else if (users.size() > 2)
+      for (const auto & u : users)
+        at_junction[u.first] = 1;
+    else
+    {
+      const bool same_direction = users[0].second == users[1].second;
+      neighbours[users[0].first].push_back({users[1].first, same_direction});
+      neighbours[users[1].first].push_back({users[0].first, same_direction});
+    }
+  }
+
+  std::vector<int> flip(ne, -1);
+  bool changed = false;
+  for (Index start = 0; start < ne; ++start)
+  {
+    if (flip[start] >= 0)
+      continue;
+    // The connected part of the surface that contains `start`.
+    std::vector<Index> part{start};
+    flip[start] = 0;
+    for (std::size_t i = 0; i < part.size(); ++i)
+      for (const auto & [f, opposite] : neighbours[part[i]])
+      {
+        const int want = flip[part[i]] ^ static_cast<int>(opposite);
+        if (flip[f] < 0)
+        {
+          flip[f] = want;
+          part.push_back(f);
+        }
+        else if (flip[f] != want)
+          throw InputError("The surface mesh cannot be oriented: going around it reverses its "
+                           "normal (like a Moebius strip), so its two sides are the same side. "
+                           "A shell needs a surface with two sides.");
+      }
+    // Choose the side: outward on a closed surface (the enclosed volume
+    // sum x.n dA / 3 positive); on an open one the largest component of the
+    // summed normal positive, or, when the normals cancel (an open tube),
+    // outward from the centroid of the part.
+    bool closed = true;
+    Point centre{0, 0, 0};
+    double area = 0;
+    for (Index e : part)
+    {
+      closed = closed && !on_boundary[e] && !at_junction[e];
+      const Point na = surfaceAreaVector(*this, _elements[e]);
+      area += norm(na);
+      centre = centre + norm(na) * elementCentroid(e);
+    }
+    centre = (1.0 / area) * centre;
+    Point summed{0, 0, 0};
+    double volume = 0;
+    for (Index e : part)
+    {
+      const Point na = (flip[e] ? -1.0 : 1.0) * surfaceAreaVector(*this, _elements[e]);
+      summed = summed + na;
+      volume += dot(elementCentroid(e) - centre, na);
+    }
+    bool reverse = volume < 0;
+    if (preferred)
+    {
+      // The side that most of the preferred normals agree with.
+      double agreement = 0;
+      for (Index e : part)
+        agreement +=
+            (flip[e] ? -1.0 : 1.0) * dot(surfaceAreaVector(*this, _elements[e]), (*preferred)[e]);
+      reverse = agreement < 0;
+    }
+    else if (!closed && norm(summed) > 1e-8 * area)
+    {
+      int k = 0;
+      for (int i = 1; i < 3; ++i)
+        if (std::abs(summed[i]) > std::abs(summed[k]) + 1e-12 * norm(summed))
+          k = i;
+      reverse = summed[k] < 0;
+    }
+    for (Index e : part)
+      if (flip[e] ^ static_cast<int>(reverse))
+      {
+        flipElement(_elements[e]);
+        changed = true;
+      }
+  }
+  return changed;
+}
+
+std::vector<Index>
+grownNodeset(const Mesh & old,
+             const Mesh & out,
+             const std::vector<Index> & members,
+             const std::vector<std::pair<std::vector<Index>, Index>> & added)
+{
+  const auto & old_boundary = old.boundaryNodeMarkers();
+  bool on_boundary = !members.empty();
+  for (Index n : members)
+    on_boundary = on_boundary && old_boundary[n];
+  const auto & new_boundary = out.boundaryNodeMarkers();
+  std::set<Index> set(members.begin(), members.end());
+  for (bool grew = true; grew;)
+  {
+    grew = false;
+    for (const auto & [parents, id] : added)
+    {
+      if (set.count(id) || (on_boundary && !new_boundary[id]))
+        continue;
+      bool inside = true;
+      for (Index p : parents)
+        inside = inside && set.count(p);
+      if (inside)
+      {
+        set.insert(id);
+        grew = true;
+      }
+    }
+  }
+  return {set.begin(), set.end()};
 }
 
 std::vector<int>
@@ -702,8 +904,14 @@ Mesh::addBoundingBoxSidesets(double tolerance)
 {
   const auto [lo, hi] = boundingBox();
   static const char * names[3][2] = {{"left", "right"}, {"bottom", "top"}, {"back", "front"}};
-  for (int d = 0; d < _dim; ++d)
+  double extent = 0;
+  for (int d = 0; d < 3; ++d)
+    extent = std::max(extent, hi[d] - lo[d]);
+  for (int d = 0; d < spaceDimension(); ++d)
   {
+    // An axis along which a surface or a curve is flat has no faces.
+    if (hi[d] - lo[d] <= tolerance * extent)
+      continue;
     const double tol = tolerance * std::max(1.0, hi[d] - lo[d]);
     for (int side = 0; side < 2; ++side)
     {
@@ -726,8 +934,10 @@ std::string
 Mesh::summary() const
 {
   std::ostringstream os;
-  os << "Mesh: dimension " << _dim << ", " << numNodes() << " nodes, " << numElements()
-     << " elements\n";
+  os << "Mesh: dimension " << _dim;
+  if (spaceDimension() > _dim)
+    os << " in " << spaceDimension() << "-D space";
+  os << ", " << numNodes() << " nodes, " << numElements() << " elements\n";
   std::map<std::string, Index> types;
   for (const auto & e : _elements)
     types[elementTypeName(e.type)]++;
@@ -771,6 +981,7 @@ Mesh::secondOrder(bool serendipity) const
     return *this;
 
   Mesh out(_dim);
+  out._space_dim = _space_dim;
   out._block_names = _block_names;
   for (const auto & p : _nodes)
     out.addNode(p);
@@ -835,22 +1046,12 @@ Mesh::secondOrder(bool serendipity) const
   // counterpart did.
   for (const auto & [name, sides] : _sidesets)
     out.addSideset(name, sides);
-  // A node set gains every added node all of whose parents already belong to
-  // it, so that a boundary condition applied through a node set still covers
-  // the whole boundary.
+  // A node set gains the added nodes between its members (grownNodeset), so
+  // that a boundary condition applied through a node set still covers the
+  // whole boundary.
+  const std::vector<std::pair<std::vector<Index>, Index>> added(created.begin(), created.end());
   for (const auto & [name, ids] : _nodesets)
-  {
-    std::set<Index> members(ids.begin(), ids.end());
-    for (const auto & [parents, id] : created)
-    {
-      bool inside = true;
-      for (Index p : parents)
-        inside = inside && members.count(p);
-      if (inside)
-        members.insert(id);
-    }
-    out.addNodeset(name, {members.begin(), members.end()});
-  }
+    out.addNodeset(name, grownNodeset(*this, out, ids, added));
   return out;
 }
 
@@ -865,6 +1066,7 @@ Mesh::refined() const
       throw InputError("Uniform refinement of a quadratic mesh is not supported directly. "
                        "Refine the linear mesh first and promote the result to second order.");
   Mesh out(_dim);
+  out._space_dim = _space_dim;
   out._block_names = _block_names;
   for (const auto & p : _nodes)
     out.addNode(p);
@@ -1025,8 +1227,11 @@ Mesh::refined() const
   }
   // The subdivisions above keep the orientation of the parent for every child
   // except possibly the tetrahedra of a pyramid, whose vertex order depends on
-  // the parent's; one pass of the orientation check settles all of them.
-  out.fixOrientation();
+  // the parent's; one pass of the orientation check settles all of them.  A
+  // surface keeps the orientation its elements were given (a generator's
+  // outward normals), which every subdivision preserves.
+  if (spaceDimension() == _dim)
+    out.fixOrientation();
 
   // Side sets: child sides that are exterior and lie on a parent side.
   std::map<std::vector<Index>, Side> child_lookup;
@@ -1036,30 +1241,33 @@ Mesh::refined() const
     std::sort(key.begin(), key.end());
     child_lookup[key] = s;
   }
+  // A node lies on a parent side when it is one of the side's nodes or was
+  // made from them only (every added node is made from nodes of this mesh).
+  std::vector<const std::vector<Index> *> made_from(out.numNodes(), nullptr);
+  for (const auto & [parents, id] : created)
+    made_from[id] = &parents;
+  const auto onSide = [&](Index k, const std::vector<Index> & side_nodes)
+  {
+    const auto has = [&](Index n)
+    { return std::find(side_nodes.begin(), side_nodes.end(), n) != side_nodes.end(); };
+    if (!made_from[k])
+      return has(k);
+    return std::all_of(made_from[k]->begin(), made_from[k]->end(), has);
+  };
   for (const auto & [name, sides] : _sidesets)
   {
     std::vector<Side> list;
     for (const auto & ps : sides)
     {
       const auto pn = sideNodes(ps);
-      std::set<Index> allowed(pn.begin(), pn.end());
-      for (const auto & [parents, id] : created)
-      {
-        bool inside = true;
-        for (Index p : parents)
-          inside = inside && allowed.count(p);
-        if (inside)
-          allowed.insert(id);
-      }
       for (Index c : children[ps.first])
       {
         const auto & ref = ReferenceElement::get(out._elements[c].type);
         for (int s = 0; s < ref.numSides(); ++s)
         {
           auto key = out.sideNodes({c, s});
-          bool inside = true;
-          for (Index k : key)
-            inside = inside && allowed.count(k);
+          const bool inside =
+              std::all_of(key.begin(), key.end(), [&](Index k) { return onSide(k, pn); });
           if (!inside)
             continue;
           std::sort(key.begin(), key.end());
@@ -1070,20 +1278,9 @@ Mesh::refined() const
     }
     out.addSideset(name, list);
   }
+  const std::vector<std::pair<std::vector<Index>, Index>> added(created.begin(), created.end());
   for (const auto & [name, ids] : _nodesets)
-  {
-    std::set<Index> set(ids.begin(), ids.end());
-    std::vector<Index> list(ids.begin(), ids.end());
-    for (const auto & [parents, id] : created)
-    {
-      bool inside = true;
-      for (Index p : parents)
-        inside = inside && set.count(p);
-      if (inside)
-        list.push_back(id);
-    }
-    out.addNodeset(name, list);
-  }
+    out.addNodeset(name, grownNodeset(*this, out, ids, added));
   return out;
 }
 

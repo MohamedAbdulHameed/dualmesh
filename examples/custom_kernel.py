@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
-"""A kernel written in Python: the large-deformation bar of Example 6.2.4.
+"""A kernel written in Python: a bar in large deformation.
 
 The axial stiffness depends on the strain,
 
@@ -28,12 +28,8 @@ def solve(load, num_elements=8, num_load_steps=5):
     problem = dm.Problem(mesh)
     problem.add_variable("displacement")
     problem.add_kernel(LargeDeformationBar(variable="displacement", axial_stiffness=1.0))
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", variable="displacement", boundary="left", value=0.0
-    )
-    problem.add_boundary_condition(
-        "Neumann_boundary_condition", variable="displacement", boundary="right", flux=load
-    )
+    problem.add_boundary_condition("Dirichlet", "left", variable="displacement", value=0.0)
+    problem.add_boundary_condition("Neumann", "right", variable="displacement", flux=load)
     problem.solve(
         load_factors=list(np.linspace(1.0 / num_load_steps, 1.0, num_load_steps)), report="none"
     )
@@ -41,7 +37,7 @@ def solve(load, num_elements=8, num_load_steps=5):
 
 
 if __name__ == "__main__":
-    print(" P      u(L)    book")
+    print(" P      u(L)    published")
     for load, reference in ((0.2, 0.1597), (1.0, 0.5213), (5.0, 1.3087)):
         tip = solve(load).values("displacement")[-1]
         print(f"{load:4.1f}  {tip:8.4f}  {reference:8.4f}")

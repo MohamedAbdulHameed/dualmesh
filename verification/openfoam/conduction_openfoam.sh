@@ -1,9 +1,10 @@
 #!/bin/bash
 # SPDX-License-Identifier: LGPL-2.1-or-later
 #
-# Steady heat conduction in a rectangular plate (the geometry and boundary
-# conditions of Example 5.4.2 of Reddy's book) with OpenFOAM's laplacianFoam,
-# marched to steady state, and sampled along two horizontal lines.
+# Steady heat conduction in a rectangular plate, held at 500 K on the left and
+# 300 K on the right, insulated at the bottom and with T = 500 (1 - 10 x^2) on
+# top, with OpenFOAM's laplacianFoam, marched to steady state, and sampled
+# along two horizontal lines.
 #
 # Usage:  ./conduction_openfoam.sh [nx] [ny]
 

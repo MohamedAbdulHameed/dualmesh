@@ -17,6 +17,7 @@
 
 #include <array>
 #include <functional>
+#include <limits>
 #include <map>
 #include <memory>
 #include <string>
@@ -72,14 +73,17 @@ struct SolverOptions
   /// the step until the residual norm falls, ||R(U + a dU)|| <= (1 - 1e-4 a)
   /// ||R(U)||, at most max_line_search_steps times (the Armijo condition on
   /// the residual norm).  It costs one residual assembly per trial.
-  std::string line_search = "none";
+  /// "automatic", the default, is backtracking when a kernel's residual has
+  /// kinks (Kernel::hasKinks, the limiter of an advection scheme), on which
+  /// the full step can cycle, and none otherwise.
+  std::string line_search = "automatic";
   int max_line_search_steps = 10;
   /// Load stepping: the load factors applied in sequence (empty = {1}).
   std::vector<double> load_factors;
   /// "automatic" (the default: sparse LU where a direct factorisation is
   /// cheap, otherwise BiCGSTAB with the preconditioner below, falling back to
   /// LU if the iteration fails; for a large Taylor-Hood system, flexible
-  /// GMRES with the "pressure_mass_schur" preconditioner), "lu" (sparse LU), "bicgstab", "gmres"
+  /// GMRES with the "pcd" preconditioner), "lu" (sparse LU), "bicgstab", "gmres"
   /// (restarted), "cg" (symmetric positive definite systems only), or
   /// "petsc" (PETSc's solvers, configured by petsc_options; needs a build
   /// with PETSc).
@@ -91,15 +95,16 @@ struct SolverOptions
   /// of the elastic property objects (the rigid body modes) and the constant of
   /// every other variable.
   ///
-  /// "pressure_mass_schur" is for pressure-velocity flow (the saddle point
-  /// systems of the Taylor-Hood and the stabilised elements): the block
-  /// upper-triangular preconditioner whose Schur complement approximation is
-  /// the pressure mass matrix scaled by 1/viscosity (SaddlePointSolver.h).
-  /// With linear_solver "gmres" or "automatic" it runs in the built-in
-  /// flexible GMRES with exact factorisations of both blocks; with "petsc" it
-  /// sets up PETSc's Schur complement field split with that matrix, and
-  /// petsc_options can change the block solvers (for instance
-  /// "-fieldsplit_0_pc_type hypre").
+  /// "pressure_mass", "pcd" and "lsc" are for pressure-velocity flow (the
+  /// saddle point systems of the Taylor-Hood and the stabilised elements):
+  /// the block upper-triangular preconditioner whose Schur complement is
+  /// approximated by the pressure mass matrix scaled by 1/viscosity (Stokes
+  /// flow), the pressure convection-diffusion operator, or the least squares
+  /// commutator (SaddlePointSolver.h).  With linear_solver "gmres" or
+  /// "automatic" they run in the built-in flexible GMRES with exact
+  /// factorisations of the momentum block and of the pressure operators; with
+  /// "petsc" PETSc's Schur complement field split applies them, and
+  /// petsc_options can change the block solvers.
   std::string preconditioner = "ilu";
   /// Relative tolerance of the Krylov solvers, ||b - A x|| <= tol ||b||.
   double linear_tolerance = 1e-12;
@@ -224,7 +229,10 @@ struct SolveResult
 /// @param take_step advances @p solution by one step of the given size,
 ///        starting from the state it is given, and reports whether the
 ///        nonlinear solve converged and how many iterations it took.  It must
-///        not throw on non-convergence.
+///        not throw on non-convergence.  Its third argument says whether the
+///        step starts from the last accepted state (so a material history
+///        starts from its committed values) or continues the step before it
+///        (the second half of a doubled step).
 /// @param on_accept is called after every accepted step with the step number
 ///        and the step size, for user callbacks.
 /// @param write_output is called with the index of an output time (of
@@ -233,16 +241,20 @@ struct SolveResult
 ///        steps land on the output times.  It can be empty.
 /// @param verbose_root suppresses the progress messages on every process but
 ///        one in a distributed run.
+/// @param vector_norm the norm of a solution vector, global in a distributed run so that every
+///        process estimates the same error and takes the same decision.  Empty: the norm of the
+///        vector held by this process.
 SolveResult runTransient(const TransientOptions & transient,
                          const SolverOptions & options,
                          Vector & solution,
                          double & current_time,
-                         const std::function<SolveResult(const Vector &, double)> & take_step,
+                         const std::function<SolveResult(const Vector &, double, bool)> & take_step,
                          const std::function<void(int, double)> & on_accept,
                          const std::function<void(int)> & write_output,
                          bool verbose_root = true,
                          const std::function<void(int, double)> & after_step = {},
-                         const std::function<double(double)> & courant = {});
+                         const std::function<double(double)> & courant = {},
+                         const std::function<double(const Vector &)> & vector_norm = {});
 
 /// A time integration that takes the place of the theta method in a transient solve.
 /// The transient loop stays (the output times, the checkpoints, the callbacks), and the integrator advances the solution by one step.
@@ -265,9 +277,72 @@ public:
   }
 };
 
+class Problem;
+struct CheckpointLayout;
+
+/// What the solvers of a Problem need from the processes that share it.  The
+/// default is the serial identity: one process holds the whole problem.  A
+/// DistributedProblem implements it for the part of the problem its process
+/// holds, so that one nonlinear driver and one transient driver serve both.
+class Parallel
+{
+public:
+  virtual ~Parallel() = default;
+  /// Whether this process prints the progress of a solve.
+  virtual bool isRoot() const { return true; }
+  /// The sum of a number over the processes.
+  virtual double sum(double value) const { return value; }
+  /// Whether a condition holds on some process.
+  virtual bool any(bool value) const { return value; }
+  /// The norm of a vector of unknowns over the processes, each unknown counted once.
+  virtual double norm(const Vector & v) const { return v.norm(); }
+  /// Add the contributions of the other processes to the entries of an assembled residual
+  /// that they share.
+  virtual void addShared(Vector &) const {}
+  /// After the prescribed values are written into @p solution: make them, and every value of
+  /// a node another process owns, those of the owner.
+  virtual void shareDirichlet(Vector &) const {}
+  /// Solve A x = b for the unknowns of @p problem; the result holds the owners' values.
+  virtual Vector linearSolve(Problem & problem,
+                             const SparseMatrix & A,
+                             const Vector & b,
+                             const SolverOptions & options,
+                             int * iterations) const;
+  /// Whether the singularity check of the Jacobian runs, which needs the whole matrix.
+  virtual bool checksSingularity() const { return true; }
+  /// The global numbers of the nodes and elements of @p problem, for a checkpoint.
+  virtual CheckpointLayout checkpointLayout(const Problem & problem) const;
+  /// Write the fields of @p problem to the files of @p base (one file, or one per process).
+  virtual void writeFields(Problem & problem,
+                           const std::string & base,
+                           const std::vector<std::string> & fields) const;
+};
+
 class Problem
 {
 public:
+  /// The processes that share this problem (the serial identity unless a DistributedProblem
+  /// holds it).
+  const Parallel & parallel() const;
+  void setParallel(const Parallel * parallel) { _parallel = parallel; }
+  /// Whether Newton's method has reached the round-off level of the system: from the third
+  /// iteration on, a residual that no longer falls (it is at least half the previous one), after
+  /// a step of at most 1e-8 of the solution, and at the round-off level of the residual,
+  /// 64 eps |J| |U| with the Frobenius norm of the Jacobian.  A badly scaled system (a thin beam,
+  /// a stiff solid) carries round-off of that order in its residual, which no further step
+  /// removes; the linear solvers accept their own round-off level the same way.
+  static bool newtonAtRoundOff(int iteration,
+                               double residual,
+                               double previous_residual,
+                               double last_step,
+                               double jacobian_norm,
+                               double solution_norm)
+  {
+    const double level =
+        64.0 * std::numeric_limits<double>::epsilon() * jacobian_norm * solution_norm;
+    return iteration > 2 && residual >= 0.5 * previous_residual && last_step <= 1e-8 &&
+           residual <= level;
+  }
   Problem(std::shared_ptr<Mesh> mesh,
           Method method = Method::DualMesh,
           CoordinateSystem coord = CoordinateSystem::Cartesian);
@@ -278,6 +353,9 @@ public:
                   FunctionPtr initial_condition = nullptr,
                   double scaling = 1.0,
                   VariableOrder order = VariableOrder::Mesh);
+  /// Let a variable also live on @p blocks (empty: everywhere), for a second physics that shares
+  /// the field on other blocks.
+  void extendVariableBlocks(const std::string & name, const std::vector<std::string> & blocks);
   void addFunction(const std::string & name, FunctionPtr f);
   std::shared_ptr<Object>
   addObject(const std::string & type, const std::string & name, InputParameters params);
@@ -317,6 +395,17 @@ public:
   FunctionPtr function(const std::string & name) const;
   /// Whether a function of this name is registered.
   bool hasFunction(const std::string & name) const { return _functions.count(name) > 0; }
+  /// The kernels and the integrated boundary conditions of the problem, in the order they were added.
+  const std::vector<std::shared_ptr<Kernel>> & kernels() const { return _kernels; }
+  const std::vector<std::shared_ptr<IntegratedBC>> & integratedBCs() const { return _ibcs; }
+  /// The names of the registered functions.
+  std::vector<std::string> functionNames() const
+  {
+    std::vector<std::string> out;
+    for (const auto & item : _functions)
+      out.push_back(item.first);
+    return out;
+  }
   /// True when the unknowns sit at cell centroids instead of mesh nodes.
   bool isCellCentered() const { return _method == Method::FiniteVolumeCell; }
   /// The cell-centred finite volume mesh (cell-centred methods only).
@@ -383,14 +472,24 @@ public:
   /// Set every degree of freedom that is not an unknown of its own: the unused slots of every first-order variable (the non-corner nodes of quadratic elements) to the linear interpolant of the corner values, and every degree of freedom that a constraint makes dependent to the value of its primary.
   void updateDependentDofs(Vector & U) const;
 
-  /// The blocks of the pressure mass matrix Schur preconditioner for the
-  /// linear system with matrix @p jacobian (see SaddlePointSolver.h): the
-  /// pressure is the variable of the one kernel that provides a Schur mass
-  /// coefficient (MassConservation), the mass matrix is assembled with that
-  /// coefficient (1/mu) and the pressure's own test functions, and its sign
-  /// is measured from the coupling blocks of @p jacobian.
-  SaddlePointBlocks saddlePointBlocks(const SparseMatrix & jacobian) const;
-  BoundaryGradient boundaryGradient() const { return _boundary_gradient; }
+  /// The blocks of the preconditioner of a flow for the linear system with
+  /// matrix @p jacobian, with the Schur complement approximated by
+  /// @p approximation (see SaddlePointSolver.h): the pressure is the variable
+  /// of the one kernel that provides the flow coefficients (MassConservation),
+  /// the operators on the pressure are assembled from them at the current
+  /// solution, and the sign of the Schur complement is measured from the
+  /// coupling blocks of @p jacobian.
+  SaddlePointBlocks saddlePointBlocks(const SparseMatrix & jacobian,
+                                      SchurApproximation approximation) const;
+  /// The mass conservation equation of a flow: the one kernel that provides
+  /// the flow coefficients, or null.
+  const Kernel * flowConstraint() const;
+  /// Whether "automatic" should factorise a system of @p n unknowns directly.
+  bool preferDirectSolver(Index n) const;
+  /// The time step and the weight of the steady terms of the last linear solve of a Newton step
+  /// (zero and one for a steady solve), which the flow preconditioners take.
+  double linearDt() const { return _linear_dt; }
+  double linearTheta() const { return _linear_theta; }
   void setBoundaryGradient(BoundaryGradient g) { _boundary_gradient = g; }
 
   /// Number of threads requested for the assembly loops; 0 means the OpenMP
@@ -430,8 +529,6 @@ public:
   // ---- history of stateful property objects ------------------------------------------------
   /// Whether any property object keeps a history at its integration points.
   bool hasState() const { return _state_record > 0; }
-  /// Size of one point's history record.
-  int stateRecordSize() const { return _state_record; }
   /// Make the state reached at the last solve the committed one (the start of
   /// the next step).  The transient solver calls it for every accepted step.
   void commitState();
@@ -447,9 +544,6 @@ public:
   };
   StateSnapshot snapshotState() const;
   void restoreState(const StateSnapshot & snapshot);
-  /// The committed history averaged over the volume points of each element
-  /// (one record per element), for output.
-  std::vector<std::vector<double>> stateAtElements() const;
   /// Keys of the points whose history is kept; ps is the kind of point set.
   static std::uint64_t stateKey(unsigned ps, unsigned a, unsigned b, unsigned q)
   {
@@ -469,8 +563,13 @@ public:
   /// them at the next assembly.
   void setElementField(const std::string & name, const std::vector<double> & values);
   const std::vector<double> & elementField(const std::string & name);
-  bool hasElementField(const std::string & name) const { return _element_fields.count(name) > 0; }
   std::vector<std::string> elementFieldNames() const;
+  /// The values of an element field, or nullptr when the problem has none of that name.
+  const std::vector<double> * findElementField(const std::string & name) const
+  {
+    const auto it = _element_fields.find(name);
+    return it == _element_fields.end() ? nullptr : &it->second;
+  }
 
   // ---- solution ---------------------------------------------------------------------
   Vector & solution() { return _U; }
@@ -487,7 +586,10 @@ public:
     const Vector * old = nullptr;    ///< previous time step (transient)
     double dt = 0.0;
     double load_factor = 1.0;
-    double theta = 1.0; ///< weight of steady terms
+    double inertia = 1.0; ///< the factor of the inertia of a flow (QpContext::inertia)
+    double theta = 1.0;   ///< weight of steady terms
+    /// The old time of a step of the theta method, whose steady terms are weighted by 1 - theta.
+    bool old_level = false;
     bool include_time_kernels = true;
     bool include_steady_terms = true;
   };
@@ -511,6 +613,15 @@ public:
   /// rotations, and the constant vector of every other variable.  One row per
   /// degree of freedom.
   Eigen::MatrixXd nearNullspace() const;
+  /// The displacement variables of every elastic property object, in component order.
+  std::vector<std::vector<int>> displacementGroups() const;
+  /// The blocks of the preconditioner "physics_blocks": every group of
+  /// displacements, and every other variable on its own, in the order of
+  /// their variables (the order in which the physics were added).  A flow is
+  /// refused: its velocity and pressure need a Schur complement split.
+  std::vector<std::vector<int>> physicsBlocks() const;
+  /// The unknowns of every block of physicsBlocks, in increasing order.
+  std::vector<std::vector<Index>> physicsBlockDofs() const;
   /// Degrees of freedom that no kernel of this problem touches, and whose
   /// equations are therefore replaced by the identity.
   const std::vector<char> & activeDofs() const { return _active_dof; }
@@ -567,7 +678,6 @@ public:
   {
     _time_integrator = std::move(integrator);
   }
-  const std::shared_ptr<TimeIntegrator> & timeIntegrator() const { return _time_integrator; }
   void setTimeStepCallback(std::function<void(double, Problem &)> cb)
   {
     _step_callback = std::move(cb);
@@ -640,6 +750,13 @@ public:
   std::vector<std::vector<double>> propertyAtCentroids(const std::string & property) const;
   /// Flux of a kernel evaluated at element centroids.
   std::vector<Point> kernelFluxAtCentroids(const std::string & kernel) const;
+  /// The stress at the height @p z above the mid-surface, at the element centroids, of the
+  /// structural kernel @p kernel (Kernel::sectionStress), one row per element.
+  std::vector<std::vector<double>> sectionStressAtCentroids(const std::string & kernel,
+                                                            double z) const;
+  /// Call @p visit with the context of every element centroid (the solution and the properties
+  /// evaluated there) and the block of the element.
+  void centroidContexts(const std::function<void(QpContext &, int)> & visit) const;
   /// Integral of a variable over the domain (with the coordinate factor).
   double integrate(const std::string & var) const;
   /// The integral of a variable over every element (over every cell of the
@@ -666,8 +783,54 @@ public:
   /// Set the SI unit of a variable.
   void setVariableUnit(const std::string & name, const std::string & unit);
 
-  /// Nodal residual of the last converged solution (before Dirichlet rows).
-  const Vector & lastResidual() const { return _last_residual; }
+  // ---- adjoint sensitivities -------------------------------------------------
+  /// An objective functional of the solution: the integral of a variable over
+  /// the whole domain (an empty boundary) or over one side set, with the
+  /// coordinate factor of the problem.
+  struct Objective
+  {
+    std::string variable;
+    std::string boundary; ///< empty: the whole domain
+  };
+  /// The gradient d g / d U of an objective, one entry per degree of freedom.
+  /// For the integral of a variable it is the vector of the integrals of its
+  /// shape functions, which the adjoint solve turns into one sensitivity per
+  /// parameter.
+  Vector objectiveGradient(const Objective & objective) const;
+  /// The value of an objective at the current solution.
+  double objectiveValue(const Objective & objective) const;
+  /// d g / d p of every named parameter, by one adjoint solve.  The
+  /// parameters are settable constants registered by name (addParameter);
+  /// the problem must hold a converged solution, which solve() leaves.
+  ///
+  /// With the solution U(p) defined by R(U, p) = 0, the chain rule gives
+  /// dg/dp = (dg/dU)(dU/dp), and eliminating dU/dp with the adjoint lambda,
+  ///
+  ///     J^T lambda = (dg/dU)^T ,   dg/dp = - lambda . dR/dp ,
+  ///
+  /// in which J is the exact Jacobian of the converged solution (one adjoint
+  /// solve, by the same linear solvers as the primal) and dR/dp is a central
+  /// difference of the residual at the converged solution: one assembly per
+  /// parameter, no solve.  The prescribed degrees of freedom carry their own
+  /// dU/dp, which enters through both terms above.  The cost is independent
+  /// of the number of unknowns beyond one adjoint solve, and linear in the
+  /// number of parameters.
+  ///
+  /// The state (history of stateful properties) and periodic constraints are
+  /// not differentiated yet: a problem with periodic boundary conditions is
+  /// refused.
+  std::map<std::string, double> sensitivities(const Objective & objective,
+                                              const std::vector<std::string> & parameters,
+                                              const SolverOptions & options = {});
+  /// Register (or replace) a named settable constant: a parameter that
+  /// sensitivities() differentiates with respect to.  Give its name wherever
+  /// a coefficient, a source or a boundary value accepts a function.
+  void addParameter(const std::string & name, double value);
+  /// Assign a registered parameter (its value is read by the objects that use
+  /// it at the next assembly; call solve() for the new solution).
+  void setParameter(const std::string & name, double value);
+  /// The value of a registered parameter.
+  double parameterValue(const std::string & name) const;
 
   std::string summary() const;
 
@@ -686,6 +849,9 @@ private:
     /// Cell-centred finite volume only: the entities whose values a face flux
     /// depends on, in the order of the local degrees of freedom.
     std::vector<Index> entities;
+    /// Node-based methods: the columns of a face flux that depends on the gradients at the face's
+    /// nodes, the element's degrees of freedom and then those of the nodes around the two.
+    std::vector<Index> columns;
     std::vector<ADReal> Rloc;
     std::vector<char> touched;
     std::vector<IntegrationPoint> pts;
@@ -746,8 +912,39 @@ private:
   /// coordinate factor, or 1 where that vanishes (on an axis of symmetry).
   double boundaryEntityFactor(const Point & x) const;
   void markActiveDofs();
-  /// Whether "automatic" should factorise a system of @p n unknowns directly.
-  bool preferDirectSolver(Index n) const;
+  /// Refuse an element whose Jacobian determinant is negative at its centroid
+  /// or at any of its nodes: an inverted element would be integrated with a
+  /// positive measure and give a wrong answer silently.  Surfaces and curves
+  /// in space are exempt (their measure is a square root); their orientation
+  /// is a convention that fixOrientation sets.
+  void checkMeshInversions();
+  /// Refuse, in a serial run, a boundary side that no side set holds, through which an advective
+  /// flux of a control volume method would not leave the domain.
+  void checkAdvectiveBoundary() const;
+  /// Whether the problem has the inertia of a flow and its velocity is at rest: zero at every
+  /// degree of freedom that no condition prescribes, on every process.
+  bool flowAtRest() const;
+  /// The weight of the steady term @p object in the assembly @p options: theta at the new time
+  /// of a step of the theta method and 1 - theta at the old one (options.theta), but 1 and 0 for
+  /// a term of an equation without a time derivative or a term atNewTime(), which a step takes
+  /// at the new time only; times the load factor if the term scales with the load.
+  double steadyWeight(const ResidualObject & object, const AssemblyOptions & options) const;
+  /// QpContext::time_weight for the kernel @p kernel: the inverse of its steady weight (without
+  /// the load factor) in a transient step, so that a time derivative inside its residual enters
+  /// the step with the weight 1, and 0 where there is no time derivative to weight.
+  double timeWeight(const Kernel & kernel, const AssemblyOptions & options) const;
+  /// Whether the equation of each variable has no time kernel (Problem::steadyWeight).
+  std::vector<char> _new_time_only;
+  /// Node-based methods with a second-order advection scheme: the least-squares gradient at
+  /// every node, grad u_a = sum_b w_ab (u_b - u_a) over the nodes b of the elements around a,
+  /// with the weights w_ab = G_a^-1 (x_b - x_a), G_a = sum_b (x_b - x_a)(x_b - x_a)^T, which is
+  /// exact for a linear field.  CSR layout by node.
+  void buildNodeGradients();
+  std::vector<Index> _gradient_offsets, _gradient_nodes;
+  std::vector<Point> _gradient_weights;
+  /// Add to the F_p of @p blocks the Robin condition at the inflow of the flow whose mass balance
+  /// is @p constraint (see SaddlePointSolver.h).
+  void addInflowRobin(const Kernel & constraint, double theta, SaddlePointBlocks & blocks) const;
   /// The direct solve, which reuses the factorisation of the previous call
   /// when the matrix has not changed (a linear problem in its second Newton
   /// iteration, or a transient with a constant matrix).
@@ -819,7 +1016,22 @@ private:
   std::map<const IntegratedBC *, std::vector<std::vector<InterfacePoint>>> _interface_pairs;
   std::vector<char> _active_dof;
   bool _initialized = false;
+  /// "variable on boundary..." of every Dirichlet condition, to refuse a second one.
+  std::set<std::string> _dirichlet_keys;
+  /// The time step and the weight of the steady terms of the equations whose
+  /// Jacobian the next linear solve takes (zero and one for a steady solve),
+  /// which the operators of the flow preconditioners need.
+  mutable bool _advective_boundary_checked = false;
+  double _linear_dt = 0.0;
+  double _linear_theta = 1.0;
+  /// The processes that share the problem; null for the serial identity.
+  const Parallel * _parallel = nullptr;
   mutable bool _singularity_checked = false;
+  /// The matrix whose singularity was checked last, by its shape: the check
+  /// runs again when the pattern of the Jacobian changes (constraints that
+  /// appear, an interface that starts to couple two bodies).
+  Index _singularity_pattern_rows = -1;
+  Index _singularity_pattern_nonzeros = -1;
   Vector _U;
   Vector _last_residual;
   double _time = 0.0;
@@ -839,7 +1051,6 @@ private:
   };
   int _state_record = 0;
   mutable std::vector<OwnerState> _state[2];
-  Vector _state_committed_U;
   /// Point the context at the history of its point (inserting a zero record
   /// the first time), or clear the pointers if the point has none.
   void bindState(QpContext & ctx) const;

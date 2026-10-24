@@ -65,9 +65,9 @@ def test_workflow_guard_rejects_the_fixed_mistakes(release):
     )
     no_dry_run = good.replace("workflow_dispatch:", "")
     assert any("workflow_dispatch" in p for p in release.workflow_problems(no_dry_run, {}))
-    token = good + "\n        with:\n          password: ${{ secrets.PYPI_API_TOKEN }}\n"
+    upload = good + "\n      - uses: pypa/gh-action-pypi-publish@release/v1\n"
     assert any(
-        "Trusted Publishing" in p for p in release.workflow_problems(token, {"wheels.yml": token})
+        "not published" in p for p in release.workflow_problems(upload, {"wheels.yml": upload})
     )
 
 

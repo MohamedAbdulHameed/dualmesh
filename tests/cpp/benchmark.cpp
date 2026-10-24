@@ -54,29 +54,28 @@ elasticity(int n, Method method)
   const std::vector<std::string> displacements = {"disp_x", "disp_y", "disp_z"};
   for (const auto & d : displacements)
     problem->addVariable(d);
-  problem->addObject("linear_elastic_stress",
+  problem->addObject("small_strain_stress",
                      "stress",
-                     params("linear_elastic_stress",
+                     params("small_strain_stress",
                             {{"displacements", displacements},
                              {"formulation", std::string("three_dimensional")},
                              {"youngs_modulus", 200.0e9},
                              {"poissons_ratio", 0.3}}));
   for (int c = 0; c < 3; ++c)
-    problem->addObject(
-        "stress_divergence",
-        "sd_" + std::to_string(c),
-        params("stress_divergence",
-               {{"variable", displacements[c]}, {"component", static_cast<long>(c)}}));
+    problem->addObject("stress_divergence",
+                       "sd_" + std::to_string(c),
+                       params("stress_divergence",
+                              {{"variable", displacements[c]}, {"displacements", displacements}}));
   for (int c = 0; c < 3; ++c)
-    problem->addObject("Dirichlet_boundary_condition",
+    problem->addObject("Dirichlet",
                        "fix_" + std::to_string(c),
-                       params("Dirichlet_boundary_condition",
+                       params("Dirichlet",
                               {{"variable", displacements[c]},
                                {"boundary", std::vector<std::string>{"left"}},
                                {"value", 0.0}}));
-  problem->addObject("Dirichlet_boundary_condition",
+  problem->addObject("Dirichlet",
                      "pull",
-                     params("Dirichlet_boundary_condition",
+                     params("Dirichlet",
                             {{"variable", std::string("disp_x")},
                              {"boundary", std::vector<std::string>{"right"}},
                              {"value", 1.0e-3}}));
@@ -126,9 +125,7 @@ projection(int n, int steps, int order, int vectors, const std::string & method_
        std::vector<std::tuple<std::string, std::string, std::string>>{
            {"periodic_x", "left", "right"}, {"periodic_y", "bottom", "top"}})
     problem.addObject(
-        "periodic_boundary_condition",
-        name,
-        params("periodic_boundary_condition", {{"primary", primary}, {"secondary", secondary}}));
+        "periodic", name, params("periodic", {{"primary", primary}, {"secondary", secondary}}));
   ProjectionSettings settings;
   settings.velocities = {"u", "v"};
   settings.density = 1.0;

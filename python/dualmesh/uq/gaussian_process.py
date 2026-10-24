@@ -196,6 +196,147 @@ class _Process:
         return self.y - resid, self.s2 / q
 
 
+# ---------------------------------------------------------------------------
+# Values and gradients of a stationary process.  With delta = a - b, the
+# scaled distance r = |delta / ell| and u_p = delta_p / ell_p^2, every kernel
+# of this module has
+#
+#   cov(z(a), dz/db_q)        =  c(r) u_q,
+#   cov(dz/da_p, z(b))        = -c(r) u_p,
+#   cov(dz/da_p, dz/db_q)     =  c(r) delta_pq / ell_p^2 - h(r) u_p u_q,
+#
+# with c = -(dk/dr)/r and h = -(dc/dr)/r:
+#   squared_exponential  k = e^{-r^2/2},                c = k,                   h = k
+#   matern52             k = (1 + s r + 5 r^2/3) e^{-s r} (s = sqrt 5),
+#                        c = (5/3)(1 + s r) e^{-s r},   h = (25/3) e^{-s r}
+#   matern32             k = (1 + s r) e^{-s r} (s = sqrt 3),
+#                        c = 3 e^{-s r},                h = 3 s e^{-s r} / r
+# The Matern 3/2 process is once mean-square differentiable, so its gradients
+# are observations of it, and h u_p u_q, which is of order r, vanishes at r = 0.
+# ---------------------------------------------------------------------------
+def _gradient_kernels(kind, a, b, ell):
+    """The covariances k (na, nb), K0g = cov(z(a), dz/db) (na, nb, k) and
+    Kgg = cov(dz/da, dz/db) (na, nb, k, k) of the points a and b."""
+    delta = a[:, None, :] - b[None, :, :]
+    u = delta / (ell * ell)
+    r = np.sqrt(((delta / ell) ** 2).sum(axis=-1))
+    if kind == "squared_exponential":
+        k = np.exp(-0.5 * r * r)
+        c, h = k, k
+    elif kind == "matern52":
+        e = np.exp(-SQRT5 * r)
+        k = (1.0 + SQRT5 * r + 5.0 / 3.0 * r * r) * e
+        c, h = 5.0 / 3.0 * (1.0 + SQRT5 * r) * e, 25.0 / 3.0 * e
+    else:
+        e = np.exp(-SQRT3 * r)
+        k = (1.0 + SQRT3 * r) * e
+        c = 3.0 * e
+        with np.errstate(divide="ignore", invalid="ignore"):
+            h = np.where(r > 0.0, 3.0 * SQRT3 * e / np.where(r > 0.0, r, 1.0), 0.0)
+    K0g = c[..., None] * u
+    Kgg = c[..., None, None] * np.diag(1.0 / (ell * ell)) - h[..., None, None] * (
+        u[..., :, None] * u[..., None, :]
+    )
+    return k, K0g, Kgg
+
+
+def _joint_covariance(kind, a, b, ell):
+    """The covariance of the values and the gradients at a with those at b,
+    ordered as the values, then the derivatives along the first input, the
+    second input, and so on: (na (1 + k), nb (1 + k))."""
+    k, K0g, Kgg = _gradient_kernels(kind, a, b, ell)
+    dims = a.shape[1]
+    top = [k] + [K0g[..., q] for q in range(dims)]
+    rows = [top]
+    for p in range(dims):
+        rows.append([-K0g[..., p]] + [Kgg[..., p, q] for q in range(dims)])
+    return np.block(rows)
+
+
+class _GradientProcess(_Process):
+    """A process conditioned on the values and the gradients of the output.
+    Its length scales and nugget start from those of the values alone and
+    then maximise the likelihood of the values and gradients together, whose
+    derivatives are taken numerically by the optimiser (there are only k + 1
+    hyperparameters)."""
+
+    def fit(self, x, y, gradients):
+        start = _Process(self.kernel, self.trend, self.nugget, self.restarts, self.rng).fit(x, y)
+        self.x = np.asarray(x, dtype=float)
+        n, k = self.x.shape
+        self.y = np.concatenate(
+            [np.asarray(y, dtype=float), np.asarray(gradients, float).T.ravel()]
+        )
+        self.F = self._joint_basis(self.x)
+        self.fit_nugget = start.fit_nugget
+        self.log_tau = start.log_tau
+        theta = np.append(start.log_ell, start.log_tau) if self.fit_nugget else start.log_ell
+        bounds = [(math.log(1e-2), math.log(1e2))] * k
+        if self.fit_nugget:
+            bounds.append((math.log(1e-10), math.log(1.0)))
+        res = optimize.minimize(
+            lambda t: self._nll(t, grad=False),
+            theta,
+            method="L-BFGS-B",
+            bounds=bounds,
+            options={"maxiter": 200},
+        )
+        best = res.x if res.fun < self._nll(theta, grad=False) else theta
+        self.log_ell = best[:k]
+        if self.fit_nugget:
+            self.log_tau = best[k]
+        self._condition()
+        return self
+
+    def _joint_basis(self, x):
+        """The trend at the values, and its derivatives at the gradients."""
+        n, k = x.shape
+        F = self._basis(x)
+        rows = [F]
+        for p in range(k):
+            D = np.zeros_like(F)
+            if self.trend == "linear":
+                D[:, 1 + p] = 1.0
+            rows.append(D)
+        return np.vstack(rows)
+
+    def _factor(self, log_ell, log_tau):
+        ell = np.exp(log_ell)
+        tau = math.exp(log_tau)
+        K = _joint_covariance(self.kernel, self.x, self.x, ell)
+        return K + (tau + 1e-10) * np.eye(len(K)), None, None, tau
+
+    def _nll(self, theta, grad=False):
+        k = self.x.shape[1]
+        log_tau = theta[k] if self.fit_nugget else self.log_tau
+        R, _, _, _ = self._factor(theta[:k], log_tau)
+        try:
+            c = linalg.cho_factor(R, lower=True, check_finite=False)
+        except linalg.LinAlgError:
+            return 1e25
+        Ri_F = linalg.cho_solve(c, self.F, check_finite=False)
+        Ri_y = linalg.cho_solve(c, self.y, check_finite=False)
+        G = self.F.T @ Ri_F
+        try:
+            beta = np.linalg.solve(G, self.F.T @ Ri_y)
+        except np.linalg.LinAlgError:
+            return 1e25
+        alpha = Ri_y - Ri_F @ beta
+        s2 = max(float((self.y - self.F @ beta) @ alpha) / len(self.y), 1e-300)
+        logdet = 2.0 * np.sum(np.log(np.diag(c[0])))
+        return 0.5 * len(self.y) * math.log(s2) + 0.5 * logdet
+
+    def _cross(self, xs):
+        k, K0g, _ = _gradient_kernels(self.kernel, xs, self.x, self.ell)
+        return np.hstack([k] + [K0g[..., q] for q in range(self.x.shape[1])])
+
+    def leave_one_out(self):
+        raise ValueError(
+            "GaussianProcess: leave-one-out is not available for a fit with gradients, because a "
+            "point and its gradient would leave together; check the surrogate on separate points."
+        )
+
+
 class GaussianProcess:
     """A Gaussian process (kriging) surrogate.  See the module documentation.
 
@@ -276,7 +417,7 @@ class GaussianProcess:
         return out
 
     # ---- fitting -----------------------------------------------------------------
-    def fit(self, x, y=None, output=None):
+    def fit(self, x, y=None, output=None, gradients=None):
         """Fit to training data.
 
         ``fit(runs)`` uses the runs of :func:`propagate` (all the outputs, or
@@ -286,9 +427,20 @@ class GaussianProcess:
         scaled to the unit cube by the range of the training points.  ``fit(x, y)`` takes an
         array of inputs (n, k), scaled to the unit cube by their range, and
         an array (n,) or (n, m) or a dict of such arrays.
+
+        ``gradients`` (n, k), with ``fit(x, y)`` and a scalar output, gives the
+        derivatives of the output with respect to the inputs at the training
+        points, for example from :meth:`dualmesh.Problem.sensitivities`.  The
+        process is then conditioned on the values and the gradients together
+        (gradient-enhanced kriging), which needs far fewer runs of the model
+        for the same accuracy.  Every kernel of the module takes gradients.
         """
         from .propagate import Runs
 
+        if gradients is not None and (isinstance(x, Runs) or y is None):
+            raise ValueError(
+                "GaussianProcess.fit: give gradients with fit(x, y, gradients=...), the inputs and the outputs as arrays."
+            )
         if isinstance(x, Runs):
             runs = x
             if output is None:
@@ -329,6 +481,18 @@ class GaussianProcess:
             u = (x - self._lo) / self._span
             flat = self._pack(y)
             ok = np.all(np.isfinite(flat), axis=1) & np.all(np.isfinite(u), axis=1)
+            if gradients is not None:
+                gradients = np.atleast_2d(np.asarray(gradients, dtype=float))
+                if flat.shape[1] != 1:
+                    raise ValueError(
+                        "GaussianProcess.fit: gradients are taken for a scalar output only."
+                    )
+                if gradients.shape != x.shape:
+                    raise ValueError(
+                        f"GaussianProcess.fit: gradients has the shape {gradients.shape}, and needs that of the inputs, {x.shape}."
+                    )
+                ok &= np.all(np.isfinite(gradients), axis=1)
+                gradients = gradients[ok]
             u, flat = u[ok], flat[ok]
         n, m = flat.shape
         if n < 3:
@@ -351,10 +515,18 @@ class GaussianProcess:
             resid = z - scores @ self._V.T
             self._discarded = np.mean(resid * resid, axis=0)
         rng = np.random.default_rng(self.seed)
-        self._processes = [
-            _Process(self.kernel, self.trend, self.nugget, self.restarts, rng).fit(u, scores[:, c])
-            for c in range(scores.shape[1])
-        ]
+        if gradients is not None:
+            # dz/du = (dy/dx) span / sd, in the standardised output on the unit cube.
+            scaled = gradients * self._span / self._sd[0]
+            process = _GradientProcess(self.kernel, self.trend, self.nugget, self.restarts, rng)
+            self._processes = [process.fit(u, scores[:, 0], scaled)]
+        else:
+            self._processes = [
+                _Process(self.kernel, self.trend, self.nugget, self.restarts, rng).fit(
+                    u, scores[:, c]
+                )
+                for c in range(scores.shape[1])
+            ]
         self._u_train = u
         self._flat_train = flat
         self._fitted = True

@@ -62,6 +62,23 @@ pyramid (see `Which methods accept which elements`_).  A mesh may mix types
 freely (hexahedra, prisms, pyramids and tetrahedra in one mesh, for instance),
 and the methods apply to it element by element.
 
+The nodes of every side are stored in an order whose right-hand normal points
+out of the element.  At a point of a side, the outward normal follows from
+this reference normal :math:`\mathbf{N}` by the relation of Nanson,
+
+.. math::
+
+   \mathbf{n} \, dA = \det(J) \, J^{-T} \mathbf{N} \, dA_0,
+
+where :math:`J` is the Jacobian of the element map, :math:`dA` is the area
+element of the side in the mesh and :math:`dA_0` is its area element in the
+reference element.  On a surface in space, :math:`J^{-1}` is the pseudo-inverse
+:math:`(J^T J)^{-1} J^T`, and the relation gives the conormal of an edge, which
+lies in the surface.  The test
+``every_side_is_wound_outward_and_its_area_vectors_close`` in
+``tests/cpp/unit_tests.cpp`` checks the order of the side nodes and the
+divergence theorem on the sides of every element type.
+
 The tensor elements
 ^^^^^^^^^^^^^^^^^^^
 
@@ -423,11 +440,12 @@ applied as tensor products on each patch of a control domain, of an interface
 or of an element, except where a symmetric rule for the whole element is
 cheaper (below).
 
-``gauss1`` to ``gauss10``
+``gauss1`` to ``gauss20``
     Gauss-Legendre with that many points per direction, exact for polynomials
     of degree :math:`2n - 1`.  The points and weights are computed once, by
     Newton iteration on the Legendre polynomial, and then looked up.  A request
-    for more than ten points is an error, and ``gauss`` without a number means
+    for more than 20 points is an error, and so is a name with other characters
+    after the number, such as ``gauss3x``.  ``gauss`` without a number means
     ``gauss2``.
 
 ``midpoint`` (alias ``centroid``)
@@ -462,8 +480,7 @@ cheaper (below).
     :math:`x_A` and :math:`x_B` the two interfaces, while a boundary node, whose
     control domain is bounded by the domain boundary as well, puts half the
     weight at its single interface and half at the node itself.  This is the
-    source rule of Chapter 3 of [Reddy2024]_ and reproduces Example 3.3.1 of the
-    book exactly.
+    source rule of [Reddy2024]_.
 
 ``automatic`` (alias ``auto``, the default)
     Gauss-Legendre with one more point per direction than the polynomial order

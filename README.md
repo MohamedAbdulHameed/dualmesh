@@ -15,7 +15,7 @@ volume method**, or the **dual mesh control domain method** (DMCDM) of
 J. N. Reddy. The core is written in C++17 and is driven from Python.
 
 A model is described in physical terms: **physics** such as `heat_transfer`,
-`solid_mechanics` and `incompressible_flow`, their **boundary conditions**,
+`solid_mechanics` and `fluid_dynamics`, their **boundary conditions**,
 and **couplings** such as `thermal_expansion`. Each physics generates the
 **kernels**, **property objects** and boundary conditions of its equations,
 which are registered objects with validated and self-documenting parameters. An
@@ -26,7 +26,7 @@ compares it with the codes whose capabilities it measures itself against: MOOSE,
 COMSOL Multiphysics, OpenFOAM, and Nek5000 and nekRS.
 
 A two-dimensional bus bar with internal heat generation, fixed temperatures on
-two sides and convection on the top (Example 5.4.3 of Reddy's book) reads:
+two sides and convection on the top reads:
 
 ```python
 import dualmesh as dm
@@ -34,13 +34,13 @@ import dualmesh as dm
 mesh = dm.generate_rectangle_mesh(x_min=0.0, x_max=0.1, y_min=0.0, y_max=0.05, num_x_elements=10, num_y_elements=5)
 
 problem = dm.Problem(mesh, method="dmcdm")  # or method="fem"
-heat = problem.add_physics("heat_transfer", "heat", thermal_conductivity=20.0, heat_source=1.0e6)
-heat.add_boundary_condition("Dirichlet_boundary_condition", "left", value=40.0)
-heat.add_boundary_condition("Dirichlet_boundary_condition", "right", value=10.0)
-heat.add_boundary_condition("convective_heat_flux_boundary_condition", "top", heat_transfer_coefficient=75.0)
+heat = problem.add_physics("heat_transfer", thermal_conductivity=20.0, heat_source=1.0e6)
+heat.add_boundary_condition("temperature = 40", boundary="left")
+heat.add_boundary_condition("temperature = 10", boundary="right")
+heat.add_boundary_condition("heat_flux = 75*temperature", boundary="top")  # convection to air at 0
 problem.solve()
 
-problem.sample("temperature", [[0.05, 0.0]])  # 83.142 (Reddy, Table 5.4.3)
+problem.sample("temperature", [[0.05, 0.0]])  # 83.142
 problem.total_reaction("temperature", "left")  # heat flow through the left face
 problem.write_vtu("bus_bar.vtu")
 problem.write_csv("bus_bar.csv")  # nodal values, with units in the column names
@@ -52,18 +52,13 @@ The complete script, with post-processors and output files, is
 
 ## General partial differential equations
 
-An equation that no physics names is written in general form. For every
-field $u$, `general_form_PDE` solves
-
-```math
-d \, \frac{\partial u}{\partial t} + \nabla \cdot \boldsymbol{\Gamma} = f \quad \text{in } \Omega ,
-```
-
-where the flux $`\boldsymbol{\Gamma}`$ and the source $f$ are expressions of
-all the fields, the components of their gradients, the coordinates, the
-time, properties and constants. The expressions are compiled to C++ and
-differentiated automatically, so Newton's method gets the exact Jacobian, and
-the assembly runs on every thread with every method.
+An equation that no physics names is written as it is printed.
+`general_form_PDE` reads the equations as text, with $`\partial u/\partial t`$
+written `du/dt`, $`\nabla u`$ `grad(u)`, $`\nabla \cdot`$ `div` and
+$`\nabla^2`$ `laplacian`, and reduces each one to its flux and source. The
+result is compiled to C++ and differentiated automatically, so Newton's
+method gets the exact Jacobian, and the assembly runs on every thread with
+every method.
 
 For example, a nonlinear diffusion (a p-Laplacian) of $u$ driven by a field
 $v$ that solves a Poisson equation,
@@ -74,14 +69,7 @@ $v$ that solves a Poisson equation,
 -\nabla \cdot \left( k \nabla v \right) = 1 \quad \text{in } \Omega ,
 ```
 
-with $u = v = 0$ on $\partial \Omega$ and $u = 0$ at $t = 0$, has in general form
-
-| Field | $d$ | $`\boldsymbol{\Gamma}`$ | $f$ |
-|---|---|---|---|
-| $u$ | $1$ | $`-\left( 1 + \lvert \nabla u \rvert^2 \right) \nabla u`$ | $`v - u^3`$ |
-| $v$ | $0$ | $`-k \nabla v`$ | $1$ |
-
-and reads, term by term, with $`\partial u / \partial x`$ written `grad_x(u)`:
+with $u = v = 0$ on $\partial \Omega$ and $u = 0$ at $t = 0$, reads
 
 ```python
 import dualmesh as dm
@@ -89,28 +77,33 @@ import dualmesh as dm
 mesh = dm.generate_rectangle_mesh(x_min=0.0, x_max=1.0, y_min=0.0, y_max=1.0, num_x_elements=20, num_y_elements=20)
 problem = dm.Problem(mesh, method="dmcdm")
 
-grad_u_squared = "(grad_x(u)^2 + grad_y(u)^2)"
 system = problem.add_physics(
     "general_form_PDE",
-    "system",
     variables=["u", "v"],
-    time_derivative_coefficient={"u": 1.0, "v": 0.0},  # d
-    flux={  # Gamma, one expression per direction
-        "u": [f"-(1 + {grad_u_squared})*grad_x(u)", f"-(1 + {grad_u_squared})*grad_y(u)"],
-        "v": ["-k*grad_x(v)", "-k*grad_y(v)"],
-    },
-    source={"u": "v - u^3", "v": 1.0},  # f
-    constants={"k": 2.0},
+    k=2.0,
+    grad_u_squared="dot(grad(u), grad(u))",
+    equations=[
+        "du/dt - div((1 + grad_u_squared)*grad(u)) = v - u^3",
+        "-div(k*grad(v)) = 1",
+    ],
 )
-for field in ("u", "v"):
-    system.add_boundary_condition("Dirichlet_boundary_condition", f"wall_{field}", variable=field, boundary=["left", "right", "bottom", "top"], value=0.0)
+walls = ["left", "right", "bottom", "top"]
+system.add_boundary_condition("u = 0", boundary=walls)
+system.add_boundary_condition("v = 0", boundary=walls)
 problem.solve_transient(end_time=0.1, time_step=0.01)
 problem.sample("v", [[0.5, 0.5]])  # 0.03687; the exact value is 0.03684
 ```
 
-`coefficient_form_PDE` writes the same kind of system by its diffusion,
-convection, absorption and source coefficients, which may couple the fields
-and depend on them. `Problem.solve_eigenvalue` gives the eigenvalues and
+Any keyword that is not a parameter, here `k` and `grad_u_squared`, is a
+definition that the equations use by its name. Each equation is matched to
+the field it governs, and a boundary condition is written the same way: a
+field alone on the left prescribes its value, and the normal flux on the left
+(`-k*dv/dn = h*(v - 1)`) prescribes the flux. An equation of a scalar field
+may also be given by its coefficients, `d`, `c`, `alpha`, `gamma`, `beta`,
+`a` and `f`, in
+$`d \, \partial u/\partial t + \nabla \cdot (-c \nabla u - \alpha u + \gamma) + \beta \cdot \nabla u + a u = f`$.
+
+`Problem.solve_eigenvalue` gives the eigenvalues and
 modes of any problem: the time derivatives define the eigenvalue, and the
 expressions may also use the symbol `eigenvalue`. The script
 [`examples/reactor_criticality.py`](examples/reactor_criticality.py) uses it
@@ -181,10 +174,11 @@ reconstruction is needed.
   and nekRS (BDF and extrapolation up to third order, a pressure Poisson
   equation solved by algebraic multigrid with projected initial guesses, and
   a step chosen by the Courant number).
-- **General partial differential equations**: `general_form_PDE` and
-  `coefficient_form_PDE` for systems of any number of fields, with
-  coefficients that differ between regions through properties, and Neumann
-  and Robin conditions whose values depend on the fields.
+- **General partial differential equations**: `general_form_PDE` for systems
+  of any number of scalar and vector fields, written as they are printed or
+  by their coefficients, with coefficients that differ between regions
+  through properties, and boundary conditions written the same way, whose
+  values may depend on the fields.
 - **Eigenvalue studies**: the eigenvalues closest to a given value and their
   modes, for linear and quadratic dependence on the eigenvalue, with complex
   eigenvalues where the operator is not symmetric.
@@ -240,12 +234,12 @@ reconstruction is needed.
 
 ## Verification
 
-Every worked example of Reddy's book with published dual mesh results is
-reproduced by the test suite: one-dimensional and two-dimensional conduction,
+The test suite solves problems of one-dimensional and two-dimensional conduction,
 axisymmetric conduction, advection-diffusion at high Péclet number, nonlinear
 conduction, plane elasticity, pressurized cylinders, squeezed flow, the
 lid-driven cavity at Re = 0 and Re = 1000, functionally graded beams (linear and
-von Kármán), circular plates and rectangular plates. Natural convection is
+von Kármán), circular plates and rectangular plates, and compares each with
+an exact solution or a published value. Natural convection is
 checked against de Vahl Davis (1983), and a manufactured-solution study checks
 the convergence order of every method and element type, also for nonlinear
 coupled systems in general form, in three dimensions, in axisymmetric

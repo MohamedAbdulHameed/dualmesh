@@ -19,9 +19,12 @@ namespace
 /// the Jacobian of the map, its determinant and inverse, and the physical
 /// gradients of the shape functions, from the shape functions @p N and their
 /// reference gradients @p dNr at @p xi.  It runs for every integration point
-/// of every element in every assembly, so the dimension is a template
-/// parameter and the small loops are unrolled.
-template <int DIM>
+/// of every element in every assembly, so the element and space dimensions
+/// are template parameters and the small loops are unrolled.  An element of
+/// lower dimension than the space (a surface in 3-D, a curve in 2-D or 3-D)
+/// has a SPACE x DIM Jacobian; its measure is sqrt(det(J^T J)) and its
+/// gradients are tangential, grad N = J (J^T J)^{-1} dN/dxi.
+template <int DIM, int SPACE>
 void
 mapWithShapeDim(const Mesh & mesh,
                 const Element & el,
@@ -42,7 +45,7 @@ mapWithShapeDim(const Mesh & mesh,
     const double n = N[k];
     for (int i = 0; i < 3; ++i)
       x[i] += n * X[i];
-    for (int i = 0; i < DIM; ++i)
+    for (int i = 0; i < SPACE; ++i)
       for (int j = 0; j < DIM; ++j)
         J[i][j] += X[i] * dNr[k][j];
   }
@@ -51,7 +54,40 @@ mapWithShapeDim(const Mesh & mesh,
     for (int j = 0; j < 3; ++j)
       mp.J[i][j] = J[i][j];
   double inv[3][3] = {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}};
-  if constexpr (DIM == 1)
+  mp.normal = {0, 0, 0};
+  if constexpr (SPACE > DIM)
+  {
+    // The metric G = J^T J of the tangents, its determinant and inverse; the
+    // pseudo-inverse is G^{-1} J^T.
+    double G[2][2] = {{0, 0}, {0, 0}};
+    for (int a = 0; a < DIM; ++a)
+      for (int b = 0; b < DIM; ++b)
+        for (int i = 0; i < SPACE; ++i)
+          G[a][b] += J[i][a] * J[i][b];
+    double Gi[2][2] = {{0, 0}, {0, 0}};
+    if constexpr (DIM == 1)
+    {
+      mp.detJ = std::sqrt(G[0][0]);
+      Gi[0][0] = 1.0 / G[0][0];
+    }
+    else
+    {
+      const double det = G[0][0] * G[1][1] - G[0][1] * G[1][0];
+      mp.detJ = std::sqrt(det);
+      Gi[0][0] = G[1][1] / det;
+      Gi[0][1] = -G[0][1] / det;
+      Gi[1][0] = -G[1][0] / det;
+      Gi[1][1] = G[0][0] / det;
+      const Point t1{J[0][0], J[1][0], J[2][0]};
+      const Point t2{J[0][1], J[1][1], J[2][1]};
+      mp.normal = (1.0 / mp.detJ) * cross(t1, t2);
+    }
+    for (int a = 0; a < DIM; ++a)
+      for (int i = 0; i < SPACE; ++i)
+        for (int b = 0; b < DIM; ++b)
+          inv[a][i] += Gi[a][b] * J[i][b];
+  }
+  else if constexpr (DIM == 1)
   {
     mp.detJ = J[0][0];
     inv[0][0] = 1.0 / J[0][0];
@@ -83,11 +119,14 @@ mapWithShapeDim(const Mesh & mesh,
   }
   if (mp.detJ == 0.0 || !std::isfinite(mp.detJ))
     throw std::runtime_error("dualmesh: degenerate element (zero Jacobian determinant)");
-  // grad N = J^{-T} dN/dxi
+  for (int i = 0; i < 3; ++i)
+    for (int j = 0; j < 3; ++j)
+      mp.Jinv[i][j] = inv[i][j];
+  // grad N = J^{-T} dN/dxi (with the pseudo-inverse on a surface or curve)
   for (int k = 0; k < nn; ++k)
   {
     Point g{0, 0, 0};
-    for (int i = 0; i < DIM; ++i)
+    for (int i = 0; i < SPACE; ++i)
       for (int j = 0; j < DIM; ++j)
         g[i] += inv[j][i] * dNr[k][j];
     mp.dN[k] = g;
@@ -104,12 +143,22 @@ mapWithShape(const Mesh & mesh,
              const Point * dNr,
              MappedPoint & mp)
 {
+  const int space = mesh.spaceDimension();
   if (dim == 3)
-    mapWithShapeDim<3>(mesh, el, nn, xi, N, dNr, mp);
+    mapWithShapeDim<3, 3>(mesh, el, nn, xi, N, dNr, mp);
   else if (dim == 2)
-    mapWithShapeDim<2>(mesh, el, nn, xi, N, dNr, mp);
+  {
+    if (space == 3)
+      mapWithShapeDim<2, 3>(mesh, el, nn, xi, N, dNr, mp);
+    else
+      mapWithShapeDim<2, 2>(mesh, el, nn, xi, N, dNr, mp);
+  }
+  else if (space == 3)
+    mapWithShapeDim<1, 3>(mesh, el, nn, xi, N, dNr, mp);
+  else if (space == 2)
+    mapWithShapeDim<1, 2>(mesh, el, nn, xi, N, dNr, mp);
   else
-    mapWithShapeDim<1>(mesh, el, nn, xi, N, dNr, mp);
+    mapWithShapeDim<1, 1>(mesh, el, nn, xi, N, dNr, mp);
 }
 } // namespace
 
@@ -134,37 +183,14 @@ mapCornerShape(const Element & el, MappedPoint & mp)
   Point dNr[kMaxElementNodes];
   double N[kMaxElementNodes];
   linear.shape(mp.xi, N, dNr);
-  // The inverse of the leading dim x dim block of the Jacobian of the
-  // element's own map.
-  const auto & J = mp.J;
-  double inv[3][3] = {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}};
-  const double id = 1.0 / mp.detJ;
-  if (dim == 1)
-    inv[0][0] = id;
-  else if (dim == 2)
-  {
-    inv[0][0] = J[1][1] * id;
-    inv[0][1] = -J[0][1] * id;
-    inv[1][0] = -J[1][0] * id;
-    inv[1][1] = J[0][0] * id;
-  }
-  else
-  {
-    inv[0][0] = (J[1][1] * J[2][2] - J[1][2] * J[2][1]) * id;
-    inv[0][1] = (J[0][2] * J[2][1] - J[0][1] * J[2][2]) * id;
-    inv[0][2] = (J[0][1] * J[1][2] - J[0][2] * J[1][1]) * id;
-    inv[1][0] = (J[1][2] * J[2][0] - J[1][0] * J[2][2]) * id;
-    inv[1][1] = (J[0][0] * J[2][2] - J[0][2] * J[2][0]) * id;
-    inv[1][2] = (J[0][2] * J[1][0] - J[0][0] * J[1][2]) * id;
-    inv[2][0] = (J[1][0] * J[2][1] - J[1][1] * J[2][0]) * id;
-    inv[2][1] = (J[0][1] * J[2][0] - J[0][0] * J[2][1]) * id;
-    inv[2][2] = (J[0][0] * J[1][1] - J[0][1] * J[1][0]) * id;
-  }
+  // The (pseudo-)inverse of the Jacobian of the element's own map.
+  // Its entries beyond the element dimension are zero on a flat mesh.
+  const auto & inv = mp.Jinv;
   for (int a = 0; a < num_corners; ++a)
   {
     mp.corner_shape[a] = N[a];
     Point g{0, 0, 0};
-    for (int i = 0; i < dim; ++i)
+    for (int i = 0; i < 3; ++i)
       for (int j = 0; j < dim; ++j)
         g[i] += inv[j][i] * dNr[a][j];
     mp.corner_gradient[a] = g;
@@ -174,12 +200,13 @@ mapCornerShape(const Element & el, MappedPoint & mp)
 
 namespace
 {
-/// Physical tangents of a patch: t_k = J * (dxi/ds_k).
+/// Physical tangents of a patch: t_k = J * (dxi/ds_k).  The rows of J beyond
+/// the space dimension are zero, so all three are summed.
 Point
 applyJ(const MappedPoint & mp, const Point & T, int dim)
 {
   Point t{0, 0, 0};
-  for (int i = 0; i < dim; ++i)
+  for (int i = 0; i < 3; ++i)
     for (int j = 0; j < dim; ++j)
       t[i] += mp.J[i][j] * T[j];
   return t;
@@ -198,18 +225,48 @@ patchDet(const std::array<Point, 3> & T, int dim)
 }
 
 /// Oriented area vector (n dA per unit parametric measure) of a patch of
-/// dimension dim-1 in a dim-dimensional element.
+/// dimension dim-1 in a dim-dimensional element.  On a surface in space the
+/// normal of an edge is the conormal t x n, which lies in the surface; at the
+/// end of a curve in space it is the unit tangent.  The caller makes it point
+/// outward.
 Point
 areaVector(const MappedPoint & mp, const std::array<Point, 3> & T, int dim)
 {
   if (dim == 1)
-    return {1.0, 0, 0};
+  {
+    const Point t{mp.J[0][0], mp.J[1][0], mp.J[2][0]};
+    if (t[1] == 0.0 && t[2] == 0.0)
+      return {1.0, 0, 0};
+    return (1.0 / norm(t)) * t;
+  }
   if (dim == 2)
   {
     const Point t = applyJ(mp, T[0], 2);
+    if (mp.normal[0] != 0.0 || mp.normal[1] != 0.0 || mp.normal[2] != 0.0)
+      return cross(t, mp.normal);
     return {t[1], -t[0], 0};
   }
   return cross(applyJ(mp, T[0], 3), applyJ(mp, T[1], 3));
+}
+
+/// The outward area vector (n dA per unit parametric measure) of a patch of
+/// side @p s, by Nanson's relation n dA = det(J) J^{-T} N dA_ref with the
+/// outward reference normal N of the side.  On a surface or a curve in space,
+/// J^{-1} is the pseudo-inverse, which gives the conormal of an edge (it lies
+/// in the surface) and the unit tangent at the end of a curve.
+Point
+sideAreaVector(const MappedPoint & mp,
+               const std::array<Point, 3> & T,
+               const Point & reference_normal,
+               int dim)
+{
+  const double reference_measure =
+      dim == 1 ? 1.0 : (dim == 2 ? norm(T[0]) : norm(cross(T[0], T[1])));
+  Point n{0, 0, 0};
+  for (int i = 0; i < 3; ++i)
+    for (int a = 0; a < dim; ++a)
+      n[i] += mp.Jinv[a][i] * reference_normal[a];
+  return (reference_measure * mp.detJ) * n;
 }
 
 /// The tensor-product rule for one patch, with the extra Gauss points a
@@ -766,7 +823,7 @@ buildSidePoints(const Mesh & mesh,
   const auto & el = mesh.element(side.first);
   const auto & ref = ReferenceElement::get(el.type);
   const int dim = ref.dimension();
-  const Point xc = mesh.elementCentroid(side.first);
+  const Point & reference_normal = ref.sideNormal(side.second);
   const auto & sn = ref.sideNodes(side.second);
   std::vector<Point> s;
   std::vector<double> w;
@@ -794,10 +851,7 @@ buildSidePoints(const Mesh & mesh,
         ip.xi = patch.map(s[q], &T);
         ip.xi_field = qs.reduced ? ref.centroid() : ip.xi;
         mapPoint(mesh, el, ip.xi, mp);
-        Point n = areaVector(mp, T, dim);
-        if (dot(n, mp.x - xc) < 0)
-          n = -1.0 * n;
-        ip.area = w[q] * n;
+        ip.area = w[q] * sideAreaVector(mp, T, reference_normal, dim);
         ip.weight = norm(ip.area);
         ip.owner = owner;
         ip.neighbor = -1;
@@ -978,6 +1032,10 @@ sideControlOwner(const Mesh & mesh, const Side & side, const Point & xi)
 // ----------------------------------------------------------------------------
 PointLocator::PointLocator(const Mesh & mesh) : _mesh(mesh)
 {
+  if (mesh.spaceDimension() > mesh.dimension())
+    throw InputError("Locating points is not available on a surface or a curve in space (a mesh "
+                     "of lower dimension than its space): a point off the surface lies in no "
+                     "element.  Sample the solution at the nodes instead.");
   auto bb = mesh.boundingBox();
   _lo = bb.first;
   _hi = bb.second;
@@ -1038,33 +1096,12 @@ PointLocator::locate(const Point & x, Index & element, Point & xi, double tol) c
     for (int it = 0; it < 30; ++it)
     {
       mapPoint(_mesh, el, r, mp);
-      Point res = x - mp.x;
-      // Solve J dr = res.
+      // Newton step dr = J^{-1} (x - x(r)), with the inverse of the map.
+      const Point res = x - mp.x;
       Point dr{0, 0, 0};
-      if (dim == 1)
-        dr[0] = res[0] / mp.J[0][0];
-      else if (dim == 2)
-      {
-        const double det = mp.detJ;
-        dr[0] = (mp.J[1][1] * res[0] - mp.J[0][1] * res[1]) / det;
-        dr[1] = (-mp.J[1][0] * res[0] + mp.J[0][0] * res[1]) / det;
-      }
-      else
-      {
-        const auto & J = mp.J;
-        const double det = mp.detJ;
-        for (int c = 0; c < 3; ++c)
-        {
-          double M[3][3];
-          for (int i = 0; i < 3; ++i)
-            for (int j = 0; j < 3; ++j)
-              M[i][j] = (j == c) ? res[i] : J[i][j];
-          dr[c] = (M[0][0] * (M[1][1] * M[2][2] - M[1][2] * M[2][1]) -
-                   M[0][1] * (M[1][0] * M[2][2] - M[1][2] * M[2][0]) +
-                   M[0][2] * (M[1][0] * M[2][1] - M[1][1] * M[2][0])) /
-                  det;
-        }
-      }
+      for (int a = 0; a < dim; ++a)
+        for (int i = 0; i < dim; ++i)
+          dr[a] += mp.Jinv[a][i] * res[i];
       r = r + dr;
       if (norm(dr) < 1e-13)
       {

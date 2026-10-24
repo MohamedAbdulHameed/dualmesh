@@ -52,15 +52,12 @@ def heat_problem(n, method):
     problem.add_variable("temperature")
     problem.add_kernel(
         "heat_conduction",
-        "conduction",
         variable="temperature",
         thermal_conductivity=2.0,
         temperature_polynomial=[1.0, 0.01],
     )
-    problem.add_kernel("heat_source", "heating", variable="temperature", heat_source=10.0)
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", "cold", variable="temperature", boundary="left", value=0.0
-    )
+    problem.add_kernel("body_force", variable="temperature", value=10.0)
+    problem.add_boundary_condition("Dirichlet", "left", variable="temperature", value=0.0)
     return problem
 
 
@@ -70,17 +67,15 @@ def elasticity_problem(n, method):
     problem.set_num_threads(1)
     problem.add_physics(
         "solid_mechanics",
-        "solid",
         youngs_modulus=200e9,
         poissons_ratio=0.3,
         formulation="plane_strain",
     )
-    for component in ("displacement_x", "displacement_y"):
+    for component in ("disp_x", "disp_y"):
         problem.add_boundary_condition(
-            "Dirichlet_boundary_condition",
-            f"fixed_{component}",
+            "Dirichlet",
+            "left",
             variable=component,
-            boundary="left",
             value=0.0,
         )
     return problem
@@ -91,25 +86,18 @@ def flow_problem(n, method, formulation="pressure", element_type="Quad4", densit
     problem = dm.Problem(mesh, method=method)
     problem.set_num_threads(1)
     problem.add_physics(
-        "incompressible_flow",
-        "flow",
-        velocities=["u", "v"],
+        "fluid_dynamics",
         density=density,
         formulation=formulation,
         pressure_pin_point=(0.5, 0.0),
     )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", "lid", variable="u", boundary="top", value=1.0
-    )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", "lid_v", variable="v", boundary="top", value=0.0
-    )
-    for variable in ("u", "v"):
+    problem.add_boundary_condition("Dirichlet", "top", variable="velocity_x", value=1.0)
+    problem.add_boundary_condition("Dirichlet", "top", variable="velocity_y", value=0.0)
+    for variable in ("velocity_x", "velocity_y"):
         problem.add_boundary_condition(
-            "Dirichlet_boundary_condition",
-            f"walls_{variable}",
+            "Dirichlet",
+            ["left", "right", "bottom"],
             variable=variable,
-            boundary=["left", "right", "bottom"],
             value=0.0,
         )
     return problem
@@ -144,13 +132,16 @@ def solver_benchmarks(quick, repeat):
     from dualmesh import mms
 
     n = 6 if quick else 10
-    fields = {"u": "sin(y+z)", "v": "sin(x+z)", "w": "sin(x+y)", "pressure": "cos(x)*y*z + x"}
+    fields = {
+        "velocity_x": "sin(y+z)",
+        "velocity_y": "sin(x+z)",
+        "velocity_z": "sin(x+y)",
+        "pressure": "cos(x)*y*z + x",
+    }
     study = mms.ManufacturedSolution(
         fields, dimension=3, flux_boundaries={"right": (1.0, 0.0, 0.0)}
     )
-    study.add_physics(
-        "incompressible_flow", "flow", velocities=["u", "v", "w"], formulation="Taylor_Hood"
-    )
+    study.add_physics("fluid_dynamics", formulation="Taylor_Hood")
     variants = [
         ("direct LU", dict(linear_solver="lu")),
         (
@@ -187,7 +178,7 @@ def solver_benchmarks(quick, repeat):
                 "method": label,
                 "unknowns": int(problem.num_active_dofs()),
                 "seconds": seconds,
-                "velocity_l2_error": float(study.errors(problem)[("u", "l2")]),
+                "velocity_l2_error": float(study.errors(problem)[("velocity_x", "l2")]),
             }
         )
     return rows

@@ -512,15 +512,9 @@ on every new mesh to build a new problem there:
    def build(mesh):
        problem = dualmesh.Problem(mesh)
        problem.add_variable("u")
-       problem.add_kernel("diffusion", "diffusion", variable="u")
-       problem.add_kernel("body_force", "source", variable="u", value=1.0)
-       problem.add_boundary_condition(
-           "Dirichlet_boundary_condition",
-           "walls",
-           variable="u",
-           boundary=mesh.sideset_names(),
-           value=0.0,
-       )
+       problem.add_kernel("diffusion", variable="u")
+       problem.add_kernel("body_force", variable="u", value=1.0)
+       problem.add_boundary_condition("Dirichlet", mesh.sideset_names(), variable="u", value=0.0)
        return problem
 
 

@@ -16,7 +16,7 @@ Layout
    python/bindings/       the pybind11 module
    python/dualmesh/       the Python package
    tests/cpp/             C++ unit tests (self-contained, no framework needed)
-   tests/python/          verification against the book
+   tests/python/          the verification suite
    verification/openfoam/ cross-verification scripts
    examples/              runnable examples
    docs/                  this documentation
@@ -39,11 +39,11 @@ generates the level below without changing its meaning.
    * - Physics
      - A set of equations on any mesh, with its boundary conditions, and the
        couplings between physics.
-     - ``problem.add_physics("solid_mechanics", "solid", ...)``,
+     - ``problem.add_physics("solid_mechanics", ...)``,
        ``problem.add_coupling("thermal_expansion", ...)``
    * - Object
      - One term (kernel), property object or condition.
-     - ``problem.add_kernel("heat_source", ...)``
+     - ``problem.add_kernel("body_force", ...)``
 
 A study of one model is a method of the model (``problem.solve()``,
 ``problem.solve_transient(...)``).  A study of many models
@@ -61,8 +61,8 @@ special case.
    generates objects.
 2. **Names.**  Type names, parameters and keywords are full words in lower
    case joined by underscores.  Proper names and abbreviations keep their
-   capitals (``Dirichlet_boundary_condition``, ``beam_Timoshenko_mixed``,
-   ``Robin_boundary_condition``), and the very common abbreviations ``num``,
+   capitals (``Dirichlet``, ``beam_Timoshenko_mixed``,
+   ``Robin``), and the very common abbreviations ``num``,
    ``max`` and ``min`` are used.  The same quantity has the same name in
    every module (e.g., ``poissons_ratio``, ``time_step``, ``implicitness``,
    ``standard_deviation``).  A Python class follows PEP 8 (``SolveResult``).
@@ -116,11 +116,11 @@ A kernel supplies a flux, a source, or both, and declares its parameters:
      {
        InputParameters p = Kernel::validParams();
        p.setClassDescription("Reaction term c u^2.");
-       p.addOptional("coefficient", ParameterKind::Real, 1.0, "The coefficient c.");
+       p.addOptional("coeff", ParameterKind::Real, 1.0, "The coefficient c.");
        return p;
      }
      explicit MyReaction(const InputParameters & p)
-       : Kernel(p), _c(p.getReal("coefficient")) {}
+       : Kernel(p), _c(p.getReal("coeff")) {}
 
      bool hasSource() const override { return true; }
      ADReal computeSource(const QpContext & ctx) const override
@@ -223,8 +223,10 @@ No output means success.
 Making a release
 ----------------
 
-The package is published on PyPI as ``dualmesh-multiphysics``.  It is imported
-as ``dualmesh`` and its command is ``dualmesh``.  The repository
+The distribution is named ``dualmesh-multiphysics``.  It is imported as
+``dualmesh`` and its command is ``dualmesh``.  It is not published on PyPI:
+the wheels and the source distribution of a release are the artifacts of the
+tag-triggered Wheels workflow.  The repository
 (``MohamedAbdulHameed/dualmesh``), the Read the Docs project (``dualmesh``,
 https://dualmesh.readthedocs.io), the import name and the command all keep the
 name ``dualmesh``.  The first release, v0.1.0, was tagged on commit
@@ -238,10 +240,9 @@ first one that fails.  It uses only the Python standard library.
    python scripts/release.py check --version X.Y.Z   # gates 1-15, local
    python scripts/release.py push  --version X.Y.Z   # gate 16
    python scripts/release.py ci --wait               # gate 17
-   python scripts/release.py dry-run --wait          # gates 18-19
-   python scripts/release.py tag   --version X.Y.Z   # gate 20
-   python scripts/release.py monitor --version X.Y.Z --wait   # gates 21-22
-   python scripts/release.py verify-pypi --version X.Y.Z      # gates 23-24
+   python scripts/release.py dry-run --wait          # gate 18
+   python scripts/release.py tag   --version X.Y.Z   # gate 19
+   python scripts/release.py monitor --version X.Y.Z --wait   # gate 20
 
 or ``python scripts/release.py release --version X.Y.Z`` for all of them in
 order.  ``python scripts/release.py check --dev`` runs the local gates at any
@@ -269,9 +270,8 @@ The gates, in order:
    A further static gate checks the release configuration: the wheel matrix
    ``[ubuntu-latest, macos-15-intel, macos-14, windows-latest]`` (which
    excludes the retired macOS 13 runner), cibuildwheel v4.2.1 or later, the
-   ``workflow_dispatch`` trigger, the tag guard and the ``pypi`` environment
-   of the publish job, Trusted Publishing without a stored token,
-   and the Furo class on every ``.. contents::`` directive.
+   ``workflow_dispatch`` trigger, no upload to PyPI, and the Furo class on
+   every ``.. contents::`` directive.
 8. clang-format 18 ``--dry-run --Werror`` on every C++ file.
 9. The C++ library is configured, built and tested with CTest.
 10. Ruff (``check`` and ``format --check``).
@@ -295,17 +295,12 @@ The gates, in order:
     run with the GitHub CLI when it is installed.  Otherwise the run is started
     in the GitHub web interface by selecting Actions, Wheels, Run workflow and
     the branch ``main``.
-19. The Publish to PyPI job of that run is *skipped*.
-20. Only then is the annotated tag created (``git tag -a vX.Y.Z -m "dualmesh
+19. Only then is the annotated tag created (``git tag -a vX.Y.Z -m "dualmesh
     vX.Y.Z"``), checked to point to ``HEAD``, and pushed alone.
-21. The tag-triggered Wheels run is followed.  Its first job checks that the
-    tag matches the package version.
-22. The Publish to PyPI job must succeed (Trusted Publishing, with
-    attestations).
-23. PyPI must list the sdist and a wheel for each of CPython 3.9-3.13 on Linux
-    x86_64, macOS x86_64, macOS arm64 and Windows x86_64, and ``pip install
-    dualmesh-multiphysics==X.Y.Z`` in a fresh environment must import and run.
-24. The temporary environment is deleted, and its deletion is checked.
+20. The tag-triggered Wheels run is followed.  Its source distribution job
+    checks that the tag matches the package version, and every wheel and the
+    sdist must build and pass their tests.  They are kept as the artifacts of
+    that run.
 
 The following actions are prohibited, whatever a failure suggests:
 
@@ -316,11 +311,9 @@ The following actions are prohibited, whatever a failure suggests:
   file by file, rerun the checks and push normally.
 * Never tag a dirty tree, a commit that is not on ``origin/main``, or a commit
   whose Wheels dry run has not passed.
-* Never upload with ``twine upload`` or a stored PyPI token.  Publication is by
-  Trusted Publishing from ``wheels.yml`` in the ``pypi`` environment.
-* Never delete and re-push the tag of a version that reached PyPI, because
-  PyPI does not accept a file twice.  Release the correction as a new patch
-  version.
+* Never upload to PyPI, where dualmesh is not published.
+* Never delete and re-push the tag of a released version.  Release the
+  correction as a new patch version.
 * Do not rename the repository, the Read the Docs project, the import or the
   command, and do not change the distribution name back to ``dualmesh``.
 * Do not remove the ``:class: this-will-duplicate-information-and-it-is-still-useful-here``

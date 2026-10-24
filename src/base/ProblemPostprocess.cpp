@@ -105,7 +105,7 @@ Problem::errorIndicator(const std::string & var) const
                      "method, whose unknowns are cell averages rather than a nodal field; "
                      "recovering a nodal gradient from them needs a different construction.");
   const Index nn = _mesh->numNodes();
-  const int dim = _mesh->dimension();
+  const int dim = _mesh->spaceDimension();
   std::vector<Point> recovered(nn, Point{0, 0, 0});
   std::vector<double> weight(nn, 0.0);
 
@@ -295,7 +295,7 @@ Problem::propertyAtCentroids(const std::string & property) const
   std::vector<std::vector<double>> out;
   MappedPoint mp;
   QpContext ctx;
-  ctx.dim = _mesh->dimension();
+  ctx.dim = _mesh->spaceDimension();
   ctx.time = _time;
   std::vector<std::vector<Point>> cg;
   if (_cells)
@@ -331,15 +331,47 @@ Problem::propertyAtCentroids(const std::string & property) const
 std::vector<Point>
 Problem::kernelFluxAtCentroids(const std::string & kernel) const
 {
-  auto * self = const_cast<Problem *>(this);
-  self->initialize();
   auto k = std::dynamic_pointer_cast<Kernel>(object(kernel));
   if (!k)
     throw InputError("'" + kernel + "' is not a kernel.");
   std::vector<Point> out;
+  centroidContexts(
+      [&](QpContext & ctx, int block)
+      {
+        ADVector3 F{ADReal(0.0), ADReal(0.0), ADReal(0.0)};
+        if (k->hasFlux() && k->activeOnBlock(block))
+          k->computeFlux(ctx, F);
+        out.push_back({F[0].value(), F[1].value(), F[2].value()});
+      });
+  return out;
+}
+
+std::vector<std::vector<double>>
+Problem::sectionStressAtCentroids(const std::string & kernel, double z) const
+{
+  auto k = std::dynamic_pointer_cast<Kernel>(object(kernel));
+  if (!k)
+    throw InputError("'" + kernel + "' is not a kernel.");
+  std::vector<std::vector<double>> out;
+  centroidContexts(
+      [&](QpContext & ctx, int block)
+      {
+        auto row = k->activeOnBlock(block) ? k->sectionStress(ctx, z) : std::vector<double>{};
+        if (row.empty() && k->activeOnBlock(block))
+          throw InputError("'" + kernel + "' is not a structural member with a section.");
+        out.push_back(std::move(row));
+      });
+  return out;
+}
+
+void
+Problem::centroidContexts(const std::function<void(QpContext &, int)> & visit) const
+{
+  auto * self = const_cast<Problem *>(this);
+  self->initialize();
   MappedPoint mp;
   QpContext ctx;
-  ctx.dim = _mesh->dimension();
+  ctx.dim = _mesh->spaceDimension();
   ctx.time = _time;
   std::vector<std::vector<Point>> cg;
   if (_cells)
@@ -364,12 +396,8 @@ Problem::kernelFluxAtCentroids(const std::string & kernel) const
     ctx.state_owner = e;
     ctx.state_key = kCentroidStateKey;
     evaluateProperties(ctx);
-    ADVector3 F{ADReal(0.0), ADReal(0.0), ADReal(0.0)};
-    if (k->hasFlux() && k->activeOnBlock(el.block))
-      k->computeFlux(ctx, F);
-    out.push_back({F[0].value(), F[1].value(), F[2].value()});
+    visit(ctx, el.block);
   }
-  return out;
 }
 
 double
@@ -481,7 +509,7 @@ Problem::boundaryFluxIntegral(const std::string & kernel, const std::string & bo
   double total = 0;
   MappedPoint mp;
   QpContext ctx;
-  ctx.dim = _mesh->dimension();
+  ctx.dim = _mesh->spaceDimension();
   ctx.time = _time;
   std::vector<IntegrationPoint> pts;
   if (_cells)

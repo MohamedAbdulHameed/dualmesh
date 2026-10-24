@@ -73,14 +73,6 @@ def to_inputs(u: np.ndarray, inputs: dict) -> np.ndarray:
     return x
 
 
-def to_unit(x: np.ndarray, inputs: dict) -> np.ndarray:
-    """Map input values back to the unit cube (the CDF of each input)."""
-    u = np.empty_like(np.asarray(x, dtype=float))
-    for j, dist in enumerate(inputs.values()):
-        u[:, j] = dist.cdf(x[:, j])
-    return u
-
-
 def normalise_output(value) -> dict:
     """A model's return value as a dict of name -> float array."""
     if isinstance(value, dict):

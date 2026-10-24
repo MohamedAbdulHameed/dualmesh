@@ -48,9 +48,12 @@ def _base_parameters(
         params.set("variable", variable)
     if boundary is not None:
         params.set("boundary", [boundary] if isinstance(boundary, str) else list(boundary))
-    params.set("block", [block] if isinstance(block, str) else list(block))
-    params.set("quadrature", quadrature)
-    params.set("reduced_integration", bool(reduced_integration))
+    # A nodal condition has no integral, so it takes no block, quadrature or reduced integration.
+    if params.has("block"):
+        params.set("block", [block] if isinstance(block, str) else list(block))
+    if params.has("quadrature"):
+        params.set("quadrature", quadrature)
+        params.set("reduced_integration", bool(reduced_integration))
     params.set("scale_with_load", bool(scale_with_load))
     params.set("_name", name or f"{type_name}_{next(_counter)}")
     params.set("_type", type_name)

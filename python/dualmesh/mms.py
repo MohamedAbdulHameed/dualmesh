@@ -37,14 +37,14 @@ Example
 
 ::
 
+    import dualmesh as dm
     from dualmesh import mms
 
     study = mms.ManufacturedSolution(fields={"u": "sin(pi*x)*cos(pi*y)"}, dimension=2)
     study.add_physics(
-        "coefficient_form_PDE",
-        "pde",
-        diffusion_coefficient="1 + x*y",
-        convection_coefficient=[1.0, 0.5],
+        "general_form_PDE",
+        flux={"u": ["-(1 + x*y)*grad_x(u)", "-(1 + x*y)*grad_y(u)"]},
+        source={"u": "-(grad_x(u) + 0.5*grad_y(u))"},
     )
     result = study.convergence_study(
         lambda n: dm.generate_rectangle_mesh(
@@ -263,17 +263,13 @@ class ManufacturedSolution:
         self._physics: list = []
         self._forcing = None
 
-    def add_physics(self, physics: str, name: str | None = None, **parameters):
+    def add_physics(self, physics: str, **parameters):
         """Add a physics to the equations, with the type name and the
         parameters of :meth:`dualmesh.Problem.add_physics`.  Every variable
         of the physics needs an exact field."""
         from . import physics as _physics
 
-        name = name or physics
-        if any(n == name for n, _t, _p, _i in self._physics):
-            raise _physics.InputError(
-                f"The manufactured solution already has a physics named '{name}'."
-            )
+        name = _physics.unique_name(physics, [n for n, _t, _p, _i in self._physics])
         instance = _physics.create(physics, name, dict(parameters))
         if not isinstance(instance, _physics.Physics):
             raise _physics.InputError(
@@ -283,7 +279,7 @@ class ManufacturedSolution:
         missing = [v for v in instance.variable_names() if v not in self.fields]
         if missing:
             raise _physics.InputError(
-                f"{physics} '{name}': give the exact field of {', '.join(missing)} in 'fields'."
+                f"{physics}: give the exact field of {', '.join(missing)} in 'fields'."
             )
         self._physics.append((name, physics, dict(parameters), instance))
         self._forcing = None
@@ -296,7 +292,7 @@ class ManufacturedSolution:
             yield instance._manufactured_terms(self.fields, self.coordinates, self.dimension)
 
     def _pressures(self) -> set:
-        return {i.pressure for _n, t, _p, i in self._physics if t == "incompressible_flow"}
+        return {i.pressure for _n, t, _p, i in self._physics if t == "fluid_dynamics"}
 
     # ---- symbolic ---------------------------------------------------------
     def _divergence(self, flux):
@@ -373,16 +369,16 @@ class ManufacturedSolution:
         problem = Problem(mesh, method=method, coordinates=self.coordinates, **problem_options)
         forcing = {v: _text(f) for v, f in self.forcing().items()}
         served, pins = set(), []
-        for name, type_name, parameters, _instance in self._physics:
+        for _name, type_name, parameters, _instance in self._physics:
             parameters = dict(parameters)
-            if type_name == "incompressible_flow":
+            if type_name == "fluid_dynamics":
                 pins.append(
                     (
                         parameters.pop("pressure_pin_point", None),
                         parameters.get("pressure", "pressure"),
                     )
                 )
-            physics = problem.add_physics(type_name, name, **parameters)
+            physics = problem.add_physics(type_name, **parameters)
             served |= physics._set_manufactured_source(
                 {v: forcing[v] for v in physics.variable_names()}
             )
@@ -393,7 +389,6 @@ class ManufacturedSolution:
             if variable not in served and not (variable in pressures and _expr(f) == 0):
                 problem.add_kernel(
                     "body_force",
-                    f"manufactured_{variable}",
                     variable=variable,
                     value=forcing[variable],
                     scale_with_load=False,
@@ -402,28 +397,25 @@ class ManufacturedSolution:
                 continue
             if walls:
                 problem.add_boundary_condition(
-                    "Dirichlet_boundary_condition",
-                    f"exact_{variable}",
+                    "Dirichlet",
+                    walls,
                     variable=variable,
-                    boundary=walls,
                     value=self.exact(variable),
                 )
             flux = self.flux(variable)
             for side, normal in self.flux_boundaries.items():
                 traction = sum(flux[d] * normal[d] for d in range(len(normal)))
                 problem.add_boundary_condition(
-                    "Neumann_boundary_condition",
-                    f"flux_{variable}_{side}",
+                    "Neumann",
+                    side,
                     variable=variable,
-                    boundary=side,
                     flux=_text(traction),
                 )
         if not self.flux_boundaries:
             for point, pressure in pins:
                 pin = list(point) if point is not None else list(mesh.node(0))
                 problem.add_boundary_condition(
-                    "point_Dirichlet_boundary_condition",
-                    f"exact_{pressure}_level",
+                    "point_Dirichlet",
                     variable=pressure,
                     point=[float(c) for c in pin],
                     value=self.exact(pressure),

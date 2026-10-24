@@ -29,37 +29,28 @@ def test_petsc_option_strings():
 
 def _cavity(problem, reynolds_number=50.0, formulation="pressure"):
     problem.add_physics(
-        "incompressible_flow",
-        "flow",
-        velocities=["u", "v"],
+        "fluid_dynamics",
         dynamic_viscosity=1.0,
         density=reynolds_number,
         formulation=formulation,
         pressure_pin_point=(0.5, 0.0),
     )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", "lid", variable="u", boundary="top", value=1.0
-    )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", "lid_v", variable="v", boundary="top", value=0.0
-    )
-    for variable in ("u", "v"):
+    problem.add_boundary_condition("Dirichlet", "top", variable="velocity_x", value=1.0)
+    problem.add_boundary_condition("Dirichlet", "top", variable="velocity_y", value=0.0)
+    for variable in ("velocity_x", "velocity_y"):
         problem.add_boundary_condition(
-            "Dirichlet_boundary_condition",
-            f"walls_{variable}",
+            "Dirichlet",
+            ["left", "right", "bottom"],
             variable=variable,
-            boundary=["left", "right", "bottom"],
             value=0.0,
         )
 
 
 def _heat(problem):
     problem.add_variable("T")
-    problem.add_kernel("heat_conduction", "k", variable="T", thermal_conductivity=2.0)
-    problem.add_kernel("heat_source", "q", variable="T", heat_source=10.0)
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", "cold", variable="T", boundary=["left", "bottom"], value=0.0
-    )
+    problem.add_kernel("heat_conduction", variable="T", thermal_conductivity=2.0)
+    problem.add_kernel("body_force", variable="T", value=10.0)
+    problem.add_boundary_condition("Dirichlet", ["left", "bottom"], variable="T", value=0.0)
 
 
 @needs_petsc
@@ -85,7 +76,7 @@ def test_petsc_reproduces_the_direct_solver_on_a_flow(method, options):
     problem = dm.Problem(mesh, method=method)
     _cavity(problem)
     result = problem.solve(linear_solver="petsc", petsc_options=options, linear_tolerance=1e-12)
-    for variable in ("u", "v", "pressure"):
+    for variable in ("velocity_x", "velocity_y", "pressure"):
         assert problem.values(variable) == pytest.approx(reference.values(variable), abs=1e-9)
     assert result.linear_iterations >= result.total_iterations
 
@@ -114,7 +105,7 @@ def test_petsc_solves_the_taylor_hood_saddle_point_system(options):
     problem = dm.Problem(mesh, method="fem")
     _cavity(problem, formulation="Taylor_Hood")
     problem.solve(linear_solver="petsc", petsc_options=options, linear_tolerance=1e-12)
-    for variable in ("u", "v", "pressure"):
+    for variable in ("velocity_x", "velocity_y", "pressure"):
         assert problem.values(variable) == pytest.approx(reference.values(variable), abs=1e-9)
 
 

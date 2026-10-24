@@ -16,13 +16,16 @@
 // equation as the source sigma_tt / r.
 #include "dualmesh/base/Deformation.h"
 #include "dualmesh/base/Factory.h"
+#include "dualmesh/base/FieldExpression.h"
 #include "dualmesh/base/Kernel.h"
 #include "dualmesh/base/Problem.h"
 #include "dualmesh/base/Property.h"
 #include "dualmesh/core/ParsedFunction.h"
 
+#include <algorithm>
 #include <array>
 #include <memory>
+#include <type_traits>
 
 namespace dualmesh
 {
@@ -30,16 +33,18 @@ namespace dualmesh
 namespace
 {
 
+/// The continuum formulations: the idealisation of the body and the strains it has.
 enum class Formulation
 {
   PlaneStress,
   PlaneStrain,
   Axisymmetric,
+  AxisymmetricOneD,
   ThreeDimensional
 };
 
 Formulation
-formulationFromName(const std::string & name)
+formulationFromName(const std::string & owner, const std::string & name)
 {
   if (name == "plane_stress")
     return Formulation::PlaneStress;
@@ -47,253 +52,141 @@ formulationFromName(const std::string & name)
     return Formulation::PlaneStrain;
   if (name == "axisymmetric")
     return Formulation::Axisymmetric;
+  if (name == "axisymmetric_1d")
+    return Formulation::AxisymmetricOneD;
   if (name == "three_dimensional")
     return Formulation::ThreeDimensional;
-  throw InputError("Unknown formulation '" + name +
-                   "' (use plane_stress, plane_strain, axisymmetric, or three_dimensional).");
+  throw InputError("'" + owner + "': unknown formulation '" + name +
+                   "'. Use plane_stress, plane_strain, axisymmetric, axisymmetric_1d or "
+                   "three_dimensional.");
+}
+
+/// The number of displacements of a formulation, which is also the dimension of its mesh.
+int
+formulationDimension(Formulation f)
+{
+  if (f == Formulation::AxisymmetricOneD)
+    return 1;
+  return f == Formulation::ThreeDimensional ? 3 : 2;
+}
+
+bool
+isAxisymmetric(Formulation f)
+{
+  return f == Formulation::Axisymmetric || f == Formulation::AxisymmetricOneD;
+}
+
+/// The isotropic small-strain stress @p sigma of the elastic strain @p ee (Voigt order,
+/// engineering shears, six values each) for the Lame constants @p lambda and @p mu.  In plane
+/// stress sigma_zz = 0, and ee[2] is set to the elastic strain that makes it so; in the other
+/// formulations ee[2] is a strain of the displacements and stays as it is.  The stress is
+/// accumulated in place: this runs at every integration point, and a temporary value with its
+/// derivatives costs as much as the arithmetic.
+template <typename Real>
+void
+isotropicStress(Formulation f, ADReal * ee, const Real & lambda, const Real & mu, ADReal * sigma)
+{
+  const auto scale = [](ADReal & s, const ADReal & x, const Real & c)
+  {
+    if constexpr (std::is_same_v<Real, double>)
+      s.addScaledBy(x, c);
+    else
+      s += c * x;
+  };
+  ADReal trace = ee[0];
+  trace += ee[1];
+  if (f == Formulation::PlaneStress)
+  {
+    // lambda* = 2 mu lambda / (lambda + 2 mu) is the plane-stress Lame constant, so that
+    // sigma_xx = E / (1 - nu^2) (eps_xx + nu eps_yy), and eps_zz = -lambda / (lambda + 2 mu)
+    // (eps_xx + eps_yy).
+    const Real plane = 2.0 * mu * lambda / (lambda + 2.0 * mu);
+    for (int i = 0; i < 2; ++i)
+    {
+      sigma[i] = 0.0;
+      scale(sigma[i], trace, plane);
+      scale(sigma[i], ee[i], 2.0 * mu);
+    }
+    sigma[2] = 0.0;
+    ee[2] = 0.0;
+    scale(ee[2], trace, -lambda / (lambda + 2.0 * mu));
+  }
+  else
+  {
+    trace += ee[2];
+    for (int i = 0; i < 3; ++i)
+    {
+      sigma[i] = 0.0;
+      scale(sigma[i], trace, lambda);
+      scale(sigma[i], ee[i], 2.0 * mu);
+    }
+  }
+  for (int i = 3; i < 6; ++i)
+  {
+    sigma[i] = 0.0;
+    scale(sigma[i], ee[i], mu);
+  }
 }
 
 /// Voigt ordering used for the "stress" and "strain" properties:
 /// 0: xx, 1: yy, 2: zz (hoop in the axisymmetric case), 3: yz, 4: xz, 5: xy.
-class LinearElasticStress : public Property
+/// The component of the equilibrium equation of @p variable: its place in 'displacements'.
+int
+displacementComponent(const std::string & owner,
+                      const std::string & variable,
+                      const std::vector<std::string> & displacements)
 {
-public:
-  static InputParameters validParams()
+  const auto it = std::find(displacements.begin(), displacements.end(), variable);
+  if (it == displacements.end())
   {
-    InputParameters p = Property::validParams();
-    p.setClassDescription(
-        "Linear elastic stress from the displacement gradients. Declares the properties "
-        "'stress' and 'strain' (Voigt order xx, yy, zz, yz, xz, xy) and 'volumetric_strain'. The "
-        "material is isotropic by default. For an orthotropic plane problem, give the reduced "
-        "stiffnesses c11, c12, c22 and c66.");
-    p.addRequired("displacements",
-                  ParameterKind::StringList,
-                  "Displacement variables (2 names in 2D and 3 in 3D, which in the axisymmetric "
-                  "case are the radial and axial displacements).");
-    p.addOptional("formulation",
-                  ParameterKind::String,
-                  std::string("plane_stress"),
-                  "Which two- or three-dimensional idealisation to use. 'plane_stress' is "
-                  "a thin body free to contract through its thickness, 'plane_strain' a "
-                  "long body restrained along its axis, 'axisymmetric' a body of revolution "
-                  "on an (r, z) mesh, which requires coordinates = 'axisymmetric' on the "
-                  "problem, and 'three_dimensional' a full solid. Any other string is an "
-                  "error.");
-    p.addOptional("youngs_modulus",
-                  ParameterKind::Real,
-                  1.0,
-                  "Young's modulus E, in a force-per-area unit consistent with the mesh and the "
-                  "loads. It is ignored in the orthotropic branch (see 'stiffness_c11').");
-    p.addOptional("poissons_ratio",
-                  ParameterKind::Real,
-                  0.0,
-                  "Poisson's ratio nu, which must satisfy -1 < nu < 0.5. The plane-strain, "
-                  "axisymmetric and three-dimensional stiffnesses become singular as nu "
-                  "approaches 0.5, so a nearly incompressible material requires care. The default "
-                  "0 gives no transverse coupling at all and rarely represents the intended "
-                  "material, so the value should be set explicitly.");
-    p.addOptional("stiffness_c11",
-                  ParameterKind::Real,
-                  0.0,
-                  "Reduced plane stiffness c11 of an orthotropic material. Setting it to a "
-                  "non-zero value is what selects the orthotropic branch: c11, c12, c22 and "
-                  "c66 are then used and 'youngs_modulus' and 'poissons_ratio' are ignored. "
-                  "It applies to 'plane_stress' and 'plane_strain' only. It is an error in "
-                  "'three_dimensional', and it is ignored without warning in "
-                  "'axisymmetric', which always uses E and nu.");
-    p.addOptional("stiffness_c12",
-                  ParameterKind::Real,
-                  0.0,
-                  "Reduced plane stiffness c12, the coupling term, placed symmetrically in "
-                  "the stiffness matrix. Used only when 'stiffness_c11' is non-zero and the "
-                  "formulation is plane stress or plane strain.");
-    p.addOptional("stiffness_c22",
-                  ParameterKind::Real,
-                  0.0,
-                  "Reduced plane stiffness c22. Used only when 'stiffness_c11' is non-zero "
-                  "and the formulation is plane stress or plane strain.");
-    p.addOptional("stiffness_c66",
-                  ParameterKind::Real,
-                  0.0,
-                  "Reduced in-plane shear stiffness c66, relating the shear stress to the "
-                  "engineering shear strain gamma_xy = 2 eps_xy. Used only when 'stiffness_c11' "
-                  "is non-zero. In the orthotropic branch the out-of-plane row of the stiffness "
-                  "is left at zero, so the plane-strain sigma_zz is not recovered.");
-    p.addOptional("thermal_expansion_coefficient",
-                  ParameterKind::Real,
-                  0.0,
-                  "Isotropic coefficient of thermal expansion alpha, per degree of the "
-                  "temperature variable. It is subtracted from the three normal strains "
-                  "only, leaving the shear strains untouched, so the thermal strain stays "
-                  "isotropic even when the stiffness is orthotropic. It has an effect only "
-                  "when 'temperature' also names a variable.");
-    p.addOptional("temperature",
-                  ParameterKind::String,
-                  std::string(""),
-                  "Name of an existing variable to use as the temperature in the thermal strain "
-                  "alpha (T - T_reference). Thermal strain is applied only when this and "
-                  "'thermal_expansion_coefficient' are both set. Setting one without the other is "
-                  "accepted and has no effect. Leave it empty for an isothermal analysis.");
-    p.addOptional("stress_free_temperature",
-                  ParameterKind::Real,
-                  0.0,
-                  "Temperature at which the body is free of stress, in the same units as "
-                  "the temperature variable. Required when 'temperature' and "
-                  "'thermal_expansion_coefficient' are given, because no default is right "
-                  "for every problem.");
-    return p;
+    std::string list;
+    for (const auto & d : displacements)
+      list += (list.empty() ? "" : ", ") + d;
+    throw InputError("'" + owner + "': the variable '" + variable +
+                     "' is not one of the displacements (" + list + ").");
   }
+  return static_cast<int>(it - displacements.begin());
+}
 
-  explicit LinearElasticStress(const InputParameters & p)
-      : Property(p), _formulation(formulationFromName(p.getString("formulation")))
-  {
-    const double E = p.getReal("youngs_modulus");
-    const double nu = p.getReal("poissons_ratio");
-    _alpha = p.getReal("thermal_expansion_coefficient");
-    _reference_temperature = p.getReal("stress_free_temperature");
-    if (!p.getString("temperature").empty() && _alpha != 0.0 &&
-        !p.isSetByUser("stress_free_temperature"))
-      throw InputError("'" + name() +
-                       "': give 'stress_free_temperature', the temperature at which the body "
-                       "is free of stress, for the thermal strain.");
-    const bool orthotropic = p.isSet("stiffness_c11") && p.getReal("stiffness_c11") != 0.0;
-    for (auto & row : _C)
-      row.fill(0.0);
-    if (_formulation == Formulation::ThreeDimensional)
-    {
-      if (orthotropic)
-        throw InputError("Give an isotropic E and nu for the three-dimensional formulation.");
-      const double lambda = E * nu / ((1 + nu) * (1 - 2 * nu));
-      const double mu = E / (2 * (1 + nu));
-      for (int i = 0; i < 3; ++i)
-        for (int j = 0; j < 3; ++j)
-          _C[i][j] = lambda + (i == j ? 2 * mu : 0.0);
-      for (int i = 3; i < 6; ++i)
-        _C[i][i] = mu;
-    }
-    else if (_formulation == Formulation::Axisymmetric)
-    {
-      const double lambda = E * nu / ((1 + nu) * (1 - 2 * nu));
-      const double mu = E / (2 * (1 + nu));
-      // (rr, zz, tt) behave like a three-dimensional material with no shear
-      // in the hoop directions; the only shear is rz (stored in slot 5).
-      for (int i = 0; i < 3; ++i)
-        for (int j = 0; j < 3; ++j)
-          _C[i][j] = lambda + (i == j ? 2 * mu : 0.0);
-      _C[5][5] = mu;
-    }
-    else if (orthotropic)
-    {
-      _C[0][0] = p.getReal("stiffness_c11");
-      _C[0][1] = _C[1][0] = p.getReal("stiffness_c12");
-      _C[1][1] = p.getReal("stiffness_c22");
-      _C[5][5] = p.getReal("stiffness_c66");
-    }
-    else if (_formulation == Formulation::PlaneStress)
-    {
-      const double f = E / (1 - nu * nu);
-      _C[0][0] = _C[1][1] = f;
-      _C[0][1] = _C[1][0] = nu * f;
-      _C[5][5] = E / (2 * (1 + nu));
-    }
-    else // plane strain
-    {
-      // Plane strain is the three-dimensional law with eps_zz held at zero, so
-      // the matrix here is the full isotropic one, lambda + 2 mu on the
-      // diagonal and lambda off it, written with f = E / [(1 + nu)(1 - 2 nu)].
-      // The zz column is kept even though eps_zz is always zero, because the
-      // thermal strain alpha (T - T_ref) is subtracted from all three normal
-      // strains before the multiplication, and the zz entry of that subtraction
-      // is what carries the out-of-plane part of the thermal stress.  Dropping
-      // the column makes the in-plane thermal stress of a fully restrained body
-      // come out as E alpha dT / [(1 + nu)(1 - 2 nu)] instead of the correct
-      // E alpha dT / (1 - 2 nu).
-      const double f = E / ((1 + nu) * (1 - 2 * nu));
-      _C[0][0] = _C[1][1] = _C[2][2] = f * (1 - nu);
-      _C[0][1] = _C[1][0] = f * nu;
-      _C[0][2] = _C[2][0] = f * nu;
-      _C[1][2] = _C[2][1] = f * nu;
-      _C[5][5] = E / (2 * (1 + nu));
-    }
-  }
+/// The parameter that lists the displacements of an object that acts on each of them.
+void
+addDisplacementsParam(InputParameters & p, const std::string & what)
+{
+  p.addRequired("displacements",
+                ParameterKind::StringList,
+                "The displacement variables in the order of the coordinate axes, e.g., [u, v, w] "
+                "in three dimensions. " +
+                    what);
+  p.setModelVariables({"displacements"});
+  p.addOptional("variable",
+                ParameterKind::Names,
+                std::vector<std::string>{},
+                "The displacement this object acts on. Default: every one of 'displacements', "
+                "each with an object of its own.");
+}
 
-  void initialSetup(Problem & problem) override
-  {
-    Property::initialSetup(problem);
-    const auto names = _params.getStringList("displacements");
-    const int dim = problem.mesh().dimension();
-    const int expected = _formulation == Formulation::ThreeDimensional ? 3 : 2;
-    if (static_cast<int>(names.size()) != expected)
-      throw InputError("'displacements' needs " + std::to_string(expected) + " variable names.");
-    if (dim != (_formulation == Formulation::ThreeDimensional ? 3 : 2))
-      throw InputError("The chosen formulation does not match the mesh dimension.");
-    _disp.clear();
-    for (const auto & n : names)
-      _disp.push_back(problem.variableIndex(n));
-    const auto temperature = _params.getString("temperature");
-    _temperature = temperature.empty() ? -1 : problem.variableIndex(temperature);
-  }
-
-  void declareProperties(PropertyRegistry & r) override
-  {
-    _stress = r.declare("stress", 6);
-    _strain = r.declare("strain", 6);
-    _volumetric = r.declare("volumetric_strain", 1);
-  }
-
-  void computeProperties(QpContext & ctx) const override
-  {
-    std::array<ADReal, 6> strain;
-    strain.fill(ADReal(0.0));
-    const auto & gu = ctx.gradient(_disp[0]);
-    const auto & gv = ctx.gradient(_disp[1]);
-    strain[0] = gu[0];
-    strain[1] = gv[1];
-    strain[5] = gu[1] + gv[0];
-    if (_formulation == Formulation::Axisymmetric)
+/// The thickness of a plane problem for the condition @p owner on @p variable: that of the
+/// stress_divergence kernels of the variable, else 1.  A condition reads one thickness, so
+/// kernels of the variable with different thicknesses (blocks of different thickness) are
+/// refused, where the first one found would silently scale the condition on the others.
+double
+planeThickness(const Problem & problem, const std::string & variable, const std::string & owner)
+{
+  double thickness = 0.0;
+  for (const auto & k : problem.kernels())
+    if (k->type() == "stress_divergence" && k->variableName() == variable)
     {
-      // eps_rr = du/dr, eps_zz = dv/dz, eps_tt = u/r, gamma_rz = du/dz + dv/dr
-      strain[1] = gv[1];
-      strain[2] = ctx.x[0] != 0.0 ? ctx.value(_disp[0]) / ctx.x[0] : gu[0];
-      strain[5] = gu[1] + gv[0];
+      const double h = k->parameters().getReal("thickness");
+      if (thickness > 0.0 && h != thickness)
+        throw InputError("'" + owner + "': the stress_divergence kernels of '" + variable +
+                         "' have the thicknesses " + std::to_string(thickness) + " and " +
+                         std::to_string(h) +
+                         ", and this condition takes one. Blocks of different thickness under "
+                         "one condition are not available yet.");
+      thickness = h;
     }
-    else if (_formulation == Formulation::ThreeDimensional)
-    {
-      const auto & gw = ctx.gradient(_disp[2]);
-      strain[2] = gw[2];
-      strain[3] = gv[2] + gw[1];
-      strain[4] = gu[2] + gw[0];
-    }
-    ADReal thermal(0.0);
-    if (_temperature >= 0 && _alpha != 0.0)
-      thermal = _alpha * (ctx.value(_temperature) - _reference_temperature);
-    for (int i = 0; i < 6; ++i)
-      ctx.property(_strain, i) = strain[i];
-    ctx.property(_volumetric) = strain[0] + strain[1] + strain[2];
-    // sigma_i = C_ij eps_j - thermal (C_i0 + C_i1 + C_i2), accumulated in
-    // place: the scaled additions create no temporaries, which matters
-    // because this runs at every integration point of every assembly.
-    const bool has_thermal = thermal.value() != 0.0 || thermal.size() > 0;
-    for (int i = 0; i < 6; ++i)
-    {
-      ADReal & s = ctx.property(_stress, i);
-      s = 0.0;
-      for (int j = 0; j < 6; ++j)
-        if (_C[i][j] != 0.0)
-          s.addScaledBy(strain[j], _C[i][j]);
-      if (has_thermal)
-        s.addScaledBy(thermal, -(_C[i][0] + _C[i][1] + _C[i][2]));
-    }
-  }
-
-private:
-  Formulation _formulation;
-  std::array<std::array<double, 6>, 6> _C;
-  std::vector<int> _disp;
-  int _temperature = -1;
-  double _alpha = 0.0, _reference_temperature = 0.0;
-  int _stress = -1, _strain = -1, _volumetric = -1;
-};
+  return thickness > 0.0 ? thickness : 1.0;
+}
 
 /// Divergence of the stress: the equilibrium equation of one displacement
 /// component.
@@ -309,24 +202,20 @@ public:
         "except in the axisymmetric case, where the radial equation (component 0) carries "
         "S = sigma_tt / r, taken as zero on the axis. The natural boundary quantity is the "
         "traction component times the thickness.");
-    p.addRequired(
-        "component",
-        ParameterKind::Integer,
-        "Index of the displacement component whose equilibrium equation this instance assembles: "
-        "0 for x or r, 1 for y or z, 2 for z. It must agree with the component that 'variable' "
-        "represents. The agreement is not checked, and a mismatch assembles the wrong row without "
-        "a warning. Add one instance per displacement variable.");
+    addDisplacementsParam(p,
+                          "The equilibrium equation of 'variable' is the one of its place in "
+                          "this list.");
     p.addOptional("thickness",
                   ParameterKind::Real,
                   1.0,
                   "Out-of-plane thickness h multiplying the whole equilibrium equation, for plane "
-                  "stress and plane strain only. Leave it at 1 in the three-dimensional case and "
-                  "in the axisymmetric case, where the integration measure already carries the "
-                  "factor 2 pi r. Any other value is accepted in those cases and gives a wrong "
-                  "result. It must match the thickness given to every traction_boundary_condition "
-                  "and pressure_boundary_condition of the same model. A point_source is not "
+                  "stress and plane strain only. A three-dimensional or axisymmetric problem, "
+                  "whose integration measure already carries the factor 2 pi r, refuses any "
+                  "other value than 1. The traction, pressure and gap_contact conditions of the "
+                  "same displacement read it from here. A point_source is not "
                   "scaled by it, so a concentrated load must already be the total force through "
                   "the thickness.");
+    p.setRange("thickness", ParameterRange::Positive);
     p.addOptional("stress_property",
                   ParameterKind::String,
                   std::string("stress"),
@@ -342,16 +231,20 @@ public:
   }
 
   explicit StressDivergence(const InputParameters & p)
-      : Kernel(p), _component(static_cast<int>(p.getInt("component"))),
+      : Kernel(p),
+        _component(displacementComponent(name(), variableName(), p.getStringList("displacements"))),
         _thickness(p.getReal("thickness")), _hoop(p.getBool("axisymmetric_hoop_term"))
   {
-    if (_component < 0 || _component > 2)
-      throw InputError("'component' must be 0, 1, or 2.");
   }
 
   void initialSetup(Problem & problem) override
   {
     Kernel::initialSetup(problem);
+    if (_thickness != 1.0 && (problem.mesh().dimension() == 3 ||
+                              problem.coordinateSystem() == CoordinateSystem::Axisymmetric))
+      throw InputError("'" + name() +
+                       "': thickness is the out-of-plane thickness of a plane problem; a "
+                       "three-dimensional or axisymmetric problem has none, so leave it at 1.");
     const auto & registry = problem.propertyRegistry();
     _stress = registry.id(_params.getString("stress_property"));
     _full = registry.components(_params.getString("stress_property")) == 9;
@@ -399,9 +292,10 @@ private:
   int _stress = -1;
 };
 
-/// Linear elastic stress with temperature-dependent elastic constants and a
-/// sum of eigenstrains, for bodies whose moduli come from other property objects
-/// and whose stress-free strain changes, for example with temperature.
+/// The isotropic small-strain stress of a solid in every continuum formulation: the elastic
+/// strain is the strain of the displacements less the eigenstrains (a thermal strain, for
+/// example) and the creep strain, and Young's modulus and Poisson's ratio may be constants,
+/// functions, properties or expressions of the fields.
 class SmallStrainStress : public Property
 {
 public:
@@ -411,39 +305,39 @@ public:
     p.setClassDescription(
         "Small-strain stress of an isotropic material: sigma = lambda tr(eps_e) I + 2 mu eps_e of "
         "the elastic strain eps_e = eps - sum of the eigenstrains - creep strain, with Young's "
-        "modulus and Poisson's ratio taken from properties (for instance those of "
-        "constant_property) or given as constants, and optional creep. Formulations: axisymmetric "
-        "(r, z mesh), axisymmetric_1d (a radial slice of a long body in generalized plane strain, "
-        "whose uniform axial strain is given by 'axial_strain'), plane_strain and "
-        "three_dimensional. Declares 'stress', 'strain', 'elastic_strain' (in the Voigt order xx, "
-        "yy, zz, yz, xz, xy with engineering shears, or r, z, theta in the axisymmetric case) and "
-        "'von_mises_stress', and with creep 'creep_strain' and 'equivalent_creep_strain'.");
-    p.addRequired("displacements", ParameterKind::StringList, "Displacement variables.");
+        "modulus and Poisson's ratio given as constants, functions, properties or expressions, "
+        "and optional creep. Formulations: plane_stress (a thin body free to contract through "
+        "its thickness, sigma_zz = 0), plane_strain (a long body restrained along its axis), "
+        "axisymmetric (a body of revolution on an (r, z) mesh), axisymmetric_1d (a radial slice "
+        "of a long body in generalized plane strain, whose uniform axial strain is given by "
+        "'axial_strain') and three_dimensional. A thermal strain is an eigenstrain, for example "
+        "of thermal_expansion_eigenstrain. Declares 'stress', 'strain', 'elastic_strain' (in "
+        "the Voigt order xx, yy, zz, yz, xz, xy with engineering shears, or r, z, theta in the "
+        "axisymmetric case), 'volumetric_strain' and 'von_mises_stress', and with creep "
+        "'creep_strain' and 'equivalent_creep_strain'.");
+    p.addRequired("displacements",
+                  ParameterKind::StringList,
+                  "The displacement variables: two in a plane or axisymmetric problem (the "
+                  "radial and the axial one in the axisymmetric case), three in three "
+                  "dimensions and the radial one in axisymmetric_1d.");
     p.addRequired("formulation",
                   ParameterKind::String,
-                  "axisymmetric, axisymmetric_1d, plane_strain or three_dimensional.");
+                  "plane_stress, plane_strain, axisymmetric, axisymmetric_1d or "
+                  "three_dimensional.");
     p.addOptional("youngs_modulus",
-                  ParameterKind::Real,
-                  0.0,
-                  "Constant Young's modulus, Pa. Default: not given, and the property named by "
-                  "'youngs_modulus_property' is used.");
-    p.addOptional("poissons_ratio",
-                  ParameterKind::Real,
-                  0.0,
-                  "Constant Poisson's ratio. Default: not given, and the property "
-                  "named by 'poissons_ratio_property' is used.");
-    p.addOptional("youngs_modulus_property",
-                  ParameterKind::String,
+                  ParameterKind::Function,
                   std::string("youngs_modulus"),
-                  "The property that holds Young's modulus when 'youngs_modulus' is "
-                  "not given. Default youngs_modulus, the name the elasticity property objects "
-                  "declare.");
-    p.addOptional("poissons_ratio_property",
-                  ParameterKind::String,
-                  std::string("poissons_ratio"),
-                  "The property that holds Poisson's ratio when 'poissons_ratio' is "
-                  "not given. Default poissons_ratio, the name the elasticity property objects "
-                  "declare.");
+                  "Young's modulus, Pa: a constant, a registered function, the name of a property, "
+                  "or an expression of the fields, x, y, z, t, the functions and the properties. "
+                  "It has no numerical default. Default: the property youngs_modulus, which a "
+                  "property object such as constant or parsed declares.");
+    p.addOptional(
+        "poissons_ratio",
+        ParameterKind::Function,
+        std::string("poissons_ratio"),
+        "Poisson's ratio, with -1 < nu < 1/2: a constant, a registered function, the name "
+        "of a property, or an expression. Default: the property poissons_ratio when a "
+        "property object declares it, and otherwise 1/3, the default of the library.");
     p.addOptional("eigenstrain_names",
                   ParameterKind::StringList,
                   std::vector<std::string>{},
@@ -465,18 +359,13 @@ public:
                   std::string(""),
                   "With creep_model = parsed: the equivalent creep strain rate, 1/s, as an "
                   "expression of von_mises_stress (Pa), temperature (K), grain_size (m) and the "
-                  "constants of 'creep_constant_names'. It is "
+                  "constants of 'creep_constants'. It is "
                   "differentiated automatically, so the return mapping and the Jacobian are "
                   "exact. It must not be negative. Default empty.");
-    p.addOptional("creep_constant_names",
-                  ParameterKind::StringList,
-                  std::vector<std::string>{},
-                  "Names of constants used in 'creep_rate', matched by position with "
-                  "'creep_constant_values'. Default none.");
-    p.addOptional("creep_constant_values",
-                  ParameterKind::RealList,
-                  std::vector<double>{},
-                  "Values of the constants of 'creep_constant_names'. Default none.");
+    p.addOptional("creep_constants",
+                  ParameterKind::RealMap,
+                  RealMap{},
+                  "Named constants that 'creep_rate' uses: name -> value. Default none.");
     p.addOptional("temperature",
                   ParameterKind::String,
                   std::string(""),
@@ -494,18 +383,14 @@ public:
     return p;
   }
   int stateSize() const override { return _creep == Creep::None ? 0 : 7; }
-  explicit SmallStrainStress(const InputParameters & p) : Property(p)
+  explicit SmallStrainStress(const InputParameters & p)
+      : Property(p), _formulation(formulationFromName(name(), p.getString("formulation")))
   {
-    _formulation = p.getString("formulation");
-    if (_formulation != "axisymmetric" && _formulation != "axisymmetric_1d" &&
-        _formulation != "plane_strain" && _formulation != "three_dimensional")
-      throw InputError("'" + name() + "': unknown formulation '" + _formulation + "'.");
-    // A constant is used only when the user gives one; otherwise the property.
-    _E = p.isSetByUser("youngs_modulus") ? p.getReal("youngs_modulus") : 0.0;
-    _nu = p.isSetByUser("poissons_ratio") ? p.getReal("poissons_ratio") : -2.0;
-    if (p.isSetByUser("youngs_modulus") && !(_E > 0.0))
+    // A constant is checked now; a property or an expression is evaluated where it is used.
+    if (const auto * E = std::get_if<double>(&p.getRaw("youngs_modulus")); E && !(*E > 0.0))
       throw InputError("'" + name() + "': youngs_modulus must be positive.");
-    if (p.isSetByUser("poissons_ratio") && !(_nu > -1.0 && _nu < 0.5))
+    if (const auto * nu = std::get_if<double>(&p.getRaw("poissons_ratio"));
+        nu && !(*nu > -1.0 && *nu < 0.5))
       throw InputError("'" + name() + "': poissons_ratio must lie in (-1, 0.5).");
     const auto c = p.getString("creep_model");
     if (c == "none")
@@ -514,19 +399,23 @@ public:
       _creep = Creep::Parsed;
     else
       throw InputError("'" + name() + "': unknown creep_model '" + c + "' (none, parsed).");
+    if (_creep != Creep::None && _formulation == Formulation::PlaneStress)
+      throw InputError("'" + name() +
+                       "': creep is available in plane_strain, axisymmetric, axisymmetric_1d "
+                       "and three_dimensional problems; its return mapping keeps the full "
+                       "stress, and plane stress would need sigma_zz = 0 within it.");
     if (_creep == Creep::Parsed)
     {
       const auto text = p.getString("creep_rate");
       if (text.empty())
         throw InputError("'" + name() + "': creep_model = parsed needs 'creep_rate'.");
       std::vector<std::string> names = {"von_mises_stress", "temperature", "grain_size"};
-      const auto constants = p.getStringList("creep_constant_names");
-      _creep_constants = p.getRealList("creep_constant_values");
-      if (constants.size() != _creep_constants.size())
-        throw InputError("'" + name() +
-                         "': 'creep_constant_names' and 'creep_constant_values' must have the "
-                         "same length.");
-      names.insert(names.end(), constants.begin(), constants.end());
+      _creep_constants.clear();
+      for (const auto & [constant, value] : p.getRealMap("creep_constants"))
+      {
+        names.push_back(constant);
+        _creep_constants.push_back(value);
+      }
       if (names.size() > 32)
         throw InputError("'" + name() + "': too many creep constants (at most 29).");
       _creep_expression = std::make_shared<ParsedExpression>(text, names);
@@ -549,6 +438,11 @@ public:
   void initialSetup(Problem & problem) override
   {
     Property::initialSetup(problem);
+    const int dim = problem.mesh().dimension();
+    if (problem.mesh().spaceDimension() > dim)
+      throw InputError("'" + name() +
+                       "': the mesh is a surface (or a curve) in space, and the continuum "
+                       "formulations need a mesh that fills its space.  Surfaces are shells.");
     if (_creep != Creep::None)
     {
       if (_params.getString("temperature").empty())
@@ -558,19 +452,43 @@ public:
     _disp.clear();
     for (const auto & n : _params.getStringList("displacements"))
       _disp.push_back(problem.variableIndex(n));
-    const std::size_t expected =
-        _formulation == "axisymmetric_1d" ? 1 : (_formulation == "three_dimensional" ? 3 : 2);
-    if (_disp.size() != expected)
-      throw InputError("'" + name() + "': the " + _formulation + " formulation needs " +
-                       std::to_string(expected) + " displacement variable(s).");
-    if ((_formulation == "axisymmetric" || _formulation == "axisymmetric_1d") &&
-        problem.coordinateSystem() != CoordinateSystem::Axisymmetric)
-      throw InputError("'" + name() + "': the " + _formulation +
-                       " formulation needs coordinates = 'axisymmetric'.");
+    const int expected = formulationDimension(_formulation);
+    const std::string formulation = _params.getString("formulation");
+    if (static_cast<int>(_disp.size()) != expected || dim != expected)
+      throw InputError("'" + name() + "': the " + formulation + " formulation needs " +
+                       std::to_string(expected) + " displacement variable(s) on a " +
+                       std::to_string(expected) + "-dimensional mesh, and has " +
+                       std::to_string(_disp.size()) + " on a " + std::to_string(dim) +
+                       "-dimensional mesh.");
+    const bool axisymmetric_coordinates =
+        problem.coordinateSystem() == CoordinateSystem::Axisymmetric;
+    if (isAxisymmetric(_formulation) != axisymmetric_coordinates)
+      throw InputError("'" + name() + "': the " + formulation + " formulation " +
+                       (axisymmetric_coordinates
+                            ? "is Cartesian, and the problem has axisymmetric coordinates. Use "
+                              "the axisymmetric formulation."
+                            : "needs coordinates = 'axisymmetric'."));
     _axial = getFunction(problem, "axial_strain");
     auto & reg = problem.propertyRegistry();
-    _Eprop = _E > 0 ? -1 : reg.id(_params.getString("youngs_modulus_property"));
-    _nuprop = _nu > -1.0 ? -1 : reg.id(_params.getString("poissons_ratio_property"));
+    _registry = &reg;
+    if (!_params.isSetByUser("youngs_modulus") && !reg.has("youngs_modulus"))
+      throw InputError("'" + name() +
+                       "': Young's modulus is not given, and no property object declares the "
+                       "property youngs_modulus. Give youngs_modulus (Pa), or add a property "
+                       "object that declares it, such as constant or parsed.");
+    if (!_params.isSetByUser("poissons_ratio") && !reg.has("poissons_ratio"))
+      _params.replaceDefault("poissons_ratio", 1.0 / 3.0);
+    _E.setup(problem, _params, "youngs_modulus", name());
+    _nu.setup(problem, _params, "poissons_ratio", name());
+    // Constant moduli are turned into the Lame constants once.
+    const auto * E = std::get_if<double>(&_params.getRaw("youngs_modulus"));
+    const auto * nu = std::get_if<double>(&_params.getRaw("poissons_ratio"));
+    _constant_moduli = E && nu;
+    if (_constant_moduli)
+    {
+      _mu0 = *E / (2.0 * (1.0 + *nu));
+      _lambda0 = *E * *nu / ((1.0 + *nu) * (1.0 - 2.0 * *nu));
+    }
     _eigen.clear();
     for (const auto & n : _params.getStringList("eigenstrain_names"))
       _eigen.push_back(reg.id(n));
@@ -580,6 +498,7 @@ public:
     _stress = r.declare("stress", 6);
     _strain = r.declare("strain", 6);
     _elastic = r.declare("elastic_strain", 6);
+    _volumetric = r.declare("volumetric_strain", 1);
     _vm = r.declare("von_mises_stress", 1);
     _F_prop = r.declare("deformation_gradient", 9);
     if (_creep != Creep::None)
@@ -690,34 +609,89 @@ public:
     }
   }
 
-  void computeProperties(QpContext & ctx) const override
+  /// The creep of one step from the trial stress @p sigma: the stress and the elastic strain
+  /// @p ee lose the creep increment, and the history moves from @p old to @p next.
+  void updateCreep(QpContext & ctx,
+                   const ADReal & mu,
+                   const double * old,
+                   double * next,
+                   ADReal * ee,
+                   ADReal * sigma) const
   {
-    std::array<ADReal, 6> e;
-    e.fill(ADReal(0.0));
-    const auto & gu = ctx.gradient(_disp[0]);
-    if (_formulation == "axisymmetric_1d")
+    std::array<double, 6> increment{0, 0, 0, 0, 0, 0};
+    double equivalent_increment = 0.0;
+    if (ctx.dt > 0 && old)
     {
-      e[0] = gu[0];
-      e[1] = ADReal(_axial->value(ctx.x, ctx.time));
-      e[2] = ctx.x[0] != 0.0 ? ctx.value(_disp[0]) / ctx.x[0] : gu[0];
-    }
-    else
-    {
-      const auto & gv = ctx.gradient(_disp[1]);
-      e[0] = gu[0];
-      e[1] = gv[1];
-      e[5] = gu[1] + gv[0];
-      if (_formulation == "axisymmetric")
-        e[2] = ctx.x[0] != 0.0 ? ctx.value(_disp[0]) / ctx.x[0] : gu[0];
-      else if (_formulation == "three_dimensional")
+      std::array<ADReal, 6> stress;
+      for (int i = 0; i < 6; ++i)
+        stress[i] = sigma[i];
+      returnMap(ctx, mu, stress, increment, equivalent_increment);
+      for (int i = 0; i < 6; ++i)
       {
-        const auto & gw = ctx.gradient(_disp[2]);
-        e[2] = gw[2];
-        e[3] = gv[2] + gw[1];
-        e[4] = gu[2] + gw[0];
+        sigma[i] = stress[i];
+        ee[i] -= increment[i];
       }
     }
-    std::array<ADReal, 6> ee = e;
+    for (int i = 0; i < 6; ++i)
+    {
+      const double total = (old ? old[i] : 0.0) + increment[i];
+      if (next)
+        next[i] = total;
+      ctx.property(_creep_prop, i) = ADReal(total);
+    }
+    const double equivalent = (old ? old[6] : 0.0) + equivalent_increment;
+    if (next)
+      next[6] = equivalent;
+    ctx.property(_creep_eq) = ADReal(equivalent);
+  }
+
+  /// The strain of the displacements into @p e (Voigt order, engineering shears).  The zz
+  /// strain of plane stress follows from the stress and is set later.
+  void displacementStrain(const QpContext & ctx, ADReal * e) const
+  {
+    for (int i = 0; i < 6; ++i)
+      e[i] = 0.0;
+    const auto & gu = ctx.gradient(_disp[0]);
+    e[0] = gu[0];
+    const auto hoop = [&](ADReal & out)
+    {
+      if (ctx.x[0] != 0.0)
+        out = ctx.value(_disp[0]) / ctx.x[0];
+      else
+        out = gu[0];
+    };
+    if (_formulation == Formulation::AxisymmetricOneD)
+    {
+      e[1] = ADReal(_axial->value(ctx.x, ctx.time));
+      hoop(e[2]);
+      return;
+    }
+    const auto & gv = ctx.gradient(_disp[1]);
+    e[1] = gv[1];
+    e[5] = gu[1];
+    e[5] += gv[0];
+    if (_formulation == Formulation::Axisymmetric)
+      hoop(e[2]);
+    else if (_formulation == Formulation::ThreeDimensional)
+    {
+      const auto & gw = ctx.gradient(_disp[2]);
+      e[2] = gw[2];
+      e[3] = gv[2];
+      e[3] += gw[1];
+      e[4] = gu[2];
+      e[4] += gw[0];
+    }
+  }
+
+  void computeProperties(QpContext & ctx) const override
+  {
+    // The strain, the elastic strain and the stress are formed in their property storage.
+    ADReal * e = &ctx.property(_strain, 0);
+    ADReal * ee = &ctx.property(_elastic, 0);
+    ADReal * sigma = &ctx.property(_stress, 0);
+    displacementStrain(ctx, e);
+    for (int i = 0; i < 6; ++i)
+      ee[i] = e[i];
     for (int id : _eigen)
       for (int i = 0; i < 6; ++i)
         ee[i] -= ctx.property(id, i);
@@ -731,66 +705,69 @@ public:
       for (int i = 0; i < 6; ++i)
         ee[i] -= old[i];
     }
-    const ADReal E = _Eprop >= 0 ? ctx.property(_Eprop) : ADReal(_E);
-    const ADReal nu = _nuprop >= 0 ? ctx.property(_nuprop) : ADReal(_nu);
-    const ADReal mu = E / (2.0 * (1.0 + nu));
-    const ADReal lambda = E * nu / ((1.0 + nu) * (1.0 - 2.0 * nu));
-    const ADReal trace = ee[0] + ee[1] + ee[2];
-    std::array<ADReal, 6> sigma;
-    for (int i = 0; i < 6; ++i)
-      sigma[i] = i < 3 ? lambda * trace + 2.0 * mu * ee[i] : mu * ee[i];
-
-    std::array<double, 6> creep_increment{0, 0, 0, 0, 0, 0};
-    double equivalent_increment = 0.0;
-    if (_creep != Creep::None && ctx.dt > 0 && old)
-      returnMap(ctx, mu, sigma, creep_increment, equivalent_increment);
-    if (next)
+    ADReal mu;
+    if (_constant_moduli)
     {
-      for (int i = 0; i < 6; ++i)
-        next[i] = old[i] + creep_increment[i];
-      next[6] = old[6] + equivalent_increment;
+      isotropicStress(_formulation, ee, _lambda0, _mu0, sigma);
+      mu = _mu0;
+    }
+    else
+    {
+      const ADReal E = _E.value(ctx);
+      const ADReal nu = _nu.value(ctx);
+      mu = E / (2.0 * (1.0 + nu));
+      const ADReal lambda = E * nu / ((1.0 + nu) * (1.0 - 2.0 * nu));
+      isotropicStress(_formulation, ee, lambda, mu, sigma);
+    }
+    if (_formulation == Formulation::PlaneStress)
+    {
+      // The total zz strain: the elastic one that keeps sigma_zz zero, plus the eigenstrains.
+      e[2] = ee[2];
+      for (int id : _eigen)
+        e[2] += ctx.property(id, 2);
     }
     if (_creep != Creep::None)
-    {
-      for (int i = 0; i < 6; ++i)
-        ctx.property(_creep_prop, i) = ADReal(old ? old[i] + creep_increment[i] : 0.0);
-      ctx.property(_creep_eq) = ADReal(old ? old[6] + equivalent_increment : 0.0);
-    }
-    for (int i = 0; i < 6; ++i)
-    {
-      ctx.property(_strain, i) = e[i];
-      ctx.property(_elastic, i) = ee[i] - creep_increment[i];
-      ctx.property(_stress, i) = sigma[i];
-    }
-    // F = I + grad u, row by row, for equations that account for the change
-    // of shape (heat conduction, follower pressure) while the stress stays
-    // that of small strain.
+      updateCreep(ctx, mu, old, next, ee, sigma);
+    ctx.property(_volumetric) = e[0] + e[1] + e[2];
+    // Two outputs that the equilibrium itself does not need are formed only when an object
+    // reads them.
+    if (_registry->isRead(_F_prop))
+      deformationGradient(ctx, e);
+    if (_registry->isRead(_vm))
+      vonMises(ctx);
+  }
+
+  /// F = I + grad u, row by row, for equations that account for the change of shape (heat
+  /// conduction, follower pressure) while the stress stays that of small strain.
+  void deformationGradient(QpContext & ctx, const ADReal * e) const
+  {
     for (int i = 0; i < 9; ++i)
       ctx.property(_F_prop, i) = ADReal(i % 4 == 0 ? 1.0 : 0.0);
+    const auto & gu = ctx.gradient(_disp[0]);
     ctx.property(_F_prop, 0) = 1.0 + gu[0];
-    if (_formulation == "axisymmetric_1d")
-    {
+    ctx.property(_F_prop, 8) = 1.0 + e[2];
+    if (_formulation == Formulation::AxisymmetricOneD)
       ctx.property(_F_prop, 4) = 1.0 + e[1];
-      ctx.property(_F_prop, 8) = 1.0 + e[2];
-    }
     else
     {
       const auto & gv = ctx.gradient(_disp[1]);
       ctx.property(_F_prop, 1) = gu[1];
       ctx.property(_F_prop, 3) = gv[0];
       ctx.property(_F_prop, 4) = 1.0 + gv[1];
-      if (_formulation == "axisymmetric")
-        ctx.property(_F_prop, 8) = 1.0 + e[2];
-      else if (_formulation == "three_dimensional")
+      if (_formulation == Formulation::ThreeDimensional)
       {
         const auto & gw = ctx.gradient(_disp[2]);
         ctx.property(_F_prop, 2) = gu[2];
         ctx.property(_F_prop, 5) = gv[2];
         ctx.property(_F_prop, 6) = gw[0];
         ctx.property(_F_prop, 7) = gw[1];
-        ctx.property(_F_prop, 8) = 1.0 + gw[2];
       }
     }
+  }
+
+  /// The von Mises stress sqrt(3 J2) of the stress.
+  void vonMises(QpContext & ctx) const
+  {
     const auto s = [&](int i) -> const ADReal & { return ctx.property(_stress, i); };
     const ADReal j2 = ((s(0) - s(1)) * (s(0) - s(1)) + (s(1) - s(2)) * (s(1) - s(2)) +
                        (s(2) - s(0)) * (s(2) - s(0))) /
@@ -807,15 +784,19 @@ protected:
   };
   std::shared_ptr<ParsedExpression> _creep_expression;
   std::vector<double> _creep_constants;
-  std::string _formulation;
-  double _E = 0.0, _nu = -2.0;
+  Formulation _formulation;
+  FieldCoefficient _E, _nu;
+  bool _constant_moduli = false;
+  double _lambda0 = 0.0, _mu0 = 0.0;
   Creep _creep = Creep::None;
   double _grain = 0.0, _creep_factor = 1.0;
   int _T = -1;
   std::vector<int> _disp, _eigen;
   FunctionPtr _axial;
-  int _Eprop = -1, _nuprop = -1, _stress = -1, _strain = -1, _elastic = -1, _vm = -1, _F_prop = -1;
+  int _stress = -1, _strain = -1, _elastic = -1, _volumetric = -1, _vm = -1, _F_prop = -1;
   int _creep_prop = -1, _creep_eq = -1;
+  /// The registry of the problem, which knows the outputs that some object reads.
+  const PropertyRegistry * _registry = nullptr;
 };
 
 // ---------------------------------------------------------------------------
@@ -912,7 +893,8 @@ public:
         "metals and ceramics, whose elastic strains stay small while their total strains may be "
         "large. stress_update = neo_Hookean is the compressible neo-Hookean hyperelastic law P = "
         "mu (F - F^-T) + lambda ln(J) F^-T, exact for any deformation and without creep, applied "
-        "to the part of F left after the eigenstrains (F = F_e F_eig). Also declares "
+        "to the part of F left after the eigenstrains (F = F_e F_eig). 'volumetric_strain' is J - 1, "
+        "the change of volume per unit volume. Also declares "
         "'deformation_gradient' (nine components) and 'green_lagrange_strain' (Voigt, engineering "
         "shears).");
     p.addOptional("stress_update",
@@ -932,6 +914,10 @@ public:
                        "neo_Hookean, not '" +
                        u + "'.");
     _neo_hookean = u == "neo_Hookean";
+    if (_formulation == Formulation::PlaneStress)
+      throw InputError("'" + name() +
+                       "': finite strain is available in plane_strain, axisymmetric, "
+                       "axisymmetric_1d and three_dimensional problems.");
     if (_neo_hookean && _creep != Creep::None)
       throw InputError("'" + name() +
                        "': creep is available with stress_update = "
@@ -953,7 +939,7 @@ public:
     Mat3<ADReal> F = identity3<ADReal>();
     const auto & gu = ctx.gradient(_disp[0]);
     const double R = ctx.x[0];
-    if (_formulation == "axisymmetric_1d")
+    if (_formulation == Formulation::AxisymmetricOneD)
     {
       F[0][0] = 1.0 + gu[0];
       F[1][1] = ADReal(1.0 + _axial->value(ctx.x, ctx.time));
@@ -966,9 +952,9 @@ public:
       F[0][1] = gu[1];
       F[1][0] = gv[0];
       F[1][1] = 1.0 + gv[1];
-      if (_formulation == "axisymmetric")
+      if (_formulation == Formulation::Axisymmetric)
         F[2][2] = 1.0 + (R != 0.0 ? ctx.value(_disp[0]) / R : gu[0]);
-      else if (_formulation == "three_dimensional")
+      else if (_formulation == Formulation::ThreeDimensional)
       {
         const auto & gw = ctx.gradient(_disp[2]);
         F[0][2] = gu[2];
@@ -992,8 +978,8 @@ public:
       for (int i = 0; i < 6; ++i)
         eigen[i] = eigen[i] + ctx.property(id, i);
 
-    const ADReal E = _Eprop >= 0 ? ctx.property(_Eprop) : ADReal(_E);
-    const ADReal nu = _nuprop >= 0 ? ctx.property(_nuprop) : ADReal(_nu);
+    const ADReal E = _E.value(ctx);
+    const ADReal nu = _nu.value(ctx);
     const ADReal mu = E / (2.0 * (1.0 + nu));
     const ADReal lambda = E * nu / ((1.0 + nu) * (1.0 - 2.0 * nu));
 
@@ -1033,8 +1019,11 @@ public:
       for (int i = 0; i < 3; ++i)
         for (int j = i; j < 3; ++j)
           sigma[kVoigt[i][j]] = S[i][j] / J;
-      for (auto & v : elastic)
-        v = ADReal(0.0);
+      // The elastic strain: the Green-Lagrange strain of F_e, with engineering shears.
+      const Mat3<ADReal> Ce = multiply3(transpose3(Fe), Fe);
+      for (int i = 0; i < 3; ++i)
+        for (int j = i; j < 3; ++j)
+          elastic[kVoigt[i][j]] = i == j ? 0.5 * (Ce[i][j] - 1.0) : Ce[i][j];
     }
     else
     {
@@ -1140,6 +1129,7 @@ public:
       ctx.property(_elastic, i) = elastic[i];
       ctx.property(_stress, i) = sigma[i];
     }
+    ctx.property(_volumetric) = J - 1.0;
     for (int i = 0; i < 3; ++i)
       for (int j = 0; j < 3; ++j)
       {
@@ -1170,7 +1160,10 @@ public:
         "Isotropic thermal strain alpha (T - T_ref) on the three normal components, as a "
         "six-component eigenstrain property for small_strain_stress.");
     p.addRequired("temperature", ParameterKind::String, "The temperature variable.");
-    p.addRequired("thermal_expansion_coefficient", ParameterKind::Real, "alpha, 1/K.");
+    p.addRequired("linear_expansion_coeff",
+                  ParameterKind::Real,
+                  "Linear thermal expansion coefficient alpha, 1/K: the strain per kelvin along "
+                  "each direction, a third of the volumetric coefficient of an isotropic solid.");
     p.addRequired("stress_free_temperature",
                   ParameterKind::Real,
                   "Temperature T_ref at which the thermal strain is zero.");
@@ -1178,7 +1171,7 @@ public:
     return p;
   }
   explicit ThermalExpansionEigenstrain(const InputParameters & p)
-      : Property(p), _alpha(p.getReal("thermal_expansion_coefficient")),
+      : Property(p), _alpha(p.getReal("linear_expansion_coeff")),
         _Tref(p.getReal("stress_free_temperature"))
   {
   }
@@ -1214,22 +1207,24 @@ public:
         "Frictionless contact between two bodies across a gap, enforced by a penalty: where "
         "the gap g = (x_s + u_s - x_p - u_p) . n_p between the displaced surfaces closes, "
         "the contact pressure is P_c = k max(0, -g), the primary surface receives the "
-        "traction -P_c n_p and the secondary surface the opposite force. One instance per "
-        "displacement component, with 'variable' that component's displacement. The "
+        "traction -P_c n_p and the secondary surface the opposite force. Added without "
+        "'variable', it acts on every displacement. The "
         "penetration at equilibrium is P_c / k, so the penalty k (Pa/m) should be large "
-        "compared with the stiffness of the bodies divided by their size, E / L.");
-    p.addRequired("displacements", ParameterKind::StringList, "All displacement variables.");
-    p.addRequired("component", ParameterKind::Integer, "The component of 'variable'.");
+        "compared with the stiffness of the bodies divided by their size, E / L. In a plane "
+        "problem the traction is multiplied by the thickness of the stress_divergence kernel "
+        "of the same displacement, as the traction and pressure conditions are.");
+    addDisplacementsParam(p, "The contact traction acts on the component of 'variable'.");
     p.addRequired("penalty", ParameterKind::Real, "Penalty stiffness k, Pa/m.");
+    p.setRange("penalty", ParameterRange::Positive);
     deformation::addParameter(
         p,
         "the contact pressure acts on the deformed primary surface: the traction per unit "
-        "undeformed area is -P_c J F^-T N, as for pressure_boundary_condition.");
+        "undeformed area is -P_c J F^-T N, as for the pressure condition.");
     return p;
   }
   explicit GapContact(const InputParameters & p) : InterfaceBC(p)
   {
-    _component = static_cast<int>(p.getInt("component"));
+    _component = displacementComponent(name(), variableName(), p.getStringList("displacements"));
     _penalty = p.getReal("penalty");
   }
   void initialSetup(Problem & problem) override
@@ -1242,6 +1237,7 @@ public:
       addCoupled(_disp.back());
     }
     _F = deformation::propertyId(problem, _params, name());
+    _thickness = planeThickness(problem, variableName(), name());
   }
   ADReal computeInterfaceFlux(const QpContext & ctx) const override
   {
@@ -1256,20 +1252,21 @@ public:
     if (g.value() >= 0)
       return ADReal(0.0);
     if (_F < 0)
-      return (_penalty * g) * ctx.normal[_component];
+      return (_thickness * _penalty * g) * ctx.normal[_component];
     ADReal cof[3][3];
     deformation::cofactor(ctx, _F, cof);
     ADReal n(0.0);
     for (int K = 0; K < 3; ++K)
       if (ctx.normal[K] != 0.0)
         n = n + cof[_component][K] * ctx.normal[K];
-    return (_penalty * g) * n;
+    return (_thickness * _penalty * g) * n;
   }
 
 private:
   int _component = 0;
   int _F = -1;
   double _penalty = 0.0;
+  double _thickness = 1.0;
   std::vector<int> _disp;
 };
 
@@ -1282,18 +1279,19 @@ public:
     InputParameters p = IntegratedBC::validParams();
     p.setClassDescription(
         "Prescribed component of the surface traction, in force per unit area. The component is "
-        "the one belonging to the equation named by 'variable', so the object is added once per "
-        "displacement variable (or once with a 'variables' list). Unlike "
-        "pressure_boundary_condition, it has no 'component' parameter. The load is given either "
-        "as the traction itself or as the total force on the boundary, which is then spread "
-        "uniformly over its area.");
-    p.addOptional("traction",
-                  ParameterKind::Function,
-                  0.0,
-                  "The traction component conjugate to 'variable', as a constant or the "
-                  "name of a function. A positive value acts along the positive direction "
-                  "of that variable's coordinate axis, whichever way the outward normal "
-                  "points. The value is multiplied by 'thickness'.");
+        "the one belonging to the equation named by 'variable' (a list of variables adds one "
+        "object per variable). The load is given either as the traction itself or as the total "
+        "force on the boundary, which is then spread uniformly over its area. In a plane "
+        "problem the traction is multiplied by the thickness of the stress_divergence kernel of "
+        "the same variable.");
+    p.addOptional(
+        "traction",
+        ParameterKind::Function,
+        0.0,
+        "The traction component conjugate to 'variable': a constant, a registered "
+        "function, or an expression of the fields, x, y, z and t. A positive value acts along the positive direction "
+        "of that variable's coordinate axis, whichever way the outward normal "
+        "points. In a plane problem it is multiplied by the thickness.");
     p.addOptional("total_force",
                   ParameterKind::Function,
                   0.0,
@@ -1301,15 +1299,8 @@ public:
                   "in N, as a constant or the name of a function of time. It is applied as the "
                   "uniform traction t = F / A, where A is the area of the boundary (with the "
                   "factor 2 pi r in axisymmetric problems). In a plane problem A is the length "
-                  "of the boundary times 'thickness', so that F is the force on the whole "
+                  "of the boundary times the thickness, so that F is the force on the whole "
                   "thickness. Give either 'traction' or 'total_force'.");
-    p.addOptional("thickness",
-                  ParameterKind::Real,
-                  1.0,
-                  "Out-of-plane thickness h multiplying the traction, for plane problems. It "
-                  "must equal the thickness given to the stress_divergence kernels of the "
-                  "same model, or the load and the stiffness are scaled inconsistently. "
-                  "Leave it at 1 in axisymmetric and three-dimensional problems.");
     p.addOptional("scale_with_load",
                   ParameterKind::Boolean,
                   true,
@@ -1319,20 +1310,17 @@ public:
                   "the loading that must stay fixed while the rest is increased.");
     return p;
   }
-  explicit TractionBC(const InputParameters & p)
-      : IntegratedBC(p), _thickness(p.getReal("thickness"))
-  {
-  }
+  explicit TractionBC(const InputParameters & p) : IntegratedBC(p) {}
   void initialSetup(Problem & problem) override
   {
     IntegratedBC::initialSetup(problem);
+    _thickness = planeThickness(problem, variableName(), name());
     const bool by_force = _params.isSetByUser("total_force");
     if (by_force && _params.isSetByUser("traction"))
-      throw InputError("traction_boundary_condition '" + _name +
-                       "': give only one of 'traction' and 'total_force'.");
+      throw InputError("traction '" + _name + "': give only one of 'traction' and 'total_force'.");
     if (!by_force)
     {
-      _t = getFunction(problem, "traction");
+      _t.setup(problem, _params, "traction", name());
       _factor = _thickness;
       return;
     }
@@ -1340,49 +1328,23 @@ public:
     // which the integration weight includes the coordinate factor.  With
     // factor = 1 / A, A being that same integral of 1, the load equals F, and
     // the thickness of a plane problem cancels.
-    _t = getFunction(problem, "total_force");
+    _t.setup(problem, _params, "total_force", name());
     _area = problem.boundaryMeasure(_boundaries);
     if (!(_area > 0.0))
-      throw InputError("traction_boundary_condition '" + _name +
+      throw InputError("traction '" + _name +
                        "': the boundary has zero area, so a total force cannot be spread over it.");
     _factor = 1.0 / _area;
   }
   ADReal computeBoundaryFlux(const QpContext & ctx) const override
   {
-    return ADReal(_factor * _t->value(ctx.x, ctx.time));
+    return _factor * _t.value(ctx);
   }
 
 private:
-  double _thickness;
+  double _thickness = 1.0;
   double _factor = 1.0;
   double _area = 0.0;
-  FunctionPtr _t;
-};
-
-/// All displacement components held at zero on a boundary: the clamped
-/// support of structural mechanics (the Fixed Constraint of COMSOL).
-class FixedConstraint : public NodalBC
-{
-public:
-  static InputParameters validParams()
-  {
-    InputParameters p = NodalBC::validParams();
-    p.setClassDescription(
-        "All the displacement components listed in 'displacements' are zero on the boundary, "
-        "i.e., the boundary is clamped. The condition is created once per displacement, under "
-        "the names <name>_<displacement>, and is equivalent to Dirichlet_boundary_condition "
-        "with 'variables' set to the same list and 'value' 0. The two define the same "
-        "constraint, so only one of them is given for a boundary.");
-    p.addOptional("displacements",
-                  ParameterKind::StringList,
-                  std::vector<std::string>{},
-                  "The displacement variables to hold at zero, e.g., [u, v, w] in three "
-                  "dimensions. It takes the place of 'variable' and 'variables', which define "
-                  "the same thing and must not be given with it.");
-    return p;
-  }
-  explicit FixedConstraint(const InputParameters & p) : NodalBC(p) {}
-  double computeValue(const Point &, double) const override { return 0.0; }
+  FieldCoefficient _t;
 };
 
 /// A plane of symmetry: the displacement normal to the plane is zero.
@@ -1396,13 +1358,9 @@ public:
         "A plane of symmetry of the body and its loads: the displacement normal to the plane "
         "is zero and the tangential displacements are free, so that only one side of the "
         "plane is modelled. The side set must lie in a plane normal to a coordinate axis, "
-        "which is found from the coordinates of its nodes, and the condition is created on "
-        "the displacement along that axis under the name <name>_<displacement>.");
-    p.addOptional("displacements",
-                  ParameterKind::StringList,
-                  std::vector<std::string>{},
-                  "The displacement variables in the order of the coordinate axes, e.g., [u, v, "
-                  "w] in three dimensions. It takes the place of 'variable' and 'variables'.");
+        "which is found from the coordinates of its nodes, and the condition holds the "
+        "displacement along that axis at zero. 'variable' lists the displacement variables in "
+        "the order of the coordinate axes, e.g., [u, v, w] in three dimensions.");
     return p;
   }
   explicit SymmetryBC(const InputParameters & p) : NodalBC(p) {}
@@ -1418,28 +1376,16 @@ public:
     InputParameters p = IntegratedBC::validParams();
     p.setClassDescription(
         "A pressure acting normal to a surface, giving the traction t_i = -p n_i with n "
-        "the outward normal, so a positive pressure pushes inward. Add one instance per "
-        "displacement variable, each with its own 'component'.");
-    p.addRequired("component",
-                  ParameterKind::Integer,
-                  "Index of the displacement component this instance contributes to: 0 for x or "
-                  "r, 1 for y or z, 2 for z. It selects which component of the outward normal "
-                  "multiplies the pressure, so it must agree with the component that 'variable' "
-                  "represents. A mismatch is not detected and applies the pressure along the "
-                  "wrong axis. Add one instance per displacement variable.");
+        "the outward normal, so a positive pressure pushes inward. Added without 'variable', it "
+        "acts on every displacement. In a plane problem the pressure is multiplied by the "
+        "thickness of the stress_divergence kernel of the same variable.");
+    addDisplacementsParam(p, "The pressure acts on the component of 'variable'.");
     p.addOptional("pressure",
                   ParameterKind::Function,
                   0.0,
-                  "Pressure in force per unit area, as a constant or the name of a "
-                  "function. A positive value presses inward, against the outward normal. "
-                  "It is multiplied by 'thickness' in plane problems.");
-    p.addOptional("thickness",
-                  ParameterKind::Real,
-                  1.0,
-                  "Out-of-plane thickness h multiplying the pressure, for plane problems. It "
-                  "must equal the thickness given to the stress_divergence kernels of the "
-                  "same model. Leave it at 1 in axisymmetric and three-dimensional "
-                  "problems.");
+                  "Pressure in force per unit area: a constant, a registered function, or an "
+                  "expression of the fields, x, y, z and t. A positive value presses inward, "
+                  "against the outward normal.");
     deformation::addParameter(
         p,
         "the pressure acts on the deformed surface (a follower load), for equations on the "
@@ -1457,21 +1403,22 @@ public:
     return p;
   }
   explicit PressureBC(const InputParameters & p)
-      : IntegratedBC(p), _component(static_cast<int>(p.getInt("component"))),
-        _thickness(p.getReal("thickness"))
+      : IntegratedBC(p),
+        _component(displacementComponent(name(), variableName(), p.getStringList("displacements")))
   {
   }
   void initialSetup(Problem & problem) override
   {
     IntegratedBC::initialSetup(problem);
-    _p = getFunction(problem, "pressure");
+    _thickness = planeThickness(problem, variableName(), name());
+    _p.setup(problem, _params, "pressure", name());
     _F = deformation::propertyId(problem, _params, name());
   }
   ADReal computeBoundaryFlux(const QpContext & ctx) const override
   {
-    const double p = _thickness * _p->value(ctx.x, ctx.time);
+    const ADReal p = _thickness * _p.value(ctx);
     if (_F < 0)
-      return ADReal(-p * ctx.normal[_component]);
+      return -p * ctx.normal[_component];
     // Row 'component' of the cofactor J F^-T, times N.
     ADReal cof[3][3];
     deformation::cofactor(ctx, _F, cof);
@@ -1484,9 +1431,9 @@ public:
 
 private:
   int _component;
-  double _thickness;
+  double _thickness = 1.0;
   int _F = -1;
-  FunctionPtr _p;
+  FieldCoefficient _p;
 };
 
 } // namespace
@@ -1495,12 +1442,10 @@ void
 registerSolidMechanicsObjects(Factory & f)
 {
   const std::string m = "solid_mechanics";
-  f.add<LinearElasticStress>("linear_elastic_stress", ObjectCategory::Property, m);
   f.add<StressDivergence>("stress_divergence", ObjectCategory::Kernel, m);
-  f.add<TractionBC>("traction_boundary_condition", ObjectCategory::BoundaryCondition, m);
-  f.add<PressureBC>("pressure_boundary_condition", ObjectCategory::BoundaryCondition, m);
-  f.add<FixedConstraint>("fixed_constraint", ObjectCategory::NodalBC, m);
-  f.add<SymmetryBC>("symmetry_boundary_condition", ObjectCategory::NodalBC, m);
+  f.add<TractionBC>("traction", ObjectCategory::BoundaryCondition, m);
+  f.add<PressureBC>("pressure", ObjectCategory::BoundaryCondition, m);
+  f.add<SymmetryBC>("symmetry", ObjectCategory::NodalBC, m);
   f.add<SmallStrainStress>("small_strain_stress", ObjectCategory::Property, m);
   f.add<FiniteStrainStress>("finite_strain_stress", ObjectCategory::Property, m);
   f.add<GapContact>("gap_contact", ObjectCategory::BoundaryCondition, m);

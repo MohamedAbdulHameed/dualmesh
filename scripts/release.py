@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: LGPL-2.1-or-later
-"""Release dualmesh to GitHub, Read the Docs and PyPI, one checked gate at a time.
+"""Release dualmesh to GitHub and Read the Docs, one checked gate at a time.
 
-The distribution on PyPI is ``dualmesh-multiphysics``; the package is imported
-as ``dualmesh`` and the command-line program is ``dualmesh``.  The first
+The distribution is ``dualmesh-multiphysics``; the package is imported as
+``dualmesh`` and the command-line program is ``dualmesh``.  It is not published
+on PyPI: the wheels and the source distribution of a release are the artifacts
+of the tag-triggered Wheels workflow.  The first
 release, v0.1.0 (commit bc96db4512378f525729f6dc48e83652fc982db6), needed a
 series of manual fixes (see docs/developing.rst, "Making a release"); every one
 of them is a gate here, so that the next release does not repeat them.
@@ -13,18 +15,16 @@ Usage (from the root of a clone, on branch main)::
     python scripts/release.py check              # gates 1-15, all local
     python scripts/release.py push               # gate 16: push main (fast-forward only)
     python scripts/release.py ci --wait          # gate 17: CI green on the pushed commit
-    python scripts/release.py dry-run --wait     # gates 18-19: Wheels dry run from main
-    python scripts/release.py tag                # gate 20: create and push vX.Y.Z
-    python scripts/release.py monitor --wait     # gates 21-22: tag build and PyPI upload
-    python scripts/release.py verify-pypi        # gates 23-24: fresh install from PyPI
+    python scripts/release.py dry-run --wait     # gate 18: Wheels dry run from main
+    python scripts/release.py tag                # gate 19: create and push vX.Y.Z
+    python scripts/release.py monitor --wait     # gate 20: the tag build
     python scripts/release.py release            # all of the above, in order
     python scripts/release.py status             # read-only summary
 
 Every command stops at the first failed gate with a message that says what
 failed and what to do.  Nothing is ever force-pushed, no tag is created from
 a dirty tree or before the dry run of the Wheels workflow has passed on the
-same commit, and publication uses PyPI Trusted Publishing from the Wheels
-workflow (no API token is used or stored).
+same commit.
 
 GitHub is queried through its public REST API.  A token is optional (it only
 raises the rate limit); it is taken from GH_TOKEN or GITHUB_TOKEN, or from
@@ -73,13 +73,6 @@ WHEEL_OSES = ["ubuntu-latest", "macos-15-intel", "macos-14", "windows-latest"]
 RETIRED_RUNNERS = ["macos-13", "macos-12", "macos-11"]
 MIN_CIBUILDWHEEL = (4, 2, 1)
 FURO_CONTENTS_CLASS = "this-will-duplicate-information-and-it-is-still-useful-here"
-PYTHON_VERSIONS = ["cp39", "cp310", "cp311", "cp312", "cp313"]
-WHEEL_PLATFORMS = {  # a wheel of each Python version is expected for each of these
-    "Linux x86_64": re.compile(r"manylinux.*x86_64"),
-    "macOS x86_64": re.compile(r"macosx_.*x86_64"),
-    "macOS arm64": re.compile(r"macosx_.*arm64"),
-    "Windows x86_64": re.compile(r"win_amd64"),
-}
 
 ROOT = Path(__file__).resolve().parents[1]
 WORK = ROOT / "build" / "release-check"
@@ -284,24 +277,12 @@ def workflow_problems(wheels_yml: str, all_workflows: dict[str, str]) -> list[st
         problems.append("wheels.yml has lost its workflow_dispatch trigger (the dry run)")
     if not re.search(r"tags:\s*\[\s*[\"']v\*[\"']\s*\]", wheels_yml):
         problems.append("wheels.yml no longer runs on tags 'v*'")
-    if "if: startsWith(github.ref, 'refs/tags/v')" not in wheels_yml:
-        problems.append(
-            "the Publish to PyPI job is not guarded by startsWith(github.ref, 'refs/tags/v')"
-        )
-    if not re.search(r"^\s*environment:\s*pypi\s*$", wheels_yml, re.M):
-        problems.append("the publish job does not use the GitHub environment 'pypi'")
-    if not re.search(r"id-token:\s*write", wheels_yml):
-        problems.append("the publish job lacks 'id-token: write' (Trusted Publishing)")
-    if not re.search(r"pypa/gh-action-pypi-publish@[0-9a-f]{40}\s+#\s*release/v1\b", wheels_yml):
-        problems.append(
-            "the publish job does not use pypa/gh-action-pypi-publish release/v1, pinned to a commit"
-        )
     for name, text in all_workflows.items():
         for action in re.findall(r"^\s*-?\s*uses:\s*(\S+)", text, re.M):
             if not re.fullmatch(r"[\w.-]+/[\w./-]+@[0-9a-f]{40}", action):
                 problems.append(f"{name}: the action '{action}' is not pinned to a commit")
-        if re.search(r"PYPI_API_TOKEN|password:\s*\$\{\{|twine upload", text):
-            problems.append(f"{name} uploads with a stored token or twine; use Trusted Publishing")
+        if re.search(r"PYPI_API_TOKEN|gh-action-pypi-publish|twine upload", text):
+            problems.append(f"{name} uploads to PyPI, where dualmesh is not published")
     return problems
 
 
@@ -447,7 +428,7 @@ def static_gates() -> None:
             )
     if problems:
         raise GateError("\n".join(problems))
-    ok("runner matrix, cibuildwheel, Trusted Publishing and Furo contents classes as released")
+    ok("runner matrix, cibuildwheel, no PyPI upload and Furo contents classes as released")
 
 
 # -----------------------------------------------------------------------------
@@ -774,8 +755,8 @@ def ci_gate(sha: str, wait: bool) -> None:
 
 def wheels_dry_run_gate(sha: str, wait: bool, dispatch: bool) -> None:
     gate(
-        "18-19",
-        f"Wheels dry run (workflow_dispatch from {BRANCH}) on {sha[:12]}: all platforms, publish skipped",
+        "18",
+        f"Wheels dry run (workflow_dispatch from {BRANCH}) on {sha[:12]}: all platforms",
     )
     if dispatch and latest_run("wheels.yml", sha, "workflow_dispatch") is None:
         if which("gh"):
@@ -798,31 +779,26 @@ def wheels_dry_run_gate(sha: str, wait: bool, dispatch: bool) -> None:
     sdist = by_name.get("Source distribution")
     if not sdist or sdist.get("conclusion") != "success":
         failures.append("Source distribution did not succeed")
-    publish = by_name.get("Publish to PyPI")
-    if publish and publish.get("conclusion") != "skipped":
-        failures.append(
-            f"Publish to PyPI was {publish.get('conclusion')} on a branch run; it must be skipped"
-        )
     if failures:
         raise GateError(
             "the dry run is not green:\n      "
             + "\n      ".join(failures)
             + f"\n      {result['html_url']}"
         )
-    ok(f"{result['html_url']} (publication skipped, as it must be on a branch)")
+    ok(result["html_url"])
 
 
 # -----------------------------------------------------------------------------
-# Tag, publication and the check from PyPI
+# Tag and the tag build
 # -----------------------------------------------------------------------------
 def tag_gate(version: str, yes: bool) -> None:
     tag = f"v{version}"
     sha = git("rev-parse", "HEAD")
-    gate("20", f"Create and push the annotated tag {tag} on {sha[:12]}")
+    gate("19", f"Create and push the annotated tag {tag} on {sha[:12]}")
     if git("rev-parse", f"origin/{BRANCH}") != sha:
         raise GateError(f"HEAD is not origin/{BRANCH}; push main first ('release.py push')")
     if not yes:
-        answer = input(f"    Type {tag} to tag {sha[:12]} and publish it to PyPI: ").strip()
+        answer = input(f"    Type {tag} to tag {sha[:12]} and release it: ").strip()
         if answer != tag:
             raise GateError("not confirmed; nothing was tagged")
     git("tag", "-a", tag, "-m", f"dualmesh {tag}")
@@ -836,86 +812,19 @@ def tag_gate(version: str, yes: bool) -> None:
 
 def monitor_gate(version: str, wait: bool) -> None:
     tag = f"v{version}"
-    gate("21-22", f"Tag-triggered Wheels workflow for {tag}, including Publish to PyPI")
+    gate("20", f"Tag-triggered Wheels workflow for {tag}")
     sha = git("rev-list", "-n", "1", tag)
     result = wait_for_run("wheels.yml", sha, "push", tag, wait)
     jobs = run_jobs(result["id"])
     print(describe_jobs(jobs))
-    names = [f"Wheels ({o})" for o in WHEEL_OSES] + ["Source distribution", "Publish to PyPI"]
+    names = [f"Wheels ({o})" for o in WHEEL_OSES] + ["Source distribution"]
     by_name = {j["name"]: j for j in jobs}
     bad = [n for n in names if by_name.get(n, {}).get("conclusion") != "success"]
     if bad or result["conclusion"] != "success":
         raise GateError(
-            f"the release workflow failed ({', '.join(bad) or result['conclusion']}): {result['html_url']}\n      Do not delete and re-push the tag of a version that reached PyPI; fix forward with a new patch version."
+            f"the release workflow failed ({', '.join(bad) or result['conclusion']}): {result['html_url']}\n      Do not delete and re-push the tag; fix forward with a new patch version."
         )
     ok(result["html_url"])
-
-
-def pypi_files(version: str) -> list[str]:
-    url = f"https://pypi.org/pypi/{DISTRIBUTION}/{version}/json"
-    with urllib.request.urlopen(url, timeout=30) as response:
-        return [f["filename"] for f in json.load(response)["urls"]]
-
-
-def verify_pypi_gate(version: str, retries: int = 20) -> None:
-    gate("23", f"PyPI lists {DISTRIBUTION} {version} with the sdist and every wheel")
-    files: list[str] = []
-    for attempt in range(retries):
-        try:
-            files = pypi_files(version)
-            break
-        except urllib.error.URLError:
-            if attempt == retries - 1:
-                raise GateError(
-                    f"https://pypi.org/project/{DISTRIBUTION}/{version}/ is not available"
-                ) from None
-            time.sleep(30)
-    stem = DISTRIBUTION.replace("-", "_")
-    missing = [] if f"{stem}-{version}.tar.gz" in files else ["sdist"]
-    for label, pattern in WHEEL_PLATFORMS.items():
-        for py in PYTHON_VERSIONS:
-            if not any(
-                f.startswith(f"{stem}-{version}-{py}-") and pattern.search(f) for f in files
-            ):
-                missing.append(f"{label} {py}")
-    if missing:
-        raise GateError("missing from PyPI: " + ", ".join(missing))
-    ok(f"{len(files)} files at https://pypi.org/project/{DISTRIBUTION}/{version}/")
-
-    gate(
-        "23-24",
-        "Fresh environment: pip install from PyPI, import, metadata, command; then clean up",
-    )
-    root = Path(tempfile.mkdtemp(prefix="dualmesh-pypi-test-"))
-    try:
-        python = _make_venv(root / "venv")
-        for attempt in range(retries):
-            proc = subprocess.run(
-                [
-                    str(python),
-                    "-m",
-                    "pip",
-                    "install",
-                    "--no-cache-dir",
-                    f"{DISTRIBUTION}=={version}",
-                ],
-                text=True,
-                capture_output=True,
-                cwd=root,
-            )
-            if proc.returncode == 0:
-                break
-            if attempt == retries - 1:
-                raise GateError(proc.stdout[-3000:] + proc.stderr[-3000:])
-            note("the index has not caught up yet; retrying in 30 s")
-            time.sleep(30)
-        _check_installed(python, _venv_bin(root / "venv", CLI_NAME), version, root / "venv")
-        ok(f"pip install {DISTRIBUTION}=={version} works")
-    finally:
-        shutil.rmtree(root, ignore_errors=True)
-        if root.exists():
-            raise GateError(f"could not delete the test environment {root}")
-        note(f"test environment {root} deleted")
 
 
 # -----------------------------------------------------------------------------
@@ -963,10 +872,6 @@ def cmd_monitor(args) -> None:
     monitor_gate(args.version or project_metadata()["version"], args.wait)
 
 
-def cmd_verify_pypi(args) -> None:
-    verify_pypi_gate(args.version or project_metadata()["version"])
-
-
 def cmd_release(args) -> None:
     args.wait = True
     cmd_check(args)
@@ -975,7 +880,6 @@ def cmd_release(args) -> None:
     cmd_dry_run(args)
     cmd_tag(args)
     cmd_monitor(args)
-    cmd_verify_pypi(args)
     print(f"\nReleased {DISTRIBUTION} {args.version or project_metadata()['version']}.")
 
 
@@ -1026,14 +930,13 @@ def main(argv=None) -> int:
     p = add(
         "dry-run",
         cmd_dry_run,
-        "gates 18-19: Wheels workflow_dispatch from main, publication skipped",
+        "gate 18: Wheels workflow_dispatch from main",
     )
     p.add_argument("--wait", action="store_true")
-    p = add("tag", cmd_tag, "gate 20: recheck everything, then create and push the tag")
+    p = add("tag", cmd_tag, "gate 19: recheck everything, then create and push the tag")
     p.add_argument("--yes", action="store_true", help="do not ask for the tag name to confirm")
-    p = add("monitor", cmd_monitor, "gates 21-22: the tag build and the PyPI publication")
+    p = add("monitor", cmd_monitor, "gate 20: the tag build")
     p.add_argument("--wait", action="store_true")
-    add("verify-pypi", cmd_verify_pypi, "gates 23-24: install from PyPI in a fresh environment")
     p = add("release", cmd_release, "every gate, in order, stopping at the first failure")
     p.add_argument("--skip-cxx", action="store_true")
     p.add_argument("--clang-format")

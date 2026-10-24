@@ -124,32 +124,17 @@ def solve_with_dualmesh(resolution: int, reynolds_number: float = 100.0):
         num_y_elements=resolution,
     )
     problem = dm.Problem(mesh, method="dmcdm")
-    problem.add_physics(
-        "incompressible_flow",
-        "flow",
-        velocities=["u", "v"],
+    flow = problem.add_physics(
+        "fluid_dynamics",
         dynamic_viscosity=1.0,
         density=reynolds_number,
         penalty_parameter=1.0e8,
     )
-    for variable in ("u", "v"):
-        problem.add_boundary_condition(
-            "Dirichlet_boundary_condition",
-            f"walls_{variable}",
-            variable=variable,
-            boundary=["left", "right", "bottom"],
-            value=0.0,
-        )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition",
-        "lid_u",
-        variable="u",
-        boundary="top",
-        value=1.0,
-        scale_with_load=True,
+    flow.add_boundary_condition(
+        ["velocity_x = 0", "velocity_y = 0"], boundary=["left", "right", "bottom"]
     )
-    problem.add_boundary_condition(
-        "Dirichlet_boundary_condition", "lid_v", variable="v", boundary="top", value=0.0
+    flow.add_boundary_condition(
+        ["velocity_x = 1", "velocity_y = 0"], boundary="top", scale_with_load=True
     )
     problem.solve(load_factors=[0.25, 0.5, 1.0], max_iterations=50)
     return problem
@@ -170,8 +155,8 @@ def main() -> int:
     arguments = parser.parse_args()
 
     problem = solve_with_dualmesh(arguments.resolution, arguments.reynolds_number)
-    dual_u = problem.sample("u", np.column_stack([np.full_like(GHIA_Y, 0.5), GHIA_Y]))
-    dual_v = problem.sample("v", np.column_stack([GHIA_X, np.full_like(GHIA_X, 0.5)]))
+    dual_u = problem.sample("velocity_x", np.column_stack([np.full_like(GHIA_Y, 0.5), GHIA_Y]))
+    dual_v = problem.sample("velocity_y", np.column_stack([GHIA_X, np.full_like(GHIA_X, 0.5)]))
 
     sampled = sorted(arguments.case.glob("postProcessing/sampleDict/*/vertical_U.xy"))
     foam_u = foam_v = None

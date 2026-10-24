@@ -16,5 +16,7 @@ boundary condition and property object with the full list of its parameters.
 
    meshes
    problem_setup
+   equations
    solving
    output
+   case_files
