@@ -153,11 +153,9 @@ public:
   Point x_other{0, 0, 0};
 
   // ---- history (state) of stateful property objects ------------------------------------
-  /// Where this point's history is kept: the owner (an element, or with
-  /// state_domain 1 a cell-centred face) and a key unique within the owner.
+  /// Where this point's history is kept: the owner element and a key unique within the owner.
   /// An owner of -1 means that the point has no history (a stateful property object
   /// then sees a zero old state and its new state is discarded).
-  int state_domain = 0;
   Index state_owner = -1;
   std::uint64_t state_key = 0;
   /// Filled by the problem before the property objects run: the state at the start

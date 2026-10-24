@@ -151,7 +151,7 @@ def test_refinement_leaves_no_hanging_node():
     def exact(x, y, z, t):
         return 1.0 + 2.0 * x - 3.0 * y
 
-    for method in ("dmcdm", "fem", "hfvm"):
+    for method in ("dmcdm", "fem"):
         problem = dm.Problem(mesh, method=method)
         problem.add_variable("u")
         problem.add_kernel("diffusion", variable="u")
@@ -249,22 +249,6 @@ def test_the_indicator_is_largest_where_the_solution_bends_most():
     near = centroids[:, 0] < 0.25
     assert indicators[near].mean() > 4.0 * indicators[~near].mean()
     assert indicators.argmax() in np.flatnonzero(near)
-
-
-def test_the_indicator_is_not_available_for_cell_centred_finite_volume():
-    mesh = unit_square(4)
-    problem = dm.Problem(mesh, method="zfvm")
-    problem.add_variable("u")
-    problem.add_kernel("diffusion", variable="u")
-    problem.add_boundary_condition(
-        "Dirichlet",
-        mesh.sideset_names(),
-        variable="u",
-        value=0.0,
-    )
-    problem.solve()
-    with pytest.raises(Exception, match="cell-centred"):
-        problem.error_indicator("u")
 
 
 # ---------------------------------------------------------------------------

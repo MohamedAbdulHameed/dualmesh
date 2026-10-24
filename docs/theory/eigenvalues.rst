@@ -71,14 +71,14 @@ The tests in ``tests/python/test_eigenvalue_study.py`` compare the study
 with exact eigenvalues:
 
 * The Laplacian on the unit square with zero values on the boundary has the
-  eigenvalues :math:`\pi^2 (m^2 + n^2)`.  All four methods converge to the
+  eigenvalues :math:`\pi^2 (m^2 + n^2)`.  Both methods converge to the
   first four at second order in the element size, and the double eigenvalue
   :math:`5\pi^2` is found twice.
 * The same eigenvalues come from the time derivative and from the symbol
   ``eigenvalue``, to round-off, and a quadratic symbol gives their square
   roots.
 * The operator :math:`-u'' + c u'` on :math:`(0, 1)` is not symmetric.  Its
-  eigenvalues are :math:`(n\pi)^2 + c^2/4`, and all four methods converge to
+  eigenvalues are :math:`(n\pi)^2 + c^2/4`, and both methods converge to
   them at second order.
 * Two diffusion equations coupled by a rotation of rate :math:`\omega` have
   the complex eigenvalues :math:`\mu \pm i \omega`, where :math:`\mu` is an

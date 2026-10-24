@@ -264,7 +264,7 @@ Poisson's equation
 
 .. code-block:: python
 
-   problem = dm.Problem(mesh, method="fem")
+   problem = dm.Problem(mesh, method="FEM")
    pde = problem.add_physics("general_form_PDE", variables="u", equations="-laplacian(u) = 1")
    pde.add_boundary_condition("u = 0", boundary=walls)
    problem.solve()
@@ -281,7 +281,7 @@ Transient heat conduction with a source
 
 .. code-block:: python
 
-   problem = dm.Problem(mesh, method="dmcdm")
+   problem = dm.Problem(mesh, method="DMCDM")
    heat = problem.add_physics(
        "general_form_PDE",
        variables="T",
@@ -311,7 +311,7 @@ where the velocity vanishes:
 
 .. code-block:: python
 
-   problem = dm.Problem(mesh, method="fem")
+   problem = dm.Problem(mesh, method="FEM")
    pde = problem.add_physics(
        "general_form_PDE",
        variables="c",
@@ -335,7 +335,7 @@ carrying the species out:
 
 .. code-block:: python
 
-   problem = dm.Problem(mesh, method="fem")
+   problem = dm.Problem(mesh, method="FEM")
    pde = problem.add_physics(
        "general_form_PDE",
        variables="c",
@@ -361,7 +361,7 @@ Reaction-diffusion: the Fisher-KPP equation
 
 .. code-block:: python
 
-   problem = dm.Problem(mesh, method="fem")
+   problem = dm.Problem(mesh, method="FEM")
    pde = problem.add_physics(
        "general_form_PDE",
        variables="u",
@@ -382,7 +382,7 @@ Anisotropic diffusion
 
 .. code-block:: python
 
-   problem = dm.Problem(mesh, method="fem")
+   problem = dm.Problem(mesh, method="FEM")
    pde = problem.add_physics(
        "general_form_PDE", variables="u", equations="-div(dot([[10, 1], [1, 1]], grad(u))) = 1"
    )
@@ -404,7 +404,7 @@ gradient vanishes, as it does at the start of Newton's method from
 
 .. code-block:: python
 
-   problem = dm.Problem(mesh, method="fem")
+   problem = dm.Problem(mesh, method="FEM")
    pde = problem.add_physics(
        "general_form_PDE",
        variables="u",
@@ -425,7 +425,7 @@ The Allen-Cahn equation
 
 .. code-block:: python
 
-   problem = dm.Problem(mesh, method="fem")
+   problem = dm.Problem(mesh, method="FEM")
    phase = problem.add_physics(
        "general_form_PDE",
        variables="phi",
@@ -454,7 +454,7 @@ is written as two second-order equations, with the chemical potential
 
 .. code-block:: python
 
-   problem = dm.Problem(mesh, method="fem")
+   problem = dm.Problem(mesh, method="FEM")
    mixture = problem.add_physics(
        "general_form_PDE",
        variables=["c", "mu"],
@@ -481,7 +481,7 @@ The Gray-Scott equations
 
 .. code-block:: python
 
-   problem = dm.Problem(mesh, method="fem")
+   problem = dm.Problem(mesh, method="FEM")
    species = problem.add_physics(
        "general_form_PDE",
        variables=["u", "v"],
@@ -507,7 +507,7 @@ the largest :math:`k` (see :ref:`tutorial-criticality`):
 
 .. code-block:: python
 
-   problem = dm.Problem(mesh, method="fem")
+   problem = dm.Problem(mesh, method="FEM")
    neutrons = problem.add_physics(
        "general_form_PDE",
        variables=["phi1", "phi2"],
@@ -533,7 +533,7 @@ the divergence carries the factor of the radius,
    cylinder = dm.generate_rectangle_mesh(
        x_min=0.0, x_max=0.01, y_min=0.0, y_max=0.02, num_x_elements=10, num_y_elements=20
    )
-   problem = dm.Problem(cylinder, method="fem", coordinates="axisymmetric")
+   problem = dm.Problem(cylinder, method="FEM", coordinates="axisymmetric")
    heat = problem.add_physics(
        "general_form_PDE",
        variables="T",
@@ -556,7 +556,7 @@ In plane strain:
 
 .. code-block:: python
 
-   problem = dm.Problem(mesh, method="fem")
+   problem = dm.Problem(mesh, method="FEM")
    solid = problem.add_physics(
        "general_form_PDE",
        variables=[{"U": "vector"}],

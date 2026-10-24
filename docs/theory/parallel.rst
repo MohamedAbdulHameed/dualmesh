@@ -214,8 +214,8 @@ guarantees only that the residuals obtained with different thread counts
 differ, if at all, by rounding at the last bit.  In the measurements below
 the residual norm is identical to all thirteen digits printed at every thread
 count, and the test suite requires the solved nodal values of a serial run and a
-four-thread run to agree to within :math:`10^{-12}` in absolute terms for all
-four discretisations.  A user who requires exactly reproducible bits should set
+four-thread run to agree to within :math:`10^{-12}` in absolute terms for both
+discretisations.  A user who requires exactly reproducible bits should set
 the thread count to one.
 
 Measured threading performance
@@ -233,9 +233,8 @@ it and is shown only to make that point.
    ===========  ========  =========  =========  ============
    Method       1 thread  2 threads  4 threads  Speedup at 2
    ===========  ========  =========  =========  ============
-   ``dmcdm``    0.604 s   0.398 s    0.346 s    1.52
-   ``fem``      0.261 s   0.211 s    0.187 s    1.24
-   ``hfvm``     0.813 s   0.524 s    0.498 s    1.55
+   ``DMCDM``    0.604 s   0.398 s    0.346 s    1.52
+   ``FEM``      0.261 s   0.211 s    0.187 s    1.24
    ===========  ========  =========  =========  ============
 
 The single-thread times depend on four properties of the implementation: the
@@ -306,7 +305,7 @@ their values.  Two libraries can do this, chosen with the ``gather_scatter``
 argument of :class:`~dualmesh.Problem`, as the discretization is chosen with
 ``method``, and the answer is the same with either.
 
-``"petsc"``
+``"PETSc"``
    PETSc's star forests (PetscSF) [PETSc2023]_.  At setup, each index has a
    *home* rank in an even layout of the indices, and a minimum reduction there
    over the pairs (rank, local index) of every copy finds the owner, which every
@@ -407,9 +406,9 @@ the size limits of the serial automatic solver:
 * when an iteration does not converge within 500 iterations, MUMPS solves
   the system.
 
-``linear_solver="lu"`` takes MUMPS directly.  ``preconditioner`` takes the
-block preconditioners by name (``"lsc"``, ``"pcd"``, ``"pressure_mass"``,
-``"physics_blocks"``, and ``"amg"`` for GAMG with the rigid body modes), and
+``linear_solver="LU"`` takes MUMPS directly.  ``preconditioner`` takes the
+block preconditioners by name (``"LSC"``, ``"PCD"``, ``"pressure_mass"``,
+``"physics_blocks"``, and ``"AMG"`` for GAMG with the rigid body modes), and
 ``petsc_options`` refines them.  Any other choice is a PETSc option string,
 for example ``"-ksp_type gmres -pc_type asm -sub_pc_type ilu"`` for restricted
 additive Schwarz with incomplete subdomain solves [CaiSarkis1999]_, or
@@ -482,27 +481,6 @@ generators and the readers build only each rank's part, this bounds the
 problem size by the memory of a single rank.  The partitioning also runs on the
 first rank alone.
 
-**The cell-centered finite volume method runs with two layers of ghost
-cells.**  Its unknowns sit at the cells and at the faces of the boundary of the
-domain, and it integrates over the faces.  The flux through a face between two
-parts needs the reconstructed gradients of the cells on both sides, and the
-gradient of a cell comes from all its neighbors, so every part also holds the
-cells of other parts up to two layers away, which PETSc's ``DMPlexDistribute``
-sends with the part (its overlap).  A cell is numbered by its element and a
-boundary face after all cells, in the order of the elements, so that the
-numbering does not depend on the partition, and the gather-scatter then works on
-cells and faces as it works on nodes.  Every face is integrated by one process,
-the one whose cell on it has the smaller global number, and the pieces of the
-residual and of the Jacobian at the cells that several processes hold are
-added as at shared nodes, so the Jacobian is the serial one and Newton's method
-takes the serial number of iterations.  A gap condition pairs across processes
-as for the other methods.  The test suite checks every cell and boundary face
-against the serial solution on one to six processes, on triangles, on
-distorted quadrilaterals (where one layer of ghost cells is not enough and
-gives differences of :math:`10^{-5}`), on tetrahedra, with a nonlinear
-diffusivity, across a gap, and through a checkpoint and a restart on another
-partition.
-
 **Gap conditions pair across processes.**  A gap condition pairs every
 integration point of its primary side with the closest point of its secondary
 side, which may belong to another process.  Every process shares the elements
@@ -520,9 +498,8 @@ processes against the serial one on one to six processes.
 distributed error indicator, no parallel marking and no parallel refinement, so
 an adaptive loop and an MPI run cannot be combined.
 
-**Only the assembly is threaded.**  All four discretisations thread their
-element and face loops, including the cell-centred finite volume method, which
-uses the same scratch, atomic and triplet arrangement.  The remainder of a
+**Only the assembly is threaded.**  Both discretisations thread their
+element and face loops.  The remainder of a
 solve runs serially: the integrated boundary conditions, the concentrated
 loads, the merge of the triplet lists, the construction of the sparse matrix and
 the linear solve itself, which is handed to Eigen [Eigen]_ and which the library
@@ -548,8 +525,7 @@ per rank plus a ``.pvtu`` index that ParaView and VisIt open as a single data
 set.
 
 **The distributed answer does not depend on the decomposition.**  This property
-is verified numerically.  On four ranks, for each of ``dmcdm``, ``fem`` and
-``hfvm``, for every partitioner of the build (PT-Scotch, ParMETIS and contiguous blocks) and for the
+is verified numerically.  On four ranks, for each of ``DMCDM`` and ``FEM``, for every partitioner of the build (PT-Scotch, ParMETIS and contiguous blocks) and for the
 automatic choice, additive Schwarz, GAMG and MUMPS, the distributed steady
 conduction solution agrees with the serial one node by node to between
 :math:`2 \times 10^{-14}` and :math:`3 \times 10^{-12}`.  These differences are

@@ -270,28 +270,13 @@ public:
 Method
 methodFromString(const std::string & s)
 {
-  // One name per method: "finite volume" alone names two methods.
   if (s == "dmcdm")
     return Method::DualMesh;
   if (s == "fem")
     return Method::FiniteElement;
-  if (s == "hfvm")
-    return Method::FiniteVolumeVertex;
-  if (s == "zfvm")
-    return Method::FiniteVolumeCell;
   throw InputError("Unknown method '" + s +
-                   "' (use 'DMCDM', 'FEM', 'HFVM' for the vertex-centred finite volume "
-                   "method, or 'ZFVM' for the cell-centred finite volume method).");
-}
-
-BoundaryGradient
-boundaryGradientFromString(const std::string & s)
-{
-  if (s == "first_order")
-    return BoundaryGradient::FirstOrder;
-  if (s == "second_order")
-    return BoundaryGradient::SecondOrder;
-  throw InputError("Unknown boundary gradient '" + s + "' (use 'first_order' or 'second_order').");
+                   "' (use 'FEM', the finite element method, for solids, or 'DMCDM', the dual "
+                   "mesh control domain method, for fluids).");
 }
 
 CoordinateSystem
@@ -876,7 +861,7 @@ PYBIND11_MODULE(_core, m)
            "A copy of this mesh with quadratic elements. Edge2 becomes Edge3, Tri3 becomes "
            "Tri6, Quad4 becomes Quad9, Tet4 becomes Tet10 and Hex8 becomes Hex27; with "
            "serendipity=True, Quad4 becomes Quad8 and Hex8 becomes Hex20 instead, which work "
-           "with the finite element and cell-centred finite volume methods only. The corner "
+           "with the finite element method only. The corner "
            "nodes keep their numbers and positions, so the geometry of the domain does not "
            "change; the added nodes sit at the midpoints of the edges, faces and cells they "
            "belong to. Side sets carry over unchanged and node sets gain the added nodes that "
@@ -1424,10 +1409,9 @@ PYBIND11_MODULE(_core, m)
            py::arg("method") = "dmcdm",
            py::arg("coordinates") = "cartesian")
       .def(
-          "set_boundary_gradient",
-          [](Problem & p, const std::string & s)
-          { p.setBoundaryGradient(boundaryGradientFromString(s)); },
-          py::arg("order"))
+          "set_method",
+          [](Problem & p, const std::string & s) { p.setMethod(methodFromString(s)); },
+          py::arg("method"))
       .def(
           "_flow_operators",
           [](Problem & p, const std::string & preconditioner)
@@ -1564,19 +1548,10 @@ PYBIND11_MODULE(_core, m)
           py::arg("steady_terms"),
           py::arg("time_kernels"),
           py::arg("eigenvalue"))
-      .def("is_cell_centered", &Problem::isCellCentered)
       .def("set_num_threads", &Problem::setNumThreads, py::arg("num_threads"))
       .def("num_threads", &Problem::numThreads)
       .def("effective_threads", &Problem::effectiveThreads)
       .def("thread_safe", &Problem::threadSafe)
-      .def("num_entities", &Problem::numEntities)
-      .def("entity_point",
-           [](const Problem & p, Index i)
-           {
-             const Point & x = p.entityPoint(i);
-             return std::vector<double>{x[0], x[1], x[2]};
-           })
-      .def("boundary_entities", &Problem::boundaryEntities, py::arg("boundary"))
       .def("extend_variable_blocks",
            &Problem::extendVariableBlocks,
            py::arg("name"),

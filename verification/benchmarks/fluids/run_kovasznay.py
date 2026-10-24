@@ -11,10 +11,10 @@ force, solves it on [-0.5, 1] x [-0.5, 1.5] with the exact velocity on three
 sides and the exact traction on the outflow side x = 1, and records the errors
 of every method on a sequence of meshes:
 
-* the stabilized pressure-velocity formulation with dmcdm, fem, hfvm and zfvm,
+* the stabilized pressure-velocity formulation with dmcdm and fem,
   by Newton's method;
 * the Taylor-Hood element (fem on Quad9 elements);
-* the projection time integration (dmcdm, fem, hfvm), marched from the exact
+* the projection time integration (dmcdm, fem), marched from the exact
   field to the steady state of its discretization, with the velocity
   prescribed on all four sides.
 
@@ -41,8 +41,8 @@ FIELDS = {
 }
 # Elements across x, and 4/3 as many across y.  The coarsest mesh is 16 across: on 8 x 11 elements the cell-centered method has no converged solution (Newton's method and relaxed direct iteration both fail).
 LEVELS = [16, 32, 64, 128]
-METHODS = ["dmcdm", "fem", "hfvm", "zfvm"]
-PROJECTION_METHODS = ["dmcdm", "fem", "hfvm"]
+METHODS = ["dmcdm", "fem"]
+PROJECTION_METHODS = ["dmcdm", "fem"]
 DEFAULT_OUT = HERE.parents[2] / "docs" / "_static" / "figures" / "fluids"
 
 
@@ -159,7 +159,7 @@ def compute():
             f"{time.perf_counter() - start:.1f} s",
             flush=True,
         )
-    result = study(formulation="Taylor_Hood").convergence_study(
+    result = study(formulation="Taylor-Hood").convergence_study(
         lambda n: mesh(n, "Quad9"), LEVELS[:-1], method="fem", report="none"
     )
     data["fem, Taylor-Hood"] = {

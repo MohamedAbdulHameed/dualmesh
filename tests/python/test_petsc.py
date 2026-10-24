@@ -33,7 +33,6 @@ def _cavity(problem, reynolds_number=50.0, formulation="pressure"):
         dynamic_viscosity=1.0,
         density=reynolds_number,
         formulation=formulation,
-        pressure_pin_point=(0.5, 0.0),
     )
     problem.add_boundary_condition("Dirichlet", "top", variable="velocity_x", value=1.0)
     problem.add_boundary_condition("Dirichlet", "top", variable="velocity_y", value=0.0)
@@ -54,7 +53,7 @@ def _heat(problem):
 
 
 @needs_petsc
-@pytest.mark.parametrize("method", ["fem", "dmcdm", "hfvm", "zfvm"])
+@pytest.mark.parametrize("method", ["fem", "dmcdm"])
 @pytest.mark.parametrize(
     "options",
     [
@@ -100,10 +99,10 @@ def test_petsc_solves_the_taylor_hood_saddle_point_system(options):
     factorisation is MUMPS, which pivots."""
     mesh = dm.generate_rectangle_mesh(0, 1, 0, 1, 8, 8, element_type="Quad9")
     reference = dm.Problem(mesh, method="fem")
-    _cavity(reference, formulation="Taylor_Hood")
+    _cavity(reference, formulation="Taylor-Hood")
     reference.solve(linear_solver="lu")
     problem = dm.Problem(mesh, method="fem")
-    _cavity(problem, formulation="Taylor_Hood")
+    _cavity(problem, formulation="Taylor-Hood")
     problem.solve(linear_solver="petsc", petsc_options=options, linear_tolerance=1e-12)
     for variable in ("velocity_x", "velocity_y", "pressure"):
         assert problem.values(variable) == pytest.approx(reference.values(variable), abs=1e-9)

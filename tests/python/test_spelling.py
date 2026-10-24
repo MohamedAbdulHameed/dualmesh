@@ -18,9 +18,7 @@ def heat(method):
     return problem
 
 
-@pytest.mark.parametrize(
-    "written, lower", [("FEM", "fem"), ("DMCDM", "dmcdm"), ("HFVM", "hfvm"), ("ZFVM", "zfvm")]
-)
+@pytest.mark.parametrize("written, lower", [("FEM", "fem"), ("DMCDM", "dmcdm")])
 def test_a_method_is_written_in_capitals_and_accepted_in_lower_case(written, lower):
     upper, small = heat(written), heat(lower)
     assert upper.method == small.method == written

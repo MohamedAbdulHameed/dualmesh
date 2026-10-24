@@ -263,7 +263,7 @@ NodalBC::initialSetup(Problem & problem)
   ResidualObject::initialSetup(problem);
   std::set<Index> ids;
   for (const auto & b : _boundaries)
-    for (Index n : problem.boundaryEntities(b))
+    for (Index n : problem.mesh().boundaryNodes(b))
       ids.insert(n);
   _nodes.assign(ids.begin(), ids.end());
 }
@@ -315,7 +315,7 @@ NodalLoad::initialSetup(Problem & problem)
   _value = getFunction(problem, "value");
   std::set<Index> ids;
   for (const auto & b : _params.getStringList("boundary"))
-    for (Index n : problem.boundaryEntities(b))
+    for (Index n : problem.mesh().boundaryNodes(b))
       ids.insert(n);
   _boundary_nodes.assign(ids.begin(), ids.end());
   _point_nodes.clear();
@@ -330,11 +330,9 @@ NodalLoad::initialSetup(Problem & problem)
     Point p{pts[i], stride == 3 ? pts[i + 1] : 0.0, stride == 3 ? pts[i + 2] : 0.0};
     Index best = -1;
     double bd = std::numeric_limits<double>::infinity();
-    for (Index n = 0; n < problem.numEntities(); ++n)
+    for (Index n = 0; n < problem.mesh().numNodes(); ++n)
     {
-      if (!problem.integratedEntity(n))
-        continue;
-      const double d = norm(problem.entityPoint(n) - p);
+      const double d = norm(problem.mesh().node(n) - p);
       if (d < bd)
       {
         bd = d;
@@ -589,12 +587,12 @@ addAdvectionSchemeParam(InputParameters & params)
       "advection_scheme",
       ParameterKind::String,
       std::string("central"),
-      "How the advective term is discretised: 'central' (the source v . grad u, for every "
-      "method), 'upwind' (the face flux with the upstream value, first order, for dmcdm, hfvm and "
-      "zfvm), 'linear_upwind' (the upstream value corrected by the upstream gradient, second "
-      "order, zfvm), 'limited' (the upstream value blended towards the central one by the van "
-      "Albada limiter, second order and bounded, zfvm). The streamline stabilisation of the "
-      "finite element method is the kernel heat_streamline_stabilization. Default central.");
+      "How the advective term is discretised: 'central' (the source v . grad u, for both "
+      "methods), or a face flux of DMCDM: 'upwind' (the upstream value, first order), "
+      "'linear_upwind' (the upstream value corrected by the upstream gradient, second order) or "
+      "'limited' (the upstream value blended towards the central one by the van Albada limiter, "
+      "second order and bounded). The streamline stabilisation is the kernel "
+      "heat_streamline_stabilization. Default central.");
 }
 
 const Kernel *
@@ -607,13 +605,10 @@ massConservationKernel(const Problem & problem)
 }
 
 ADVector3
-advectingVelocity(const QpContext & ctx,
-                  const Kernel * mass,
-                  bool cells,
-                  const std::vector<int> & velocities)
+advectingVelocity(const QpContext & ctx, const Kernel * mass, const std::vector<int> & velocities)
 {
   ADVector3 w{ADReal(0.0), ADReal(0.0), ADReal(0.0)};
-  if (mass && (cells || !ctx.on_boundary) && mass->conservedVelocity(ctx, w))
+  if (mass && !ctx.on_boundary && mass->conservedVelocity(ctx, w))
     return w;
   for (std::size_t d = 0; d < velocities.size(); ++d)
     w[d] = ctx.coefficientValue(velocities[d]);
@@ -623,39 +618,25 @@ advectingVelocity(const QpContext & ctx,
 AdvectionScheme
 advectionScheme(const Problem & problem, const std::string & text, const std::string & owner)
 {
-  const Method m = problem.method();
-  const bool cells = m == Method::FiniteVolumeCell;
-  const bool nodes = m == Method::DualMesh || m == Method::FiniteVolumeVertex;
-  const auto refuse = [&](const std::string & allowed)
-  {
-    throw InputError("'" + owner + "': the advection scheme '" + text +
-                     "' is not available with this method, which takes " + allowed + ".");
-  };
-  const std::string choices = cells || nodes
-                                  ? "central, upwind, linear_upwind or limited"
-                                  : "central (the streamline stabilisation of the finite "
-                                    "element method is the kernel "
-                                    "heat_streamline_stabilization, which heat_transfer adds "
-                                    "with advection_scheme 'SUPG', and momentum_stabilization "
-                                    "for a flow)";
   if (text == "central")
     return AdvectionScheme::Central;
-  if (text == "upwind")
-  {
-    if (!cells && !nodes)
-      refuse(choices);
-    return AdvectionScheme::Upwind;
-  }
-  if (text == "linear_upwind" || text == "limited")
-  {
-    if (!cells && !nodes)
-      refuse(choices);
-    return text == "limited" ? AdvectionScheme::Limited : AdvectionScheme::LinearUpwind;
-  }
-  if (text == "SUPG" || text == "supg")
-    refuse(choices);
-  throw InputError("'" + owner + "': unknown advection scheme '" + text +
-                   "'. The schemes are central, upwind, linear_upwind and limited.");
+  const bool face = text == "upwind" || text == "linear_upwind" || text == "limited";
+  if (!face && text != "SUPG" && text != "supg")
+    throw InputError("'" + owner + "': unknown advection scheme '" + text +
+                     "'. The schemes are central, upwind, linear_upwind and limited.");
+  if (!face || !problem.isDual())
+    throw InputError(
+        "'" + owner + "': the advection scheme '" + text + "' is not available with this method, " +
+        (problem.isDual()
+             ? std::string("which takes central, upwind, linear_upwind or limited.")
+             : std::string("which takes central. The streamline stabilisation is the kernel "
+                           "heat_streamline_stabilization, which heat_transfer adds with "
+                           "advection_scheme 'SUPG', and momentum_stabilization for a flow. The "
+                           "face fluxes upwind, linear_upwind and limited are those of "
+                           "method='DMCDM'.")));
+  return text == "upwind"    ? AdvectionScheme::Upwind
+         : text == "limited" ? AdvectionScheme::Limited
+                             : AdvectionScheme::LinearUpwind;
 }
 
 } // namespace dualmesh

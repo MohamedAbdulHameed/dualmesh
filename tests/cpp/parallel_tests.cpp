@@ -104,7 +104,7 @@ bareLocalPart(const Mesh & mesh, const std::vector<Index> & elements)
   return part;
 }
 
-/// Quadrilaterals on the unit square whose interior nodes are moved off the grid, so that no line between two cell centers is normal to their face; the edges stay straight and form the side sets "left", "right", "bottom" and "top".
+/// Quadrilaterals on the unit square whose interior nodes are moved off the grid, so that no element is a parallelogram; the edges stay straight and form the side sets "left", "right", "bottom" and "top".
 Mesh
 distortedQuadrilaterals(int nx, int ny)
 {
@@ -234,51 +234,24 @@ main()
     check(comm.sum(gs.numOwned()) == num_global,
           "gather-scatter (" + tag + "): every index is owned exactly once");
 
-    // The largest holder of every index claims it, and every rank adds entities of its own (negative indices), which no operation changes and no rank owns.
-    const auto claims_of = [&](int r, Index g)
-    {
-      for (int q = ranks - 1; q > r; --q)
-        if (holds(q, g))
-          return false;
-      return true;
-    };
+    // Every rank adds entities of its own (negative indices), which no operation changes and no
+    // rank owns.
     std::vector<Index> with_own = ids;
-    std::vector<char> claims;
-    for (Index g : ids)
-      claims.push_back(claims_of(comm.rank(), g) ? 1 : 0);
     for (int k = 0; k < 5; ++k)
-    {
       with_own.insert(with_own.begin() + k * 3, -1);
-      claims.insert(claims.begin() + k * 3, 1);
-    }
-    GatherScatter claimed;
-    claimed.setup(comm, with_own, library, claims);
+    GatherScatter own;
+    own.setup(comm, with_own, library);
     std::vector<double> values(with_own.size());
     for (std::size_t i = 0; i < with_own.size(); ++i)
       values[i] = with_own[i] < 0 ? -7.0 : value(comm.rank(), with_own[i], 0);
     std::vector<double> own_sum = values;
-    claimed.sum(own_sum.data(), 1);
-    claimed.copyFromOwners(values.data(), 1);
-    bool claimed_right = true, own_untouched = true;
+    own.sum(own_sum.data(), 1);
+    own.copyFromOwners(values.data(), 1);
+    bool own_untouched = true;
     for (std::size_t i = 0; i < with_own.size(); ++i)
-    {
-      const Index g = with_own[i];
-      if (g < 0)
-      {
+      if (with_own[i] < 0)
         own_untouched = own_untouched && values[i] == -7.0 && own_sum[i] == -7.0 &&
-                        !claimed.owns(static_cast<Index>(i)) &&
-                        claimed.owner(static_cast<Index>(i)) == -1;
-        continue;
-      }
-      int last = -1;
-      for (int r = 0; r < ranks; ++r)
-        if (holds(r, g))
-          last = r;
-      claimed_right = claimed_right && claimed.owner(static_cast<Index>(i)) == last &&
-                      values[i] == value(last, g, 0);
-    }
-    check(everywhere(claimed_right),
-          "gather-scatter (" + tag + "): the claiming holder owns an index and gives its value");
+                        !own.owns(static_cast<Index>(i)) && own.owner(static_cast<Index>(i)) == -1;
     check(everywhere(own_untouched),
           "gather-scatter (" + tag +
               "): an entity of one rank alone is left unchanged and unowned");
@@ -500,10 +473,8 @@ main()
   }
 
   // ---- the distributed solution does not depend on the partition ---------
-  for (auto [name, method] :
-       std::vector<std::pair<std::string, Method>>{{"dmcdm", Method::DualMesh},
-                                                   {"fem", Method::FiniteElement},
-                                                   {"hfvm", Method::FiniteVolumeVertex}})
+  for (auto [name, method] : std::vector<std::pair<std::string, Method>>{
+           {"dmcdm", Method::DualMesh}, {"fem", Method::FiniteElement}})
   {
     Mesh mesh = generateRectangleMesh(grid(12), grid(12), "Quad4");
 
@@ -841,10 +812,8 @@ main()
     if (GatherScatter::haveGslib())
       gather_scatters.push_back("gslib");
     for (bool doubly : {false, true})
-      for (const auto & [name, method] :
-           std::vector<std::pair<std::string, Method>>{{"dmcdm", Method::DualMesh},
-                                                       {"fem", Method::FiniteElement},
-                                                       {"hfvm", Method::FiniteVolumeVertex}})
+      for (const auto & [name, method] : std::vector<std::pair<std::string, Method>>{
+               {"dmcdm", Method::DualMesh}, {"fem", Method::FiniteElement}})
       {
         Mesh mesh = generateRectangleMesh(grid(12), grid(10), "Quad4");
         auto reference_mesh = std::make_shared<Mesh>(mesh);
@@ -948,11 +917,8 @@ main()
                                 {"secondary_boundary", std::vector<std::string>{"secondary"}},
                                 {"gap_conductance", 50.0}}));
     };
-    for (const auto & [name, method] :
-         std::vector<std::pair<std::string, Method>>{{"dmcdm", Method::DualMesh},
-                                                     {"fem", Method::FiniteElement},
-                                                     {"hfvm", Method::FiniteVolumeVertex},
-                                                     {"zfvm", Method::FiniteVolumeCell}})
+    for (const auto & [name, method] : std::vector<std::pair<std::string, Method>>{
+             {"dmcdm", Method::DualMesh}, {"fem", Method::FiniteElement}})
     {
       auto reference_mesh = std::make_shared<Mesh>(mesh);
       Problem reference(reference_mesh, method);
@@ -975,121 +941,6 @@ main()
       label << name << ": a gap between bodies on different ranks gives the serial solution (worst "
             << "relative difference " << worst / scale << ")";
       check(worst <= 1e-9 * scale, label.str());
-    }
-  }
-
-  // ---- the cell-centered finite volume method ---------------------------------
-  // Every part holds two layers of ghost cells and every face is integrated by one rank, so the value at every cell and boundary face is the serial one.
-  // On distorted quadrilaterals the line between two cell centers is not normal to their face, so the flux needs the reconstructed gradients of both cells, and those of a ghost cell are complete only with the second layer (on triangles and tetrahedra the first layer already holds every neighbor of a ghost cell next to the part).
-  // The nonlinear diffusivity checks, by the number of Newton iterations, that the Jacobian is the serial one.
-  {
-    struct Case
-    {
-      std::string name;
-      Mesh mesh;
-      bool nonlinear;
-      BoundaryGradient gradient;
-    };
-    std::vector<Case> cases;
-    cases.push_back({"triangles",
-                     generateRectangleMesh(grid(14), grid(11), "Tri3"),
-                     false,
-                     BoundaryGradient::FirstOrder});
-    cases.push_back({"distorted quadrilaterals with the second-order boundary gradient",
-                     distortedQuadrilaterals(13, 9),
-                     false,
-                     BoundaryGradient::SecondOrder});
-    cases.push_back({"distorted quadrilaterals with a nonlinear diffusivity",
-                     distortedQuadrilaterals(10, 12),
-                     true,
-                     BoundaryGradient::FirstOrder});
-    cases.push_back({"triangles with a nonlinear diffusivity",
-                     generateRectangleMesh(grid(12), grid(10), "Tri3", "left"),
-                     true,
-                     BoundaryGradient::SecondOrder});
-    cases.push_back({"tetrahedra",
-                     generateBoxMesh(grid(4), grid(3), grid(3), "Tet4"),
-                     false,
-                     BoundaryGradient::FirstOrder});
-    const auto define = [](Problem & problem, bool nonlinear)
-    {
-      if (!nonlinear)
-      {
-        defineConduction(problem);
-        return;
-      }
-      problem.addVariable("temperature");
-      problem.addObject("diffusion",
-                        "diffusion",
-                        params("diffusion",
-                               {{"variable", std::string("temperature")},
-                                {"diffusivity", 2.0},
-                                {"solution_polynomial", std::vector<double>{1.0, 0.08}}}));
-      problem.addObject(
-          "body_force",
-          "source",
-          params("body_force", {{"variable", std::string("temperature")}, {"value", 300.0}}));
-      problem.addObject("Dirichlet",
-                        "cold",
-                        params("Dirichlet",
-                               {{"variable", std::string("temperature")},
-                                {"boundary", std::vector<std::string>{"left", "bottom"}},
-                                {"value", 1.0}}));
-    };
-    if (comm.size() > 1)
-    {
-      Mesh whole = generateRectangleMesh(grid(6), grid(6), "Quad4");
-      std::vector<Index> mine;
-      for (Index e = 0; e < whole.numElements(); ++e)
-        if (e % comm.size() == comm.rank())
-          mine.push_back(e);
-      bool refused = false;
-      try
-      {
-        DistributedProblem bare(bareLocalPart(whole, mine), Method::FiniteVolumeCell);
-      }
-      catch (const InputError &)
-      {
-        refused = true;
-      }
-      check(!comm.any(!refused), "zfvm refuses a part of a mesh without two layers of ghost cells");
-    }
-    for (const auto & c : cases)
-    {
-      Problem reference(std::make_shared<Mesh>(c.mesh), Method::FiniteVolumeCell);
-      reference.setBoundaryGradient(c.gradient);
-      define(reference, c.nonlinear);
-      const SolveResult serial = reference.solveSteady();
-      const auto expected = reference.values("temperature");
-      std::vector<std::string> exchanges = {"petsc"};
-      if (GatherScatter::haveGslib())
-        exchanges.push_back("gslib");
-      for (const auto & exchange : exchanges)
-      {
-        DistributedOptions options;
-        options.linear_tolerance = 1e-13;
-        options.gather_scatter = exchange;
-        DistributedProblem distributed(
-            c.mesh, Method::FiniteVolumeCell, CoordinateSystem::Cartesian, options);
-        distributed.local().setBoundaryGradient(c.gradient);
-        define(distributed.local(), c.nonlinear);
-        const SolveResult parallel = distributed.solveSteady();
-        const auto got = distributed.gatheredValues("temperature");
-        double worst = got.size() == expected.size() ? 0.0 : 1e300, scale = 0;
-        for (std::size_t n = 0; n < got.size() && n < expected.size(); ++n)
-        {
-          worst = std::max(worst, std::abs(got[n] - expected[n]));
-          scale = std::max(scale, std::abs(expected[n]));
-        }
-        std::ostringstream label;
-        label << "zfvm on " << c.name << " (" << exchange
-              << ") gives the serial value at every cell and boundary face (worst relative "
-                 "difference "
-              << worst / scale << ", Newton iterations " << parallel.total_iterations << ", serial "
-              << serial.total_iterations << ")";
-        check(worst <= 1e-9 * scale && parallel.total_iterations == serial.total_iterations,
-              label.str());
-      }
     }
   }
 
@@ -1125,8 +976,8 @@ main()
     };
     Mesh mesh = distortedQuadrilaterals(10, 8);
     const std::string file = "dualmesh_parallel_tests.chk";
-    for (const auto & [name, method] : std::vector<std::pair<std::string, Method>>{
-             {"dmcdm", Method::DualMesh}, {"zfvm", Method::FiniteVolumeCell}})
+    for (const auto & [name, method] :
+         std::vector<std::pair<std::string, Method>>{{"dmcdm", Method::DualMesh}})
     {
       TransientOptions whole;
       whole.end_time = 1.0;
@@ -1193,10 +1044,8 @@ main()
     settings.density = 1.0;
     settings.dynamic_viscosity = 0.1;
     settings.order = 2;
-    for (const auto & [method_name, method] :
-         std::vector<std::pair<std::string, Method>>{{"fem", Method::FiniteElement},
-                                                     {"dmcdm", Method::DualMesh},
-                                                     {"hfvm", Method::FiniteVolumeVertex}})
+    for (const auto & [method_name, method] : std::vector<std::pair<std::string, Method>>{
+             {"fem", Method::FiniteElement}, {"dmcdm", Method::DualMesh}})
       for (const bool periodic : {false, true})
       {
         const auto define = [&](Problem & problem)

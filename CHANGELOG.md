@@ -9,26 +9,23 @@ All notable changes to this project are documented here. The format follows
 ### Added
 
 - **Advection schemes.** The heat that a `nonisothermal_flow` coupling carries
-  is stabilised by default: the streamline upwind Petrov-Galerkin term (SUPG,
-  the new `heat_streamline_stabilization`) with FEM, DMCDM and HFVM, and the
-  limited face flux with ZFVM. `advection_scheme` of `heat_transfer` chooses
-  `"central"`, `"upwind"`, `"linear_upwind"`, `"limited"` or `"SUPG"` where the
-  case calls for it. The inertia of a flow takes its scheme from the method,
-  with no option: SUPG with FEM, DMCDM and HFVM, limited with ZFVM, which
-  measured the closest on the cavity at Re = 100 and 1000, the Kovasznay flow
-  and natural convection. The object-level kernels `advection`,
+  is stabilised by default with the streamline upwind Petrov-Galerkin term
+  (SUPG, the new `heat_streamline_stabilization`). `advection_scheme` of
+  `heat_transfer` chooses `"central"`, `"upwind"`, `"linear_upwind"`,
+  `"limited"` or `"SUPG"` where the case calls for it. The inertia of a flow
+  takes SUPG, with no option. The object-level kernels `advection`,
   `heat_convection` and `convective_inertia` take `advection_scheme`. The face
   schemes are `"upwind"`, `"linear_upwind"` (the upstream value corrected by
   the upstream gradient) and `"limited"` (blended towards the central value by
-  the van Albada limiter), on every control volume method: DMCDM and HFVM
-  reconstruct the gradient at a node by least squares, with the exact Jacobian
-  (not yet on a distributed mesh). The heat and the momentum carry the
+  the van Albada limiter), with DMCDM, which reconstructs the gradient at a
+  node by least squares, with the exact Jacobian (not yet on a distributed
+  mesh). The heat and the momentum carry the
   velocity whose flux the mass equation conserves (v - tau r_m through the
   faces, as OpenFOAM carries phi), so they are conserved exactly, the
   temperature does not depend on its scale, and upwind is bounded. On a
   boundary layer at a cell Péclet number of 5, upwind and limited stay in
-  [0, 1] where central reaches -1.5 with ZFVM and -0.43 with the node methods,
-  limited converges at order 1.7 to 2.05, and upwind at order 0.9. On the
+  [0, 1] where central reaches -0.43, limited converges at order 2.05, and
+  upwind at order 0.9. On the
   skew jump of Brooks and Hughes with a held outflow, the temperature of
   Galerkin reaches 409 and that of SUPG 1.6. The SUPG residual is the sum of
   the sources of every other kernel of the temperature.
@@ -48,7 +45,7 @@ All notable changes to this project are documented here. The format follows
   block, on one process or many. The PETSc version with exact block solves
   takes the iterations of the built-in one. On the lid-driven cavity `lsc`
   takes 10 to 30 iterations per Newton step for Taylor-Hood and 17 to 70 for
-  the equal-order element of `fem` and `dmcdm` up to Re = 400, and `pcd` 17
+  the equal-order element of `FEM` and `DMCDM` up to Re = 400, and `pcd` 17
   to 79 (the Stokes start included). The counts grow by at most 73 per cent over two refinements of the
   mesh. On a
   three-dimensional Taylor-Hood cavity on two processes `lsc` is about twice
@@ -128,8 +125,7 @@ All notable changes to this project are documented here. The format follows
   element and dual mesh control domain methods run on surfaces, in serial
   and distributed: a tilted rectangle reproduces the flat solution to
   round-off, and the Laplace-Beltrami problem on the sphere converges at
-  second order. The cell-centred finite volume method, flow and the
-  continuum formulations of `solid_mechanics` refuse surfaces, and shells come
+  second order. Flow and the continuum formulations of `solid_mechanics` refuse surfaces, and shells come
   next. `mesh_from_arrays` and `read_mesh` place a mesh in the space its
   coordinates use.
 - **Surface generators.** `generate_cylinder_surface_mesh` (radius, length,
@@ -220,8 +216,8 @@ All notable changes to this project are documented here. The format follows
   preconditioner. For equal-order elements the weight of the divergence in
   the pressure equation is capped by the stabilization parameter of the
   pressure-velocity formulation, which keeps the accuracy at small steps.
-  The finite element, dual mesh control domain and vertex-centered finite
-  volume methods, serial and distributed, with periodic boundaries.
+  The finite element and dual mesh control domain methods, serial and
+  distributed, with periodic boundaries.
   Checked at second order in space on the Taylor-Green vortex, at the order
   of the backward difference in time on an exactly represented flow, and
   against the serial run on one to four processes.
@@ -251,13 +247,6 @@ All notable changes to this project are documented here. The format follows
   rho dv/dt, which a transient solve includes and a steady solve leaves out.
 - `dualmesh_benchmark projection` times the steps of the projection time
   integration on any number of processes.
-- **The cell-centered finite volume method in distributed problems**: every
-  part holds two layers of ghost cells, sent by PETSc's DMPlexDistribute, and
-  every face is integrated by one process. Cells and boundary faces are
-  numbered in the order of the elements, so checkpoints do not depend on the
-  partition. Checked against the serial solution at every cell and boundary
-  face on one to six processes, with the serial number of Newton iterations,
-  across a gap, and through a restart on another partition.
 - **Gap conditions in distributed problems**: an interface condition pairs
   its primary and secondary sides across processes; a process that holds a
   primary side reads the secondary elements it lacks as ghost elements, which
@@ -472,12 +461,24 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- **The method follows the physics by default.** `Problem(mesh)` takes
+  DMCDM when the problem has a `fluid_dynamics` of the pressure formulation,
+  and FEM otherwise. `method="FEM"` or `"DMCDM"` chooses one.
+- **The pressure level of an enclosed flow is fixed automatically.** When no
+  boundary determines the pressure, which the solver finds from the Jacobian
+  (a constant pressure solves the homogeneous problem), Newton's method holds
+  the pressure unknown nearest the centre of the fluid at its value and
+  shifts the converged pressure to a mean of zero over the fluid, with the
+  reactions taken after the shift. The result is the same on any number of
+  processes. A boundary velocity whose net flux is not zero, which an
+  incompressible flow cannot take in, is reported with its size. A level
+  that changes the flow (a property or source that depends on the pressure)
+  is refused with the request for a pressure datum.
 - **A steady flow at rest starts from the Stokes solution.** Newton's method
   starts from the same problem without the inertia, solved at the first load
   factor, when the velocity is zero wherever no condition prescribes it. On a
-  channel at Re = 100 with a varying inflow, the cell-centred method diverged
-  from rest ("structurally singular" after about 40 iterations) and now
-  converges in 3 to 4 iterations. A start set by the user is kept. The counts
+  channel at Re = 100 with a varying inflow, Newton's method diverged from
+  rest and now converges in a few iterations. A start set by the user is kept. The counts
   of a solve include the Stokes iterations.
 - **A diverging Newton iteration stops** when the residual reaches a million
   times its first value, with an error that says so and names the remedies.
@@ -490,11 +491,9 @@ All notable changes to this project are documented here. The format follows
   the centreline velocities halves for every method, the Kovasznay errors fall
   by about a quarter, the Nusselt number at Ra = 1e5 is within 0.5 % (1.1 %
   before), and the SUPG boundary layer has the error 0.0024 (0.143 before).
-  The pressure of zfvm on triangles converges at order 1.06 (1.33 before).
 - **Abbreviations in the input are written in capitals and proper names with a
   capital**, as the naming rule of the input requires: `advection_scheme="SUPG"`,
-  the methods `"FEM"`, `"DMCDM"`, `"HFVM"`, `"ZFVM"` (`Problem.method` holds this
-  spelling), the linear solvers `"LU"`, `"CG"`, `"GMRES"`, `"BiCGStab"`,
+  the methods `"FEM"` and `"DMCDM"` (`Problem.method` holds this spelling), the linear solvers `"LU"`, `"CG"`, `"GMRES"`, `"BiCGStab"`,
   `"PETSc"`, the preconditioners `"ILU"`, `"ILUT"`, `"AMG"`, `"Jacobi"`, `"LSC"`,
   `"PCD"`, and the nonlinear solvers `"Newton"`, `"Picard"`. The lower-case
   spelling is accepted everywhere.
@@ -586,7 +585,7 @@ All notable changes to this project are documented here. The format follows
   (was `incompressible_flow`), with their couplings, and `general_form_PDE`.
   The `beam`, `plate` and `circular_plate` physics are formulations of
   `solid_mechanics` (`formulation="plate"`, `"beam"` with
-  `theory="Euler_Bernoulli"` or `"Timoshenko"` and, for Timoshenko,
+  `theory="Euler-Bernoulli"` or `"Timoshenko"` and, for Timoshenko,
   `form="mixed"` or `"displacement"`, `"circular_plate"` with
   `theory="first_order"` or `"classical"`), whose section is given by its
   material (`youngs_modulus`, `poissons_ratio` and the `thickness` or the
@@ -661,7 +660,7 @@ All notable changes to this project are documented here. The format follows
   of `GaussianProcess.predict`), and `fgm.beam_stiffness` takes
   `poissons_ratio`.
 - The Taylor-Hood formulation of `incompressible_flow` is named
-  `Taylor_Hood`.
+  `Taylor-Hood`.
 - `linear_solver="automatic"` iterates with algebraic multigrid where it
   used BiCGSTAB with ILU(0).
 - The Python code is formatted by `ruff format` with a line length of 100
@@ -681,6 +680,22 @@ All notable changes to this project are documented here. The format follows
 
 ### Removed
 
+- **The vertex-centred (`"HFVM"`) and cell-centred (`"ZFVM"`) finite volume
+  methods**, with `boundary_gradient`, `Problem.is_cell_centered` and
+  `Problem.boundary_entities`. Two
+  methods remain: FEM, the more accurate for solids (order p + 1 on
+  quadratic elements, every element type, the structures and Taylor-Hood),
+  and DMCDM, for fluids, as accurate as equal-order FEM, locally
+  conservative and 30 % faster per projection step. HFVM, with the same
+  unknowns as DMCDM, was within 1 % of it on the Kovasznay flow and up to
+  twice as far from the exact solution on conduction. ZFVM was seven times
+  less accurate on the cavity at Re = 1000 and the slowest.
+- `pressure_pin_point`, `stabilization` and `streamline_stabilization` of
+  `fluid_dynamics`. The pressure level of an enclosed flow is fixed
+  automatically. The pressure stabilisation is always on for the equal-order
+  element and off for Taylor-Hood. The advection of the momentum takes SUPG. A
+  `point_Dirichlet` condition on the pressure still prescribes its value at a
+  point.
 - `linear_elastic_stress`, merged into `small_strain_stress`: one isotropic
   stress object for every formulation. The thermal strain is an eigenstrain of
   `thermal_expansion_eigenstrain`. The orthotropic option (`stiffness_c11` to
@@ -790,7 +805,7 @@ All notable changes to this project are documented here. The format follows
 - Newton's method accepts the round-off level of a badly scaled system: from
   the third iteration, a residual that no longer falls, after a step of at
   most 1e-8 of the solution, below 64 eps |J| |U|. A thin displacement
-  Timoshenko beam (L/h of 1000 and 10000) stalled there with fem and was
+  Timoshenko beam (L/h of 1000 and 10000) stalled there with FEM and was
   reported as not converged, with its exact answer in hand. The serial and
   the distributed solvers decide it by one rule.
 - Two physics on two blocks that share a field (a stepped beam) gave the
@@ -834,10 +849,6 @@ All notable changes to this project are documented here. The format follows
   whose right-hand normal pointed into the prism, so `write_sidesets` wrote
   those faces wound inward. Every side of every element type is now wound
   outward, which a test checks against the divergence theorem.
-- The cell-centred finite volume method (`zfvm`) joined only two of the
-  elements at a face shared by three or more (overlapping or duplicated
-  elements) and solved on the wrong connections. Such a mesh is now refused
-  with the numbers of the elements.
 - A mesh whose nodes had a constant coordinate that was not zero (a plate at
   z = 0.5) became a surface in space, and so did a plane mesh with round-off
   in z. A coordinate now moves a mesh into a higher space only when its range
@@ -875,21 +886,12 @@ All notable changes to this project are documented here. The format follows
   index of 0.031 with the interval 0.049 to 0.142). The interval now holds
   the bootstrap error of the estimate and the spread of the random functions
   around their mean, and it is centred on the estimate.
-- `Problem.write_csv` wrote the node coordinates beside the values, which for
-  the cell-centred method (`zfvm`) are at the element and boundary face
-  centroids. It now writes the positions of the unknowns.
 - A store of the uncertainty studies matched a run only when its input values
   were equal to the last bit, so a store written with other versions of
   NumPy and SciPy ran its runs again. It now matches the input values to a
   relative tolerance of 1e-12.
 - `describe` of an input group failed on a list of groups and on a nested
   list of numbers.
-- The cell-centred finite volume method (`zfvm`) took the coefficient of
-  only one side at a face between two blocks, which made it first order
-  wherever a coefficient (a conductivity, a diffusion coefficient) jumps
-  between materials. It now uses the harmonic mean of the two sides, and
-  converges at second order (`tests/python/test_finite_volume.py`).
-
 - A singular system (a part of the mesh that no boundary condition holds,
   e.g., a floating body or a region without any temperature condition) is
   reported with the variables and the extent of that part. It was solved

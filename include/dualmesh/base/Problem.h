@@ -9,7 +9,6 @@
 #include "dualmesh/base/Kernel.h"
 #include "dualmesh/base/Property.h"
 #include "dualmesh/fe/Assembly.h"
-#include "dualmesh/fv/CellMesh.h"
 #include "dualmesh/linalg/SaddlePointSolver.h"
 #include "dualmesh/mesh/Mesh.h"
 
@@ -294,6 +293,12 @@ public:
   virtual double sum(double value) const { return value; }
   /// Whether a condition holds on some process.
   virtual bool any(bool value) const { return value; }
+  /// The smallest and the largest of a number over the processes.
+  virtual double minimum(double value) const { return value; }
+  virtual double maximum(double value) const { return value; }
+  /// The number of local unknown @p dof in the numbering of all processes; -1 for one that no
+  /// process solves for.
+  virtual Index globalDof(Index dof) const { return dof; }
   /// The norm of a vector of unknowns over the processes, each unknown counted once.
   virtual double norm(const Vector & v) const { return v.norm(); }
   /// Add the contributions of the other processes to the entries of an assembled residual
@@ -384,6 +389,10 @@ public:
   const Mesh & mesh() const { return *_mesh; }
   std::shared_ptr<Mesh> meshPointer() const { return _mesh; }
   Method method() const { return _method; }
+  /// Whether the method is the dual mesh control domain method, which tests with control volumes.
+  bool isDual() const { return _method == Method::DualMesh; }
+  /// Change the method before the problem is initialised: the method chosen from the physics.
+  void setMethod(Method method);
   CoordinateSystem coordinateSystem() const { return _coord; }
   /// The value of the symbol eigenvalue that the expressions read; an eigenvalue study sets it.
   void setEigenvalue(double value) { _eigenvalue = value; }
@@ -406,20 +415,8 @@ public:
       out.push_back(item.first);
     return out;
   }
-  /// True when the unknowns sit at cell centroids instead of mesh nodes.
-  bool isCellCentered() const { return _method == Method::FiniteVolumeCell; }
-  /// The cell-centred finite volume mesh (cell-centred methods only).
-  const CellMesh & cellMesh() const;
-  /// Number of entities carrying degrees of freedom: mesh nodes for the dual
-  /// mesh, finite element and vertex-centred finite volume methods; cells plus
-  /// boundary faces for the cell-centred finite volume method.
-  Index numEntities() const;
-  /// Position of the degree of freedom entity @p i.
-  const Point & entityPoint(Index i) const;
-  /// Entities of a boundary, used by nodal (essential) boundary conditions.
-  std::vector<Index> boundaryEntities(const std::string & name) const;
-  Index numDofs() const { return numEntities() * numVariables(); }
-  Index dof(Index entity, int var) const { return entity * numVariables() + var; }
+  Index numDofs() const { return _mesh->numNodes() * numVariables(); }
+  Index dof(Index node, int var) const { return node * numVariables() + var; }
 
   // ---- variables of different orders --------------------------------------------
   //
@@ -490,7 +487,6 @@ public:
   /// (zero and one for a steady solve), which the flow preconditioners take.
   double linearDt() const { return _linear_dt; }
   double linearTheta() const { return _linear_theta; }
-  void setBoundaryGradient(BoundaryGradient g) { _boundary_gradient = g; }
 
   /// Number of threads requested for the assembly loops; 0 means the OpenMP
   /// default (the value of OMP_NUM_THREADS, or the number of cores).
@@ -539,8 +535,8 @@ public:
   /// solves the same step more than once (an outer iteration).
   struct StateSnapshot
   {
-    std::vector<std::vector<std::uint64_t>> keys[2];
-    std::vector<std::vector<double>> values[2];
+    std::vector<std::vector<std::uint64_t>> keys;
+    std::vector<std::vector<double>> values;
   };
   StateSnapshot snapshotState() const;
   void restoreState(const StateSnapshot & snapshot);
@@ -634,7 +630,7 @@ public:
   /// are applied only on the owning process, so that a shared node does not
   /// receive the same point load once per process.  An empty mask, the
   /// default, means that every entity is owned.
-  void setOwnedEntities(std::vector<char> owned) { _owned_entity = std::move(owned); }
+  void setOwnedNodes(std::vector<char> owned) { _owned_node = std::move(owned); }
 
   // ---- executioners ---------------------------------------------------------------------
   SolveResult solveSteady(const SolverOptions & options = {});
@@ -646,25 +642,13 @@ public:
   SolveResult solveTransient(const TransientOptions & transient,
                              const SolverOptions & options = {});
   /// Called after every converged time step (time, problem).
-  /// The elements that this problem integrates: all of them, except the ghost elements at the end of the mesh that a distributed run adds to read the other side of an interface or, for the cell-centered method, the cells next to its part.
+  /// The elements that this problem integrates: all of them, except the ghost elements at the end of the mesh that a distributed run adds to read the other side of an interface.
   Index numIntegratedElements() const
   {
     return _num_integrated_elements >= 0 ? _num_integrated_elements : _mesh->numElements();
   }
   /// Make the elements from @p first on ghosts, which are read but not integrated, and size the solution for the nodes added to the mesh with them.
   void setGhostElements(Index first);
-  /// The global number of every local element.
-  /// The processes of a distributed problem of the cell-centered method agree by it which of them integrates a face between two of their parts: the one that integrates the cell with the smaller number.
-  void setGlobalElementNumbers(std::vector<Index> numbers)
-  {
-    _global_element_numbers = std::move(numbers);
-  }
-  /// Whether this problem integrates face @p f of the cell-centered method: a face of two integrated cells, a boundary face of an integrated cell, and a face between an integrated cell and a ghost cell when the integrated cell has the smaller global number.
-  /// Every face of a distributed mesh is thus integrated by exactly one process.
-  bool integratesFace(const CellFace & f) const;
-  /// Whether entity @p i belongs to the part that this problem integrates: for the cell-centered method, an integrated cell or a boundary face of one; every node otherwise.
-  /// A value or a load given at a point goes to the nearest of these entities, so that a ghost cell's face, which is not a face of the mesh, is never chosen.
-  bool integratedEntity(Index i) const;
   /// Sides of ghost elements on side set @p sideset, which an interface condition with that secondary side set may pair with.
   void addInterfaceCandidates(const std::string & sideset, const std::vector<Side> & sides);
   /// Call the callback of setTimeStepCallback, if any, for a step accepted at the current time.
@@ -727,10 +711,7 @@ public:
   ///     H1 seminorm ( \int |grad u_h - grad u|^2 dV )^(1/2)
   ///
   /// u_h is the finite-dimensional field the method actually represents: the
-  /// element interpolation of the nodal values for the three node-based
-  /// methods, and for the cell-centred finite volume method the linear
-  /// reconstruction U_c + G_c . (x - x_c) in every cell, whose gradient is the
-  /// reconstructed cell gradient G_c.  The integrals are evaluated with a
+  /// element interpolation of the nodal values.  The integrals are evaluated with a
   /// Gauss rule of @p quadrature_points per direction on every element patch
   /// (zero chooses the polynomial order plus four), with the coordinate factor
   /// of the problem, so an axisymmetric error is the error of the body of
@@ -757,10 +738,12 @@ public:
   /// Call @p visit with the context of every element centroid (the solution and the properties
   /// evaluated there) and the block of the element.
   void centroidContexts(const std::function<void(QpContext &, int)> & visit) const;
+  /// The integral over the blocks of variable @p v of the shape function of each node (partial
+  /// at the nodes that processes share).
+  Vector nodeWeights(int v) const;
   /// Integral of a variable over the domain (with the coordinate factor).
   double integrate(const std::string & var) const;
-  /// The integral of a variable over every element (over every cell of the
-  /// cell-centred method), with the coordinate factor.  An empty name gives
+  /// The integral of a variable over every element, with the coordinate factor.  An empty name gives
   /// the volume of every element.
   std::vector<double> elementIntegrals(const std::string & var) const;
   /// Measure of the named side sets: their total length in two dimensions and
@@ -846,9 +829,6 @@ private:
   {
     std::vector<double> cur, lag, old;
     std::vector<Index> dofs;
-    /// Cell-centred finite volume only: the entities whose values a face flux
-    /// depends on, in the order of the local degrees of freedom.
-    std::vector<Index> entities;
     /// Node-based methods: the columns of a face flux that depends on the gradients at the face's
     /// nodes, the element's degrees of freedom and then those of the nodes around the two.
     std::vector<Index> columns;
@@ -868,16 +848,6 @@ private:
     std::vector<const Kernel *> kernels;
   };
   void buildGroups();
-  /// Assembly for the cell-centred finite volume method (ProblemFiniteVolume.cpp).
-  void assembleCellFiniteVolume(const Vector & U,
-                                const AssemblyOptions & opts,
-                                Vector & R,
-                                SparseMatrix * J);
-  /// Green-Gauss gradient of every variable at every cell centroid.
-  std::vector<std::vector<Point>> cellGradients(const Vector & U) const;
-  /// Fill a context with the cell value and the Green-Gauss cell gradient.
-  void
-  fillContextCell(QpContext & ctx, Index cell, const std::vector<std::vector<Point>> & grads) const;
   void fillContext(QpContext & ctx,
                    const Element & el,
                    const MappedPoint & field_point,
@@ -895,7 +865,6 @@ private:
     Point xi{0, 0, 0};  ///< secondary parent reference coordinates
     Point x{0, 0, 0};   ///< the paired point
     int owner = -1;     ///< dual mesh: secondary local node owning the point
-    Index face = -1;    ///< cell-centred method: secondary boundary face
   };
   /// Pair every integration point of every interface condition (called by
   /// initialize()).  Indexed [condition][primary side or face][point].
@@ -908,9 +877,6 @@ private:
                          std::vector<Eigen::Triplet<double>> * triplets,
                          ThreadScratch & scratch);
   double coordFactor(const Point & x) const;
-  /// The weight of the equation of a cell-centred boundary entity: the
-  /// coordinate factor, or 1 where that vanishes (on an axis of symmetry).
-  double boundaryEntityFactor(const Point & x) const;
   void markActiveDofs();
   /// Refuse an element whose Jacobian determinant is negative at its centroid
   /// or at any of its nodes: an inverted element would be integrated with a
@@ -965,6 +931,23 @@ private:
   /// a rigid body motion) is a solution of the homogeneous problem, e.g., a
   /// body without supports or a region without any temperature condition.
   void checkSingularity(const SparseMatrix & J) const;
+  /// The pressure of an incompressible flow whose boundary prescribes no pressure (an enclosed
+  /// flow) is determined only up to a constant, which the Jacobian @p J shows as a constant
+  /// pressure that it maps to zero.  Hold one unknown of each such pressure at its value, the
+  /// same unknown on every process, and return whether one was added.
+  bool holdPressureLevels(const SparseMatrix & J);
+  /// Shift each held pressure of @p U to a mean of zero over its fluid, and return the sum over
+  /// the pressures of |shift| times the scale of its constant mode.
+  double shiftPressureLevels(Vector & U) const;
+  /// Add to each held pressure of @p U a test shift of the size of the pressure in its equations,
+  /// the larger of its largest value and @p force (the size of the reactions) over the scale of
+  /// its constant mode, and return the sum of shift times that scale.
+  double testShiftPressureLevels(Vector & U, double force) const;
+  /// Take the size of the mass residual at the start of a solve as the scale of the boundary flux.
+  void notePressureLevelFlux();
+  /// Warn once when the mass equation of a held unknown, at the converged @p R, carries a net
+  /// flux of the boundary: data that an incompressible flow cannot satisfy.
+  void checkPressureLevelBalance(const Vector & R);
   struct LinearSolverCache;
   mutable std::shared_ptr<LinearSolverCache> _solver_cache;
   SolveResult nonlinearSolve(const SolverOptions & options,
@@ -980,11 +963,9 @@ private:
   std::shared_ptr<Mesh> _mesh;
   Method _method;
   CoordinateSystem _coord;
-  std::shared_ptr<CellMesh> _cells;
-  BoundaryGradient _boundary_gradient = BoundaryGradient::FirstOrder;
   int _num_threads = 0;
   bool _thread_safe = true;
-  std::vector<char> _owned_entity;
+  std::vector<char> _owned_node;
   std::vector<Variable> _vars;
   /// See hasMixedOrder() and localDofIndex(): whether the layout is mixed,
   /// the position of every mesh-order variable among the mesh-order variables
@@ -1002,7 +983,6 @@ private:
   std::vector<std::shared_ptr<Constraint>> _constraints;
   std::vector<Index> _primary_of;
   Index _num_integrated_elements = -1;
-  std::vector<Index> _global_element_numbers;
   std::map<std::string, std::vector<Side>> _interface_candidates;
   bool _constraints_outside = false;
   std::vector<char> _extra_constrained;
@@ -1032,6 +1012,20 @@ private:
   /// appear, an interface that starts to couple two bodies).
   Index _singularity_pattern_rows = -1;
   Index _singularity_pattern_nonzeros = -1;
+  /// A pressure whose level is free: the variable, the unknown held for it (-1 on a process
+  /// that does not have it), the norm of |J| times its constant mode, the largest norm of its
+  /// mass residual at the start of a solve (the scale of the boundary flux), the weights of its
+  /// mean (nodeWeights), and whether the net flux was reported.
+  struct PressureLevel
+  {
+    int variable = -1;
+    Index dof = -1;
+    double scale = 0.0, flux = 0.0;
+    Vector weight;
+    bool warned = false;
+  };
+  bool _levels_checked = false;
+  std::vector<PressureLevel> _levels;
   Vector _U;
   Vector _last_residual;
   double _time = 0.0;
@@ -1041,7 +1035,7 @@ private:
   std::function<void(int)> _output_callback;
   std::map<std::string, std::vector<double>> _element_fields;
 
-  /// The history of one owner (an element, or a cell-centred face): the keys
+  /// The history of one owner (an element): the keys
   /// of its points and, for each, a record in three buffers.  Only the
   /// thread that assembles an owner touches its entry.
   struct OwnerState
@@ -1050,7 +1044,7 @@ private:
     std::vector<double> start, trial, committed;
   };
   int _state_record = 0;
-  mutable std::vector<OwnerState> _state[2];
+  mutable std::vector<OwnerState> _state;
   /// Point the context at the history of its point (inserting a zero record
   /// the first time), or clear the pointers if the point has none.
   void bindState(QpContext & ctx) const;

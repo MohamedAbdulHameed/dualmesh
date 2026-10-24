@@ -97,7 +97,7 @@ def _flow_study(fields, dimension, coordinates="cartesian", outflow=None, **opti
     study = mms.ManufacturedSolution(
         fields, dimension=dimension, coordinates=coordinates, flux_boundaries=outflow
     )
-    study.add_physics("fluid_dynamics", formulation="Taylor_Hood", **options)
+    study.add_physics("fluid_dynamics", formulation="Taylor-Hood", **options)
     return study
 
 
@@ -294,8 +294,7 @@ def _cavity(n):
         "fluid_dynamics",
         dynamic_viscosity=1.0,
         density=100.0,
-        formulation="Taylor_Hood",
-        pressure_pin_point=(0.5, 0.0),
+        formulation="Taylor-Hood",
     )
     problem.add_boundary_condition(
         "Dirichlet",
@@ -346,9 +345,9 @@ def test_the_pressure_at_non_corner_nodes_is_the_linear_field():
     problem = dm.Problem(mesh, method="fem")
     problem.add_physics(
         "fluid_dynamics",
-        formulation="Taylor_Hood",
-        pressure_pin_point=(0.125, 0.0),
+        formulation="Taylor-Hood",
     )
+    problem.add_boundary_condition("point_Dirichlet", variable="pressure", point=[0.125, 0.0])
     problem.add_boundary_condition("Dirichlet", "top", variable="velocity_x", value=1.0)
     for variable, boundaries in (
         ("velocity_x", ["left", "right", "bottom"]),
@@ -396,7 +395,7 @@ def test_an_unknown_order_lists_the_valid_ones():
         problem.add_variable("pressure", order="second")
 
 
-@pytest.mark.parametrize("method", ["dmcdm", "hfvm", "zfvm"])
+@pytest.mark.parametrize("method", ["dmcdm"])
 def test_a_first_order_variable_needs_the_finite_element_method(method):
     mesh = dm.generate_rectangle_mesh(0, 1, 0, 1, 2, 2, element_type="Quad9")
     problem = dm.Problem(mesh, method=method)
@@ -409,22 +408,11 @@ def test_a_first_order_variable_needs_the_finite_element_method(method):
 def test_taylor_hood_needs_a_quadratic_mesh_and_the_finite_element_method():
     linear = dm.generate_rectangle_mesh(0, 1, 0, 1, 2, 2)
     with pytest.raises(ValueError, match="second_order"):
-        dm.Problem(linear, method="fem").add_physics("fluid_dynamics", formulation="Taylor_Hood")
+        dm.Problem(linear, method="fem").add_physics("fluid_dynamics", formulation="Taylor-Hood")
     quadratic = linear.second_order()
     with pytest.raises(ValueError, match="method='FEM'"):
         dm.Problem(quadratic, method="dmcdm").add_physics(
-            "fluid_dynamics", formulation="Taylor_Hood"
-        )
-
-
-@pytest.mark.parametrize("option", ["stabilization", "streamline_stabilization"])
-def test_taylor_hood_refuses_stabilisation(option):
-    mesh = dm.generate_rectangle_mesh(0, 1, 0, 1, 2, 2, element_type="Quad9")
-    with pytest.raises(ValueError, match="Taylor-Hood"):
-        dm.Problem(mesh, method="fem").add_physics(
-            "fluid_dynamics",
-            formulation="Taylor_Hood",
-            **{option: True},
+            "fluid_dynamics", formulation="Taylor-Hood"
         )
 
 
@@ -433,7 +421,7 @@ def test_an_existing_pressure_of_the_wrong_order_is_refused():
     problem = dm.Problem(mesh, method="fem")
     problem.add_variable("pressure")
     with pytest.raises(ValueError, match="order='first'"):
-        problem.add_physics("fluid_dynamics", formulation="Taylor_Hood")
+        problem.add_physics("fluid_dynamics", formulation="Taylor-Hood")
 
 
 def test_unstabilised_equal_order_is_refused():
@@ -455,5 +443,5 @@ def test_unstabilised_equal_order_is_refused():
 
 def test_an_unknown_formulation_lists_the_valid_ones():
     mesh = dm.generate_rectangle_mesh(0, 1, 0, 1, 2, 2)
-    with pytest.raises(ValueError, match="penalty, pressure, Taylor_Hood"):
+    with pytest.raises(ValueError, match="penalty, pressure, Taylor-Hood"):
         dm.Problem(mesh, method="fem").add_physics("fluid_dynamics", formulation="taylor-hood")

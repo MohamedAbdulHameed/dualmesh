@@ -102,9 +102,8 @@ public:
   /// The polynomial order of the shape functions: 1 or 2.
   int order() const { return elementIsQuadratic(_type) ? 2 : 1; }
   /// Whether this element carries a dual mesh, which the dual mesh control
-  /// domain method and the vertex-centred finite volume method need.  Every
-  /// element supports the finite element method and the cell-centred finite
-  /// volume method; Quad8, Hex20 and Pyramid5 support only those two.
+  /// domain method needs.  Every element supports the finite element method;
+  /// Quad8, Hex20 and Pyramid5 support only that one.
   bool supportsDualMesh() const { return !_scv.empty(); }
   /// Why the element has no dual mesh, in a sentence that completes "this
   /// element cannot be used with the dual mesh methods because ...".  Empty

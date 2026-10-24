@@ -22,37 +22,28 @@ Creating the problem
        x_min=0.0, x_max=1.0, y_min=0.0, y_max=1.0, num_x_elements=10, num_y_elements=10
    )
 
-   problem = dm.Problem(mesh, method="dmcdm", coordinates="cartesian")
+   problem = dm.Problem(mesh, method="automatic", coordinates="cartesian")
 
-``method`` chooses the discretisation.  All four discretisations read the same
-problem description, so that a comparison of the methods requires a change of
-this keyword alone.
+``method`` chooses the discretisation.  Both methods read the same problem
+description.
 
-``"dmcdm"``
-   The dual mesh control domain method of [Reddy2019a]_ and [Reddy2024]_, and
-   the default.  The unknowns are located at the mesh nodes.  The balance law is
+``"FEM"``
+   The Galerkin finite element method, for solids.  It reaches order
+   :math:`p + 1` in :math:`L^2` on elements of order :math:`p`, accepts every
+   element type, and carries the structures, the mixed formulations and the
+   Taylor-Hood element.
+
+``"DMCDM"``
+   The dual mesh control domain method of [Reddy2019a]_ and [Reddy2024]_, for
+   fluids.  The unknowns are located at the mesh nodes.  The balance law is
    integrated over each node's control domain, and the flux at a control domain
-   interface is taken from the element interpolation.
+   interface is taken from the element interpolation, so mass and heat are
+   conserved in every control domain (see :doc:`/theory/finite_volume`).
 
-``"fem"``
-   The standard Galerkin finite element method, provided so that the two can be
-   compared on identical input.  The unknowns are again located at the nodes.
-
-``"hfvm"``
-   The vertex-centred finite volume method, the "half control volume"
-   formulation of Chapter 3 of [Reddy2024]_.  Its control volumes are the same
-   dual mesh control domains, but the flux at a face is computed from a
-   two-point difference along the edge joining the two nodes, whereas the dual
-   mesh control domain method takes it from the element interpolation.  See
-   :doc:`/theory/finite_volume`.
-
-``"zfvm"``
-   The cell-centred finite volume method, the "zero-thickness control volume"
-   formulation.  It is the only method whose unknowns are located away from the
-   mesh nodes: there is one unknown at every element centroid and one at every
-   boundary face centroid.  Code that reads results back must therefore use the
-   points returned by :meth:`~dualmesh.Problem.entity_points` in place of the
-   mesh nodes (see :doc:`output`).
+``"automatic"``
+   The default: DMCDM when the problem has a ``fluid_dynamics`` of the pressure
+   formulation, FEM otherwise.  The choice is made when the physics are built,
+   at the first solve.
 
 ``coordinates`` chooses the coordinate system, which determines the volume and
 area factors in every integral.
@@ -70,14 +61,6 @@ area factors in every integral.
 ``"spherical"``
    The first coordinate is the radius and the problem is a function of it alone.
    Volume integrals carry :math:`4\pi r^2`.
-
-``boundary_gradient`` applies only to the cell-centred finite volume method and
-selects how the gradient at a boundary face is reconstructed.  ``"first_order"``,
-the default, uses the difference between the face value and the owning cell
-value over the normal distance.  ``"second_order"`` also uses the neighbouring
-cell, which makes it exact for a quadratic normal profile and noticeably more
-accurate on a coarse mesh.  The two are compared in
-:doc:`/theory/finite_volume`.
 
 ``distributed`` and ``partitioner`` concern a problem split among
 MPI processes.  A script run with ``mpirun -n 4 python script.py`` splits the
@@ -206,10 +189,8 @@ lists them.
 **Convection-dominated transport.**  When a flow carries heat much faster than
 the heat conducts (a cell Péclet number above about 1), the central
 discretisation oscillates, so the heat that a ``nonisothermal_flow`` coupling
-carries is stabilised by default: with the streamline upwind Petrov-Galerkin
-term (SUPG) for FEM, DMCDM and HFVM, and with the bounded second-order face
-flux ``"limited"`` for ZFVM.  The inertia of the flow is treated the same way,
-with no option.  ``advection_scheme`` of ``heat_transfer`` chooses another
+carries is stabilised by default with the streamline upwind Petrov-Galerkin
+term (SUPG).  The inertia of the flow is treated the same way, with no option.  ``advection_scheme`` of ``heat_transfer`` chooses another
 scheme where the case calls for it, for example ``"central"`` where conduction
 matters as much as convection:
 
@@ -267,12 +248,12 @@ Taylor-Hood element, which combines a quadratic velocity with a linear pressure
 .. code-block:: python
 
    mesh = dm.generate_rectangle_mesh(0, 1, 0, 1, 16, 16, element_type="Quad9")
-   problem = dm.Problem(mesh, method="fem")
+   problem = dm.Problem(mesh, method="FEM")
    problem.add_variable("velocity_x")
    problem.add_variable("velocity_y")
    problem.add_variable("pressure", order="first")
 
-The ``fluid_dynamics`` physics with ``formulation="Taylor_Hood"``
+The ``fluid_dynamics`` physics with ``formulation="Taylor-Hood"``
 declares the variables in this way itself.
 
 The number of variables is limited by the automatic differentiation budget: the
@@ -349,9 +330,9 @@ unknowns onto the nodes and keeps a symmetric matrix symmetric.  A corner of a
 domain periodic in two directions is joined to a single primary node.  The two
 boundaries must match node by node after the translation, and a value
 prescribed on a secondary node must also be prescribed on its primary.  The
-condition works with ``fem``, ``hfvm`` and ``dmcdm``, serially and on any
-number of processes.  On a manufactured solution periodic in one direction and
-in two, every method converges at second order.
+condition works with ``FEM`` and ``DMCDM``, serially and on any number of
+processes.  On a manufactured solution periodic in one direction and in two,
+both methods converge at second order.
 
 .. code-block:: python
 

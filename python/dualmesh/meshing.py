@@ -206,8 +206,7 @@ def generate_rectangle_mesh(
     y: Sequence[float] | None = None,
 ) -> Mesh:
     """Structured two-dimensional mesh of ``Quad4``, ``Tri3``, ``Quad8``,
-    ``Quad9`` or ``Tri6`` elements.  ``Quad8`` works with ``method="fem"`` and
-    ``method="zfvm"`` only.
+    ``Quad9`` or ``Tri6`` elements.  ``Quad8`` works with ``method="FEM"`` only.
 
     Side sets ``"left"``, ``"right"``, ``"bottom"`` and ``"top"`` are created
     automatically.  Pass ``x_coordinates``/``y_coordinates`` for a fully
@@ -257,8 +256,8 @@ def generate_box_mesh(
     ``Pyramid5``, ``Hex20``, ``Hex27`` or ``Tet10`` elements.  A ``Tet4`` mesh
     has six tetrahedra per cell, a ``Wedge6`` mesh two prisms split on the base
     diagonal, and a ``Pyramid5`` mesh six pyramids meeting at an added centre
-    node.  ``Pyramid5`` and ``Hex20`` work with ``method="fem"`` and
-    ``method="zfvm"`` only.
+    node.  ``Pyramid5`` and ``Hex20`` work with ``method="FEM"``
+    only.
 
     Side sets ``"left"``, ``"right"``, ``"bottom"``, ``"top"``, ``"back"`` and
     ``"front"`` are created automatically.  The bounds are ``x=[x_min,

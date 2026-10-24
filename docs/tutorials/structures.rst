@@ -44,4 +44,4 @@ Points to note:
   kernel twice per model, once for bending and once for shear with reduced
   integration.
 * Geometric nonlinearity is switched on with ``von_karman=True``.  Use load
-  steps, and optionally ``nonlinear_solver="picard"`` with ``relaxation=0.35``.
+  steps, and optionally ``nonlinear_solver="Picard"`` with ``relaxation=0.35``.

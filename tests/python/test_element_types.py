@@ -1,11 +1,9 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 """Tests of the element types that not every method can use.
 
-Every element supports the finite element method and the cell-centred finite
-volume method, because both need only the element itself.  The dual mesh
-control domain method and the vertex-centred finite volume method integrate
-over the control domains of a dual mesh, so they need an element that carries
-one.  ``Wedge6`` does.  ``Quad8`` and ``Hex20`` do not, because a serendipity
+Every element supports the finite element method, which needs only the element
+itself.  The dual mesh control domain method integrates over the control
+domains of a dual mesh, so it needs an element that carries one.  ``Wedge6`` does.  ``Quad8`` and ``Hex20`` do not, because a serendipity
 element has no interior node and the median dual is undefined for it, and
 ``Pyramid5`` does not, because its apex is shared by four edges and the
 decomposition its control domain would need is not implemented.
@@ -21,12 +19,12 @@ import dualmesh as dm
 import numpy as np
 import pytest
 
-METHODS = ("dmcdm", "fem", "hfvm", "zfvm")
+METHODS = ("dmcdm", "fem")
 SUPPORTED = {
-    "Quad8": {"fem", "zfvm"},
-    "Hex20": {"fem", "zfvm"},
+    "Quad8": {"fem"},
+    "Hex20": {"fem"},
     "Wedge6": set(METHODS),
-    "Pyramid5": {"fem", "zfvm"},
+    "Pyramid5": {"fem"},
 }
 
 
@@ -163,7 +161,7 @@ def test_each_element_is_offered_to_exactly_the_methods_that_can_use_it(element_
     if method in SUPPORTED[element_type]:
         dm.Problem(mesh, method=method)
     else:
-        with pytest.raises(ValueError, match=f"{element_type}.*method='FEM'.*method='ZFVM'"):
+        with pytest.raises(ValueError, match=f"{element_type}.*method='FEM'"):
             dm.Problem(mesh, method=method)
 
 
@@ -189,7 +187,7 @@ def test_a_hexahedron_and_prism_hybrid_mesh_passes_the_patch_test(method):
     assert patch_test_error(hybrid_mesh("Wedge6"), method) < tolerance
 
 
-@pytest.mark.parametrize("method", ["fem", "zfvm"])
+@pytest.mark.parametrize("method", ["fem"])
 def test_a_hexahedron_and_pyramid_hybrid_mesh_passes_the_patch_test(method):
     tolerance = 1e-12
     assert patch_test_error(hybrid_mesh("Pyramid5"), method) < tolerance

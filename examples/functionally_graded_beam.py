@@ -13,7 +13,7 @@ MODULUS_TOP, MODULUS_BOTTOM, POISSON = 30.0e6, 3.0e6, 0.3
 LOAD = 0.5
 # The theory and, for Timoshenko, the form of each beam model.
 MODELS = {
-    "Euler-Bernoulli": ("Euler_Bernoulli", None),
+    "Euler-Bernoulli": ("Euler-Bernoulli", None),
     "Timoshenko, displacement": ("Timoshenko", "displacement"),
     "Timoshenko, mixed": ("Timoshenko", None),
 }

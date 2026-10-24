@@ -89,7 +89,6 @@ def flow_problem(n, method, formulation="pressure", element_type="Quad4", densit
         "fluid_dynamics",
         density=density,
         formulation=formulation,
-        pressure_pin_point=(0.5, 0.0),
     )
     problem.add_boundary_condition("Dirichlet", "top", variable="velocity_x", value=1.0)
     problem.add_boundary_condition("Dirichlet", "top", variable="velocity_y", value=0.0)
@@ -111,7 +110,7 @@ def assembly_benchmarks(quick, repeat):
         ("plane elasticity", elasticity_problem),
         ("pressure-velocity flow", flow_problem),
     ):
-        for method in ("fem", "dmcdm", "hfvm", "zfvm"):
+        for method in ("fem", "dmcdm"):
             problem = build(n, method)
             problem.initialize()
             seconds, (residual, _) = best_of(repeat, problem.linear_system)
@@ -141,7 +140,7 @@ def solver_benchmarks(quick, repeat):
     study = mms.ManufacturedSolution(
         fields, dimension=3, flux_boundaries={"right": (1.0, 0.0, 0.0)}
     )
-    study.add_physics("fluid_dynamics", formulation="Taylor_Hood")
+    study.add_physics("fluid_dynamics", formulation="Taylor-Hood")
     variants = [
         ("direct LU", dict(linear_solver="lu")),
         (

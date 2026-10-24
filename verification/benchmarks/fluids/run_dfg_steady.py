@@ -14,7 +14,10 @@ between the front and the back of the cylinder, p(0.15, 0.2) - p(0.25, 0.2), by
 sampling.  The reference values are C_D = 5.57953523384, C_L = 0.010618948146
 and Delta p = 0.11752016697.
 
-    python run_dfg_steady.py [output directory] [--plot-only]
+    python run_dfg_steady.py [output directory] [--plot-only] [--method fem | Taylor-Hood]
+
+One method per run keeps each run under the ten minutes allowed on the laptop; the cache merges
+the methods.
 """
 
 import sys
@@ -32,7 +35,7 @@ import plotstyle  # noqa: E402
 
 REFERENCE = {"drag": 5.57953523384, "lift": 0.010618948146, "dp": 0.11752016697}
 SIZES = [0.01, 0.005, 0.0025, 0.00125]  # element size on the cylinder
-METHODS = ["dmcdm", "fem", "hfvm", "zfvm"]
+METHODS = ["dmcdm", "fem"]
 SCALE = 2.0 / (0.2**2 * 0.1)  # 2 / (U_mean^2 D)
 DEFAULT_OUT = HERE.parents[2] / "docs" / "_static" / "figures" / "fluids"
 
@@ -64,8 +67,7 @@ def solve(mesh, method, formulation="pressure"):
             value=0.0,
         )
     start = time.perf_counter()
-    # The cell-centered method diverges on the coarsest mesh when the inflow starts at full speed, and raises it in four load steps.
-    problem.solve(load_factors=[0.25, 0.5, 0.75, 1.0] if method == "zfvm" else [1.0], report="none")
+    problem.solve(report="none")
     elapsed = time.perf_counter() - start
     pressure = problem.sample("pressure", [[0.15, 0.2], [0.25, 0.2]])
     return {
@@ -77,7 +79,7 @@ def solve(mesh, method, formulation="pressure"):
     }
 
 
-def compute():
+def compute(methods):
     import dualmesh as dm
 
     data = {}
@@ -89,9 +91,8 @@ def compute():
             for h in SIZES
             for order in (1, 2)
         }
-        for method in METHODS:
-            # The Jacobian of the cell-centered method couples two rings of neighbors, and its direct factorization on the finest mesh takes several minutes; that mesh is left out for it.
-            sizes = SIZES[:-1] if method == "zfvm" else SIZES
+        for method in [m for m in methods if m in METHODS]:
+            sizes = SIZES
             rows = [solve(meshes[(h, 1)], method) for h in sizes]
             data[method] = {key: np.asarray([r[key] for r in rows]) for key in rows[0]}
             data[method]["h"] = np.asarray(sizes)
@@ -99,8 +100,10 @@ def compute():
                 f"{method}: C_D {data[method]['drag']}, C_L {data[method]['lift']}, dp {data[method]['dp']}",
                 flush=True,
             )
+        if "Taylor-Hood" not in methods:
+            return data
         # The quadratic triangles of the Taylor-Hood element, twice as large, so that the two meshes have about as many nodes.
-        rows = [solve(meshes[(2 * h, 2)], "fem", "Taylor_Hood") for h in SIZES[1:]]
+        rows = [solve(meshes[(2 * h, 2)], "fem", "Taylor-Hood") for h in SIZES[1:]]
         data["fem, Taylor-Hood"] = {key: np.asarray([r[key] for r in rows]) for key in rows[0]}
         data["fem, Taylor-Hood"]["h"] = np.asarray(SIZES[1:])
         print(
@@ -145,12 +148,20 @@ def table(data):
 
 
 if __name__ == "__main__":
-    out, plot_only = plotstyle.parse_args(sys.argv[1:], DEFAULT_OUT)
+    argv = list(sys.argv[1:])
+    methods = [*METHODS, "Taylor-Hood"]
+    if "--method" in argv:
+        i = argv.index("--method")
+        methods = [argv[i + 1]]
+        del argv[i : i + 2]
+    out, plot_only = plotstyle.parse_args(argv, DEFAULT_OUT)
     cache = plotstyle.cache_path(__file__)
     if plot_only:
         data = plotstyle.load_cache(cache)
     else:
-        data = compute()
+        data = compute(methods)
+        if cache.exists():
+            data = {**plotstyle.load_cache(cache), **data}
         plotstyle.save_cache(cache, data)
     table(data)
     plot(data, out)

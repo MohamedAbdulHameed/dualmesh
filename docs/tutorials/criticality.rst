@@ -146,7 +146,7 @@ The flux of a bare homogeneous core is 0 at the boundary, and
 the geometrical buckling :math:`(\pi/H)^2` for a slab of thickness
 :math:`H`, :math:`(2.405/R)^2` for an infinite cylinder of radius :math:`R`,
 :math:`(\pi/R)^2` for a sphere and :math:`(2.405/R)^2 + (\pi/H)^2` for a
-finite cylinder ([Lee2025]_, Sect. 5.3).  All four methods converge to the
+finite cylinder ([Lee2025]_, Sect. 5.3).  Both methods converge to the
 slab value at second order in the element size.  A slab with the vacuum
 condition has the flux :math:`\cos(Bx)` with :math:`D B \tan(B a) = 1/r`,
 where :math:`a` is the half thickness, and the calculation gives it to

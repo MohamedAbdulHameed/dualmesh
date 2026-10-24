@@ -88,7 +88,7 @@ def test_the_general_form_of_diffusion_is_the_diffusion_kernel(method):
     assert np.array_equal(solve(True), solve(False))
 
 
-@pytest.mark.parametrize("method", ["fem", "dmcdm", "hfvm"])
+@pytest.mark.parametrize("method", ["fem", "dmcdm"])
 def test_linear_elasticity_in_general_form_is_solid_mechanics(method):
     """Plane strain written as two equations of general form, with the stress
     of Hooke's law as the flux, gives the displacements of solid_mechanics to

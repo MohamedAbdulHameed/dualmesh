@@ -49,12 +49,12 @@ from the exact fields:
        "fluid_dynamics",
        density=1.0,
        dynamic_viscosity=1.0 / Re,
-       formulation="pressure",  # or "Taylor_Hood" on Quad9 elements
+       formulation="pressure",  # or "Taylor-Hood" on Quad9 elements
    )
    result = study.convergence_study(
        lambda n: dm.generate_rectangle_mesh(-0.5, 1.0, -0.5, 1.5, n, round(4 * n / 3)),
        [16, 32, 64, 128],
-       method="dmcdm",  # fem, hfvm, zfvm
+       method="DMCDM",  # or FEM
    )
 
 The projection time integration marches the flow from the exact fields to its
@@ -66,7 +66,7 @@ the splitting takes: an outflow there would be a prescribed pressure (see
 
 .. code-block:: python
 
-   problem = dm.Problem(mesh, method="dmcdm")  # fem, hfvm
+   problem = dm.Problem(mesh, method="DMCDM")  # or FEM
    flow = problem.add_physics(
        "fluid_dynamics",
        density=1.0,
@@ -102,12 +102,6 @@ Results
    * - FEM
      - :math:`1.02 \times 10^{-3}` (1.98)
      - :math:`1.23 \times 10^{-3}` (1.93)
-   * - HFVM
-     - :math:`9.37 \times 10^{-4}` (1.98)
-     - :math:`1.18 \times 10^{-3}` (1.93)
-   * - ZFVM
-     - :math:`6.53 \times 10^{-4}` (1.95)
-     - :math:`5.53 \times 10^{-4}` (1.91)
    * - FEM, Taylor-Hood
      - :math:`2.11 \times 10^{-5}` (2.97)
      - :math:`7.17 \times 10^{-5}` (2.02)
@@ -117,20 +111,13 @@ Results
    * - FEM, projection
      - :math:`6.72 \times 10^{-4}` (2.01)
      - :math:`6.61 \times 10^{-4}` (3.56)
-   * - HFVM, projection
-     - :math:`5.90 \times 10^{-4}` (2.01)
-     - :math:`6.61 \times 10^{-4}` (3.19)
 
 Every method converges to the exact solution at its expected order: second
-order in the velocity for the equal-order elements and the cell-centered
-method, third order for the quadratic velocity of the Taylor-Hood element, and
+order in the velocity for the equal-order elements, third order for the quadratic velocity of the Taylor-Hood element, and
 about 1.9 in the pressure of the monolithic solutions, above the first order
 that the theory of the stabilized equal-order methods guarantees.  The pressure
 of the projection solutions falls faster on the finest meshes (order 3.2 to
-3.6).  The three node methods give nearly the same errors.  The cell-centered
-method's errors are about two thirds of those of the node methods in the
-velocity and half in the pressure, on the same mesh, whose cells are about as
-many as the nodes of the node methods.  The errors of the stabilized methods
+3.6).  The two methods give nearly the same errors.  The errors of the stabilized methods
 fell by about 40 % when the parameter :math:`\tau` took the factor 9 on its
 viscous term (:doc:`../theory/heat_and_fluids`): before, the velocity error of
 DMCDM on the finest mesh was :math:`1.64 \times 10^{-3}` (order 1.85).  The projection time integration reaches a steady state that is closer to

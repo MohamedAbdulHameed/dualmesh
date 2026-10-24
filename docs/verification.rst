@@ -144,33 +144,27 @@ in which the convergence theory of every method is stated,
    \qquad
    \lvert e \rvert_{H^1} = \Bigl( \int_\Omega \lvert \nabla e \rvert^2 \,\mathrm{d}V \Bigr)^{1/2} ,
 
-where :math:`u_h` is the field each method represents: the element
-interpolation of the nodal values for the node-based methods, and the linear
-reconstruction :math:`U_c + \mathbf{G}_c \cdot (\mathbf{x} - \mathbf{x}_c)` in
-every cell for the cell-centred method.
+where :math:`u_h` is the element interpolation of the nodal values.
 
 **Expected orders.**  For an element of polynomial order :math:`p`:
 
 ====================  =================  ====================
 Method                :math:`L^2` error  :math:`H^1` seminorm
 ====================  =================  ====================
-``fem``               :math:`p + 1`      :math:`p`
-``dmcdm``, ``hfvm``   2                  :math:`p`
-``zfvm``              2                  1
+``FEM``               :math:`p + 1`      :math:`p`
+``DMCDM``             2                  :math:`p`
 ====================  =================  ====================
 
 The first row is classical finite element theory, the extra order in
 :math:`L^2` coming from the duality argument of Aubin and Nitsche
-[Aubin1967]_ [Nitsche1968]_.  The control volume methods are optimal in the
+[Aubin1967]_ [Nitsche1968]_.  DMCDM is optimal in the
 energy seminorm, but their :math:`L^2` order remains 2 on quadratic elements,
 because a control volume balance is not a Galerkin projection
 (:doc:`theory/elements` explains where the interfaces lie and why their
-position matters).  The cell-centred method carries one value per cell whatever the
-element and reconstructs a linear field from it, so the element order improves
-only its geometry.
+position matters).
 
 **Coverage.**  ``tests/python/test_mms.py`` runs 161 convergence studies.  They
-cover the four methods on every element type each accepts, in one, two and
+cover both methods on every element type each accepts, in one, two and
 three dimensions, and in Cartesian, axisymmetric and spherical coordinates.
 They include variable, solution-dependent (nonlinear) and constant
 coefficients, advection in the conservative and the non-conservative form with
@@ -186,22 +180,22 @@ order.
 **Results.**  The observed orders on the finest pair of meshes for the diffusion
 problem with a variable coefficient, as :math:`L^2` / :math:`H^1`, are:
 
-============  =============  =============  =============  =============
-Element       ``fem``        ``dmcdm``      ``hfvm``       ``zfvm``
-============  =============  =============  =============  =============
-``Tri3``      1.99 / 1.00    1.99 / 1.00    1.99 / 1.00    2.00 / 1.00
-``Quad4``     2.00 / 1.00    2.00 / 1.00    1.99 / 1.00    2.00 / 1.00
-``Tri6``      3.00 / 1.99    2.01 / 1.99    2.04 / 1.99    2.00 / 1.00
-``Quad8``     3.00 / 2.00    n/a            n/a            2.00 / 1.00
-``Quad9``     3.00 / 2.00    2.05 / 2.00    2.23 / 2.00    2.00 / 1.00
-``Tet4``      1.94 / 0.98    1.96 / 0.98    1.96 / 0.98    1.97 / 0.98
-``Hex8``      1.99 / 1.01    2.00 / 1.01    1.98 / 1.01    1.97 / 0.99
-``Wedge6``    1.95 / 0.98    1.96 / 0.98    1.96 / 0.98    1.98 / 0.99
-``Pyramid5``  1.99 / 1.00    n/a            n/a            1.98 / 0.99
-``Tet10``     3.00 / 1.96    2.66 / 1.96    2.86 / 1.89    1.95 / 0.97
-``Hex20``     3.06 / 2.08    n/a            n/a            1.94 / 0.98
-``Hex27``     2.99 / 2.00    2.72 / 2.00    2.96 / 2.00    1.94 / 0.98
-============  =============  =============  =============  =============
+============  =============  =============
+Element       ``FEM``        ``DMCDM``
+============  =============  =============
+``Tri3``      1.99 / 1.00    1.99 / 1.00
+``Quad4``     2.00 / 1.00    2.00 / 1.00
+``Tri6``      3.00 / 1.99    2.01 / 1.99
+``Quad8``     3.00 / 2.00    n/a
+``Quad9``     3.00 / 2.00    2.05 / 2.00
+``Tet4``      1.94 / 0.98    1.96 / 0.98
+``Hex8``      1.99 / 1.01    2.00 / 1.01
+``Wedge6``    1.95 / 0.98    1.96 / 0.98
+``Pyramid5``  1.99 / 1.00    n/a
+``Tet10``     3.00 / 1.96    2.66 / 1.96
+``Hex20``     3.06 / 2.08    n/a
+``Hex27``     2.99 / 2.00    2.72 / 2.00
+============  =============  =============
 
 The two-dimensional sequences use :math:`4, 8, 16, 32` elements per side.  The
 three-dimensional sequences use :math:`3, 6, 12` for the linear elements and
@@ -224,7 +218,7 @@ A user-defined study requires only a few lines:
    result = study.convergence_study(
        lambda n: dm.generate_rectangle_mesh(0, 1, 0, 1, n, n, element_type="Tri6"),
        [4, 8, 16, 32],
-       method="fem",
+       method="FEM",
    )
    print(result.table())  # errors and observed orders
 
@@ -257,21 +251,18 @@ square elements.
    and largest error of the assembly powers (%) for :math:`m \times m`
    elements per assembly.
 
-   ======  ===============  ===============  ===============  ===============
-   m       ``fem``          ``dmcdm``        ``hfvm``         ``zfvm``
-   ======  ===============  ===============  ===============  ===============
-   4       25.9 / 8.38      46.8 / 12.4      43.5 / 12.9      -35.0 / 13.9
-   8       5.5 / 2.18       9.9 / 3.21       9.0 / 3.39       -15.6 / 5.17
-   16      1.2 / 0.61       2.2 / 0.87       2.0 / 0.92       -4.6 / 1.44
-   32      0.2 / 0.22       0.4 / 0.29       0.4 / 0.30       -1.3 / 0.34
-   ======  ===============  ===============  ===============  ===============
+   ======  ===============  ===============
+   m       ``FEM``          ``DMCDM``
+   ======  ===============  ===============
+   4       25.9 / 8.38      46.8 / 12.4
+   8       5.5 / 2.18       9.9 / 3.21
+   16      1.2 / 0.61       2.2 / 0.87
+   32      0.2 / 0.22       0.4 / 0.29
+   ======  ===============  ===============
 
-All four methods converge to the reference.  The node-based methods converge
-at second order in the element size.  At :math:`m = 32` their error of
-:math:`k_\mathrm{eff}` is less than 0.5 pcm, and their largest error of the
-assembly powers is less than 0.3 %.  The cell-centred method approaches
-second order on the finer meshes.  Its error of :math:`k_\mathrm{eff}` has
-the opposite sign.
+Both methods converge to the reference at second order in the element size.
+At :math:`m = 32` their error of :math:`k_\mathrm{eff}` is less than 0.5 pcm,
+and their largest error of the assembly powers is less than 0.3 %.
 
 .. figure:: _static/figures/neutronics/iaea_2d_pwr_k_convergence.png
    :width: 85%
@@ -282,7 +273,7 @@ the opposite sign.
 .. figure:: _static/figures/neutronics/iaea_2d_pwr_assembly_power_error.png
    :width: 85%
 
-   The 2D IAEA PWR benchmark: error of the assembly powers with ``fem`` and
+   The 2D IAEA PWR benchmark: error of the assembly powers with ``FEM`` and
    32 elements per assembly.
 
 Coupled problems
@@ -291,8 +282,7 @@ Coupled problems
 The natural convection benchmark of de Vahl Davis [DeVahlDavis1983]_ checks a
 two-way coupled problem (``tests/python/test_multiphysics.py``): the average
 Nusselt number and the velocity maxima of the square cavity at Rayleigh
-numbers from :math:`10^3` to :math:`10^5`, with the dual mesh, finite element
-and vertex-centred finite volume methods, and the quadratic convergence of
+numbers from :math:`10^3` to :math:`10^5`, with both methods, and the quadratic convergence of
 Newton's method on the coupled system.  The numbers are in
 :doc:`theory/heat_and_fluids`.
 

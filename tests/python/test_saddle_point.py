@@ -36,7 +36,6 @@ def _cavity(formulation, element_type, n, density=0.0, method="fem"):
         "fluid_dynamics",
         density=density,
         formulation=formulation,
-        pressure_pin_point=(0.5, 0.0),
     )
     problem.add_boundary_condition("Dirichlet", "top", variable="velocity_x", value=1.0)
     problem.add_boundary_condition("Dirichlet", "top", variable="velocity_y", value=0.0)
@@ -66,11 +65,11 @@ def _relative_difference(problem, reference):
 @pytest.mark.parametrize(
     "formulation, element_type, preconditioner, limit",
     [
-        ("Taylor_Hood", "Quad9", "pressure_mass", 20),
+        ("Taylor-Hood", "Quad9", "pressure_mass", 20),
         ("pressure", "Quad4", "pressure_mass", 22),
-        ("Taylor_Hood", "Quad9", "pcd", 34),
+        ("Taylor-Hood", "Quad9", "pcd", 34),
         ("pressure", "Quad4", "pcd", 34),
-        ("Taylor_Hood", "Quad9", "lsc", 16),
+        ("Taylor-Hood", "Quad9", "lsc", 16),
         ("pressure", "Quad4", "lsc", 34),
     ],
 )
@@ -94,9 +93,9 @@ def test_navier_stokes_at_a_moderate_reynolds_number(preconditioner, limit):
     """At Re = 100 the Schur complement carries convection, which the mass
     matrix ignores and pcd and lsc approximate; measured 36, 43 and 16
     iterations per Newton step."""
-    reference = _cavity("Taylor_Hood", "Quad9", 16, density=100.0)
+    reference = _cavity("Taylor-Hood", "Quad9", 16, density=100.0)
     reference.solve(linear_solver="lu")
-    problem = _cavity("Taylor_Hood", "Quad9", 16, density=100.0)
+    problem = _cavity("Taylor-Hood", "Quad9", 16, density=100.0)
     result = problem.solve(linear_solver="gmres", preconditioner=preconditioner)
     assert _relative_difference(problem, reference) < 1e-8
     assert result.linear_iterations / result.total_iterations < limit
@@ -116,7 +115,7 @@ def _channel(formulation, element_type, n, density):
 
 
 @pytest.mark.parametrize(
-    "formulation, element_type, limit", [("Taylor_Hood", "Quad9", 42), ("pressure", "Quad4", 52)]
+    "formulation, element_type, limit", [("Taylor-Hood", "Quad9", 42), ("pressure", "Quad4", 52)]
 )
 def test_pcd_with_an_inflow_and_an_outflow(formulation, element_type, limit):
     """A channel at Re = 100 with a uniform inflow and a free outflow: F_p takes the Robin
@@ -213,9 +212,9 @@ def test_a_transient_solve_takes_the_time_derivative_into_the_operators(
 @pytest.mark.skipif(not dm.have_petsc(), reason="built without PETSc")
 @pytest.mark.parametrize("options", [None, "-fieldsplit_0_pc_type gamg"])
 def test_petsc_field_split_with_the_pressure_mass_matrix(options):
-    reference = _cavity("Taylor_Hood", "Quad9", 12)
+    reference = _cavity("Taylor-Hood", "Quad9", 12)
     reference.solve(linear_solver="lu")
-    problem = _cavity("Taylor_Hood", "Quad9", 12)
+    problem = _cavity("Taylor-Hood", "Quad9", 12)
     problem.solve(
         linear_solver="petsc",
         preconditioner="pressure_mass",
@@ -228,7 +227,7 @@ def test_petsc_field_split_with_the_pressure_mass_matrix(options):
 @pytest.mark.skipif(not dm.have_petsc(), reason="built without PETSc")
 @pytest.mark.parametrize("preconditioner", ["pcd", "lsc"])
 @pytest.mark.parametrize(
-    "formulation, element_type, n", [("Taylor_Hood", "Quad9", 8), ("pressure", "Quad4", 16)]
+    "formulation, element_type, n", [("Taylor-Hood", "Quad9", 8), ("pressure", "Quad4", 16)]
 )
 def test_petsc_with_exact_blocks_takes_the_iterations_of_the_built_in_solver(
     preconditioner, formulation, element_type, n
@@ -276,7 +275,7 @@ def test_petsc_with_algebraic_multigrid_blocks(preconditioner):
     assert _relative_difference(problem, reference) < 1e-7
 
 
-@pytest.mark.parametrize("method", ["dmcdm", "hfvm"])
+@pytest.mark.parametrize("method", ["dmcdm"])
 @pytest.mark.parametrize("preconditioner", ["pressure_mass", "pcd", "lsc"])
 def test_it_works_with_the_control_volume_methods(method, preconditioner):
     reference = _cavity("pressure", "Quad4", 12, method=method)
@@ -335,13 +334,13 @@ def test_the_split_by_physics_refuses_a_flow():
 
 
 def test_an_unknown_preconditioner_is_named_with_the_closest_one():
-    problem = _cavity("Taylor_Hood", "Quad9", 4)
+    problem = _cavity("Taylor-Hood", "Quad9", 4)
     with pytest.raises(ValueError, match="Did you mean 'pressure_mass'"):
         problem.solve(preconditioner="pressure_mass_schur")
 
 
 def test_it_needs_a_krylov_solver():
-    problem = _cavity("Taylor_Hood", "Quad9", 4)
+    problem = _cavity("Taylor-Hood", "Quad9", 4)
     with pytest.raises(ValueError, match="'GMRES' or 'automatic'"):
         problem.solve(linear_solver="bicgstab", preconditioner="pressure_mass")
 
@@ -436,7 +435,6 @@ def _natural_convection():
         dynamic_viscosity=0.71,
         density=1.0,
         formulation="pressure",
-        pressure_pin_point=(0.5, 0.0),
     )
     heat = problem.add_physics("heat_transfer", thermal_conductivity=1.0)
     problem.add_coupling(
@@ -520,7 +518,6 @@ def test_the_automatic_solver_falls_back_to_the_direct_solver():
             density=10.0,
             dynamic_viscosity=1.0,
             formulation="pressure",
-            pressure_pin_point=(0.5, 0.5, 0.0),
         )
         flow.add_boundary_condition(
             ["velocity_x = 1", "velocity_y = 0", "velocity_z = 0"], boundary="top"

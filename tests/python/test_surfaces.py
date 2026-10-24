@@ -364,10 +364,6 @@ def test_surfaces_are_refused_where_they_do_not_make_sense():
     mesh = dm.generate_spherical_shell_mesh(radius=1.0, num_elements=[8, 16])
     with pytest.raises(InputError, match="shells are not available yet"):
         dm.Problem(mesh).add_physics("solid_mechanics", youngs_modulus=1.0, poissons_ratio=0.3)
-    with pytest.raises(InputError, match="cell-centred finite volume"):
-        problem = dm.Problem(mesh, method="zfvm")
-        problem.add_physics("heat_transfer", thermal_conductivity=1.0)
-        problem.solve()
 
 
 def test_num_elements_is_accepted_beside_the_per_axis_counts():

@@ -10,7 +10,7 @@ computed with the finite element method for comparison.
 import dualmesh as dm
 
 
-def solve(num_elements, method="dmcdm"):
+def solve(num_elements, method="DMCDM"):
     mesh = dm.generate_line_mesh(start=0.0, end=0.05, num_elements=num_elements)
     problem = dm.Problem(mesh, method=method)
     problem.add_variable("temperature")
@@ -28,7 +28,7 @@ def solve(num_elements, method="dmcdm"):
 
 
 if __name__ == "__main__":
-    for method in ("dmcdm", "fem"):
+    for method in ("DMCDM", "FEM"):
         problem = solve(5, method)
         values = problem.values("temperature")
         print(f"{method:6s} u = " + " ".join(f"{v:8.3f}" for v in values))

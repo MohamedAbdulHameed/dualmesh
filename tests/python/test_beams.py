@@ -72,7 +72,7 @@ def beam_problem(
         von_karman=von_karman,
     )
     # The Euler-Bernoulli beam has no shear deformation, so it takes no shear stiffness.
-    if model != "beam_Euler_Bernoulli_mixed":
+    if model != "beam_Euler-Bernoulli_mixed":
         common["shear_stiffness"] = s.shear
     if model == "beam_Timoshenko_displacement":
         variables = dict(
@@ -136,7 +136,7 @@ def beam_problem(
     "model, expected",
     [
         # Table 7.5.1: centre deflection w(L/2) in inches, q0 = 0.5 lb/in
-        ("beam_Euler_Bernoulli_mixed", [0.2588, 0.2600, 0.2603, 0.2604]),
+        ("beam_Euler-Bernoulli_mixed", [0.2588, 0.2600, 0.2603, 0.2604]),
         ("beam_Timoshenko_displacement", [0.2540, 0.2588, 0.2600, 0.2604]),
         ("beam_Timoshenko_mixed", [0.2588, 0.2600, 0.2604, 0.2604]),
     ],
@@ -151,7 +151,7 @@ def test_table_7_5_1_pinned_homogeneous_beam(model, expected):
         assert centre == pytest.approx(reference, abs=1.1e-4)
 
 
-@pytest.mark.parametrize("model", ["beam_Euler_Bernoulli_mixed", "beam_Timoshenko_mixed"])
+@pytest.mark.parametrize("model", ["beam_Euler-Bernoulli_mixed", "beam_Timoshenko_mixed"])
 @pytest.mark.parametrize("num_elements", [4, 8, 16, 32])
 def test_table_7_5_2_bending_moment_is_exact(model, num_elements):
     """The mixed dual mesh models give the exact centre moment q0 L^2 / 8."""
@@ -179,7 +179,7 @@ def test_table_7_5_3_functionally_graded_pinned_beam(
     s = stiffness(power_law_index)
     reduced_bending = s.bending - s.coupling**2 / s.extensional
     references = {
-        "beam_Euler_Bernoulli_mixed": euler_mixed,
+        "beam_Euler-Bernoulli_mixed": euler_mixed,
         "beam_Timoshenko_displacement": timoshenko_displacement,
         "beam_Timoshenko_mixed": timoshenko_mixed,
     }
@@ -195,7 +195,7 @@ def test_table_7_5_3_functionally_graded_pinned_beam(
     "model, expected",
     [
         # Table 7.5.4: w(L/2) Dhat / (q0 L^4) x 100 for clamped-clamped beams
-        ("beam_Euler_Bernoulli_mixed", [0.2685, 0.2624, 0.2609, 0.2605, 0.2604]),
+        ("beam_Euler-Bernoulli_mixed", [0.2685, 0.2624, 0.2609, 0.2605, 0.2604]),
         ("beam_Timoshenko_displacement", [0.2445, 0.2567, 0.2597, 0.2605, 0.2607]),
         ("beam_Timoshenko_mixed", [0.2688, 0.2628, 0.2612, 0.2609, 0.2608]),
     ],
@@ -213,7 +213,7 @@ def test_table_7_5_4_clamped_homogeneous_beam(model, expected):
 
 def test_euler_bernoulli_and_timoshenko_agree_for_a_slender_beam():
     """With L/h = 100 shear deformation is negligible."""
-    euler, _ = beam_problem("beam_Euler_Bernoulli_mixed", 32)
+    euler, _ = beam_problem("beam_Euler-Bernoulli_mixed", 32)
     euler.solve()
     timoshenko, _ = beam_problem("beam_Timoshenko_mixed", 32)
     timoshenko.solve()
@@ -291,7 +291,7 @@ def test_table_7_6_1_nonlinear_pinned_beam(load, reference):
     """
     s = stiffness(0.0)
     reduced_bending = s.bending - s.coupling**2 / s.extensional
-    models = ("beam_Timoshenko_displacement", "beam_Euler_Bernoulli_mixed", "beam_Timoshenko_mixed")
+    models = ("beam_Timoshenko_displacement", "beam_Euler-Bernoulli_mixed", "beam_Timoshenko_mixed")
     steps = max(1, int(round(load)))
     factors = list(np.linspace(1.0 / steps, 1.0, steps))
     for model, expected in zip(models, reference):
@@ -305,7 +305,7 @@ def test_nonlinear_beam_direct_iteration_with_acceleration():
     """Direct iteration with the book's acceleration parameter beta = 0.35."""
     s = stiffness(0.0)
     reduced_bending = s.bending - s.coupling**2 / s.extensional
-    problem, _ = beam_problem("beam_Euler_Bernoulli_mixed", 16, von_karman=True, load=10.0)
+    problem, _ = beam_problem("beam_Euler-Bernoulli_mixed", 16, von_karman=True, load=10.0)
     problem.solve(
         nonlinear_solver="picard",
         relaxation=0.35,
@@ -318,8 +318,8 @@ def test_nonlinear_beam_direct_iteration_with_acceleration():
 
 
 def test_nonlinear_beam_is_stiffer_than_the_linear_one():
-    linear, _ = beam_problem("beam_Euler_Bernoulli_mixed", 16, load=10.0)
+    linear, _ = beam_problem("beam_Euler-Bernoulli_mixed", 16, load=10.0)
     linear.solve()
-    nonlinear, _ = beam_problem("beam_Euler_Bernoulli_mixed", 16, von_karman=True, load=10.0)
+    nonlinear, _ = beam_problem("beam_Euler-Bernoulli_mixed", 16, von_karman=True, load=10.0)
     nonlinear.solve(load_factors=list(np.linspace(0.1, 1.0, 10)), max_iterations=100)
     assert nonlinear.values("deflection")[-1] < 0.3 * linear.values("deflection")[-1]

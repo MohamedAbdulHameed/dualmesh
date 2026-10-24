@@ -65,7 +65,7 @@ def orders(errors):
     return [math.log2(errors[i] / errors[i + 1]) for i in range(len(errors) - 1)]
 
 
-@pytest.mark.parametrize("method", ["fem", "dmcdm", "hfvm", "zfvm"])
+@pytest.mark.parametrize("method", ["fem", "dmcdm"])
 def test_bare_slab_converges_at_second_order(method):
     """H = 1 m with zero flux at both faces: k = 3 / (2 + 0.01 pi^2)."""
     exact = k_bare(math.pi**2)

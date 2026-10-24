@@ -37,7 +37,7 @@ NUT_CENTRE = np.array([-12.0 * MM, 0.0])
 WIDTH, THICKNESS = 12.0 * MM, 5.0 * MM  # the handle section
 
 
-def solve(mesh_file="wrench.msh", method="fem"):
+def solve(mesh_file="wrench.msh", method="FEM"):
     mesh = dm.read_mesh(mesh_file)
     print(dm.sideset_summary(mesh))
     problem = dm.Problem(mesh, method=method)
@@ -129,7 +129,7 @@ def plot_top_face(problem, von_mises, path):
 
 if __name__ == "__main__":
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
-    method = args[0] if args else "fem"
+    method = args[0] if args else "FEM"
     start = time.perf_counter()
     problem = solve(method=method)
     print(f"{method}: solved in {time.perf_counter() - start:.1f} s")

@@ -95,8 +95,7 @@ public:
 
   /// Add one element from its record and the three coordinates of each of its nodes.
   /// The record holds the global index of the element, the type, the block, the number of nodes, their global indices, the number of sides and their (side set, side) pairs, and the number of memberships and their (node of the element, node set) pairs.
-  /// The sides and memberships of a ghost element belong to its own rank and are left out.
-  void add(const Index * record, const double * coordinates, bool ghost = false)
+  void add(const Index * record, const double * coordinates)
   {
     std::size_t at = 0;
     _part.global_elements.push_back(record[at++]);
@@ -116,11 +115,6 @@ public:
       nodes[k] = it->second;
     }
     const Index element = _part.mesh->addElement(type, nodes, block);
-    if (ghost)
-    {
-      ++_part.num_ghost_elements;
-      return;
-    }
     for (Index k = 0, n = record[at++]; k < n; ++k)
     {
       const auto set = static_cast<std::size_t>(record[at++]);
@@ -230,50 +224,28 @@ rebuild(DM dm,
   PartBuilder part(header);
   PetscInt cell_start = 0, cell_end = 0;
   DM_PETSC(DMPlexGetHeightStratum(dm, 0, &cell_start, &cell_end));
-  // The cells that another rank owns, the leaves of the point star forest, are the ghost elements, and follow the rank's own.
-  std::vector<char> ghost(static_cast<std::size_t>(cell_end - cell_start), 0);
-  PetscSF points;
-  DM_PETSC(DMGetPointSF(dm, &points));
-  PetscInt num_leaves = 0;
-  const PetscInt * leaves = nullptr;
-  DM_PETSC(PetscSFGetGraph(points, nullptr, &num_leaves, &leaves, nullptr));
-  for (PetscInt k = 0; k < num_leaves; ++k)
-  {
-    const PetscInt point = leaves ? leaves[k] : k;
-    if (point >= cell_start && point < cell_end)
-      ghost[point - cell_start] = 1;
-  }
   std::vector<Index> record;
-  for (const bool ghosts : {false, true})
-    for (PetscInt c = cell_start; c < cell_end; ++c)
-    {
-      if (static_cast<bool>(ghost[c - cell_start]) != ghosts)
-        continue;
-      PetscInt size = 0, offset = 0, real_offset = 0;
-      DM_PETSC(PetscSectionGetDof(integer_section, c, &size));
-      DM_PETSC(PetscSectionGetOffset(integer_section, c, &offset));
-      DM_PETSC(PetscSectionGetOffset(real_section, c, &real_offset));
-      record.assign(integers + offset, integers + offset + size);
-      part.add(record.data(), reals + real_offset, ghosts);
-    }
+  for (PetscInt c = cell_start; c < cell_end; ++c)
+  {
+    PetscInt size = 0, offset = 0, real_offset = 0;
+    DM_PETSC(PetscSectionGetDof(integer_section, c, &size));
+    DM_PETSC(PetscSectionGetOffset(integer_section, c, &offset));
+    DM_PETSC(PetscSectionGetOffset(real_section, c, &real_offset));
+    record.assign(integers + offset, integers + offset + size);
+    part.add(record.data(), reals + real_offset);
+  }
   return part.finish();
 }
 #endif
 } // namespace
 
 LocalMesh
-distributeMesh(const Mesh & mesh,
-               const Communicator & comm,
-               const std::string & partitioner,
-               int ghost_layers)
+distributeMesh(const Mesh & mesh, const Communicator & comm, const std::string & partitioner)
 {
-  if (ghost_layers < 0)
-    throw InputError("The number of ghost layers cannot be negative.");
   // One rank holds the whole mesh, numbered as it is, and has no other rank's elements next to its own.
   if (comm.size() == 1)
   {
     LocalMesh part;
-    part.ghost_layers = ghost_layers;
     part.mesh = std::make_shared<Mesh>(mesh);
     part.global_nodes.resize(static_cast<std::size_t>(mesh.numNodes()));
     std::iota(part.global_nodes.begin(), part.global_nodes.end(), 0);
@@ -317,7 +289,7 @@ distributeMesh(const Mesh & mesh,
   comm.broadcast(encoded);
   header = Header::decode(encoded);
 
-  // The root's DMPlex holds every cell; PETSc's partitioner divides them, and DMPlexDistribute and DMPlexDistributeData move each cell and its record to its rank, together with the cells of the ghost layers (PETSc's overlap: in a mesh of cells and vertices, a layer holds the cells that share a vertex with the layers inside it).
+  // The root's DMPlex holds every cell; PETSc's partitioner divides them, and DMPlexDistribute and DMPlexDistributeData move each cell and its record to its rank.
   Mesh empty(header.dimension);
   empty.setSpaceDimension(header.space_dimension);
   const Mesh & held = comm.isRoot() ? mesh : empty;
@@ -333,7 +305,7 @@ distributeMesh(const Mesh & mesh,
   records(held, header, dm, integer_section, integers, real_section, reals);
   PetscSF migration = nullptr;
   DM distributed = nullptr;
-  DM_PETSC(DMPlexDistribute(dm, static_cast<PetscInt>(ghost_layers), &migration, &distributed));
+  DM_PETSC(DMPlexDistribute(dm, 0, &migration, &distributed));
   PetscSection new_integer_section, new_real_section;
   DM_PETSC(PetscSectionCreate(PETSC_COMM_WORLD, &new_integer_section));
   DM_PETSC(PetscSectionCreate(PETSC_COMM_WORLD, &new_real_section));
@@ -355,7 +327,6 @@ distributeMesh(const Mesh & mesh,
                                 reinterpret_cast<void **>(&new_reals)));
   LocalMesh part =
       rebuild(distributed, header, new_integer_section, new_integers, new_real_section, new_reals);
-  part.ghost_layers = ghost_layers;
   DM_PETSC(PetscFree(new_integers));
   DM_PETSC(PetscFree(new_reals));
   DM_PETSC(PetscSectionDestroy(&new_integer_section));

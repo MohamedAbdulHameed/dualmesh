@@ -113,8 +113,8 @@ struct SideProjection
 SideProjection projectOntoSide(const Mesh & mesh, const Side & side, const Point & x);
 
 /// The local node of the element whose control domain contains the side point
-/// with parent reference coordinates @p xi (dual mesh and vertex-centred
-/// methods): the owner of the side control patch that contains it, or the
+/// with parent reference coordinates @p xi (the dual mesh control domain
+/// method): the owner of the side control patch that contains it, or the
 /// nearest one.
 int sideControlOwner(const Mesh & mesh, const Side & side, const Point & xi);
 

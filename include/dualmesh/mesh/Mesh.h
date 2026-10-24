@@ -24,8 +24,7 @@ namespace dualmesh
 /// quadratic family (Edge3, Tri6, Quad9, Tet10, Hex27) carry a dual mesh and so
 /// work with every discretisation.  The serendipity elements Quad8 and Hex20
 /// and the pyramid Pyramid5 have no dual mesh and work with the finite element
-/// method and the cell-centred finite volume method only; a Problem refuses
-/// them for the other two methods and says why.  Node numbering follows VTK
+/// method only; a Problem refuses them for DMCDM and says why.  Node numbering follows VTK
 /// for every type, so files written and read through VTK need no reordering.
 enum class ElementType
 {
@@ -131,8 +130,7 @@ public:
   /// Return the same mesh with quadratic elements: Edge2 becomes Edge3, Tri3
   /// becomes Tri6, Quad4 becomes Quad9, Tet4 becomes Tet10 and Hex8 becomes
   /// Hex27.  With @p serendipity, Quad4 becomes Quad8 and Hex8 becomes Hex20
-  /// instead, which work with the finite element and cell-centred finite
-  /// volume methods only.  The corner nodes keep their numbers, the geometry is unchanged
+  /// instead, which work with the finite element method only.  The corner nodes keep their numbers, the geometry is unchanged
   /// (the added nodes are placed at the midpoints of the edges, faces and
   /// cells they belong to), and side sets and node sets are carried over.
   Mesh secondOrder(bool serendipity = false) const;

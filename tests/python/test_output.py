@@ -214,19 +214,6 @@ def test_the_fields_at_an_output_time_equal_a_run_to_that_time(tmp_path):
     )
 
 
-def test_the_csv_rows_of_the_cell_centred_method_are_at_its_unknowns(tmp_path):
-    """The cell-centred method has one unknown in each element and one on
-    each boundary face, at their centroids: the CSV file gives these
-    positions (it gave the node positions, whose count differs)."""
-    problem = bus_bar("zfvm")
-    problem.solve(report="none")
-    problem.write_csv(str(tmp_path / "cells.csv"))
-    header, rows = read_csv(tmp_path / "cells.csv")
-    assert header == ["x (m)", "y (m)", "temperature (K)"]
-    assert len(rows) == len(problem.values("temperature")) == 50 + 30
-    assert rows[:, :2] == pytest.approx(np.asarray(problem.entity_points())[:, :2])
-
-
 def test_a_variable_of_the_object_level_has_a_unit_only_when_one_is_given(tmp_path):
     problem = cooling_bar(variable_unit="")
     assert problem.variable_unit("temperature") == ""

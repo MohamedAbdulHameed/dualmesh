@@ -25,7 +25,7 @@ Problem::reactions(const std::string & var, const std::string & boundary) const
   if (_last_residual.size() != numDofs())
     throw InputError("Reactions are available after a solve.");
   std::vector<std::pair<Index, double>> out;
-  for (Index n : boundaryEntities(boundary))
+  for (Index n : _mesh->boundaryNodes(boundary))
     out.emplace_back(n, _last_residual[dof(n, v)]);
   return out;
 }
@@ -46,12 +46,6 @@ Problem::sample(const std::string & var, const std::vector<Point> & points) cons
   PointLocator loc(*_mesh);
   std::vector<double> out;
   MappedPoint mp;
-  // The cell-centred method stores one value per cell; a point value is
-  // recovered by the linear reconstruction u(x) = U_c + grad u|_c . (x - x_c),
-  // which is second-order accurate, as in every finite volume code.
-  std::vector<std::vector<Point>> cg;
-  if (_cells)
-    cg = cellGradients(_U);
   for (const auto & p : points)
   {
     Index e;
@@ -59,11 +53,6 @@ Problem::sample(const std::string & var, const std::vector<Point> & points) cons
     if (!loc.locate(p, e, xi, 1e-8))
     {
       out.push_back(std::numeric_limits<double>::quiet_NaN());
-      continue;
-    }
-    if (_cells)
-    {
-      out.push_back(_U[dof(e, v)] + dot(cg[v][e], p - _cells->entityPoint(e)));
       continue;
     }
     const auto & el = _mesh->element(e);
@@ -80,8 +69,6 @@ std::vector<Point>
 Problem::gradientAtCentroids(const std::string & var) const
 {
   const int v = variableIndex(var);
-  if (_cells)
-    return cellGradients(_U)[v];
   std::vector<Point> out;
   MappedPoint mp;
   for (Index e = 0; e < numIntegratedElements(); ++e)
@@ -100,10 +87,6 @@ std::vector<double>
 Problem::errorIndicator(const std::string & var) const
 {
   const int v = variableIndex(var);
-  if (_cells)
-    throw InputError("The error indicator is not available for the cell-centred finite volume "
-                     "method, whose unknowns are cell averages rather than a nodal field; "
-                     "recovering a nodal gradient from them needs a different construction.");
   const Index nn = _mesh->numNodes();
   const int dim = _mesh->spaceDimension();
   std::vector<Point> recovered(nn, Point{0, 0, 0});
@@ -192,9 +175,6 @@ Problem::errorNorms(const std::string & var,
   // far below the discretisation error.
   QuadratureSpec rule;
   rule.points = quadrature_points > 0 ? quadrature_points : order + 2;
-  std::vector<std::vector<Point>> cell_gradients;
-  if (_cells)
-    cell_gradients = cellGradients(_U);
 
   // The sum is split over threads when every function may be called
   // concurrently; a Python callable keeps it on one thread.
@@ -228,18 +208,12 @@ Problem::errorNorms(const std::string & var,
           mapPoint(*_mesh, el, p.xi, mp);
           double uh = 0;
           Point gh{0, 0, 0};
-          if (_cells)
+          for (int k = 0; k < el.numNodes(); ++k)
           {
-            gh = cell_gradients[v][e];
-            uh = _U[dof(e, v)] + dot(gh, mp.x - _cells->entityPoint(e));
+            const double U = _U[dof(el.nodes[k], v)];
+            uh += mp.N[k] * U;
+            gh = gh + U * mp.dN[k];
           }
-          else
-            for (int k = 0; k < el.numNodes(); ++k)
-            {
-              const double U = _U[dof(el.nodes[k], v)];
-              uh += mp.N[k] * U;
-              gh = gh + U * mp.dN[k];
-            }
           const double w = p.weight * coordFactor(mp.x);
           const double diff = uh - exact.value(mp.x, _time);
           l2 += w * diff * diff;
@@ -297,26 +271,17 @@ Problem::propertyAtCentroids(const std::string & property) const
   QpContext ctx;
   ctx.dim = _mesh->spaceDimension();
   ctx.time = _time;
-  std::vector<std::vector<Point>> cg;
-  if (_cells)
-    cg = cellGradients(_U);
   for (Index e = 0; e < numIntegratedElements(); ++e)
   {
     const auto & el = _mesh->element(e);
-    if (_cells)
-      fillContextCell(ctx, e, cg);
-    else
-    {
-      mapPoint(*_mesh, el, ReferenceElement::get(el.type).centroid(), mp);
-      const auto loc = localValues(*this, el);
-      if (_mixed_order)
-        mapCornerShape(el, mp);
-      fillContext(ctx, el, mp, loc, nullptr, nullptr, 0);
-      ctx.x = mp.x;
-      ctx.element = e;
-      ctx.block = el.block;
-    }
-    ctx.state_domain = 0;
+    mapPoint(*_mesh, el, ReferenceElement::get(el.type).centroid(), mp);
+    const auto loc = localValues(*this, el);
+    if (_mixed_order)
+      mapCornerShape(el, mp);
+    fillContext(ctx, el, mp, loc, nullptr, nullptr, 0);
+    ctx.x = mp.x;
+    ctx.element = e;
+    ctx.block = el.block;
     ctx.state_owner = e;
     ctx.state_key = kCentroidStateKey;
     evaluateProperties(ctx);
@@ -373,26 +338,17 @@ Problem::centroidContexts(const std::function<void(QpContext &, int)> & visit) c
   QpContext ctx;
   ctx.dim = _mesh->spaceDimension();
   ctx.time = _time;
-  std::vector<std::vector<Point>> cg;
-  if (_cells)
-    cg = cellGradients(_U);
   for (Index e = 0; e < numIntegratedElements(); ++e)
   {
     const auto & el = _mesh->element(e);
-    if (_cells)
-      fillContextCell(ctx, e, cg);
-    else
-    {
-      mapPoint(*_mesh, el, ReferenceElement::get(el.type).centroid(), mp);
-      const auto loc = localValues(*this, el);
-      if (_mixed_order)
-        mapCornerShape(el, mp);
-      fillContext(ctx, el, mp, loc, nullptr, nullptr, 0);
-      ctx.x = mp.x;
-      ctx.element = e;
-      ctx.block = el.block;
-    }
-    ctx.state_domain = 0;
+    mapPoint(*_mesh, el, ReferenceElement::get(el.type).centroid(), mp);
+    const auto loc = localValues(*this, el);
+    if (_mixed_order)
+      mapCornerShape(el, mp);
+    fillContext(ctx, el, mp, loc, nullptr, nullptr, 0);
+    ctx.x = mp.x;
+    ctx.element = e;
+    ctx.block = el.block;
     ctx.state_owner = e;
     ctx.state_key = kCentroidStateKey;
     evaluateProperties(ctx);
@@ -409,12 +365,6 @@ Problem::integrate(const std::string & var) const
   double total = 0;
   MappedPoint mp;
   std::vector<IntegrationPoint> pts;
-  if (_cells)
-  {
-    for (Index c = 0; c < _cells->numCells(); ++c)
-      total += _U[dof(c, v)] * _cells->cellVolume(c) * coordFactor(_cells->entityPoint(c));
-    return total;
-  }
   for (Index e = 0; e < numIntegratedElements(); ++e)
   {
     const auto & el = _mesh->element(e);
@@ -436,13 +386,6 @@ Problem::elementIntegrals(const std::string & var) const
 {
   const int v = var.empty() ? -1 : variableIndex(var);
   std::vector<double> out(_mesh->numElements(), 0.0);
-  if (_cells)
-  {
-    for (Index c = 0; c < _cells->numCells() && c < _mesh->numElements(); ++c)
-      out[c] = (v < 0 ? 1.0 : _U[dof(c, v)]) * _cells->cellVolume(c) *
-               coordFactor(_cells->entityPoint(c));
-    return out;
-  }
   QuadratureSpec g;
   g.points = 3;
   MappedPoint mp;
@@ -512,26 +455,6 @@ Problem::boundaryFluxIntegral(const std::string & kernel, const std::string & bo
   ctx.dim = _mesh->spaceDimension();
   ctx.time = _time;
   std::vector<IntegrationPoint> pts;
-  if (_cells)
-  {
-    const auto cg = cellGradients(_U);
-    for (int fi : _cells->boundaryFaceIndices(*_mesh, boundary))
-    {
-      const CellFace & f = _cells->faces()[fi];
-      if (!k->activeOnBlock(_cells->cellBlock(f.owner)))
-        continue;
-      fillContextCell(ctx, f.owner, cg);
-      ctx.x = f.centroid;
-      ctx.normal = (1.0 / f.measure) * f.area;
-      ctx.on_boundary = true;
-      evaluateProperties(ctx);
-      ADVector3 F{ADReal(0.0), ADReal(0.0), ADReal(0.0)};
-      k->computeFlux(ctx, F);
-      total += (F[0].value() * f.area[0] + F[1].value() * f.area[1] + F[2].value() * f.area[2]) *
-               coordFactor(f.centroid);
-    }
-    return total;
-  }
   for (const auto & side : _mesh->sideset(boundary))
   {
     const auto & el = _mesh->element(side.first);
@@ -591,30 +514,17 @@ Problem::writeVTU(const std::string & filename,
        "byte_order=\"LittleEndian\">\n<UnstructuredGrid>\n";
   f << "<Piece NumberOfPoints=\"" << m.numNodes() << "\" NumberOfCells=\"" << ne << "\">\n";
   f << "<PointData>\n";
-  if (!_cells)
-    for (const auto & v : _vars)
-    {
-      if (!written(v))
-        continue;
-      f << "<DataArray type=\"Float64\" Name=\"" << v.name << "\"" << unit(v)
-        << " format=\"ascii\">\n";
-      for (Index n = 0; n < m.numNodes(); ++n)
-        f << _U[dof(n, v.index)] << "\n";
-      f << "</DataArray>\n";
-    }
+  for (const auto & v : _vars)
+  {
+    if (!written(v))
+      continue;
+    f << "<DataArray type=\"Float64\" Name=\"" << v.name << "\"" << unit(v)
+      << " format=\"ascii\">\n";
+    for (Index n = 0; n < m.numNodes(); ++n)
+      f << _U[dof(n, v.index)] << "\n";
+    f << "</DataArray>\n";
+  }
   f << "</PointData>\n<CellData>\n";
-  // The cell-centred method stores its unknowns on the cells.
-  if (_cells)
-    for (const auto & v : _vars)
-    {
-      if (!written(v))
-        continue;
-      f << "<DataArray type=\"Float64\" Name=\"" << v.name << "\"" << unit(v)
-        << " format=\"ascii\">\n";
-      for (Index c = 0; c < ne; ++c)
-        f << _U[dof(c, v.index)] << "\n";
-      f << "</DataArray>\n";
-    }
   f << "<DataArray type=\"Int32\" Name=\"block\" format=\"ascii\">\n";
   for (Index e = 0; e < ne; ++e)
     f << m.element(e).block << "\n";

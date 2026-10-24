@@ -72,7 +72,7 @@ def conduction_problem(problem):
     )
 
 
-@pytest.mark.parametrize("method", ["dmcdm", "fem", "hfvm", "zfvm"])
+@pytest.mark.parametrize("method", ["dmcdm", "fem"])
 @pytest.mark.parametrize(
     "solver",
     [
@@ -104,7 +104,6 @@ def test_distributed_path_reproduces_the_serial_answer(method, solver, gather_sc
     got = np.asarray(distributed.gathered_values("temperature"))
     assert got == pytest.approx(expected, abs=1e-8)
     assert distributed.num_ranks == dm.num_ranks()
-    # The unknowns of zfvm sit at the cells and the boundary faces, those of the other methods at the nodes.
     assert distributed.num_global_dofs == len(expected)
 
 
@@ -139,7 +138,7 @@ def test_distributed_transient_reproduces_the_serial_answer():
     assert got == pytest.approx(expected, abs=1e-8)
 
 
-@pytest.mark.parametrize("method", ["dmcdm", "fem", "hfvm", "zfvm"])
+@pytest.mark.parametrize("method", ["dmcdm", "fem"])
 def test_threading_does_not_change_the_answer(method):
     """The threaded assembly must give the same numbers as the serial one.
 
@@ -149,7 +148,7 @@ def test_threading_does_not_change_the_answer(method):
     """
     results = {}
     for threads in (1, 4):
-        mesh = dm.generate_rectangle_mesh(0.0 if method != "zfvm" else 0.0, 1.0, 0.0, 1.0, 40, 40)
+        mesh = dm.generate_rectangle_mesh(0.0, 1.0, 0.0, 1.0, 40, 40)
         problem = dm.Problem(mesh, method=method, distributed=False)
         conduction_problem(problem)
         problem.set_num_threads(threads)
@@ -243,7 +242,7 @@ def test_a_linear_solve_that_cannot_converge_says_what_to_try():
 
 
 @pytest.mark.skipif(not dm.have_petsc(), reason="built without PETSc")
-@pytest.mark.parametrize("theory", ["Euler_Bernoulli", "Timoshenko"])
+@pytest.mark.parametrize("theory", ["Euler-Bernoulli", "Timoshenko"])
 def test_a_distributed_mixed_beam_is_solved_or_refused_never_left_at_zero(theory):
     """The mixed beam has a zero diagonal in its deflection equation, on which algebraic multigrid
     fails without an error: PETSc then reports convergence on the preconditioned residual.  The
@@ -271,7 +270,7 @@ def test_a_distributed_mixed_beam_is_solved_or_refused_never_left_at_zero(theory
     assert tip == pytest.approx(exact, rel=2e-3)
 
 
-@pytest.mark.parametrize("method", ["dmcdm", "fem", "hfvm"])
+@pytest.mark.parametrize("method", ["dmcdm", "fem"])
 @pytest.mark.parametrize("density", [0.0, 50.0])
 def test_distributed_pressure_velocity_flow_reproduces_the_serial_answer(method, density):
     """The enclosed cavity in the pressure-velocity formulation.  Its pressure
@@ -285,7 +284,6 @@ def test_distributed_pressure_velocity_flow_reproduces_the_serial_answer(method,
             dynamic_viscosity=1.0,
             density=density,
             formulation="pressure",
-            pressure_pin_point=(0.5, 0.0),
         )
         problem.add_boundary_condition("Dirichlet", "top", variable="velocity_x", value=1.0)
         problem.add_boundary_condition("Dirichlet", "top", variable="velocity_y", value=0.0)
@@ -310,7 +308,7 @@ def test_distributed_pressure_velocity_flow_reproduces_the_serial_answer(method,
 
 
 @pytest.mark.skipif(not dm.have_petsc(), reason="built without PETSc")
-@pytest.mark.parametrize("method", ["dmcdm", "fem", "hfvm"])
+@pytest.mark.parametrize("method", ["dmcdm", "fem"])
 @pytest.mark.parametrize(
     "options",
     [None, {"ksp_type": "gmres", "pc_type": "asm", "sub_pc_type": "ilu", "ksp_gmres_restart": 400}],
@@ -326,7 +324,6 @@ def test_distributed_petsc_reproduces_the_serial_answer(method, options):
             dynamic_viscosity=1.0,
             density=50.0,
             formulation="pressure",
-            pressure_pin_point=(0.5, 0.0),
         )
         problem.add_boundary_condition("Dirichlet", "top", variable="velocity_x", value=1.0)
         problem.add_boundary_condition("Dirichlet", "top", variable="velocity_y", value=0.0)
@@ -355,8 +352,7 @@ def _taylor_hood_cavity(problem):
         "fluid_dynamics",
         dynamic_viscosity=1.0,
         density=50.0,
-        formulation="Taylor_Hood",
-        pressure_pin_point=(0.5, 0.0),
+        formulation="Taylor-Hood",
     )
     problem.add_boundary_condition("Dirichlet", "top", variable="velocity_x", value=1.0)
     problem.add_boundary_condition("Dirichlet", "top", variable="velocity_y", value=0.0)
@@ -410,7 +406,7 @@ def test_an_unknown_gather_scatter_is_refused():
         dm.Problem(mesh, distributed=True, gather_scatter="crystal")
 
 
-@pytest.mark.parametrize("method", ["dmcdm", "fem", "hfvm"])
+@pytest.mark.parametrize("method", ["dmcdm", "fem"])
 @pytest.mark.parametrize("gather_scatter", ["petsc", "gslib"])
 def test_distributed_periodic_boundaries_reproduce_the_serial_answer(method, gather_scatter):
     """A domain periodic in both directions, whose periodic node pairs lie on different processes."""
@@ -436,7 +432,7 @@ def test_distributed_periodic_boundaries_reproduce_the_serial_answer(method, gat
     assert got == pytest.approx(serial.values("u"), abs=1e-8)
 
 
-@pytest.mark.parametrize("method", ["dmcdm", "fem", "hfvm"])
+@pytest.mark.parametrize("method", ["dmcdm", "fem"])
 def test_distributed_postprocessors_equal_the_serial_ones(method):
     """Every post-processor type gives the same value on any number of processes: integrals and fluxes are summed over the processes, extremes are reduced, and a point value comes from the process whose elements contain the point."""
 
@@ -544,7 +540,7 @@ def test_a_restarted_creep_run_ends_where_an_uninterrupted_one_ends(distributed)
         shutil.rmtree(directory, ignore_errors=True)
 
 
-@pytest.mark.parametrize("method", ["fem", "dmcdm", "hfvm"])
+@pytest.mark.parametrize("method", ["fem", "dmcdm"])
 def test_a_distributed_gap_condition_reproduces_the_serial_answer(method):
     """Heat crosses a gap between two bodies whose meshes do not match, and the bodies lie on different processes: every process that holds the primary side reads the secondary elements it pairs with as ghost elements."""
     from test_gaps import CONDUCTANCE, conduction_problem, two_slabs
@@ -652,7 +648,6 @@ def _equal_order_cavity(problem):
         dynamic_viscosity=1.0,
         density=50.0,
         formulation="pressure",
-        pressure_pin_point=(0.5, 0.0),
     )
     problem.add_boundary_condition("Dirichlet", "top", variable="velocity_x", value=1.0)
     problem.add_boundary_condition("Dirichlet", "top", variable="velocity_y", value=0.0)

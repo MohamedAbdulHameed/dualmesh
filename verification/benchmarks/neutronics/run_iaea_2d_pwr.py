@@ -127,7 +127,7 @@ REFERENCE_THERMAL_FLUX = {
     33: 2.498,
     35: 2.448,
 }
-METHODS = ("fem", "dmcdm", "hfvm", "zfvm")
+METHODS = ("fem", "dmcdm")
 DIVISIONS = (2, 4, 8, 16, 32)
 
 

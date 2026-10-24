@@ -37,7 +37,7 @@ prescribed velocities:
    import dualmesh as dm
 
    mesh = dm.read_mesh("dfg.msh")
-   problem = dm.Problem(mesh, method="dmcdm")  # fem, hfvm, zfvm
+   problem = dm.Problem(mesh, method="DMCDM")  # or FEM
    flow = problem.add_physics(
        "fluid_dynamics",
        density=1.0,
@@ -49,23 +49,16 @@ prescribed velocities:
        ["velocity_x = 4*0.3*y*(0.41 - y)/0.41^2", "velocity_y = 0"], boundary="inlet", scale_with_load=True
    )
    flow.add_boundary_condition(["velocity_x = 0", "velocity_y = 0"], boundary=["walls", "cylinder"])
-   problem.solve()  # zfvm: load_factors=[0.25, 0.5, 0.75, 1.0]
+   problem.solve()
    drag = -2 / (0.2**2 * 0.1) * problem.total_reaction("velocity_x", "cylinder")
    lift = -2 / (0.2**2 * 0.1) * problem.total_reaction("velocity_y", "cylinder")
    p_front, p_back = problem.sample("pressure", [[0.15, 0.2], [0.25, 0.2]])
 
-The Taylor-Hood element takes ``formulation="Taylor_Hood"`` on quadratic
+The Taylor-Hood element takes ``formulation="Taylor-Hood"`` on quadratic
 triangles twice as large, whose sides on the cylinder lie on the circle.
 
 Results
 -------
-
-.. note::
-
-   The numbers on this page were measured before the stabilisation parameter
-   :math:`\tau` took the factor 9 on its viscous term (24 October 2026), which
-   lowered the errors of the stabilised methods on the cavity and the Kovasznay
-   flow by about half.  They are being measured again.
 
 .. list-table:: The coefficients on the finest mesh of every method, and their
    relative errors
@@ -77,22 +70,17 @@ Results
      - :math:`C_D`
      - :math:`C_L`
      - :math:`\Delta p`
-   * - dmcdm, hfvm
+   * - DMCDM
      - 210 429
-     - 5.58002 (+0.009 %)
-     - 0.01053 (-0.8 %)
-     - 0.11691 (-0.52 %)
-   * - fem
+     - 5.57958 (+0.001 %)
+     - 0.01061 (-0.1 %)
+     - 0.11741 (-0.091 %)
+   * - FEM
      - 210 429
-     - 5.58003 (+0.009 %)
-     - 0.01053 (-0.8 %)
-     - 0.11691 (-0.52 %)
-   * - zfvm
-     - 106 098
-     - 5.58419 (+0.084 %)
-     - 0.01000 (-5.8 %)
-     - 0.11639 (-0.96 %)
-   * - fem, Taylor-Hood
+     - 5.57958 (+0.001 %)
+     - 0.01061 (-0.1 %)
+     - 0.11741 (-0.091 %)
+   * - FEM, Taylor-Hood
      - 157 743
      - 5.57953 (-0.000 %)
      - 0.01062 (+0.01 %)
@@ -103,23 +91,21 @@ Results
      - 0.010619
      - 0.117520
 
-The drag of every method converges to the reference, at about second order in
-the element size for the equal-order elements: its error falls from 2 % on the
-coarsest mesh to 0.3 %, 0.05 % and 0.009 % as the element size is halved.  The
-lift, a hundredth of the drag and the difference of two nearly equal forces on
-the two sides of the cylinder, has the wrong sign on the coarsest mesh of every
-equal-order method and converges from the second mesh on.  The pressure
-difference converges at about first order, since the pressure of the stabilized
-equal-order elements is first-order accurate at points.  On triangles the dual
-mesh control domain and the vertex-centered finite volume methods give the
-same numbers, because the edge difference of a linear triangle is its
-interpolated gradient, and their drag agrees with that of the finite element
-method to 0.003 %.  The Taylor-Hood element, with its curved sides on the cylinder
+The drag of every method converges to the reference: for the equal-order
+elements its error falls from 0.5 % on the coarsest mesh to 0.035 %, 0.005 % and
+0.001 % as the element size is halved.  The lift, a hundredth of the drag and
+the difference of two nearly equal forces on the two sides of the cylinder,
+has the right sign on every mesh and is within 0.1 % on the finest.  The
+pressure difference converges at between first and second order (errors of
+1.05 %, 0.79 %, 0.23 % and 0.091 %), since the pressure of the stabilized
+equal-order elements is first-order accurate at points.  On the finest mesh the
+dual mesh control domain method agrees with the finite element method to every
+printed digit.  These errors are about a fifth of
+those measured before the parameter :math:`\tau` took the factor 9 on its
+viscous term (:doc:`../theory/heat_and_fluids`): the drag error was 0.009 % and
+that of the pressure difference 0.52 % on the finest mesh.  The Taylor-Hood element, with its curved sides on the cylinder
 and its quadratic velocity, reproduces every printed digit of the reference
-drag and lift on 158 000 unknowns.  The cell-centered method needs the inflow
-raised in four load steps on the coarsest mesh, where Newton's method diverges
-from the full inflow, and its direct solves take longest, so its finest mesh is
-left out.
+drag and lift on 158 000 unknowns.
 
 .. figure:: ../_static/figures/fluids/dfg_2d1_drag_error.png
    :width: 85%

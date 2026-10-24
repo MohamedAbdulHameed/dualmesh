@@ -34,20 +34,16 @@ def _cavity(
     viscosity=1.0,
     coordinates="cartesian",
     scale=1.0,
-    stabilization=None,
 ):
     mesh = dm.generate_rectangle_mesh(
         x=[0, scale], y=[0, scale], num_elements=[n, n], element_type=element_type
     )
     problem = dm.Problem(mesh, method="fem", coordinates=coordinates)
-    extra = {} if stabilization is None else {"stabilization": stabilization}
     flow = problem.add_physics(
         "fluid_dynamics",
         density=density,
         dynamic_viscosity=viscosity,
         formulation=formulation,
-        pressure_pin_point=(0.5 * scale, 0.0),
-        **extra,
     )
     u, v = (
         ("velocity_r", "velocity_z")
@@ -80,8 +76,8 @@ def _pressure_block(ops, name):
     [
         ("Quad4", "pressure", "cartesian", 1.0),
         ("Tri3", "pressure", "cartesian", 1.0),
-        ("Quad9", "Taylor_Hood", "cartesian", 1.0),
-        ("Tri6", "Taylor_Hood", "cartesian", 1.0),
+        ("Quad9", "Taylor-Hood", "cartesian", 1.0),
+        ("Tri6", "Taylor-Hood", "cartesian", 1.0),
         ("Quad4", "pressure", "axisymmetric", np.pi),  # the integral of 2 pi r over [0, 1]^2
     ],
 )
@@ -118,7 +114,7 @@ def _channel(element_type, formulation, density=50.0, viscosity=1.0):
 
 
 @pytest.mark.parametrize(
-    "element_type, formulation", [("Quad4", "pressure"), ("Quad9", "Taylor_Hood")]
+    "element_type, formulation", [("Quad4", "pressure"), ("Quad9", "Taylor-Hood")]
 )
 def test_the_pressure_mass_matrix_sums_to_the_integral_of_one_over_mu(element_type, formulation):
     """The channel has no prescribed pressure, so the whole matrix is there: area / mu."""
@@ -146,7 +142,7 @@ def test_the_stabilisation_vanishes_on_a_constant_and_is_semidefinite(preconditi
 
 
 def test_taylor_hood_has_no_stabilisation():
-    ops = _operators(_cavity("Quad9", "Taylor_Hood"), "lsc")
+    ops = _operators(_cavity("Quad9", "Taylor-Hood"), "lsc")
     assert len(ops["stabilization"][2]) == 0
     assert len(ops["commutator_stabilization"][2]) == 0
 
@@ -183,7 +179,7 @@ def test_c2_is_c1_times_mu_over_h_squared_on_a_uniform_mesh():
 
 
 @pytest.mark.parametrize(
-    "element_type, formulation", [("Quad4", "pressure"), ("Quad9", "Taylor_Hood")]
+    "element_type, formulation", [("Quad4", "pressure"), ("Quad9", "Taylor-Hood")]
 )
 def test_fp_is_zero_on_a_constant_away_from_the_inflow(element_type, formulation):
     """The diffusion and the convection of a constant vanish, so F_p 1 is zero on every row
@@ -208,7 +204,7 @@ def test_fp_is_zero_on_a_constant_away_from_the_inflow(element_type, formulation
         # The integral of the discrete u over the inflow side: 1 - h with the linear velocity,
         # 1 - h / 3 with the quadratic one, h = 1/4, the corners at rest.
         ("Quad4", "pressure", 1.0 - 0.25),
-        ("Quad9", "Taylor_Hood", 1.0 - 0.25 / 3.0),
+        ("Quad9", "Taylor-Hood", 1.0 - 0.25 / 3.0),
     ],
 )
 def test_fp_sums_to_the_inflow_term_of_its_robin_condition(element_type, formulation, inflow):

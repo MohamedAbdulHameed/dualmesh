@@ -19,7 +19,7 @@ right, insulated at the bottom, and cooled on top by air at
    )
 
    # 2. a problem on that mesh
-   problem = dm.Problem(mesh, method="dmcdm")
+   problem = dm.Problem(mesh, method="DMCDM")
 
    # 3. the physics: heat conduction with a heat source
    heat = problem.add_physics("heat_transfer", thermal_conductivity=20.0, heat_source=1.0e6)
@@ -144,7 +144,7 @@ Solving
 .. code-block:: python
 
    problem.solve()  # steady, Newton
-   problem.solve(nonlinear_solver="picard", relaxation=0.35)
+   problem.solve(nonlinear_solver="Picard", relaxation=0.35)
    problem.solve(load_factors=[0.25, 0.5, 0.75, 1.0])  # load stepping
    problem.solve_transient(end_time=10.0, time_step=0.5, implicitness=1.0)
 
@@ -172,5 +172,5 @@ method is the ``method`` argument:
 
 .. code-block:: python
 
-   dual = dm.Problem(mesh, method="dmcdm")
-   finite_element = dm.Problem(mesh, method="fem")
+   dual = dm.Problem(mesh, method="DMCDM")
+   finite_element = dm.Problem(mesh, method="FEM")

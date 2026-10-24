@@ -23,7 +23,7 @@ import dualmesh as dm
 import numpy as np
 import pytest
 
-METHODS = ("fem", "dmcdm", "hfvm", "zfvm")
+METHODS = ("fem", "dmcdm")
 LAPLACIAN = np.pi**2 * np.array([2.0, 5.0, 5.0, 8.0])
 
 

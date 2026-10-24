@@ -38,7 +38,7 @@ The same problem in Python is:
 .. code-block:: python
 
    mesh = dm.generate_rectangle_mesh(x=[0.0, 0.1], y=[0.0, 0.02], num_elements=[40, 8])
-   problem = dm.Problem(mesh, method="fem")
+   problem = dm.Problem(mesh, method="FEM")
    heat = problem.add_physics("heat_transfer", thermal_conductivity=20.0, heat_source=1.0e6)
    heat.add_boundary_condition("temperature = 300", boundary="left")
    heat.add_boundary_condition("heat_flux = h*(temperature - 293)", boundary="top", h=25.0)
@@ -80,7 +80,9 @@ The sections
        with its keywords, or ``file:`` a mesh file with the keywords of
        :func:`~dualmesh.read_mesh`.  Required.
    * - ``method``
-     - ``fem``, ``dmcdm``, ``hfvm`` or ``zfvm``.  Default ``dmcdm``.
+     - ``FEM`` (solids), ``DMCDM`` (fluids) or ``automatic``, the default:
+       DMCDM for a ``fluid_dynamics`` of the pressure formulation, FEM
+       otherwise.
    * - ``coordinates``
      - ``cartesian`` (the default), ``axisymmetric`` or ``spherical``.
    * - ``physics``

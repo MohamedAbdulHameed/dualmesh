@@ -140,14 +140,13 @@ Finite volume methods
 ---------------------
 
 .. [Patankar1980] S. V. Patankar, *Numerical Heat Transfer and Fluid Flow*,
-   Hemisphere Publishing, Washington, DC, 1980.  The cell-centred finite volume
-   method in the form Chapter 3 of [Reddy2024]_ presents it.
+   Hemisphere Publishing, Washington, DC, 1980.  The finite volume method in
+   the form Chapter 3 of [Reddy2024]_ presents it.
 
 .. [Jasak1996] H. Jasak, *Error Analysis and Estimation for the Finite Volume
    Method with Applications to Fluid Flows*, PhD thesis, Imperial College
-   London, 1996.  The non-orthogonal correction and the deferred correction
-   treatment of it, in the form used by the two finite volume discretisations
-   of dualmesh.
+   London, 1996.  The bounded face schemes in the form of its Eq. (3.66),
+   which the advection of the dual mesh control domain method uses.
 
 .. [DemirdzicMuzaferija1995] I. Demirdžić and S. Muzaferija, "Numerical method
    for coupled fluid flow, heat transfer and stress analysis using unstructured
@@ -158,8 +157,9 @@ Finite volume methods
 .. [BarthJespersen1989] T. J. Barth and D. C. Jespersen, "The design and
    application of upwind schemes on unstructured meshes", AIAA Paper 89-0366,
    27th Aerospace Sciences Meeting, Reno, NV, 9–12 January 1989.
-   DOI: 10.2514/6.1989-366.  The least-squares gradient reconstruction used by
-   the cell-centred method.
+   DOI: 10.2514/6.1989-366.  The least-squares gradient reconstruction, which
+   the dual mesh control domain method takes at the nodes for its
+   second-order face schemes.
 
 .. [Barth1993] T. J. Barth, "Recent developments in high order K-exact
    reconstruction on unstructured meshes", AIAA Paper 93-0668, 31st Aerospace
@@ -327,7 +327,7 @@ Solvers
    J. E. Roman, K. Rupp, P. Sanan, J. Sarich, B. F. Smith, S. Zampini,
    H. Zhang, H. Zhang and J. Zhang, *PETSc/TAO Users Manual*, Revision 3.19,
    Argonne National Laboratory report ANL-21/39, 2023.
-   DOI: 10.2172/1968587.  The library behind ``linear_solver="petsc"``.
+   DOI: 10.2172/1968587.  The library behind ``linear_solver="PETSc"``.
 
 .. [FalgoutYang2002] R. D. Falgout and U. M. Yang, "hypre: a library of high
    performance preconditioners", in *Computational Science: ICCS 2002*,
@@ -409,7 +409,7 @@ Solvers
 .. [Saad1994] Y. Saad, "ILUT: a dual threshold incomplete LU factorization",
    *Numerical Linear Algebra with Applications*, 1(4):387–402, 1994.
    DOI: 10.1002/nla.1680010405.  The threshold preconditioner offered as
-   ``preconditioner = "ilut"``.
+   ``preconditioner = "ILUT"``.
 
 .. [Saad2003] Y. Saad, *Iterative Methods for Sparse Linear Systems*, 2nd
    edition, SIAM, Philadelphia, 2003.  ISBN 978-0-89871-534-7.

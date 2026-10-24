@@ -10,11 +10,10 @@ canonical form
 where ``F`` is the flux and ``S`` the source of each equation and ``u`` stands
 for all the fields, so that the equations may be coupled.  All the fields are
 solved together by Newton's method with an exact Jacobian from automatic
-differentiation.  The same problem definition can be discretized with the
-Galerkin finite element method (``method="fem"``), the vertex-centred or the
-cell-centred finite volume method (``"hfvm"``, ``"zfvm"``), or the dual mesh
-control domain method of J. N. Reddy (``"dmcdm"``), which enforces the balance
-law over node-centred control domains of a dual mesh.
+differentiation.  The same problem definition is discretized with the
+Galerkin finite element method (``method="FEM"``) for solids, or the dual mesh
+control domain method of J. N. Reddy (``"DMCDM"``) for fluids, which enforces
+the balance law over node-centred control domains of a dual mesh.
 
 A minimal example (a cooling fin governed by ``-u'' + 400 u = 0``)::
 

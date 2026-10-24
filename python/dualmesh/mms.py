@@ -233,8 +233,7 @@ class ManufacturedSolution:
     The pressure of an incompressible flow is never prescribed on the
     boundary.  A flow without a flux boundary is enclosed, determines its
     pressure only up to a constant, and its pressure is held at its exact
-    value at the ``pressure_pin_point`` of the physics (the first mesh node
-    when it is not given).
+    value at the first mesh node.
 
     An enclosed flow with a velocity that crosses the boundary is a poor
     manufactured problem for a stabilised equal-order method: the nodal
@@ -337,7 +336,7 @@ class ManufacturedSolution:
                 # and for a field that is regular on the axis the divisions
                 # cancel. Brought over one denominator they do so
                 # symbolically, and the forcing can then be evaluated on the
-                # axis itself, as the cell-centred method does at its faces.
+                # axis itself.
                 sympy = _sympy()
                 forcing = {
                     v: sympy.cancel(sympy.together(sympy.expand(f))) for v, f in forcing.items()
@@ -370,14 +369,8 @@ class ManufacturedSolution:
         forcing = {v: _text(f) for v, f in self.forcing().items()}
         served, pins = set(), []
         for _name, type_name, parameters, _instance in self._physics:
-            parameters = dict(parameters)
             if type_name == "fluid_dynamics":
-                pins.append(
-                    (
-                        parameters.pop("pressure_pin_point", None),
-                        parameters.get("pressure", "pressure"),
-                    )
-                )
+                pins.append(parameters.get("pressure", "pressure"))
             physics = problem.add_physics(type_name, **parameters)
             served |= physics._set_manufactured_source(
                 {v: forcing[v] for v in physics.variable_names()}
@@ -412,12 +405,11 @@ class ManufacturedSolution:
                     flux=_text(traction),
                 )
         if not self.flux_boundaries:
-            for point, pressure in pins:
-                pin = list(point) if point is not None else list(mesh.node(0))
+            for pressure in pins:
                 problem.add_boundary_condition(
                     "point_Dirichlet",
                     variable=pressure,
-                    point=[float(c) for c in pin],
+                    point=[float(c) for c in mesh.node(0)],
                     value=self.exact(pressure),
                 )
         points = problem.entity_points()

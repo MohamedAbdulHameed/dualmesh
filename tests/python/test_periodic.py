@@ -13,7 +13,7 @@ import dualmesh as dm
 import numpy as np
 import pytest
 
-METHODS = ["fem", "hfvm", "dmcdm"]
+METHODS = ["fem", "dmcdm"]
 
 
 def _orders(errors):
@@ -114,14 +114,4 @@ def test_a_value_prescribed_on_the_secondary_boundary_only_is_refused():
     problem.add_boundary_condition("Dirichlet", "right", variable="u", value=1.0)
     problem.add_boundary_condition("periodic", primary="left", secondary="right")
     with pytest.raises(ValueError, match="prescribed value that its primary node does not"):
-        problem.solve(report="none")
-
-
-def test_the_cell_centred_method_is_refused():
-    mesh = dm.generate_rectangle_mesh(0.0, 1.0, 0.0, 1.0, 4, 4)
-    problem = dm.Problem(mesh, method="zfvm", distributed=False)
-    problem.add_variable("u")
-    problem.add_kernel("diffusion", variable="u")
-    problem.add_boundary_condition("periodic", primary="left", secondary="right")
-    with pytest.raises(ValueError, match="zfvm"):
         problem.solve(report="none")

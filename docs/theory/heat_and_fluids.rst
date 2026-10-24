@@ -384,21 +384,12 @@ keeps its full rule and only the constrained term is under-integrated.  A fuller
 rule on the penalty term is available, and its only appropriate use is to
 demonstrate the locking.
 
-The same counting determines which discretisations can use the formulation. The
-vertex-centred finite volume method replaces the interpolated gradient at a
-control domain interface by a two-point difference along the edge.  Applied to
-the penalty term, that difference would impose the constraint once per edge,
-which exceeds the one constraint per element of the reduced rule and locks the
-flow.  The replacement is therefore skipped where a kernel requests reduced
-integration.  With that exception the vertex-centred method gives the same
-cavity flow as the dual mesh method.  The cell-centred finite volume method has
-no element interior to integrate over: its fluxes are formed at faces, from
-reconstructed cell gradients, so it imposes the constraint at every face.  On a
-lid-driven cavity the velocities computed with the penalty term on this method
-are five orders of magnitude too small.  ``penalty_incompressibility`` therefore
-refuses the cell-centred method.  Incompressible flow with that method requires
-a pressure-velocity coupling, which the pressure-velocity formulation described
-below provides.
+The same counting decides how a discretisation must evaluate the term.  A
+gradient taken as a two-point difference along each edge would impose the
+constraint once per edge, which exceeds the one constraint per element of the
+reduced rule and locks the flow: on a lid-driven cavity the velocities were
+five orders of magnitude too small.  Both methods of dualmesh evaluate the
+penalty term with the interpolated gradient at the element centroid.
 
 The equations as the code assembles them
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -536,13 +527,13 @@ solution: the same problem with the inertia :math:`\rho (\mathbf{v} \cdot
 rest holds the prescribed boundary velocities next to zero values, so its
 linearised inertia has steep gradients, and the first step from it can leave the
 basin of convergence.  On a channel at :math:`Re = 100` with the inflow
-:math:`y` or :math:`6 y (1 - y)`, the first step of the cell-centred method
-from rest landed 300 away from the Stokes pressure, whose range is 0 to 28, and
-Newton's method diverged on :math:`16 \times 16` and :math:`32 \times 32`
-cells.  From the Stokes solution it converges in 3 to 4 iterations to the
+:math:`y` or :math:`6 y (1 - y)`, a cell-centred finite volume method, which
+dualmesh had until 24 October 2026, landed its first step from rest 300 away
+from the Stokes pressure, whose range is 0 to 28, and Newton's method diverged.
+From the Stokes solution Newton's method converges in a few iterations to the
 solution that continuation in the Reynolds number reaches.  The Stokes solve
-takes the pressure mass preconditioner when the flow takes ``"lsc"`` or
-``"pcd"``, which approximate a convection that it does not have.  A velocity
+takes the pressure mass preconditioner when the flow takes ``"LSC"`` or
+``"PCD"``, which approximate a convection that it does not have.  A velocity
 that the user gives as the start (``set_values`` or ``initial_condition``) is
 kept, and the report of the solve states the Stokes start.
 
@@ -595,13 +586,12 @@ The pressure-velocity formulation
 The penalty method removes the pressure from the unknowns, which is economical,
 but it has three costs.  First, the penalty parameter :math:`\gamma` must be
 large for the divergence to be small, which makes the matrix badly conditioned.
-Second, the penalty term must be integrated with a reduced rule, which has no
-counterpart in the cell-centred finite volume method.  Third, the pressure is
+Second, the penalty term must be integrated with a reduced rule.  Third, the pressure is
 only recovered afterwards, element by element.  The *pressure-velocity* (or *mixed*)
 formulation, selected with ``formulation="pressure"`` of the
 ``fluid_dynamics`` physics, keeps the pressure :math:`p` as
 an unknown field and solves the mass equation alongside the momentum
-equations.  It works with all four methods.
+equations.  It works with both methods.
 
 The equations
 ^^^^^^^^^^^^^
@@ -679,7 +669,7 @@ Laplacian that removes the checkerboard mode.  For the control volume methods
 the same flux is integrated over the faces of each control volume, and the
 face mass flux becomes the interpolated velocity corrected by
 :math:`\tau (\nabla p - \dots)`.  This is the idea behind the momentum
-interpolation of [RhieChow1983]_, which cell-centred codes use to avoid
+interpolation of [RhieChow1983]_, which finite volume codes use to avoid
 checkerboard pressures on colocated grids, here extended from the pressure
 gradient to the whole momentum residual.
 
@@ -704,7 +694,7 @@ the optimal parameter of linear elements, :math:`(h / 2 |\mathbf{v}|)(\coth
 Tezduyar without it gives :math:`h^2 / (4 \nu)`, three times too much.
 Measured on 32 by 32 elements at :math:`Re = 100`, against a Taylor-Hood
 solution on :math:`64 \times 64` elements, the factor halves the error of the
-cavity centreline velocities (``fem`` 0.0045 and 0.0088 against 0.0016 and
+cavity centreline velocities (``FEM`` 0.0045 and 0.0088 against 0.0016 and
 0.0041), and it lowers the error of the Kovasznay flow by about a quarter for
 every method and that of the Nusselt number of natural convection at
 :math:`Ra = 10^5` from 1.1 % to 0.5 %.  The first is absent
@@ -874,7 +864,7 @@ pair of meshes (the theoretical values are 3, 2 and 2):
 
 The enclosed case includes a velocity that crosses the boundary, for which the
 stabilised equal-order element produces an :math:`O(1)` pressure spike at the
-pin (see below).  The Taylor-Hood element, which has no pressure Laplacian to
+entity that fixes the pressure level (see below).  The Taylor-Hood element, which has no pressure Laplacian to
 carry the imbalance, shows no spike, and its pressure still converges at second
 order.
 
@@ -939,7 +929,7 @@ centrelines within 0.01.
 *Misuse is refused* with a message that states the required correction, in the
 following cases:
 
-* a first-order variable with any method other than ``fem``,
+* a first-order variable with any method other than ``FEM``,
 * ``formulation="taylor_hood"`` on a linear mesh or with another method,
 * stabilisation or SUPG requested with this element,
 * an existing pressure of the wrong order, and
@@ -959,18 +949,38 @@ mass equations of all control volumes gives
 conserves mass globally, whatever the stabilisation.
 
 An enclosed flow, with a velocity condition on every boundary, determines the
-pressure only up to a constant.  ``pressure_pin_point`` fixes it with a
-``point_Dirichlet``, which replaces the mass equation of the
-entity nearest to a point.  That mass equation is then dropped, and the pinned
-entity becomes the only place where a net boundary flux
+pressure only up to a constant.  The solver finds such a flow from its Jacobian
+:math:`\mathbf{J}` on the first Newton iteration.  A constant pressure
+:math:`\mathbf{1}_p` is then a solution of the homogeneous problem, with
+:math:`\|\mathbf{J}\,\mathbf{1}_p\| \le 10^{-9}\, \||\mathbf{J}|\,\mathbf{1}_p\|`.
+This test covers every boundary condition, including the symmetry planes, which
+hold the normal velocity and leave the pressure free.  The solver then holds the
+unknown of the pressure nearest the centre of the fluid at its value (an
+unknown in a corner slows the Krylov solvers by about 40 %).  After each
+converged solve it shifts the pressure to a mean of zero over the fluid and
+takes the residual, and so the reactions, at the shifted state.
+
+The shifted residual also checks that the level is still free at the solution.
+A viscosity, a density or a source that depends on the pressure makes the level
+change the flow, which a start at rest may not show.  The mass equations of an
+enclosed flow then still sum to the boundary flux whatever the solution
+(:math:`\mathbf{J}^{\mathsf{T}} \mathbf{1}_p = 0`), so they do not fix the
+level, and each level gives a flow of its own.  The solve stops with an error
+that asks for the pressure at a point (``point_Dirichlet``) or a pressure or
+traction condition.
+
+The held unknown replaces one mass equation.  The held entity is therefore the
+only place where a net boundary flux
 :math:`\oint \mathbf{v}_h \cdot \mathbf{n}\,\mathrm{d}s \neq 0` can be accommodated.
-With walls and a sliding lid the discrete net flux is zero and the pin
-introduces no error.  With prescribed velocities that cross the boundary,
+With walls and a sliding lid the discrete net flux is zero, the held unknown
+introduces no error, and the result does not depend on which unknown is held or
+on the number of processes.  With prescribed velocities that cross the boundary,
 however, the nodal interpolant of the data carries a net flux of order
 :math:`h^2`, and the pressure Laplacian of the stabilisation, whose coefficient
 is :math:`\tau \sim h^2`, converts it into a pressure spike of order one at the
-pin.  Such a flow should have an outlet: a boundary with a traction condition
-(or none) determines the pressure and needs no pin.
+held entity.  The solve then warns with the size of the net flux.  Such a flow
+should have an outlet: a boundary with a traction condition (or none)
+determines the pressure.
 
 Verification of the pressure-velocity formulation
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -992,27 +1002,19 @@ and :math:`16^3` in three dimensions) are:
      - :math:`\|\mathbf{v} - \mathbf{v}_h\|_{L^2}`
      - :math:`|\mathbf{v} - \mathbf{v}_h|_{H^1}`
      - :math:`\|p - p_h\|_{L^2}`
-   * - Distorted Quad4, node methods
+   * - Distorted Quad4
      - 1.98 to 1.99
      - 1.01
      - 1.60 to 1.65
-   * - Distorted Quad4, ``zfvm``
-     - 1.99
-     - 1.01
-     - 1.58
-   * - Distorted Tri3, node methods
+   * - Distorted Tri3
      - 1.99
      - 1.00 to 1.01
      - 1.59 to 1.60
-   * - Distorted Tri3, ``zfvm``
-     - 1.99
-     - 1.01
-     - 1.26
-   * - Axisymmetric Quad4 with the axis, all methods
+   * - Axisymmetric Quad4 with the axis, both methods
      - 1.95 to 1.97
      - 1.03
      - 1.61 to 1.68
-   * - Hex8, all methods
+   * - Hex8, both methods
      - 1.81 to 1.83
      - 1.15 to 1.21
      - 1.59 to 1.66
@@ -1026,18 +1028,18 @@ which is the behaviour usually reported for equal-order linear elements
 [BrezziPitkaranta1984]_.
 
 The physics is checked against two benchmarks.  For the lid-driven cavity at
-:math:`Re = 100` on a :math:`32 \times 32` mesh, every method reproduces the
+:math:`Re = 100` on a :math:`32 \times 32` mesh, both methods reproduce the
 centreline velocities of [Ghia1982]_ to within 0.015, and to within 0.0074 on
 :math:`64 \times 64`.  At :math:`Re = 1000` on :math:`64 \times 64` the finite
 element method gives the minimum horizontal velocity :math:`-0.381`, against
-:math:`-0.383` in the reference.  The node-based methods require the two corner
+:math:`-0.383` in the reference.  Both methods require the two corner
 nodes of the lid to belong to the walls.  With the lid velocity prescribed at
 those nodes, flow crosses the side walls through the first row of elements, and
 the vortex is noticeably too weak at :math:`Re = 1000`.  For natural convection,
 with the buoyancy in the stabilisation, the Nusselt number and velocity maxima
-on the :math:`32 \times 32` graded mesh are within 2 % of [DeVahlDavis1983]_ for
-the node methods up to :math:`Ra = 10^6`, and within 3.6 % for the cell-centred
-method.  Newton's method converges quadratically for all four methods.
+on the :math:`32 \times 32` graded mesh are within 2 % of [DeVahlDavis1983]_ up
+to :math:`Ra = 10^6`.  Newton's method converges quadratically with both
+methods.
 
 Transient flow
 --------------
@@ -1131,19 +1133,16 @@ with the prescribed velocity on its boundary and the natural condition
 :math:`\nu\, \partial v_i / \partial n = 0` where the velocity is free and the
 pressure is prescribed (an outflow).
 
-**The three node methods.**  The equations above are written with test
+**The two methods.**  The equations above are written with test
 functions.  The finite element method takes the shape functions.  The dual mesh
-control domain method and the vertex-centered finite volume method take the
-indicator of the control domain :math:`\Omega_I` of each node, so that
+control domain method takes the indicator of the control domain :math:`\Omega_I` of each node, so that
 :math:`(w, f)` becomes :math:`\int_{\Omega_I} f \,\mathrm{d}V` and
 :math:`(\nabla q, \mathbf{F})` becomes
 :math:`-\oint_{\partial \Omega_I} \mathbf{F} \cdot \mathbf{n} \,\mathrm{d}S` over
-the interfaces between control domains, as in the assembly of these methods.  The
+the interfaces between control domains, as in the assembly of the method.  The
 mass and gradient terms are then integrals over the control domains, the
 Laplacian is the flux of the gradient out of them, and
-:math:`(\nabla q, \mathbf{u}^*)` is the flux of :math:`\mathbf{u}^*`.  The
-vertex-centered method takes the gradient on an interface from the difference
-along the edge between its two nodes, as its assembly does.  The curl-curl term
+:math:`(\nabla q, \mathbf{u}^*)` is the flux of :math:`\mathbf{u}^*`.  The curl-curl term
 keeps the form above with the shape functions: on linear elements, where the
 vorticity is constant in each element, it equals the integral of
 :math:`\mathbf{n} \cdot \nabla \times \boldsymbol{\omega}` over the part of the
@@ -1188,8 +1187,7 @@ closest combination is that of the smallest residual.  The matrices and the prec
 the value [Fischer2021]_ uses with BDF3 and EXT3.
 
 **Verification.**  ``tests/python/test_projection.py`` and
-``dualmesh_parallel_tests`` check the following for the finite element, dual
-mesh control domain and vertex-centered finite volume methods.
+``dualmesh_parallel_tests`` check the following for both methods.
 
 * The decaying Taylor-Green vortex,
   :math:`\mathbf{v} = (-\cos x \sin y, \sin x \cos y)\, e^{-2 \nu t}`, with its
@@ -1198,10 +1196,9 @@ mesh control domain and vertex-centered finite volume methods.
   falls as :math:`6.2 \times 10^{-2}`, :math:`1.3 \times 10^{-2}`,
   :math:`3.0 \times 10^{-3}` and :math:`7.3 \times 10^{-4}` on
   :math:`8^2` to :math:`64^2` ``Quad4`` elements with the finite element method,
-  :math:`7.6 \times 10^{-2}` to :math:`1.1 \times 10^{-3}` with the other two,
-  all at second order, and at second order on ``Tri3`` elements as well, where
-  the dual mesh control domain and vertex-centered methods coincide (the edge
-  difference of a linear triangle is its interpolated gradient).  In a periodic
+  :math:`7.6 \times 10^{-2}` to :math:`1.1 \times 10^{-3}` with the dual mesh
+  control domain method, both at second order, and at second order on ``Tri3``
+  elements as well.  In a periodic
   box the velocity converges at second order or faster (about third on these
   uniform grids) and the pressure at second order.
 * The stagnation flow :math:`\mathbf{v} = g(t)\,(x, -y)`, whose linear velocity
@@ -1220,7 +1217,7 @@ of one half (``dualmesh_benchmark projection``), each step takes one iteration o
 the pressure solve, four without the projection of the earlier pressures, and two
 of each velocity solve, with every method.  A step of the finite element method
 takes 0.030, 0.016 and 0.010 s on one, two and four processes of a laptop, and a
-step of the dual mesh control domain or vertex-centered method 0.041 s on one,
+step of the dual mesh control domain method 0.041 s on one,
 because it evaluates the flow at the control domains and at their interfaces.
 
 Verification of the fluids module
@@ -1287,24 +1284,20 @@ incompressible flow, because
 :math:`\mathrm{Pe}_h = |\mathbf{v}| h / (2 \kappa)`, with
 :math:`\kappa = k / (\rho c_p)`, the central source :eq:`heatconvection`
 oscillates.  The heat that a ``nonisothermal_flow`` coupling carries takes, by
-default, the streamline stabilisation below (SUPG) with FEM, DMCDM and HFVM,
-and the limited face flux of :doc:`finite_volume` with ZFVM: the schemes that
-measured the closest on boundary layers and jumps.  ``advection_scheme`` of
-``heat_transfer`` chooses another one (``"central"``, ``"upwind"``,
-``"linear_upwind"``, ``"limited"``, ``"SUPG"``), because the best scheme depends
+default, the streamline stabilisation below (SUPG), which measured the closest
+on boundary layers and jumps.  ``advection_scheme`` of ``heat_transfer``
+chooses another one (``"central"``, or with DMCDM the face fluxes
+``"upwind"``, ``"linear_upwind"`` and ``"limited"`` of :doc:`finite_volume`),
+because the best scheme depends
 on the case: where conduction matters as much as convection, as in resolved
 natural convection, central can be closer (below).  The face schemes write the
 term with the faces of each control volume, as :math:`\rho c_p \sum_f m\, T_f`,
 with the flux :math:`m` of the velocity that the mass equation conserves, so
 that the heat is conserved exactly and the temperature does not depend on its
-scale.  The inertia of a flow takes its scheme from the method, with no option,
-because one scheme measured the closest in every case: the streamline
-stabilisation ``momentum_stabilization`` with FEM, DMCDM and HFVM, and the
-limited face flux :math:`\rho \sum_f m\, v_{i,f}` with ZFVM (on the cavity at
-:math:`Re = 100` and 1000, the Kovasznay flow and natural convection).
-``streamline_stabilization=True`` keeps the central form with SUPG on ZFVM.
+scale.  The inertia of a flow takes the streamline stabilisation
+``momentum_stabilization``, with no option.
 
-With FEM, DMCDM and HFVM, ``"SUPG"`` adds ``heat_streamline_stabilization``,
+``"SUPG"`` adds ``heat_streamline_stabilization``,
 the streamline upwind Petrov-Galerkin term of [BrooksHughes1982]_.  It is the
 flux :math:`\mathbf{F} = \tau\, \mathbf{v}\, r`, which adds
 :math:`\int_\Omega \tau\, (\mathbf{v} \cdot \nabla w)\, r \, d\Omega` to the
@@ -1343,8 +1336,8 @@ is :math:`1.4 \times 10^{-2}`, :math:`2.3 \times 10^{-3}` and
 :math:`2.6 \times 10^{-4}` on 8, 16 and 32 elements per side (Galerkin's
 :math:`2.6 \times 10^{-2}`, :math:`6.3 \times 10^{-3}` and
 :math:`1.6 \times 10^{-3}`).  On the harmonic :math:`T = e^x \sin y` both converge at second
-order.  For the inertia of a flow, SUPG is ``streamline_stabilization``, which
-``fluid_dynamics`` adds by default with the central scheme only.
+order.  For the inertia of a flow, SUPG is ``momentum_stabilization``, which
+``fluid_dynamics`` adds with both methods.
 
 On the skew jump of [BrooksHughes1982]_ with the outflow held at zero (a
 :math:`24 \times 24` mesh, :math:`k = 10^{-6}`), Galerkin's temperature reaches
@@ -1407,8 +1400,7 @@ carries the default streamline stabilisation, whose residual leaves the
 conduction term out.  That costs a little here, where conduction matters as
 much as convection: with ``advection_scheme="central"`` the differences were
 0.2 % and 0.6 % (1.8 % for :math:`v_m` at :math:`Ra = 10^6`).  The finite
-element and vertex-centred finite volume methods give Nusselt numbers within
-0.2 % of the same values.  The heat entering at the hot wall leaves at the cold
+element method gives Nusselt numbers within 0.2 % of the same values.  The heat entering at the hot wall leaves at the cold
 wall to round-off, and on a :math:`16 \times 16` mesh at :math:`Ra = 10^4` the
 relative Newton steps of the last load step fall as
 :math:`1.8 \times 10^{-3}`, :math:`1.5 \times 10^{-6}`,

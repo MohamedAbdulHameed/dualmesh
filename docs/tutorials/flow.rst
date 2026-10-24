@@ -5,7 +5,7 @@ The ``fluid_dynamics`` physics solves the equations of an incompressible
 Newtonian fluid.  This tutorial uses its default, the penalty formulation: the
 pressure is replaced by :math:`P = -\gamma\,\nabla\cdot\mathbf{v}`, and the
 penalty term is integrated with a reduced rule, which prevents locking of the
-velocity field.  The ``pressure`` and ``Taylor_Hood`` formulations keep the
+velocity field.  The ``pressure`` and ``Taylor-Hood`` formulations keep the
 pressure as an unknown (see :doc:`../theory/heat_and_fluids`).
 
 .. literalinclude:: ../../examples/lid_driven_cavity.py

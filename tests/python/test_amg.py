@@ -120,7 +120,11 @@ def test_multigrid_input_checks():
         Exception, match="'AMG' works with linear_solver 'CG', 'BiCGStab' or 'automatic'"
     ):
         cantilever(2, linear_solver="gmres", preconditioner="amg")
+    # Advection makes the matrix nonsymmetric.
+    problem = dm.Problem(dm.generate_rectangle_mesh(0, 1, 0, 1, 4, 4), method="DMCDM")
+    problem.add_variable("u")
+    problem.add_kernel("diffusion", variable="u")
+    problem.add_kernel("advection", variable="u", velocity=[1.0, 0.0], advection_scheme="upwind")
+    problem.add_boundary_condition("Dirichlet", "left", variable="u", value=1.0)
     with pytest.raises(Exception, match="needs a symmetric matrix"):
-        # The cell-centred finite volume method gives a nonsymmetric matrix on
-        # a tetrahedral mesh.
-        cantilever(3, method="zfvm", element_type="Tet4", linear_solver="cg", preconditioner="amg")
+        problem.solve(report="none", linear_solver="cg", preconditioner="amg")

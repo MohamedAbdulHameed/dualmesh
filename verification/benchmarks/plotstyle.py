@@ -36,8 +36,6 @@ SPINE = "#c3c2b7"
 METHOD_STYLE = {
     "dmcdm": (DUALMESH, "o"),
     "fem": (SECOND, "s"),
-    "hfvm": ("#8a5cd6", "^"),
-    "zfvm": ("#c99a1e", "D"),
     "fem, Taylor-Hood": (MUTED, "v"),
 }
 

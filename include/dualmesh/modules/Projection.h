@@ -17,7 +17,7 @@
 //
 //     nu (grad v, grad u^n) + (beta_0 / dt) (v, u^n) = (v, u*) / dt - (v, dP/dx) .
 //
-// The equations are written with test functions: the shape functions of the finite element method, or the indicator of the control domain of each node for the methods of the dual mesh (dmcdm and hfvm), for which (v, f) is an integral over the control domain and (grad q, F) the flux of F out of it.
+// The equations are written with test functions: the shape functions of the finite element method, or the indicator of the control domain of each node for the methods of the dual mesh (DMCDM), for which (v, f) is an integral over the control domain and (grad q, F) the flux of F out of it.
 // The pressure equation is a Poisson equation, solved by the conjugate gradient method with algebraic multigrid (hypre BoomerAMG), and each Helmholtz equation is symmetric and diagonally dominant, solved by the conjugate gradient method with a Jacobi preconditioner.
 // The matrices are assembled once and kept, with their preconditioners, as long as the step size is unchanged.
 // The coefficients beta_j and alpha_j are those of a variable step, so a step shortened to land on an output time keeps the order.
@@ -112,7 +112,7 @@ private:
   std::unique_ptr<Layout> _layout;
   std::unique_ptr<Geometry> _geometry;
   bool _ready = false;
-  /// Whether the method tests with the control volumes of the dual mesh (dmcdm, hfvm) rather than with the shape functions (fem).
+  /// Whether the method tests with the control volumes of the dual mesh (DMCDM) rather than with the shape functions (FEM).
   bool _dual = false;
   std::string _pressure_options, _velocity_options;
   int _dim = 0;
@@ -142,6 +142,9 @@ private:
   /// The accepted solutions and their times, the latest first.
   std::deque<std::pair<double, Vector>> _history;
   Vector _kinematic_pressure;
+  /// The volume of every entity, the integral of its shape function, for the mean of the pressure.
+  Vector _volume;
+  double _total_volume = 0.0;
   int _pressure_iterations = 0, _velocity_iterations = 0;
 };
 

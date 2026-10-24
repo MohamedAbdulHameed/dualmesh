@@ -121,7 +121,7 @@ Integrating :eq:`canonical` over the control domain of node :math:`I` and
 applying the divergence theorem gives the discrete equation of that node:
 
 .. math::
-   :label: dmcdm
+   :label: DMCDM
 
    R_I = -\oint_{\partial \Omega_I} \mathbf{F}\cdot\mathbf{n} \, \mathrm{d}S
          + \int_{\Omega_I} S \, \mathrm{d}V = 0 .
@@ -177,7 +177,7 @@ surface of a cylinder, and support reactions are obtained.
 The finite element method for comparison
 ----------------------------------------
 
-Setting ``method="fem"`` on the same problem replaces :eq:`dmcdm` by the
+Setting ``method="FEM"`` on the same problem replaces :eq:`DMCDM` by the
 Galerkin weak form of the same canonical equation,
 
 .. math::
@@ -199,7 +199,7 @@ are checked in the test suite:
 Coordinate systems
 ------------------
 
-The integrals in :eq:`dmcdm` carry a factor that depends on the coordinate
+The integrals in :eq:`DMCDM` carry a factor that depends on the coordinate
 system:
 
 .. list-table::

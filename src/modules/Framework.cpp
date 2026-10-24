@@ -432,10 +432,8 @@ PointDirichletBC::validParams()
 {
   InputParameters p = NodalBC::validParams();
   p.setClassDescription(
-      "Prescribed value u = g(x, t) at the single entity (node, or for the cell-centred method "
-      "cell or boundary face) nearest to a point. For a first-order variable on a quadratic mesh "
-      "the entity is the nearest corner node. Its main use is to fix the level of the pressure of "
-      "an enclosed incompressible flow, which the equations determine only up to a constant.");
+      "Prescribed value u = g(x, t) at the single node nearest to a point. For a first-order "
+      "variable on a quadratic mesh the node is the nearest corner node.");
   p.remove("boundary");
   p.addRequired("point",
                 ParameterKind::RealList,
@@ -457,20 +455,20 @@ PointDirichletBC::initialSetup(Problem & problem)
   // A first-order variable on a quadratic mesh lives on the corner nodes only,
   // so the nearest corner node is the one to fix.
   std::vector<char> carries;
-  if (problem.hasMixedOrder() && !problem.isCellCentered())
+  if (problem.hasMixedOrder())
   {
-    carries.assign(problem.numEntities(), 0);
+    carries.assign(problem.mesh().numNodes(), 0);
     for (const auto & el : problem.mesh().elements())
       for (int a = 0; a < problem.numLocalNodes(el, variable()); ++a)
         carries[el.nodes[a]] = 1;
   }
   Index best = -1;
   double best_distance = std::numeric_limits<double>::infinity();
-  for (Index i = 0; i < problem.numEntities(); ++i)
+  for (Index i = 0; i < problem.mesh().numNodes(); ++i)
   {
-    if ((!carries.empty() && !carries[i]) || !problem.integratedEntity(i))
+    if (!carries.empty() && !carries[i])
       continue;
-    const double d = norm(problem.entityPoint(i) - x);
+    const double d = norm(problem.mesh().node(i) - x);
     if (d < best_distance)
     {
       best_distance = d;
@@ -735,8 +733,7 @@ PeriodicBC::validParams()
       "is joined to the node of the primary boundary at the translated position, and the two "
       "act as one unknown whose equation collects both, so that its control domain wraps around "
       "the domain. A node that is periodic in two directions (a corner) is joined to one primary. "
-      "The meshes of the two boundaries must match node by node after the translation. Works "
-      "with fem, hfvm and dmcdm.");
+      "The meshes of the two boundaries must match node by node after the translation.");
   p.addRequired("primary", ParameterKind::String, "The side set or node set whose nodes are kept.");
   p.addRequired("secondary",
                 ParameterKind::String,
@@ -854,13 +851,13 @@ PeriodicBC::initialSetup(Problem & problem)
 {
   Constraint::initialSetup(problem);
   _pairs.clear();
-  const auto primary = problem.boundaryEntities(primaryBoundary());
-  const auto secondary = problem.boundaryEntities(secondaryBoundary());
+  const auto primary = problem.mesh().boundaryNodes(primaryBoundary());
+  const auto secondary = problem.mesh().boundaryNodes(secondaryBoundary());
   std::vector<Point> primary_points, secondary_points;
   for (Index n : primary)
-    primary_points.push_back(problem.entityPoint(n));
+    primary_points.push_back(problem.mesh().node(n));
   for (Index n : secondary)
-    secondary_points.push_back(problem.entityPoint(n));
+    secondary_points.push_back(problem.mesh().node(n));
   const auto matched = match(primary_points, secondary_points);
   const auto vars = periodicVariables(problem);
   for (std::size_t k = 0; k < secondary.size(); ++k)

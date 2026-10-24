@@ -12,7 +12,7 @@ files.  The temperature at the middle of the bottom edge is 83.142.
 import dualmesh as dm
 
 
-def bus_bar(method="dmcdm"):
+def bus_bar(method="DMCDM"):
     mesh = dm.generate_rectangle_mesh(
         x_min=0.0, x_max=0.1, y_min=0.0, y_max=0.05, num_x_elements=10, num_y_elements=5
     )

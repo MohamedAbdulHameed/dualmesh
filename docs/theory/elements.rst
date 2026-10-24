@@ -53,10 +53,9 @@ Type           Dim  Nodes  Order  Node set
 ``Pyramid5``   3    5      1      the four base corners and the apex
 =============  ===  =====  =====  ================================================
 
-Every type can be used by the finite element method and by the cell-centred
-finite volume method, which need only the element's geometry and shape
-functions.  The dual mesh control domain method and the vertex-centred finite
-volume method also need the element to be divided into node-centred control
+Every type can be used by the finite element method, which needs only the
+element's geometry and shape functions.  The dual mesh control domain method
+also needs the element to be divided into node-centred control
 domains, and three types cannot be: the two serendipity elements and the
 pyramid (see `Which methods accept which elements`_).  A mesh may mix types
 freely (hexahedra, prisms, pyramids and tetrahedra in one mesh, for instance),
@@ -229,17 +228,16 @@ denominator vanishes only at the apex, which no quadrature point reaches.
 Which methods accept which elements
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-=============  ======  ======  ======  ======
-Type           fem     zfvm    dmcdm   hfvm
-=============  ======  ======  ======  ======
-``Quad8``      yes     yes     no      no
-``Hex20``      yes     yes     no      no
-``Pyramid5``   yes     yes     no      no
-every other    yes     yes     yes     yes
-=============  ======  ======  ======  ======
+=============  ======  ======
+Type           FEM     DMCDM
+=============  ======  ======
+``Quad8``      yes     no
+``Hex20``      yes     no
+``Pyramid5``   yes     no
+every other    yes     yes
+=============  ======  ======
 
-The dual mesh control domain method and the vertex-centred finite volume
-method both integrate the balance law over node-centred control domains, and
+The dual mesh control domain method integrates the balance law over node-centred control domains, and
 those must *partition* the element: every point belongs to exactly one control
 domain, and every node owns one.  The median dual makes that assignment from
 the node set, and it is not defined for three of the elements.
@@ -258,12 +256,10 @@ the node set, and it is not defined for three of the elements.
   implement the non-tensor decomposition that would match the control domain
   interfaces exactly.
 
-The finite element and cell-centred finite volume methods need no partition,
-because the first integrates over the element and the second over the cell.
-They therefore accept all fourteen types.  The check is made when a problem is
-created: a dual-mesh method on a mesh containing one of the three types raises
-an error that names the type, gives the reason above, and lists the methods
-that accept it (``test_element_types.py``).  A linear mesh is promoted to the
+The finite element method needs no partition, because it integrates over the
+element, so it accepts all fourteen types.  The check is made when a problem is
+created: DMCDM on a mesh containing one of the three types raises an error that
+names the type, gives the reason above, and names FEM, which accepts it (``test_element_types.py``).  A linear mesh is promoted to the
 serendipity elements by ``mesh.second_order(serendipity=True)``, and the
 generators accept ``Quad8`` and ``Hex20`` directly.
 
@@ -640,10 +636,10 @@ meshes.
 =========  =======  ====================  ====================  ====================  ==========
 Element    Method   :math:`4\times4`      :math:`8\times8`      :math:`16\times16`    Rates
 =========  =======  ====================  ====================  ====================  ==========
-``Quad9``  dmcdm    6.92e-3               1.64e-3               4.03e-4               2.08, 2.02
-``Quad9``  fem      5.56e-4               3.35e-5               2.07e-6               4.05, 4.01
-``Tri6``   dmcdm    1.64e-2               3.78e-3               9.22e-4               2.12, 2.03
-``Tri6``   fem      3.52e-3               2.29e-4               1.44e-5               3.95, 3.99
+``Quad9``  DMCDM    6.92e-3               1.64e-3               4.03e-4               2.08, 2.02
+``Quad9``  FEM      5.56e-4               3.35e-5               2.07e-6               4.05, 4.01
+``Tri6``   DMCDM    1.64e-2               3.78e-3               9.22e-4               2.12, 2.03
+``Tri6``   FEM      3.52e-3               2.29e-4               1.44e-5               3.95, 3.99
 =========  =======  ====================  ====================  ====================  ==========
 
 The observed rates are two for the dual mesh control domain method and four

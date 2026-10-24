@@ -75,15 +75,6 @@ Problem::objectiveGradient(const Objective & objective) const
     // The integral of the variable over the domain: g = int u dV, so
     // dg/dU at the node of a shape function N is int N dV, the same vector
     // a one-point source assembled on that variable would produce.
-    if (_method == Method::FiniteVolumeCell)
-    {
-      // The unknowns are the cell values: g = sum_c u_c |V_c|.
-      const std::vector<double> volumes = elementIntegrals("");
-      const Index cells = cellMesh().numCells();
-      for (Index c = 0; c < cells && c < static_cast<Index>(volumes.size()); ++c)
-        gradient[dof(c, v)] = volumes[c];
-      return gradient;
-    }
     QuadratureSpec spec;
     spec.kind = QuadratureSpec::Kind::Gauss;
     std::vector<IntegrationPoint> points;
@@ -112,10 +103,6 @@ Problem::objectiveGradient(const Objective & objective) const
   }
 
   // The integral of the variable over a side set.
-  if (_method == Method::FiniteVolumeCell)
-    throw InputError("sensitivities: an objective over the boundary of the cell-centred finite "
-                     "volume method is not available yet; integrate over the domain, or use "
-                     "fem, dmcdm or hfvm for the boundary.");
   if (!_mesh->sidesets().count(objective.boundary))
     throw InputError("sensitivities: the objective names the boundary '" + objective.boundary +
                      "', which the mesh does not have.");

@@ -46,9 +46,9 @@ combined with, and solved.  dualmesh is one in the following precise sense:
    test (:file:`tests/python/test_multiphysics.py`) checks.
 
 4. **One description, several discretisations.**  The same problem is
-   discretised by the finite element method, the vertex-centred or the
-   cell-centred finite volume method, or the dual mesh control domain method,
-   chosen by one keyword.  An element type or a physics that a method cannot
+   discretised by the finite element method (for solids) or the dual mesh
+   control domain method (for fluids), chosen by the physics or by one
+   keyword.  An element type or a physics that a method cannot
    treat correctly is rejected with an error message that states the reason.
 
 In this design the three physics modules are three sets of kernels that share
@@ -81,8 +81,7 @@ What is in place
        method, by a stabilized equal-order pressure-velocity formulation
        (PSPG and SUPG) or with Taylor-Hood elements, and Boussinesq buoyancy.
        Transient flow monolithically or by the projection splitting of
-       Nek5000 and nekRS (finite element, dual mesh control domain and
-       vertex-centered finite volume methods).
+       Nek5000 and nekRS (both methods).
    * - General equations
      - Systems of any number of fields in general form (flux and source as
        expressions of the fields and their gradients) and in coefficient
@@ -94,8 +93,7 @@ What is in place
      - Monolithic, exact-Jacobian coupling of any fields on one mesh.
        Verified on natural convection [DeVahlDavis1983]_.
    * - Discretisation
-     - Galerkin finite elements, vertex- and cell-centred finite volumes and
-       the dual mesh control domain method.  Fourteen element types, including
+     - Galerkin finite elements and the dual mesh control domain method.  Fourteen element types, including
        prisms, pyramids and serendipity elements.  Cartesian, axisymmetric and
        spherical coordinates.
    * - Time

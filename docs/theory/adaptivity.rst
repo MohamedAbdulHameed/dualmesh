@@ -139,16 +139,7 @@ the recovery is one-sided at boundary nodes, where fewer elements contribute to
 the average, so the indicator is less reliable on the layer of elements touching
 the boundary.
 
-*It is not available for the cell-centred finite volume method.*  Calling
-:meth:`~dualmesh.Problem.error_indicator` on a problem built with
-``method="zfvm"`` raises an error, so that no misleading number is returned.
-The reason is structural: the unknowns of that method are cell averages, so
-there is no nodal field to differentiate and no element gradient of the kind
-:eq:`recovery` averages.  Recovering a nodal gradient from cell averages needs
-a different construction (a least-squares or Green-Gauss reconstruction over
-the cells around each node), which the library does not provide.  The dual mesh
-control domain method, the finite element method and the vertex-centred finite
-volume method all carry nodal unknowns and all support the indicator.
+Both methods carry nodal unknowns and support the indicator.
 
 Marking
 -------

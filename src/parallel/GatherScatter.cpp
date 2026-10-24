@@ -128,13 +128,10 @@ GatherScatter::~GatherScatter()
 void
 GatherScatter::setup(const Communicator & comm,
                      const std::vector<Index> & global_ids,
-                     Library library,
-                     const std::vector<char> & claims)
+                     Library library)
 {
   _rank = comm.rank();
   const std::size_t n = global_ids.size();
-  if (!claims.empty() && claims.size() != n)
-    throw std::invalid_argument("GatherScatter: one claim flag per local entity is needed.");
   // Copies of one index on this rank are one entity: the first copy represents it, and the libraries see each index once.
   // An entity that only this rank has (a negative index) is left out.
   std::unordered_map<Index, Index> compact_of;
@@ -142,7 +139,6 @@ GatherScatter::setup(const Communicator & comm,
   _compact_of.assign(n, -1);
   _representative.clear();
   std::vector<Index> compact_ids;
-  std::vector<char> compact_claims;
   for (std::size_t i = 0; i < n; ++i)
   {
     if (global_ids[i] < 0)
@@ -153,14 +149,11 @@ GatherScatter::setup(const Communicator & comm,
     {
       _representative.push_back(static_cast<Index>(i));
       compact_ids.push_back(global_ids[i]);
-      compact_claims.push_back(0);
     }
     _compact_of[i] = it->second;
-    if (!claims.empty() && claims[i])
-      compact_claims[it->second] = 1;
   }
   _duplicates = _representative.size() < n;
-  setupCompact(comm, compact_ids, library, claims.empty() ? claims : compact_claims);
+  setupCompact(comm, compact_ids, library);
   _owner.assign(n, -1);
   _owns.assign(n, 0);
   for (std::size_t i = 0; i < n; ++i)
@@ -176,17 +169,12 @@ GatherScatter::setup(const Communicator & comm,
 void
 GatherScatter::setupCompact(const Communicator & comm,
                             const std::vector<Index> & global_ids,
-                            Library library,
-                            const std::vector<char> & claims)
+                            Library library)
 {
   const std::size_t n = global_ids.size();
   _owner_compact.assign(n, _rank);
   _star.reset();
-  // The owner is the smallest rank of the copies that claim the entity, and of all copies when none does: a copy that does not claim enters the minimum as its rank plus the number of ranks.
-  const int ranks = comm.size();
-  const auto key = [&](std::size_t i)
-  { return claims.empty() || claims[i] ? _rank : _rank + ranks; };
-  (void) key;
+  // The owner is the smallest rank of the copies.
 #ifdef DUALMESH_HAVE_GSLIB
   if (_gslib)
     dualmesh_gslib_free(_gslib);
@@ -202,11 +190,7 @@ GatherScatter::setupCompact(const Communicator & comm,
     for (std::size_t i = 0; i < n; ++i)
       ids[i] = static_cast<long long>(global_ids[i]) + 1;
     _gslib = dualmesh_gslib_setup(MPI_COMM_WORLD, ids.data(), static_cast<unsigned>(n));
-    for (std::size_t i = 0; i < n; ++i)
-      _owner_compact[i] = key(i);
     dualmesh_gslib_min(_gslib, _owner_compact.data());
-    for (auto & owner : _owner_compact)
-      owner %= ranks;
     return;
   }
 #endif
@@ -239,7 +223,7 @@ GatherScatter::setupCompact(const Communicator & comm,
   std::vector<int> copies(2 * n), first(2 * static_cast<std::size_t>(home_count), INT_MAX);
   for (std::size_t i = 0; i < n; ++i)
   {
-    copies[2 * i] = key(i);
+    copies[2 * i] = _rank;
     copies[2 * i + 1] = static_cast<int>(i);
   }
   DM_PETSC(PetscSFReduceBegin(home, MPI_2INT, copies.data(), first.data(), MPI_MINLOC));
@@ -254,7 +238,7 @@ GatherScatter::setupCompact(const Communicator & comm,
   _star->size = static_cast<Index>(n);
   for (std::size_t i = 0; i < n; ++i)
   {
-    _owner_compact[i] = owner_of[2 * i] % ranks;
+    _owner_compact[i] = owner_of[2 * i];
     if (_owner_compact[i] != _rank)
     {
       _star->leaves.push_back(static_cast<PetscInt>(i));

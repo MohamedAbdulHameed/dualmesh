@@ -126,12 +126,12 @@ RecordShape
 recordShape(MPI_Comm comm, const Problem::StateSnapshot & state)
 {
   int points = 0, history = 0;
-  for (std::size_t e = 0; e < state.keys[0].size(); ++e)
+  for (std::size_t e = 0; e < state.keys.size(); ++e)
   {
-    const auto & keys = state.keys[0][e];
+    const auto & keys = state.keys[e];
     points = std::max(points, static_cast<int>(keys.size()));
     if (!keys.empty())
-      history = std::max(history, static_cast<int>(state.values[0][e].size() / keys.size()));
+      history = std::max(history, static_cast<int>(state.values[e].size() / keys.size()));
   }
   RecordShape shape;
   MPI_Allreduce(&points, &shape.points, 1, MPI_INT, MPI_MAX, comm);
@@ -203,15 +203,10 @@ writeCheckpoint(const std::string & file,
   const int nv = problem.numVariables();
   const auto state = problem.snapshotState();
   std::string error;
-  for (const auto & keys : state.keys[1])
-    if (!keys.empty())
-      error = "A checkpoint holds the history of the material at the elements; the history at "
-              "the faces of the cell-centered method cannot be written yet.";
-  stopTogether(comm, error);
   const RecordShape shape = recordShape(comm, state);
   // The ghost elements of a distributed run follow the integrated ones and belong to another rank's part of the file.
   const std::size_t elements = layout.global_elements.size();
-  if (shape.size() > 0 && elements > state.keys[0].size())
+  if (shape.size() > 0 && elements > state.keys.size())
     error = "This problem has a history of the material, and its part of the mesh was built "
             "without the global numbers of its elements, which a checkpoint needs.";
   stopTogether(comm, error);
@@ -264,8 +259,8 @@ writeCheckpoint(const std::string & file,
     for (std::size_t e = 0; e < elements; ++e)
     {
       double * r = records.data() + e * static_cast<std::size_t>(size);
-      const auto & keys = state.keys[0][e];
-      const auto & values = state.values[0][e];
+      const auto & keys = state.keys[e];
+      const auto & values = state.values[e];
       r[0] = static_cast<double>(keys.size());
       for (std::size_t k = 0; k < keys.size(); ++k)
       {
@@ -341,7 +336,7 @@ readCheckpoint(const std::string & file, Problem & problem, const CheckpointLayo
     auto state = problem.snapshotState();
     std::string error;
     if (file_elements != layout.num_global_elements ||
-        layout.global_elements.size() > state.keys[0].size())
+        layout.global_elements.size() > state.keys.size())
       error = "'" + file + "' holds the history of the material of " +
               std::to_string(file_elements) +
               " elements, which does not fit this problem; a checkpoint restarts the problem "
@@ -358,8 +353,8 @@ readCheckpoint(const std::string & file, Problem & problem, const CheckpointLayo
     {
       const double * r = records.data() + e * static_cast<std::size_t>(size);
       const auto points = static_cast<std::size_t>(r[0]);
-      auto & keys = state.keys[0][e];
-      auto & values = state.values[0][e];
+      auto & keys = state.keys[e];
+      auto & values = state.values[e];
       keys.assign(points, 0);
       values.assign(points * static_cast<std::size_t>(shape.history), 0.0);
       for (std::size_t k = 0; k < points; ++k)

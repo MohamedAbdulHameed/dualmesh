@@ -142,7 +142,7 @@ def test_a_rigid_rotation_changes_nothing():
             formulation="plane_strain",
             youngs_modulus=1e9,
             poissons_ratio=0.3,
-            stress_update="neo_Hookean",
+            stress_update="neo-Hookean",
         )
         p.add_kernel(
             "stress_divergence",

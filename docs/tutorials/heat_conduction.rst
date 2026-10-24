@@ -16,9 +16,9 @@ Running it prints
 
 .. code-block:: text
 
-   dmcdm  u =  300.000  257.618  225.593  202.637  187.827  180.568
-   dmcdm  Q(0) = 4817.0
-   fem    u =  300.000  257.567  225.507  202.527  187.703  180.437
+   DMCDM  u =  300.000  257.618  225.593  202.637  187.827  180.568
+   DMCDM  Q(0) = 4817.0
+   FEM    u =  300.000  257.567  225.507  202.527  187.703  180.437
 
 The two computations differ only in the ``method`` argument of
 :class:`dualmesh.Problem`.
@@ -50,4 +50,4 @@ Points to note
 * A temperature-dependent conductivity :math:`k = k_0 (1 + k_1 T)` needs only
   ``temperature_polynomial=[1.0, k1]`` on the ``heat_conduction`` kernel.  The
   problem is then solved by Newton's method with the exact Jacobian, or by direct
-  iteration with ``nonlinear_solver="picard"``.
+  iteration with ``nonlinear_solver="Picard"``.

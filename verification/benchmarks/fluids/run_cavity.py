@@ -8,10 +8,10 @@ uniform meshes of 32, 64 and 128 elements per side and records the largest
 difference of the velocity u along x = 0.5 and of v along y = 0.5 from the
 tabulated values, for
 
-* the stabilized pressure-velocity formulation with dmcdm, fem, hfvm and zfvm,
+* the stabilized pressure-velocity formulation with dmcdm and fem,
   by Newton's method with the lid speed raised in load steps;
 * the Taylor-Hood element (fem on Quad9 elements);
-* the projection time integration (dmcdm, fem, hfvm), marched from rest to
+* the projection time integration (dmcdm, fem), marched from rest to
   the steady state.
 
     python run_cavity.py [output directory] [--plot-only]
@@ -32,9 +32,8 @@ import plotstyle  # noqa: E402
 RE = 1000.0
 LEVELS = [32, 64, 128]
 # The cell-centered method has no converged solution on 32 x 32 cells at this Reynolds number (Newton's method diverges, also with ten load steps), and is compared on the two finer meshes; 256 x 256 cells take more than ten minutes with the serial direct solver.
-LEVELS_ZFVM = [64, 128]
-METHODS = ["dmcdm", "fem", "hfvm", "zfvm"]
-PROJECTION_METHODS = ["dmcdm", "fem", "hfvm"]
+METHODS = ["dmcdm", "fem"]
+PROJECTION_METHODS = ["dmcdm", "fem"]
 PROJECTION_LEVEL = 64
 DEFAULT_OUT = HERE.parents[2] / "docs" / "_static" / "figures" / "fluids"
 
@@ -49,8 +48,6 @@ def cavity(n, method, element_type="Quad4", formulation="pressure", projection=F
         density=RE,
         formulation=formulation,
     )
-    if formulation == "pressure":
-        parameters["pressure_pin_point"] = (0.5, 0.0)
     if projection:
         parameters["time_integration"] = "projection"
     flow = problem.add_physics("fluid_dynamics", **parameters)
@@ -107,7 +104,7 @@ def compute():
     for method in METHODS:
         start = time.perf_counter()
         du, dv, curves = [], [], []
-        levels = LEVELS_ZFVM if method == "zfvm" else LEVELS
+        levels = LEVELS
         for n in levels:
             u, v = steady(n, method)
             du.append(np.abs(u - U).max())
@@ -126,7 +123,7 @@ def compute():
         )
     du, dv = [], []
     for n in LEVELS:
-        u, v = steady(n // 2, "fem", "Quad9", "Taylor_Hood")
+        u, v = steady(n // 2, "fem", "Quad9", "Taylor-Hood")
         du.append(np.abs(u - U).max())
         dv.append(np.abs(v - V).max())
     data["fem, Taylor-Hood"] = {

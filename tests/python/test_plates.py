@@ -40,7 +40,7 @@ def circular_plate(num_elements, power_law_index=0.0, support="hinged"):
     """Axisymmetric circular plate, first-order shear deformation theory."""
     s = circular_plate_stiffness(power_law_index)
     mesh = dm.generate_line_mesh(start=0.0, end=CIRCULAR_RADIUS, num_elements=num_elements)
-    problem = dm.Problem(mesh, coordinates="axisymmetric")
+    problem = dm.Problem(mesh, method="DMCDM", coordinates="axisymmetric")
     for name in ("radial_displacement", "deflection", "rotation"):
         problem.add_variable(name)
     common = dict(
@@ -301,7 +301,7 @@ def test_plate_reduced_integration_is_required_for_thin_plates():
     mesh = dm.generate_rectangle_mesh(
         x_min=0.0, x_max=0.5, y_min=0.0, y_max=0.5, num_x_elements=8, num_y_elements=8
     )
-    problem = dm.Problem(mesh)
+    problem = dm.Problem(mesh, method="DMCDM")
     variables = ["u", "v", "w", "rotation_x", "rotation_y"]
     for name in variables:
         problem.add_variable(name)
@@ -348,7 +348,7 @@ def classical_circular_plate(
     """Axisymmetric circular plate, mixed classical (Kirchhoff) theory."""
     s = circular_plate_stiffness(power_law_index)
     mesh = dm.generate_line_mesh(start=0.0, end=CIRCULAR_RADIUS, num_elements=num_elements)
-    problem = dm.Problem(mesh, coordinates="axisymmetric")
+    problem = dm.Problem(mesh, method="DMCDM", coordinates="axisymmetric")
     plate = problem.add_physics(
         "solid_mechanics",
         formulation="circular_plate",

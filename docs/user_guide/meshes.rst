@@ -30,8 +30,7 @@ one-dimensional mesh still reports :math:`y = z = 0`.  The space the nodes
 live in may have more dimensions than the elements: a surface of
 two-dimensional elements in three-dimensional space is the mesh of a shell
 (see :ref:`surface-meshes`).  Nodes are numbered from
-zero, and that numbering is the numbering of the degrees of freedom for every
-method except the cell-centred finite volume method.
+zero, and that numbering is the numbering of the degrees of freedom.
 
 **Elements** are the cells of the primal mesh.  Each names its type, lists the
 global numbers of its nodes in the local order the reference element defines,
@@ -105,12 +104,11 @@ Type           Nodes  Dim.  Order          Node layout
 ``Pyramid5``       5     3  linear         four base corners and the apex
 =============  =====  ====  =============  ============================================
 
-Nodes are numbered as VTK numbers them.  The finite element and cell-centred
-finite volume methods accept every type.  The dual mesh and vertex-centred
-finite volume methods need the element to be divided into node-centred control
+Nodes are numbered as VTK numbers them.  The finite element method accepts
+every type.  The dual mesh control domain method needs the element to be divided into node-centred control
 domains, which is not defined for the serendipity elements (they have no
 interior node to own the centre of the element) or for the pyramid (its apex
-is shared by four edges), so they reject ``Quad8``, ``Hex20`` and ``Pyramid5``
+is shared by four edges), so it rejects ``Quad8``, ``Hex20`` and ``Pyramid5``
 with an error that states the reason.  :doc:`/theory/elements` gives the
 details.
 
@@ -316,8 +314,7 @@ in a thin curved sheet, or the Laplace-Beltrami problem.  A rectangle tilted in
 space gives exactly the solution of the flat rectangle, and on the unit sphere
 :math:`-\Delta_S u + u = 3z` converges to its exact solution :math:`u = z` at
 second order (``tests/python/test_surfaces.py``).  The finite element and dual
-mesh control domain methods run on surfaces.  The cell-centred finite volume
-method, flow and the continuum formulations of ``solid_mechanics`` refuse
+mesh control domain methods run on surfaces.  Flow and the continuum formulations of ``solid_mechanics`` refuse
 them, and shells are the next step of :doc:`/scope`.
 
 The elements of a surface are oriented consistently: the normals of

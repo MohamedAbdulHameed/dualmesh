@@ -103,7 +103,7 @@ public:
   /// the automatic line search turns backtracking on for such a problem.
   virtual bool hasKinks() const { return false; }
   /// Whether the face flux needs the gradient at the two sides of a face (the linear upwind and
-  /// limited schemes).  The node-based methods then reconstruct it at the nodes from the nodes
+  /// limited schemes).  DMCDM then reconstructs it at the nodes from the nodes
   /// around them (Problem::buildNodeGradients), and the flux depends on those nodes too.
   virtual bool needsSideGradients() const { return false; }
   /// For the mass equation of a flow: the velocity whose flux it conserves through the faces of
@@ -151,10 +151,8 @@ protected:
 /// leaves one body enters the other exactly (energy, or momentum, is
 /// conserved across the gap).  The primary side is integrated with the rule of
 /// the discretisation; the secondary side receives its share through its own
-/// test functions at the paired point (finite elements), the control domain
-/// that contains the paired point (dual mesh and vertex-centred finite
-/// volumes), or the boundary face that contains it (cell-centred finite
-/// volumes).  At an interface point the context holds the primary values in
+/// test functions at the paired point (finite elements) or the control domain
+/// that contains the paired point (the dual mesh).  At an interface point the context holds the primary values in
 /// u and grad_u, the secondary values in u_other, the paired point in x_other,
 /// and the primary outward normal in normal.  Gradients are not available on
 /// the secondary side.
@@ -258,18 +256,14 @@ const Kernel * massConservationKernel(const Problem & problem);
 /// The velocity that an advective face flux of a flow carries at the point of @p ctx: the
 /// velocity w whose flux the mass equation @p mass conserves, so that the heat and the momentum
 /// are conserved exactly and see no source from a discrete divergence of the velocity.  On the
-/// boundary of the node-based methods the mass equation takes v . n (mass_flux), and so does the
-/// flux there; @p cells is whether the method is the cell-centred one, whose mass equation takes
-/// its own flux on every face.  Without a mass equation it is the velocity @p velocities.
-ADVector3 advectingVelocity(const QpContext & ctx,
-                            const Kernel * mass,
-                            bool cells,
-                            const std::vector<int> & velocities);
+/// boundary the mass equation takes v . n (mass_flux), and so does the flux there.  Without a mass
+/// equation it is the velocity @p velocities.
+ADVector3
+advectingVelocity(const QpContext & ctx, const Kernel * mass, const std::vector<int> & velocities);
 
 /// The advection scheme named by @p text, checked against the method of @p problem: "central"
-/// for every method (the term as the volume source v . grad u), "upwind" for the control volume
-/// methods, "linear_upwind" and "limited" for the cell-centred method, which reconstructs the
-/// gradients of the cells.  "SUPG" is refused: the streamline stabilisation of the finite element
+/// for both methods (the term as the volume source v . grad u), and the face fluxes "upwind",
+/// "linear_upwind" and "limited" for DMCDM.  "SUPG" is refused: the streamline stabilisation of the finite element
 /// method is a separate kernel (heat_streamline_stabilization, momentum_stabilization).  @p owner
 /// names the kernel in messages.
 AdvectionScheme

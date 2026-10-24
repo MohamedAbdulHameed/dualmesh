@@ -19,8 +19,7 @@ import numpy as np
 import pytest
 from dualmesh._core import InputError
 
-NODE_METHODS = ("hfvm", "dmcdm")
-CELL_SCHEMES = ("central", "upwind", "linear_upwind", "limited")
+FACE_SCHEMES = ("upwind", "linear_upwind", "limited")
 
 
 def boundary_layer(method, scheme, n, pe, mesh=None):
@@ -47,29 +46,42 @@ def order(method, scheme):
 # ---------------------------------------------------------------------------
 # Boundedness and order in one dimension
 # ---------------------------------------------------------------------------
-@pytest.mark.parametrize(
-    "method, scheme",
-    [(m, s) for m in (*NODE_METHODS, "zfvm") for s in ("upwind", "limited")],
-)
-def test_the_bounded_schemes_do_not_oscillate_at_a_cell_peclet_number_of_5(method, scheme):
+@pytest.mark.parametrize("scheme", ["upwind", "limited"])
+def test_the_bounded_schemes_do_not_oscillate_at_a_cell_peclet_number_of_5(scheme):
     """The solution stays in [0, 1], as the exact one does, where the central scheme of the
-    same method undershoots (the control that the problem can oscillate)."""
-    u, _, _ = boundary_layer(method, scheme, 20, 100.0)
+    same "DMCDM" undershoots (the control that the problem can oscillate)."""
+    u, _, _ = boundary_layer("DMCDM", scheme, 20, 100.0)
     assert u.min() > -1e-12 and u.max() < 1.0 + 1e-12, (u.min(), u.max())
-    central, _, _ = boundary_layer(method, "central", 20, 100.0)
+    central, _, _ = boundary_layer("DMCDM", "central", 20, 100.0)
     assert central.min() < -0.1
 
 
 @pytest.mark.parametrize(
-    "method, scheme, low, high",
-    [(m, "upwind", 0.8, 1.2) for m in (*NODE_METHODS, "zfvm")]
-    + [(m, "central", 1.8, 2.3) for m in (*NODE_METHODS, "zfvm")]
-    + [(m, s, 1.6, 2.3) for m in (*NODE_METHODS, "zfvm") for s in ("linear_upwind", "limited")],
+    "scheme, low, high",
+    [
+        ("upwind", 0.8, 1.2),
+        ("central", 1.8, 2.3),
+        ("linear_upwind", 1.6, 2.3),
+        ("limited", 1.6, 2.3),
+    ],
 )
-def test_each_scheme_converges_at_its_order(method, scheme, low, high):
+def test_each_scheme_converges_at_its_order(scheme, low, high):
     """Upwind is first order, and central, linear upwind and the limited scheme second order."""
-    p = order(method, scheme)
+    p = order("DMCDM", scheme)
     assert low < p < high, p
+
+
+def two_block_line(n):
+    """The unit interval in n cells, the block "inner" for x < 0.6 and "outer" beyond."""
+    x = np.linspace(0.0, 1.0, n + 1)
+    cells = np.array([[i, i + 1] for i in range(n)])
+    blocks = [0 if (i + 0.5) / n < 0.6 else 1 for i in range(n)]
+    mesh = dm.mesh_from_arrays(x[:, None], cells, element_type="Edge2", blocks=blocks, dimension=1)
+    mesh.set_block_name(0, "inner")
+    mesh.set_block_name(1, "outer")
+    mesh.add_sideset_by_predicate("left", lambda x, y, z: x < 0.5)
+    mesh.add_sideset_by_predicate("right", lambda x, y, z: x > 0.5)
+    return mesh
 
 
 def alternating_line(n):
@@ -86,12 +98,9 @@ def alternating_line(n):
 @pytest.mark.parametrize("scheme", ["linear_upwind", "limited"])
 def test_the_second_order_schemes_are_exact_for_a_linear_field_on_uneven_cells(scheme):
     """u = x solves u' - 0.01 u'' = 1.  The least-squares gradient is exact for it, so linear
-    upwind is exact, and r = 1, psi = 1, so the limited value is the central one, which is exact
-    only if it weights the two cells by their distances to the face (2/3 and 1/3 here).  Newton's
-    method needs the line search here: from zero it cycles between the two sides of the kink of
-    the limiter at r = 0, and the automatic line search is backtracking for it."""
+    upwind is exact, and r = 1, psi = 1, so the limited value is the central one, which is exact."""
     mesh = alternating_line(20)
-    problem = dm.Problem(mesh, method="zfvm")
+    problem = dm.Problem(mesh, method="DMCDM")
     problem.add_variable("u")
     problem.add_kernel("diffusion", variable="u", diffusivity=0.01)
     problem.add_kernel("advection", variable="u", velocity=[1.0], advection_scheme=scheme)
@@ -103,32 +112,14 @@ def test_the_second_order_schemes_are_exact_for_a_linear_field_on_uneven_cells(s
     assert np.abs(problem.values("u") - x).max() < 1e-12
 
 
-def test_without_the_line_search_newton_cycles_on_the_kink_of_the_limiter():
-    """The case above with line_search 'none': from zero, Newton's method cycles between two
-    states (residual 2e-2, then 0.45, then 2e-2 ...), which is why the automatic choice is
-    backtracking for the limited scheme."""
-    problem = dm.Problem(alternating_line(20), method="zfvm")
-    problem.add_variable("u")
-    problem.add_kernel("diffusion", variable="u", diffusivity=0.01)
-    problem.add_kernel("advection", variable="u", velocity=[1.0], advection_scheme="limited")
-    problem.add_kernel("body_force", variable="u", value=1.0)
-    problem.add_boundary_condition("Dirichlet", "left", variable="u", value=0.0)
-    problem.add_boundary_condition("Dirichlet", "right", variable="u", value=1.0)
-    with pytest.raises(RuntimeError, match="did not converge"):
-        problem.solve(report="none", line_search="none")
-
-
-@pytest.mark.parametrize("method", ["zfvm", *NODE_METHODS])
 @pytest.mark.parametrize("element", ["Quad4", "Tri3"])
 @pytest.mark.parametrize("scheme", ["linear_upwind", "limited"])
-def test_the_second_order_schemes_are_exact_for_a_linear_field_in_two_dimensions(
-    element, scheme, method
-):
+def test_the_second_order_schemes_are_exact_for_a_linear_field_in_two_dimensions(element, scheme):
     """u = x + 2 y solves v . grad u - 0.01 Laplacian(u) = 2 with v = (1, 0.5).  The node-based
     methods reconstruct the gradient at a node by least squares over the nodes around it, which
-    is exact for a linear field, as the cell gradient of ZFVM is."""
+    is exact for a linear field."""
     mesh = dm.generate_rectangle_mesh(x=[0, 1], y=[0, 1], num_elements=[8, 8], element_type=element)
-    problem = dm.Problem(mesh, method=method)
+    problem = dm.Problem(mesh, method="DMCDM")
     problem.add_variable("u")
     problem.add_kernel("diffusion", variable="u", diffusivity=0.01)
     problem.add_kernel("advection", variable="u", velocity=[1.0, 0.5], advection_scheme=scheme)
@@ -141,14 +132,13 @@ def test_the_second_order_schemes_are_exact_for_a_linear_field_in_two_dimensions
     assert np.abs(problem.values("u") - x[:, 0] - 2.0 * x[:, 1]).max() < 1e-9
 
 
-@pytest.mark.parametrize("method", NODE_METHODS)
 @pytest.mark.parametrize("element", ["Quad4", "Tri3"])
-def test_the_jacobian_of_the_node_gradient_is_exact(method, element):
-    """Linear upwind is linear in u, so Newton's method converges in one step when the Jacobian
+def test_the_jacobian_of_the_node_gradient_is_exact(element):
+    """Linear upwind is linear in u, so Newton's "DMCDM" converges in one step when the Jacobian
     holds the derivatives with respect to every node of the reconstructed gradient, including the
     nodes outside the element of the face."""
     mesh = dm.generate_rectangle_mesh(x=[0, 1], y=[0, 1], num_elements=[8, 8], element_type=element)
-    problem = dm.Problem(mesh, method=method)
+    problem = dm.Problem(mesh, method="DMCDM")
     problem.add_variable("u")
     problem.add_kernel("diffusion", variable="u", diffusivity=0.01)
     problem.add_kernel(
@@ -162,13 +152,14 @@ def test_the_jacobian_of_the_node_gradient_is_exact(method, element):
 
 def test_the_limited_scheme_converges_in_few_newton_iterations():
     """The limiter is differentiated exactly, so Newton's method converges in a few steps on the
-    boundary layer, and the limited scheme has the smallest error of the schemes there."""
-    u, exact, result = boundary_layer("zfvm", "limited", 20, 100.0)
+    boundary layer (measured 4).  Of the bounded schemes the limited one has the smaller error
+    there (0.11 against 0.16 for upwind); linear upwind is closer (0.048) but undershoots to -0.04,
+    and central to -0.43."""
+    u, exact, result = boundary_layer("DMCDM", "limited", 20, 100.0)
     assert result.total_iterations <= 6
-    limited = np.abs(u - exact).max()
-    for scheme in ("upwind", "linear_upwind", "central"):
-        other, _, _ = boundary_layer("zfvm", scheme, 20, 100.0)
-        assert limited < np.abs(other - exact).max(), scheme
+    assert u.min() > -1e-12 and u.max() < 1.0 + 1e-12
+    upwind, _, _ = boundary_layer("DMCDM", "upwind", 20, 100.0)
+    assert np.abs(u - exact).max() < 0.8 * np.abs(upwind - exact).max()
 
 
 @pytest.mark.parametrize("form, beyond", [("conservative", 0.5), ("non_conservative", 1.0)])
@@ -180,15 +171,7 @@ def test_a_face_between_two_blocks_carries_the_upstream_properties(scheme, form,
     speed of the upstream block: the downstream one would make the flux 2 u there.  In the
     non-conservative form v . grad u = 0, so u = 1 everywhere."""
     n = 20
-    x = np.linspace(0.0, 1.0, n + 1)
-    cells = np.array([[i, i + 1] for i in range(n)])
-    blocks = [0 if (i + 0.5) / n < 0.6 else 1 for i in range(n)]
-    mesh = dm.mesh_from_arrays(x[:, None], cells, element_type="Edge2", blocks=blocks, dimension=1)
-    mesh.set_block_name(0, "inner")
-    mesh.set_block_name(1, "outer")
-    mesh.add_sideset_by_predicate("left", lambda x, y, z: x < 0.5)
-    mesh.add_sideset_by_predicate("right", lambda x, y, z: x > 0.5)
-    problem = dm.Problem(mesh, method="zfvm")
+    problem = dm.Problem(two_block_line(n), method="DMCDM")
     problem.add_variable("u")
     problem.add_property("constant", block=["inner"], properties={"speed": 1.0})
     problem.add_property("constant", block=["outer"], properties={"speed": 2.0})
@@ -211,15 +194,7 @@ def test_the_non_conservative_form_takes_the_upstream_speed_between_two_blocks()
     by h / v from cell to cell, and the face between the blocks takes the speed of the upstream
     block, so the step there is h (the downstream speed would make it h / 2)."""
     n = 20
-    x = np.linspace(0.0, 1.0, n + 1)
-    cells = np.array([[i, i + 1] for i in range(n)])
-    blocks = [0 if (i + 0.5) / n < 0.6 else 1 for i in range(n)]
-    mesh = dm.mesh_from_arrays(x[:, None], cells, element_type="Edge2", blocks=blocks, dimension=1)
-    mesh.set_block_name(0, "inner")
-    mesh.set_block_name(1, "outer")
-    mesh.add_sideset_by_predicate("left", lambda x, y, z: x < 0.5)
-    mesh.add_sideset_by_predicate("right", lambda x, y, z: x > 0.5)
-    problem = dm.Problem(mesh, method="zfvm")
+    problem = dm.Problem(two_block_line(n), method="DMCDM")
     problem.add_variable("u")
     problem.add_property("constant", block=["inner"], properties={"speed": 1.0})
     problem.add_property("constant", block=["outer"], properties={"speed": 2.0})
@@ -228,45 +203,14 @@ def test_the_non_conservative_form_takes_the_upstream_speed_between_two_blocks()
     problem.add_kernel("body_force", variable="u", value=1.0)
     problem.add_boundary_condition("Dirichlet", "left", variable="u", value=0.0)
     problem.solve(report="none")
-    # The first n entities are the cells, the others the two boundary faces.
-    order = np.argsort(problem.entity_points()[:n, 0])
-    steps = np.diff(problem.values("u")[:n][order])
+    order = np.argsort(problem.entity_points()[:, 0])
+    steps = np.diff(problem.values("u")[order])
     h = 1.0 / n
-    np.testing.assert_allclose(steps[:11], h, rtol=1e-6)
-    np.testing.assert_allclose(steps[11], h, rtol=1e-6)
-    np.testing.assert_allclose(steps[12:], h / 2, rtol=1e-6)
-
-
-def test_an_advection_restricted_to_one_block_does_not_enter_the_other():
-    """Advection v u' = 1 in the block x < 0.6 only, and conduction in both, with k = 1e-10 in the
-    first block and 1 beyond, u(0) = 0 and u(1) = 5.  The face between the blocks conducts almost
-    nothing, so the second block holds u = 5.  The non-conservative face term of the advection
-    belongs to the first block's cells only: in the second block's first cell it would couple the
-    two blocks."""
-    n = 20
-    x = np.linspace(0.0, 1.0, n + 1)
-    cells = np.array([[i, i + 1] for i in range(n)])
-    blocks = [0 if (i + 0.5) / n < 0.6 else 1 for i in range(n)]
-    mesh = dm.mesh_from_arrays(x[:, None], cells, element_type="Edge2", blocks=blocks, dimension=1)
-    mesh.set_block_name(0, "inner")
-    mesh.set_block_name(1, "outer")
-    mesh.add_sideset_by_predicate("left", lambda x, y, z: x < 0.5)
-    mesh.add_sideset_by_predicate("right", lambda x, y, z: x > 0.5)
-    problem = dm.Problem(mesh, method="zfvm")
-    problem.add_variable("u")
-    problem.add_property("constant", block=["inner"], properties={"k": 1e-10})
-    problem.add_property("constant", block=["outer"], properties={"k": 1.0})
-    problem.add_kernel("diffusion", variable="u", diffusivity="k")
-    problem.add_kernel(
-        "advection", variable="u", velocity=[1.0], advection_scheme="upwind", block=["inner"]
-    )
-    problem.add_kernel("body_force", variable="u", value=1.0, block=["inner"])
-    problem.add_boundary_condition("Dirichlet", "left", variable="u", value=0.0)
-    problem.add_boundary_condition("Dirichlet", "right", variable="u", value=5.0)
-    problem.solve(report="none")
-    xc = problem.entity_points()[:n, 0]
-    u = problem.values("u")[:n]
-    np.testing.assert_allclose(u[xc > 0.6], 5.0, atol=1e-6)
+    np.testing.assert_allclose(steps[:12], h, rtol=1e-6)
+    # The outflow node has half a control volume, over which upwind takes the difference across a
+    # whole element: its step is h / 4, the first-order error of upwind at an outflow.
+    np.testing.assert_allclose(steps[12:-1], h / 2, rtol=1e-6)
+    np.testing.assert_allclose(steps[-1], h / 4, rtol=1e-6)
 
 
 # ---------------------------------------------------------------------------
@@ -274,15 +218,12 @@ def test_an_advection_restricted_to_one_block_does_not_enter_the_other():
 # ---------------------------------------------------------------------------
 @pytest.mark.parametrize("form", ["conservative", "non_conservative"])
 @pytest.mark.parametrize("element", ["Quad4", "Tri3"])
-@pytest.mark.parametrize(
-    "method, scheme",
-    [(m, s) for m in (*NODE_METHODS, "zfvm") for s in CELL_SCHEMES[1:]],
-)
-def test_a_uniform_state_leaves_through_the_outflow_unchanged(element, method, scheme, form):
+@pytest.mark.parametrize("scheme", FACE_SCHEMES)
+def test_a_uniform_state_leaves_through_the_outflow_unchanged(element, scheme, form):
     """u = 1 on the inflow sides and no condition on the outflow sides: u = 1 everywhere, to
     round-off, so the conservative boundary flux carries the boundary value."""
     mesh = dm.generate_rectangle_mesh(x=[0, 1], y=[0, 1], num_elements=[8, 8], element_type=element)
-    problem = dm.Problem(mesh, method=method)
+    problem = dm.Problem(mesh, method="DMCDM")
     problem.add_variable("u")
     problem.add_kernel("diffusion", variable="u", diffusivity=0.01)
     problem.add_kernel(
@@ -320,22 +261,20 @@ def skew(method, scheme, n=24, outflow_value=None):
     return mesh.points(), problem.values("temperature")
 
 
-@pytest.mark.parametrize("method", NODE_METHODS)
-def test_the_node_methods_upwind_a_skew_jump_without_oscillation(method):
+def test_the_node_methods_upwind_a_skew_jump_without_oscillation():
     """The upwind temperature stays in [0, 1], to the tolerance of the nonlinear solve, up to the
     outflow sides, which have no condition."""
-    _, T = skew(method, "upwind")
+    _, T = skew("DMCDM", "upwind")
     assert T.min() > -1e-9 and T.max() < 1.0 + 1e-9, (T.min(), T.max())
 
 
-@pytest.mark.parametrize("method", NODE_METHODS)
-def test_the_conservative_flux_through_the_boundary_keeps_a_skew_jump_bounded(method):
+def test_the_conservative_flux_through_the_boundary_keeps_a_skew_jump_bounded():
     """The skew jump carried by the constant velocity of advection in the conservative form: the
     flux through the outflow sides must carry the value of the node's own control volume (a value
     interpolated along the side couples the nodes of the side and undershoots)."""
     c, s = math.cos(math.radians(30.0)), math.sin(math.radians(30.0))
     mesh = dm.generate_rectangle_mesh(x=[0, 1], y=[0, 1], num_elements=[24, 24])
-    problem = dm.Problem(mesh, method=method)
+    problem = dm.Problem(mesh, method="DMCDM")
     problem.add_variable("u")
     problem.add_kernel("diffusion", variable="u", diffusivity=1e-6)
     problem.add_kernel(
@@ -352,16 +291,13 @@ def test_the_conservative_flux_through_the_boundary_keeps_a_skew_jump_bounded(me
     assert u.min() > -1e-9 and u.max() < 1.0 + 1e-9, (u.min(), u.max())
 
 
-@pytest.mark.parametrize(
-    "method, scheme",
-    [(m, s) for m in (*NODE_METHODS, "zfvm") for s in CELL_SCHEMES[1:]],
-)
-def test_the_inertia_of_a_constant_velocity_component_vanishes(method, scheme):
+@pytest.mark.parametrize("scheme", FACE_SCHEMES)
+def test_the_inertia_of_a_constant_velocity_component_vanishes(scheme):
     """v_x = x (from a Laplace equation with these boundary values, which the methods solve
     exactly) and v_y = 1 at the inflow: (v . grad) v_y = 0, so v_y = 1 everywhere, although
     div v = 1.  The conservative face form would add the source v_y div v."""
     mesh = dm.generate_rectangle_mesh(x=[0.5, 1.5], y=[0, 1], num_elements=[8, 8])
-    problem = dm.Problem(mesh, method=method)
+    problem = dm.Problem(mesh, method="DMCDM")
     for name in ("vx", "vy"):
         problem.add_variable(name)
         problem.add_kernel("diffusion", variable=name, diffusivity=0.01)
@@ -382,11 +318,8 @@ def test_the_inertia_of_a_constant_velocity_component_vanishes(method, scheme):
     assert np.abs(problem.values("vy") - 1.0).max() < 1e-10
 
 
-@pytest.mark.parametrize(
-    "method, scheme",
-    [(m, s) for m in (*NODE_METHODS, "zfvm") for s in CELL_SCHEMES[1:]],
-)
-def test_the_heat_a_flow_carries_is_conserved_exactly(method, scheme):
+@pytest.mark.parametrize("scheme", FACE_SCHEMES)
+def test_the_heat_a_flow_carries_is_conserved_exactly(scheme):
     """A cavity driven by its lid at Re = 100, hot on the left, cold on the right, adiabatic at
     the top and the bottom.  The face flux carries the velocity that the mass equation conserves,
     whose flux through every control volume sums to zero and through the walls is zero, so the
@@ -394,13 +327,12 @@ def test_the_heat_a_flow_carries_is_conserved_exactly(method, scheme):
     velocity, whose discrete divergence is not zero, the balance missed the integral of
     T div_h(v)."""
     mesh = dm.generate_rectangle_mesh(x=[0, 1], y=[0, 1], num_elements=[16, 16])
-    problem = dm.Problem(mesh, method=method)
+    problem = dm.Problem(mesh, method="DMCDM")
     flow = problem.add_physics(
         "fluid_dynamics",
         density=100.0,
         dynamic_viscosity=1.0,
         formulation="pressure",
-        pressure_pin_point=(0.5, 0.0),
     )
     heat = problem.add_physics("heat_transfer", thermal_conductivity=0.1, advection_scheme=scheme)
     problem.add_coupling("nonisothermal_flow", heat_transfer=heat, fluid_dynamics=flow)
@@ -437,19 +369,16 @@ def channel(method, scheme, offset):
     return problem.values("temperature") - offset
 
 
-@pytest.mark.parametrize(
-    "method, scheme",
-    [(m, s) for m in (*NODE_METHODS, "zfvm") for s in CELL_SCHEMES[1:]],
-)
-def test_the_heat_a_flow_carries_does_not_depend_on_the_temperature_scale(method, scheme):
+@pytest.mark.parametrize("scheme", FACE_SCHEMES)
+def test_the_heat_a_flow_carries_does_not_depend_on_the_temperature_scale(scheme):
     """The same channel in kelvin, 300 K higher: the temperature rises by 300 K everywhere and
     stays in [0, 1] above it, as the equation v . grad T = div(k grad T) / (rho c_p) requires.
     The conservative face flux m T_f would see the discrete divergence of the velocity and give a
-    source T div(v), which moved the temperature by 13 K (dmcdm) and 253 K (zfvm) and took it to
+    source T div(v), which moved the temperature by 13 K (DMCDM) and took it to
     1.67 even at offset 0."""
-    T = channel(method, scheme, 0.0)
+    T = channel("DMCDM", scheme, 0.0)
     assert T.min() > -1e-9 and T.max() < 1.0 + 1e-9, (T.min(), T.max())
-    np.testing.assert_allclose(channel(method, scheme, 300.0), T, atol=1e-6)
+    np.testing.assert_allclose(channel("DMCDM", scheme, 300.0), T, atol=1e-6)
 
 
 def test_supg_removes_the_oscillation_of_galerkin_at_an_outflow_layer():
@@ -725,12 +654,12 @@ KOVASZNAY = {
 }
 
 
-def kovasznay_errors(method, **flow):
+def kovasznay_errors(method):
     from dualmesh import mms
 
     study = mms.ManufacturedSolution(KOVASZNAY, dimension=2, flux_boundaries={"right": (1.0, 0.0)})
     study.add_physics(
-        "fluid_dynamics", density=1.0, dynamic_viscosity=1.0 / RE, formulation="pressure", **flow
+        "fluid_dynamics", density=1.0, dynamic_viscosity=1.0 / RE, formulation="pressure"
     )
     return study.convergence_study(
         lambda n: dm.generate_rectangle_mesh(-0.5, 1.0, -0.5, 1.5, n, round(4 * n / 3)),
@@ -740,35 +669,20 @@ def kovasznay_errors(method, **flow):
     )
 
 
-@pytest.mark.parametrize("method", ["FEM", "DMCDM", "HFVM", "ZFVM"])
+@pytest.mark.parametrize("method", ["FEM", "DMCDM"])
 def test_the_flow_of_every_method_converges_at_second_order_on_kovasznay_flow(method):
     """The exact Navier-Stokes solution of Kovasznay (1948) at Re = 40, with the exact velocity on
-    three sides and the exact traction on the outflow side, with the advection of each method:
-    the streamline stabilisation for FEM, DMCDM and HFVM, the limited face flux for ZFVM."""
+    three sides and the exact traction on the outflow side, with the streamline stabilisation."""
     result = kovasznay_errors(method)
     assert 1.8 < result.order("velocity_x", last=2) < 2.3, result.summary()
 
 
-def test_the_limited_flux_of_zfvm_is_closer_than_its_streamline_stabilisation():
-    """The default of the cell-centred method, the limited face flux, against the central form
-    with the streamline stabilisation that streamline_stabilization=True keeps: measured 7.6e-3
-    against 9.5e-3 for the velocity on 32 elements (and half the error on the cavity at
-    Re = 1000)."""
-    limited = kovasznay_errors("ZFVM").errors[("velocity_x", "l2")][-1]
-    central = kovasznay_errors("ZFVM", streamline_stabilization=True)
-    central = central.errors[("velocity_x", "l2")][-1]
-    assert limited < 0.9 * central, (limited, central)
-
-
-@pytest.mark.parametrize(
-    "method, scheme", [("FEM", "SUPG"), ("DMCDM", "SUPG"), ("HFVM", "SUPG"), ("ZFVM", "limited")]
-)
-def test_the_heat_a_flow_carries_takes_the_scheme_of_its_method_by_default(method, scheme):
-    """The default of advection_scheme: the streamline stabilisation for the methods of the
-    elements and of the dual mesh, and the limited face flux for the cell-centred method, which
-    measured the closest on the boundary layer, the skew jump and natural convection."""
+@pytest.mark.parametrize("method", ["FEM", "DMCDM"])
+def test_the_heat_a_flow_carries_takes_the_streamline_stabilisation_by_default(method):
+    """The default of advection_scheme is the streamline stabilisation, which measured the
+    closest on the boundary layer, the skew jump and natural convection."""
     _, by_default = skew(method, None, n=8, outflow_value=0.0)
-    _, given = skew(method, scheme, n=8, outflow_value=0.0)
+    _, given = skew(method, "SUPG", n=8, outflow_value=0.0)
     np.testing.assert_allclose(by_default, given, atol=1e-12)
 
 
@@ -778,7 +692,7 @@ def test_the_heat_a_flow_carries_takes_the_scheme_of_its_method_by_default(metho
 @pytest.mark.parametrize(
     "method, scheme, words",
     [
-        ("zfvm", "SUPG", "central, upwind, linear_upwind or limited"),
+        ("DMCDM", "SUPG", "central, upwind, linear_upwind or limited"),
         ("fem", "upwind", "heat_streamline_stabilization"),
         ("fem", "SUPG", "heat_streamline_stabilization"),
         ("fem", "supg", "heat_streamline_stabilization"),
@@ -811,28 +725,16 @@ def test_the_node_gradient_schemes_are_refused_on_a_distributed_mesh():
 
 def test_an_error_of_an_object_names_it_once():
     mesh = dm.generate_line_mesh(start=0.0, end=1.0, num_elements=4)
-    problem = dm.Problem(mesh, method="zfvm")
+    problem = dm.Problem(mesh, method="DMCDM")
     problem.add_variable("u")
     with pytest.raises(InputError, match="advection_form") as error:
         problem.add_kernel("advection", variable="u", velocity=[1.0], advection_form="both")
     assert str(error.value).count("advection_0") == 1, str(error.value)
 
 
-def test_supg_of_the_heat_with_a_control_volume_method_is_refused():
-    mesh = dm.generate_rectangle_mesh(x=[0, 1], y=[0, 1], num_elements=[2, 2])
-    problem = dm.Problem(mesh, method="zfvm")
-    flow = problem.add_physics(
-        "fluid_dynamics", density=1.0, dynamic_viscosity=1.0, formulation="pressure"
-    )
-    heat = problem.add_physics("heat_transfer", thermal_conductivity=1.0, advection_scheme="SUPG")
-    problem.add_coupling("nonisothermal_flow", heat_transfer=heat, fluid_dynamics=flow)
-    with pytest.raises(InputError, match="FEM, DMCDM and HFVM"):
-        problem.solve(report="none")
-
-
 def test_a_heat_scheme_without_a_flow_is_refused():
     mesh = dm.generate_rectangle_mesh(x=[0, 1], y=[0, 1], num_elements=[2, 2])
-    problem = dm.Problem(mesh, method="zfvm")
+    problem = dm.Problem(mesh, method="DMCDM")
     heat = problem.add_physics("heat_transfer", thermal_conductivity=1.0, advection_scheme="upwind")
     heat.add_boundary_condition("temperature = 0", boundary="left")
     with pytest.raises(InputError, match="no nonisothermal_flow coupling"):

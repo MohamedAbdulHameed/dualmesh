@@ -21,7 +21,7 @@ The setup
 ---------
 
 The flow starts from rest and is advanced by the projection time integration
-(BDF2 and EXT2) at a Courant number of one half, distributed over four
+(BDF2 and EXT2) at a Courant number of one half, distributed over two
 processes.  The splitting takes the do-nothing outflow as a prescribed pressure
 of zero, with the natural condition :math:`\nu\, \partial \mathbf{v} / \partial n
 = 0` on the velocity.  The forces on the cylinder are minus the sums of the
@@ -33,7 +33,7 @@ computes at every step from its momentum equations.
    import dualmesh as dm
 
    mesh = dm.read_mesh("dfg.msh")
-   problem = dm.Problem(mesh, method="dmcdm")  # fem, hfvm
+   problem = dm.Problem(mesh, method="DMCDM")  # or FEM
    flow = problem.add_physics(
        "fluid_dynamics",
        density=1.0,
@@ -59,16 +59,9 @@ and the largest drag and lift coefficients are taken over them.
 Results
 -------
 
-.. note::
-
-   The numbers on this page were measured before the stabilisation parameter
-   :math:`\tau` took the factor 9 on its viscous term (24 October 2026), which
-   lowered the errors of the stabilised methods on the cavity and the Kovasznay
-   flow by about half.  They are being measured again.
-
 .. list-table:: The largest drag and lift coefficients of a cycle and the
    Strouhal number, with their relative errors, and the wall time of one step on
-   four processes of a laptop
+   two processes of a laptop
    :header-rows: 1
    :widths: 20 12 18 18 18 14
 
@@ -78,30 +71,30 @@ Results
      - :math:`\max C_L`
      - :math:`St`
      - s per step
-   * - fem
+   * - FEM
      - 13 665
-     - 3.2941 (+2.30 %)
-     - 0.9910 (+0.51 %)
-     - 0.29827 (-1.20 %)
-     - 0.0040
-   * - fem
+     - 3.2221 (+0.07 %)
+     - 0.9618 (-2.44 %)
+     - 0.30014 (-0.58 %)
+     - 0.0053
+   * - FEM
      - 53 049
-     - 3.2317 (+0.36 %)
-     - 0.9809 (-0.51 %)
-     - 0.30138 (-0.17 %)
-     - 0.020
-   * - dmcdm, hfvm
+     - 3.2200 (+0.00 %)
+     - 0.9764 (-0.96 %)
+     - 0.30170 (-0.06 %)
+     - 0.025
+   * - DMCDM
      - 13 665
-     - 3.3010 (+2.52 %)
-     - 1.0061 (+2.05 %)
-     - 0.29747 (-1.46 %)
-     - 0.0027
-   * - dmcdm, hfvm
+     - 3.2259 (+0.18 %)
+     - 0.9763 (-0.98 %)
+     - 0.29941 (-0.82 %)
+     - 0.0041
+   * - DMCDM
      - 53 049
-     - 3.2327 (+0.39 %)
-     - 0.9844 (-0.15 %)
-     - 0.30122 (-0.22 %)
-     - 0.012
+     - 3.2212 (+0.04 %)
+     - 0.9805 (-0.55 %)
+     - 0.30156 (-0.10 %)
+     - 0.018
    * - Reference
      - 667 264
      - 3.2200
@@ -109,16 +102,26 @@ Results
      - 0.30188
      -
 
-Halving the element size divides the error of the largest drag by six, that of
-the Strouhal number by seven and that of the largest lift by between one and
-fourteen, so all three converge to the reference.  On 53 049 unknowns, a
-twelfth of those of the reference computation, the largest drag is within
-0.4 %, the largest lift within 0.5 % and the Strouhal number within 0.22 %.  The
-dual mesh control domain and the vertex-centered methods give the same numbers
-on these triangles, for the reason given in :doc:`dfg_steady`, and their steps
-took a third to 40 % less time than those of the finite element method.  A step of the
-finer mesh takes 12 to 20 ms on four processes, and the run of ten time units,
-about 19 000 steps at a Courant number of one half, takes four to six minutes.
+All three quantities converge to the reference.  Halving the element size
+divides the error of the Strouhal number by eight to ten and that of the largest
+lift by about two, and brings the largest drag to within 0.04 %.  On 53 049
+unknowns, a twelfth of those of the reference computation, the largest drag is
+within 0.04 %, the largest lift within 1 % and the Strouhal number within
+0.1 %.  The lift converges the slowest: it is the amplitude of the oscillation,
+which the numerical dissipation of the coarse mesh damps.
+
+The splitting caps the weight of the divergence in its pressure equation at
+:math:`1/\tau`.  Against the numbers measured before the factor 9 entered the
+viscous term of :math:`\tau` (24 October 2026), the error of the largest drag on
+the coarser mesh fell from 2.3 to 2.5 % to 0.07 to 0.18 %, and that of the
+Strouhal number fell by about half.  The error of the largest lift on the finer
+mesh rose from 0.15 to 0.5 % to 0.55 to 1 %.
+
+The steps of the dual mesh control domain method take 20 to 30 % less time
+than those of the finite element method.
+A step of the finer mesh takes 18 to 25 ms on two processes, and the run of ten
+time units, about 19 000 steps at a Courant number of one half, takes five to
+eight minutes.
 
 .. figure:: ../_static/figures/fluids/dfg_2d2_lift.png
    :width: 85%
@@ -136,7 +139,6 @@ Reproducing the results
 .. code-block:: console
 
    pip install gmsh
-   mpirun -n 4 python verification/benchmarks/fluids/run_dfg_unsteady.py --method dmcdm  # about 6 minutes each
-   mpirun -n 4 python verification/benchmarks/fluids/run_dfg_unsteady.py --method fem
-   mpirun -n 4 python verification/benchmarks/fluids/run_dfg_unsteady.py --method hfvm
+   mpirun -n 2 python verification/benchmarks/fluids/run_dfg_unsteady.py --method dmcdm  # 6 to 9 minutes each
+   mpirun -n 2 python verification/benchmarks/fluids/run_dfg_unsteady.py --method fem
    python verification/benchmarks/fluids/run_dfg_unsteady.py --plot-only

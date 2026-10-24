@@ -15,7 +15,7 @@ def bus_bar(conductivity=20.0, heat_source=1.0, convection=75.0):
     mesh = dm.generate_rectangle_mesh(
         x_min=0.0, x_max=0.1, y_min=0.0, y_max=0.05, num_x_elements=10, num_y_elements=5
     )
-    problem = dm.Problem(mesh, method="dmcdm")
+    problem = dm.Problem(mesh, method="DMCDM")
     heat = problem.add_physics(
         "heat_transfer", thermal_conductivity=conductivity, heat_source=1.0e6 * heat_source
     )

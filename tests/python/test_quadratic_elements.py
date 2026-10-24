@@ -30,7 +30,7 @@ import pytest
 
 QUADRATIC_2D = ["Tri6", "Quad9"]
 QUADRATIC_3D = ["Tet10", "Hex27"]
-METHODS = ["dmcdm", "fem", "hfvm", "zfvm"]
+METHODS = ["dmcdm", "fem"]
 
 
 def distorted_square(num_elements=3, element_type="Quad9"):
@@ -148,22 +148,19 @@ def test_promoting_an_already_quadratic_mesh_changes_nothing():
     assert np.asarray(again.points()) == pytest.approx(np.asarray(mesh.points()))
 
 
-def test_the_serendipity_elements_are_refused_by_the_dual_mesh_methods_only():
+def test_the_serendipity_elements_are_refused_by_the_dual_mesh_method_only():
     """Quad8 has mid-edge nodes but no interior node, so the median dual is not
-    defined for it.  It is still a perfectly good finite element, and the
-    cell-centred finite volume method needs only its geometry, so the mesh is
-    accepted and only the two methods that integrate over control domains
-    refuse it, naming the reason and the methods that do work."""
+    defined for it.  It is still a perfectly good finite element, so the mesh is
+    accepted by FEM and refused by DMCDM, which names the reason and the method
+    that does work."""
     mesh = dm.mesh_from_arrays(
         [[0, 0], [1, 0], [1, 1], [0, 1], [0.5, 0], [1, 0.5], [0.5, 1], [0, 0.5]],
         [[0, 1, 2, 3, 4, 5, 6, 7]],
         element_type="Quad8",
     )
-    for method in ("dmcdm", "hfvm"):
-        with pytest.raises(ValueError, match="no interior node.*method='FEM'"):
-            dm.Problem(mesh, method=method)
-    for method in ("fem", "zfvm"):
-        dm.Problem(mesh, method=method)
+    with pytest.raises(ValueError, match="no interior node.*method='FEM'"):
+        dm.Problem(mesh, method="DMCDM")
+    dm.Problem(mesh, method="FEM")
 
 
 def test_a_quadratic_mesh_cannot_be_refined_directly():

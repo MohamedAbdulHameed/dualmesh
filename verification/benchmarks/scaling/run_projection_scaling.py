@@ -30,7 +30,7 @@ sys.path.insert(0, str(HERE.parents[0]))
 import plotstyle  # noqa: E402
 
 ROOT = HERE.parents[2]
-METHODS = ["dmcdm", "fem", "hfvm"]
+METHODS = ["dmcdm", "fem"]
 STRONG_SIZES = [256, 512]
 WEAK_BASE = 128
 STEPS = 60

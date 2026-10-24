@@ -231,7 +231,7 @@ def test_the_run_reports_a_failure_instead_of_grinding_to_a_halt():
 
 
 @pytest.mark.parametrize("time_stepper", ["fixed", "error", "iteration"])
-@pytest.mark.parametrize("method", ["dmcdm", "fem", "hfvm", "zfvm"])
+@pytest.mark.parametrize("method", ["dmcdm", "fem"])
 def test_every_discretisation_works_with_every_stepper(method, time_stepper):
     problem = slab(num_elements=40, method=method)
     result = problem.solve_transient(

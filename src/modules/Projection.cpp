@@ -222,10 +222,7 @@ ProjectionSolver::setUp()
   if (mesh.spaceDimension() > _dim)
     throw InputError("The projection solver of incompressible flow is not available on a surface "
                      "or a curve in space.");
-  if (_problem.method() == Method::FiniteVolumeCell)
-    throw InputError("Projection: the projection time integration runs with the finite element "
-                     "method and the methods of the dual mesh (fem, dmcdm and hfvm) so far.");
-  _dual = _problem.method() != Method::FiniteElement;
+  _dual = _problem.isDual();
   if (_problem.coordinateSystem() != CoordinateSystem::Cartesian)
     throw InputError("Projection: the projection time integration runs in Cartesian coordinates "
                      "so far.");
@@ -270,7 +267,7 @@ ProjectionSolver::setUp()
   _layout = std::make_unique<Layout>();
   Layout & L = *_layout;
   L.distributed = _distributed;
-  L.n = _problem.numEntities();
+  L.n = _problem.mesh().numNodes();
   if (_distributed)
   {
     L.global = _distributed->globalEntityNumbers();
@@ -329,10 +326,8 @@ ProjectionSolver::setUp()
   // ---- the mass, stiffness and gradient matrices ---------------------------------------------------
   // The finite element method tests with the shape functions.
   // The methods of the dual mesh test with the control volumes: the mass and the gradient are integrals over the control volume of each node, and the Laplacian is - the flux of the gradient out of it, through the interfaces between control volumes.
-  // The vertex-centered finite volume method takes the gradient on an interface from the difference along the edge between its two nodes, with the interpolated part transverse to the edge (as its assembly does).
   std::vector<Eigen::Triplet<double>> gradient_entries[3];
   MappedPoint mp;
-  const bool edge_gradient = _problem.method() == Method::FiniteVolumeVertex;
   for (Index e = 0; e < elements; ++e)
   {
     const Element & el = mesh.element(e);
@@ -371,17 +366,9 @@ ProjectionSolver::setUp()
       const int lo = geo.faces.owner[point], ln = geo.faces.neighbor[point];
       const Index o = el.nodes[lo], n = el.nodes[ln];
       const Point & a = geo.faces.area[point];
-      const Point d = mesh.node(n) - mesh.node(o);
-      const double dd = dot(d, d);
       for (int b = 0; b < nn; ++b)
       {
-        Point g = mp.dN[b];
-        if (edge_gradient && dd > 0)
-        {
-          const double jump = (b == ln ? 1.0 : 0.0) - (b == lo ? 1.0 : 0.0);
-          g = g + ((jump - dot(g, d)) / dd) * d;
-        }
-        const double flux = dot(g, a);
+        const double flux = dot(mp.dN[b], a);
         _stiffness_entries.emplace_back(o, el.nodes[b], -flux);
         _stiffness_entries.emplace_back(n, el.nodes[b], flux);
       }
@@ -424,8 +411,14 @@ ProjectionSolver::setUp()
   _pressure_pinned =
       !L.any(std::find(_pressure_fixed.begin(), _pressure_fixed.end(), 1) != _pressure_fixed.end());
   if (_pressure_pinned)
+  {
     for (Index i = 0; i < L.n; ++i)
       _pressure_fixed[i] = L.global[i] == 0 ? 1 : 0;
+    // The weights of the mean of the pressure, those of the monolithic solve.
+    _volume = _problem.nodeWeights(_pressure);
+    L.sum(_volume);
+    _total_volume = L.sumOwned(_volume);
+  }
   // The Laplacian of the finite element method is symmetric, solved by the conjugate gradient method; that of the dual mesh is not in general, solved by GMRES.
   _pressure_options = _settings.pressure_solver.empty()
                           ? std::string(_dual ? "-ksp_type gmres" : "-ksp_type cg") +
@@ -895,6 +888,9 @@ ProjectionSolver::step(Vector & solution, const Vector & old, double time, doubl
       P[i] = _pressure_pinned ? 0.0 : extrapolated[_problem.dof(i, _pressure)] / rho;
   _pressure_iterations =
       solve(*_pressure_solver, _stiffness, _pressure_fixed, pressure_rhs, P, _pressure_pinned);
+  // The pressure of an enclosed flow with a mean of zero, as the monolithic solve reports it.
+  if (_pressure_pinned)
+    P.array() -= L.sumOwned(_volume.cwiseProduct(P)) / _total_volume;
   _kinematic_pressure = P;
 
   // ---- the velocity -------------------------------------------------------------------------------

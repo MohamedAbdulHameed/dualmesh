@@ -730,8 +730,8 @@ ReferenceElement::buildTensorDual(const std::vector<double> & c)
 void
 ReferenceElement::buildElementGeometryOnly()
 {
-  // Elements that the finite element and the cell-centred finite volume
-  // methods can use but the dual mesh methods cannot.  Only the whole-element
+  // Elements that the finite element method can use but the dual mesh
+  // control domain method cannot.  Only the whole-element
   // and whole-side patches are needed for their integrals; the control domain
   // lists stay empty, which is what supportsDualMesh() tests.
   const int ns = numSides();

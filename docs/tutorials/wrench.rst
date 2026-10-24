@@ -314,5 +314,5 @@ concentration.  The edges of the fixed jaws are also singular, as is every
 edge where a clamped face meets a free face.
 
 The results are written to ``wrench_fem.vtu``, which ParaView opens, and
-``python wrench.py fem --figure`` also draws the figure above.  The figures of
+``python wrench.py FEM --figure`` also draws the figure above.  The figures of
 the geometry and of the side sets are drawn by ``plot_wrench_geometry.py``.

@@ -12,12 +12,12 @@ Newton's method, with an exact Jacobian computed by automatic
 differentiation.  The coupling between the physics is therefore represented
 exactly in the Jacobian.
 
-The same problem description can be discretised by four methods, which are
-selected by one keyword: the Galerkin **finite element method**, the
-vertex-centred and the cell-centred **finite volume methods**, and the **dual
-mesh control domain method** (DMCDM) of J. N. Reddy [Reddy2024]_, which combines the
-finite element interpolation with the finite volume balance.  All four
-methods are held to the same verification standard.  An element type or a
+The same problem description is discretised by two methods: the Galerkin
+**finite element method** (FEM) for solids, and the **dual mesh control
+domain method** (DMCDM) of J. N. Reddy [Reddy2024]_ for fluids, which combines
+the finite element interpolation with the finite volume balance and so
+conserves mass and heat in every control volume.  By default the method
+follows the physics.  Both are held to the same verification standard.  An element type or a
 physics that a method cannot treat correctly is refused with an explanation.
 
 The library is written in C++17 and is driven from Python.  A model is
@@ -45,7 +45,7 @@ two sides and convection on the top reads:
        x_min=0.0, x_max=0.1, y_min=0.0, y_max=0.05, num_x_elements=10, num_y_elements=5
    )
 
-   problem = dm.Problem(mesh, method="dmcdm")
+   problem = dm.Problem(mesh, method="DMCDM")
    heat = problem.add_physics("heat_transfer", thermal_conductivity=20.0, heat_source=1.0e6)
    heat.add_boundary_condition("temperature = 40", boundary="left")
    heat.add_boundary_condition("temperature = 10", boundary="right")
@@ -118,11 +118,10 @@ automatic differentiation.
 Capabilities
 ------------
 
-**Four discretisations of one problem description.**  The dual mesh control
-domain method, the Galerkin finite element method, and the vertex-centred and
-cell-centred finite volume methods.  Changing one
-keyword changes the method and leaves the rest of the problem unchanged,
-which makes a comparison between methods meaningful.
+**Two discretisations of one problem description.**  The Galerkin finite
+element method for solids and the dual mesh control domain method for fluids,
+chosen by the physics or by one keyword, which leaves the rest of the problem
+unchanged.
 
 **Arbitrary meshes.**  Fourteen element types (``Edge2``, ``Tri3``,
 ``Quad4``, ``Tet4``, ``Hex8``, ``Wedge6``, ``Pyramid5``, and the quadratic

@@ -333,7 +333,7 @@ def unit_square(n=8):
     )
 
 
-@pytest.mark.parametrize("method", ["fem", "dmcdm", "zfvm"])
+@pytest.mark.parametrize("method", ["fem", "dmcdm"])
 def test_the_general_form_equals_the_dedicated_kernels(method):
     objects = dm.Problem(unit_square(), method=method)
     objects.add_variable("c")
@@ -618,7 +618,9 @@ def test_misuse_is_answered_with_what_to_do():
             "solid_mechanics", formulation="plane_stress", youngs_modulus=1.0, poissons_ratio=0.5
         )
     with pytest.raises(ValueError, match="Taylor-Hood element needs the finite element method"):
-        dm.Problem(bus_bar_mesh()).add_physics("fluid_dynamics", formulation="Taylor_Hood")
+        dm.Problem(bus_bar_mesh(), method="DMCDM").add_physics(
+            "fluid_dynamics", formulation="Taylor-Hood"
+        )
 
 
 def test_couplings_are_added_before_the_solve():

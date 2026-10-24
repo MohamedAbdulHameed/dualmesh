@@ -38,11 +38,9 @@ public:
   /// Find the ranks that hold each of @p global_ids, the global index of every local entity, and the owner of each, the smallest of those ranks.
   /// Local entities that share an index are copies of one entity: their values are summed with those of the other ranks, and only the first copy on the owner counts as owned.
   /// A negative index marks an entity that only this rank has: no operation changes its values, and no rank owns it.
-  /// @p claims, when given, holds one flag per local entity: the owner is then the smallest of the ranks whose copies claim the entity, and the smallest of all only when none claims it.
   void setup(const Communicator & comm,
              const std::vector<Index> & global_ids,
-             Library library = Library::Petsc,
-             const std::vector<char> & claims = {});
+             Library library = Library::Petsc);
 
   /// Number of local entities.
   Index size() const { return static_cast<Index>(_owner.size()); }
@@ -59,10 +57,8 @@ public:
   void copyFromOwners(double * values, int width) const;
 
 private:
-  void setupCompact(const Communicator & comm,
-                    const std::vector<Index> & global_ids,
-                    Library library,
-                    const std::vector<char> & claims);
+  void
+  setupCompact(const Communicator & comm, const std::vector<Index> & global_ids, Library library);
   void sumCompact(double * values, int width) const;
   void copyCompact(double * values, int width) const;
 

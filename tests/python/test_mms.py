@@ -4,7 +4,7 @@
 Every discretisation is held to the same standard here: on a sequence of
 smoothly distorted meshes, with a smooth manufactured solution, the error must
 fall at the order the theory of that discretisation predicts, in the two norms
-the theory is stated in.  The matrix covers the four methods, every element
+the theory is stated in.  The matrix covers both methods, every element
 type each method accepts, one, two and three dimensions, the Cartesian,
 axisymmetric and spherical coordinate systems, and linear, nonlinear,
 advective, reactive, transient and vector (elastic) problems.
@@ -16,18 +16,14 @@ order p, are
 method                L2 error          H1 seminorm
 ====================  ===============  ===============
 ``fem``               p + 1             p
-``dmcdm``, ``hfvm``   2                 p
-``zfvm``              2                 1
+``dmcdm``             2                 p
 ====================  ===============  ===============
 
 The first row is classical finite element theory.  The second row records a
-property of the control volume methods that the documentation explains: on a
-quadratic element they are optimal in the energy seminorm but their L2 error
-does not gain the extra order that the Galerkin method owes to its duality
-argument, because a control volume balance is not a Galerkin projection.  The
-third row reflects that the cell-centred method carries one value per cell
-whatever the element, and reconstructs a linear field from it, so the element
-order improves only the geometry.
+property of DMCDM that the documentation explains: on a quadratic element it is
+optimal in the energy seminorm but its L2 error does not gain the extra order
+that the Galerkin method owes to its duality argument, because a control volume
+balance is not a Galerkin projection.
 
 An observed order is accepted when it lies within 0.2 below the expected one
 or up to 0.4 above it: a finite sequence of meshes is never exactly asymptotic,
@@ -79,13 +75,13 @@ def expected_orders(method, element_type):
     p = ORDER[element_type]
     if method == "fem":
         return p + 1, p
-    if method in ("dmcdm", "hfvm"):
+    if method == "dmcdm":
         return 2, p
     return 2, 1
 
 
 def supported(method, element_type):
-    return method in ("fem", "zfvm") or element_type in DUAL_MESH_TYPES
+    return method == "fem" or element_type in DUAL_MESH_TYPES
 
 
 def check(result, variable, method, element_type, norms=("l2", "h1")):
@@ -93,7 +89,7 @@ def check(result, variable, method, element_type, norms=("l2", "h1")):
     for norm in norms:
         observed = result.rates(variable, norm)[-1]
         lower, upper = expected[norm] - 0.2, expected[norm] + 0.4
-        if norm == "l2" and method in ("dmcdm", "hfvm") and ORDER[element_type] == 2:
+        if norm == "l2" and method == "dmcdm" and ORDER[element_type] == 2:
             # The asymptotic order is 2, reached from above: on the coarse
             # three-dimensional meshes a test can afford the observed rate is
             # still between 2 and the finite element method's 3.  The 2D
@@ -171,7 +167,7 @@ def cube_family(element_type):
     return build
 
 
-METHODS = ("dmcdm", "fem", "hfvm", "zfvm")
+METHODS = ("dmcdm", "fem")
 
 
 def study_of(
@@ -215,9 +211,7 @@ def test_the_axisymmetric_and_spherical_divergences():
 
 def test_a_solution_in_the_space_is_reproduced_exactly():
     """When the manufactured solution is a polynomial the elements represent
-    exactly, the error is round-off, for every method on its own terms: a
-    linear field for the node-based methods on linear elements and for the
-    cell-centred method's linear reconstruction."""
+    exactly, the error is round-off: a linear field on linear elements."""
     study = study_of({"u": "1 + 2*x - 3*y"}, 2, "general_form_PDE", variables="u", c="1 + x + y")
     for method in METHODS:
         problem = study.build(square_family("Quad4")(4), method=method)

@@ -27,7 +27,7 @@ for any nonlinearity, including nonlinear boundary conditions.
 previous iterate.  A kernel asks for the lagged value with
 ``ctx.coefficient_value(variable)``.  In Newton mode the same call returns the
 current AD value, so one kernel serves both schemes.  With
-``nonlinear_solver="picard"`` the iteration is direct iteration, and its
+``nonlinear_solver="Picard"`` the iteration is direct iteration, and its
 acceleration (relaxation) parameter :math:`\gamma`,
 
 .. math::

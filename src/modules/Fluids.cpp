@@ -236,25 +236,6 @@ public:
   void initialSetup(Problem & problem) override
   {
     Kernel::initialSetup(problem);
-    // The penalty formulation works only because the constraint div v = 0 is
-    // imposed once per element, at its centroid, by a reduced rule; imposed
-    // more often it leaves the velocity no freedom and the flow locks.  The
-    // cell-centred finite volume method has no element interior to integrate
-    // over reducedly: its fluxes are evaluated at faces from reconstructed
-    // cell gradients, which imposes the constraint at every face, and the
-    // measured flow in a lid-driven cavity is five orders of magnitude too
-    // small.  Incompressible flow on that method needs a pressure-velocity
-    // coupling instead, which is not implemented, so the combination is
-    // refused rather than allowed to return a locked answer.
-    if (problem.method() == Method::FiniteVolumeCell)
-      throw InputError(
-          "penalty_incompressibility '" + name() +
-          "': the penalty formulation of incompressible flow cannot be used with the "
-          "cell-centred finite volume method (zfvm). It needs the incompressibility "
-          "constraint to be imposed once per element by a reduced integration rule, and the "
-          "cell-centred method imposes it at every face, which locks the velocity field. Use "
-          "the dual mesh (dmcdm), finite element (fem) or vertex-centred finite volume (hfvm) "
-          "method for incompressible flow.");
     _v =
         resolveVelocities(problem, _params.getStringList("velocities"), problem.mesh().dimension());
     _axisymmetric = problem.coordinateSystem() == CoordinateSystem::Axisymmetric;
@@ -330,7 +311,6 @@ public:
     _rho = getFunction(problem, "density");
     _scheme = advectionScheme(problem, _scheme_text, name());
     _mass = _face_flux ? massConservationKernel(problem) : nullptr;
-    _cells = problem.isCellCentered();
   }
   // The term is the source rho (v . grad) u_i, or with an advection scheme of a control volume
   // method a face flux with the face value u_i,f that the scheme takes from the two sides: the
@@ -351,7 +331,7 @@ public:
   {
     if (!_face_flux)
       return false;
-    const ADVector3 w = advectingVelocity(ctx, _mass, _cells, _v);
+    const ADVector3 w = advectingVelocity(ctx, _mass, _v);
     velocity = 0.0;
     for (std::size_t d = 0; d < _v.size(); ++d)
       velocity += w[d].value() * ctx.normal[d];
@@ -359,7 +339,7 @@ public:
   }
   void computeFlux(const QpContext & ctx, ADVector3 & F) const override
   {
-    const ADVector3 w = advectingVelocity(ctx, _mass, _cells, _v);
+    const ADVector3 w = advectingVelocity(ctx, _mass, _v);
     double velocity = 0.0;
     for (std::size_t d = 0; d < _v.size(); ++d)
       velocity += w[d].value() * ctx.normal[d];
@@ -388,7 +368,6 @@ private:
   AdvectionScheme _scheme = AdvectionScheme::Central;
   /// The mass equation whose conserved velocity a face flux carries, or nullptr.
   const Kernel * _mass = nullptr;
-  bool _cells = false;
 };
 
 /// The buoyancy force of the Boussinesq approximation.
@@ -749,7 +728,7 @@ public:
         "Conservation of mass of an incompressible flow, div v = 0, assembled on the pressure "
         "variable as the flux F = -(v - tau r_m). The term tau r_m is the residual-based pressure "
         "stabilisation (PSPG for the finite element method, momentum interpolation for the "
-        "control volume methods) that makes equal-order velocity and pressure stable. Here r_m is "
+        "dual mesh control domain method) that makes equal-order velocity and pressure stable. Here r_m is "
         "the momentum residual without its viscous part and tau is the parameter of Tezduyar. Set "
         "'stabilization' to false for Taylor-Hood elements, which are stable without it. The "
         "density, the viscosity, the body forces and the buoyancy of r_m are read from the "

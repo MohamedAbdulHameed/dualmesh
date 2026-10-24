@@ -10,7 +10,7 @@ import dualmesh as dm
 import numpy as np
 import pytest
 
-METHODS = ("fem", "dmcdm", "hfvm", "zfvm")
+METHODS = ("fem", "dmcdm")
 
 
 def finite_difference_jacobian(problem, step=1e-7):
@@ -97,7 +97,7 @@ def test_nonlinear_coefficients_and_a_jump_between_blocks(method):
     assert compare(exact, approximate) < 1e-6
 
 
-@pytest.mark.parametrize("method", ["fem", "dmcdm", "zfvm"])
+@pytest.mark.parametrize("method", ["fem", "dmcdm"])
 def test_navier_stokes_in_the_pressure_formulation(method):
     mesh = dm.generate_rectangle_mesh(
         x_min=0.0, x_max=1.0, y_min=0.0, y_max=1.0, num_x_elements=3, num_y_elements=3

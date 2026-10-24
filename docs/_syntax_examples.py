@@ -42,7 +42,7 @@ itself, which is the simplest way to make a problem nonlinear:
    # A diffusivity that depends on the solution: k_eff = 1.0 * (1 + 0.5 u).
    problem.add_kernel("diffusion", variable="u", diffusivity=1.0, solution_polynomial=[1.0, 0.5])
 
-The last form requires a nonlinear solve.  With ``nonlinear_solver="newton"``
+The last form requires a nonlinear solve.  With ``nonlinear_solver="Newton"``
 the derivative of the polynomial is carried exactly through the automatic
 differentiation, so the iteration converges quadratically.
 """,
@@ -275,7 +275,7 @@ node by node after it:
    problem.add_boundary_condition("periodic", primary="inlet", secondary="outlet", variable=["u", "v"], translation=[2.0, 0.0])
 
 A value prescribed on the secondary boundary must also be prescribed on the
-primary one.  The condition works with ``fem``, ``hfvm`` and ``dmcdm``, in
+primary one.  The condition works with ``FEM`` and ``DMCDM``, in
 serial and in parallel.
 """,
 )
@@ -355,7 +355,7 @@ base value:
 
    # k(T) = 45 (1 + 0.002 T)
    problem.add_kernel("heat_conduction", variable="temperature", thermal_conductivity=45.0, temperature_polynomial=[1.0, 0.002])
-   problem.solve(nonlinear_solver="newton")
+   problem.solve(nonlinear_solver="Newton")
 """,
 )
 
@@ -387,7 +387,7 @@ power of the temperature, and it requires temperatures on an absolute scale:
 
    # A surface at a few hundred kelvin radiating to surroundings at 300 K.
    problem.add_boundary_condition("radiative_heat_flux", variable="temperature", boundary="top", emissivity=0.8, ambient_temperature=300.0)
-   problem.solve(nonlinear_solver="newton")
+   problem.solve(nonlinear_solver="Newton")
 
 Radiation and convection usually act together.  When both objects are added
 on the same side set, their fluxes are summed.
@@ -459,7 +459,7 @@ A positive pressure acts inward, opposite to the outward normal.
 # Beams and plates
 # ---------------------------------------------------------------------------
 _add(
-    "beam_Euler_Bernoulli_mixed",
+    "beam_Euler-Bernoulli_mixed",
     """
 The classical beam theory gives a fourth-order equation in the deflection.
 The dual mesh control domain method discretizes second-order equations, so the
@@ -470,7 +470,7 @@ second-order equations.  One call adds the equations of the three variables:
 
    for name in ("axial", "deflection", "moment"):
        problem.add_variable(name)
-   problem.add_kernel("beam_Euler_Bernoulli_mixed", axial_displacement="axial", transverse_displacement="deflection", bending_moment="moment", extensional_stiffness=a_xx, bending_stiffness=d_xx, transverse_load=-1.0e3)
+   problem.add_kernel("beam_Euler-Bernoulli_mixed", axial_displacement="axial", transverse_displacement="deflection", bending_moment="moment", extensional_stiffness=a_xx, bending_stiffness=d_xx, transverse_load=-1.0e3)
 
 The boundary conditions follow the duality pairs: a clamped end prescribes the
 deflection and leaves the moment free, because the vanishing slope is the
@@ -624,7 +624,7 @@ preferable to setting its density to zero:
 .. code-block:: python
 
    problem.add_kernel("convective_inertia", variable=velocities, velocities=velocities, density=1.0)
-   problem.solve(nonlinear_solver="newton", load_factors=[0.1, 0.25, 0.5, 0.75, 1.0])
+   problem.solve(nonlinear_solver="Newton", load_factors=[0.1, 0.25, 0.5, 0.75, 1.0])
 
 At a high Reynolds number, a solve that starts from rest at the full velocity
 usually diverges.  Either increase the boundary velocity in increments with
@@ -736,7 +736,7 @@ mass equation:
 
 .. code-block:: python
 
-   flow = problem.add_physics("fluid_dynamics", dynamic_viscosity=1.0, density=100.0, formulation="pressure", pressure_pin_point=(0.5, 0.0))
+   flow = problem.add_physics("fluid_dynamics", dynamic_viscosity=1.0, density=100.0, formulation="pressure")
 
 To add it manually, give the momentum equations it belongs to:
 
@@ -950,7 +950,7 @@ or a neo-Hookean solid:
 
 .. code-block:: python
 
-   problem.add_property("finite_strain_stress", displacements=["disp_x", "disp_y"], formulation="plane_strain", youngs_modulus=1.0e6, poissons_ratio=0.45, stress_update="neo_Hookean")
+   problem.add_property("finite_strain_stress", displacements=["disp_x", "disp_y"], formulation="plane_strain", youngs_modulus=1.0e6, poissons_ratio=0.45, stress_update="neo-Hookean")
 """,
 )
 

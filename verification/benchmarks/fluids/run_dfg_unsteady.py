@@ -37,7 +37,7 @@ import plotstyle  # noqa: E402
 
 REFERENCE = {"drag": 3.2200, "lift": 0.9859, "strouhal": 0.30188}
 SIZES = [0.005, 0.0025]
-METHODS = ["dmcdm", "fem", "hfvm"]
+METHODS = ["dmcdm", "fem"]
 # The shedding is periodic from about t = 7; the last three cycles before t = 10 are measured.
 END_TIME = 10.0
 SCALE = 2.0 / (1.0**2 * 0.1)  # 2 / (U_mean^2 D)

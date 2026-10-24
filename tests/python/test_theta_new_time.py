@@ -17,11 +17,10 @@ import numpy as np
 import pytest
 
 
-@pytest.mark.parametrize("supg", [False, True])
 @pytest.mark.parametrize("implicitness", [1.0, 0.5])
-def test_a_uniformly_accelerating_flow_is_exact(implicitness, supg):
+def test_a_uniformly_accelerating_flow_is_exact(implicitness):
     """v = (1 + t, 0), p = -x: rho dv/dt = -grad p, which linear elements hold exactly, so every
-    step of every theta is exact to round-off."""
+    step of every theta is exact to round-off, with the streamline stabilisation included."""
     mesh = dm.generate_rectangle_mesh(x=[0, 1], y=[0, 1], num_elements=[8, 8])
     problem = dm.Problem(mesh, method="fem")
     flow = problem.add_physics(
@@ -29,7 +28,6 @@ def test_a_uniformly_accelerating_flow_is_exact(implicitness, supg):
         density=1.0,
         dynamic_viscosity=0.01,
         formulation="pressure",
-        streamline_stabilization=supg,
         initial_condition={"velocity": [1, 0], "pressure": "-x"},
     )
     flow.add_boundary_condition(
@@ -45,7 +43,7 @@ def test_a_uniformly_accelerating_flow_is_exact(implicitness, supg):
 
 def rotating_flow_error(implicitness, n):
     """v = (1 + t)(y, x) with its pressure, an exact solution of the Navier-Stokes equations
-    without a body force; the pressure pinned at the origin, where it is zero at every time."""
+    without a body force, in a box whose walls prescribe the velocity."""
     mesh = dm.generate_rectangle_mesh(x=[0, 1], y=[0, 1], num_elements=[n, n])
     problem = dm.Problem(mesh, method="fem")
     flow = problem.add_physics(
@@ -53,7 +51,6 @@ def rotating_flow_error(implicitness, n):
         density=1.0,
         dynamic_viscosity=0.01,
         formulation="pressure",
-        pressure_pin_point=(0.0, 0.0),
         initial_condition={"velocity": ["y", "x"]},
     )
     flow.add_boundary_condition(

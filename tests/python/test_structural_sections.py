@@ -62,7 +62,7 @@ def _beam(theory, form=None, **section):
 
 @pytest.mark.parametrize(
     "theory, form",
-    [("Euler_Bernoulli", None), ("Timoshenko", None), ("Timoshenko", "displacement")],
+    [("Euler-Bernoulli", None), ("Timoshenko", None), ("Timoshenko", "displacement")],
 )
 @pytest.mark.parametrize("power_law_index", [0.0, 1.0, 2.0])
 def test_a_graded_beam_equals_the_closed_form_stiffnesses(theory, form, power_law_index):
@@ -201,7 +201,7 @@ def _expand(problem, solid):
 
 @pytest.mark.parametrize(
     "theory, form",
-    [("Euler_Bernoulli", None), ("Timoshenko", None), ("Timoshenko", "displacement")],
+    [("Euler-Bernoulli", None), ("Timoshenko", None), ("Timoshenko", "displacement")],
 )
 def test_a_heated_cantilever_expands_freely(theory, form):
     # A homogeneous cantilever heated uniformly by 100 K: u(L) = alpha dT L, and no bending.
@@ -224,7 +224,7 @@ def test_a_heated_cantilever_expands_freely(theory, form):
 
 @pytest.mark.parametrize(
     "theory, form",
-    [("Euler_Bernoulli", None), ("Timoshenko", None), ("Timoshenko", "displacement")],
+    [("Euler-Bernoulli", None), ("Timoshenko", None), ("Timoshenko", "displacement")],
 )
 def test_a_heated_graded_cantilever_bends_as_its_section_requires(theory, form):
     # A graded section expands more on its stiff side: with no load, [A B; B D] [e0; k] = [N_T;
@@ -341,7 +341,7 @@ def test_the_bending_stress_of_a_simply_supported_beam():
     beam = problem.add_physics(
         "solid_mechanics",
         formulation="beam",
-        theory="Euler_Bernoulli",
+        theory="Euler-Bernoulli",
         youngs_modulus=E,
         poissons_ratio=NU,
         cross_section={"width": width, "height": height},
@@ -381,7 +381,7 @@ def test_a_continuum_returns_its_stress_property():
 # ---------------------------------------------------------------------------
 # Free and supported ends
 # ---------------------------------------------------------------------------
-BEAM_FORMS = [("Euler_Bernoulli", None), ("Timoshenko", None), ("Timoshenko", "displacement")]
+BEAM_FORMS = [("Euler-Bernoulli", None), ("Timoshenko", None), ("Timoshenko", "displacement")]
 LENGTH, LOAD, WIDTH, HEIGHT = 2.0, 1.0e4, 0.1, 0.2
 
 
@@ -408,7 +408,7 @@ def _flexibilities(theory):
     # The bending flexibility 1/EI and, for a Timoshenko beam, the shear flexibility 1/(k G A).
     bending = 1.0 / (E * WIDTH * HEIGHT**3 / 12)
     shear = (
-        0.0 if theory == "Euler_Bernoulli" else 1.0 / (5 / 6 * E / (2 * (1 + NU)) * WIDTH * HEIGHT)
+        0.0 if theory == "Euler-Bernoulli" else 1.0 / (5 / 6 * E / (2 * (1 + NU)) * WIDTH * HEIGHT)
     )
     return bending, shear
 
@@ -571,7 +571,7 @@ def test_a_beam_on_a_quadratic_mesh_is_refused():
 
 
 def test_a_height_outside_the_section_is_refused():
-    problem = _loaded_beam("Euler_Bernoulli", None, [("fixed", "left")])
+    problem = _loaded_beam("Euler-Bernoulli", None, [("fixed", "left")])
     beam = next(iter(problem._physics.values()))
     with pytest.raises(ValueError, match="outside the section"):
         beam.stress(z=0.11)
@@ -582,7 +582,7 @@ def test_a_height_outside_the_section_is_refused():
     "model, inputs, message",
     [
         (
-            "beam_Euler_Bernoulli_mixed",
+            "beam_Euler-Bernoulli_mixed",
             dict(bending_stiffness=1.0e5),
             "give 'extensional_stiffness'",
         ),
@@ -592,12 +592,12 @@ def test_a_height_outside_the_section_is_refused():
             "give 'shear_stiffness'",
         ),
         (
-            "beam_Euler_Bernoulli_mixed",
+            "beam_Euler-Bernoulli_mixed",
             dict(extensional_stiffness=1.0e8, bending_stiffness=1.0e5, shear_stiffness=1.0e7),
             "takes no 'shear_stiffness'",
         ),
         (
-            "beam_Euler_Bernoulli_mixed",
+            "beam_Euler-Bernoulli_mixed",
             dict(
                 youngs_modulus=E,
                 cross_section={"width": 0.1, "height": 0.2},
@@ -686,7 +686,7 @@ def test_a_stepped_cantilever_of_two_physics_has_the_exact_tip_deflection(theory
 
 
 def test_an_end_condition_after_the_first_solve_is_refused():
-    problem = _loaded_beam("Euler_Bernoulli", None, [("fixed", "left")])
+    problem = _loaded_beam("Euler-Bernoulli", None, [("fixed", "left")])
     beam = next(iter(problem._physics.values()))
     with pytest.raises(ValueError, match="Give every condition before the first solve"):
         beam.add_boundary_condition("fixed", boundary="right")

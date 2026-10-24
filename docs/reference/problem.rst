@@ -118,14 +118,12 @@ Mesh entities and variables
 
    Problem.mesh
    Problem.entity_points
-   Problem.boundary_entities
    Problem.nodes_where
    Problem.node_at
    Problem.variable_index
    Problem.variable_unit
    Problem.variable_order
    Problem.num_active_dofs
-   Problem.is_cell_centered
    Problem.thread_safe
 
 Distributed problems

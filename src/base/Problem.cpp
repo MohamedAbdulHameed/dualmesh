@@ -49,13 +49,18 @@ Problem::Problem(std::shared_ptr<Mesh> mesh, Method method, CoordinateSystem coo
   if (_coord == CoordinateSystem::Axisymmetric && _mesh->dimension() == 3)
     throw InputError(
         "The axisymmetric coordinate system requires a 1D (radial) or 2D (r, z) mesh.");
-  // The dual mesh control domain method and the vertex-centred finite volume
-  // method integrate over the control domains of the dual mesh, so every
-  // element has to carry one.  The finite element method and the cell-centred
-  // finite volume method need only the element itself.  Checking here, once,
-  // is what lets every element type be offered to the methods that can use it
-  // without any of them having to test for the others.
-  if (_method == Method::DualMesh || _method == Method::FiniteVolumeVertex)
+  setMethod(method);
+}
+
+void
+Problem::setMethod(Method method)
+{
+  if (_initialized)
+    throw InputError("The method of a problem is chosen before it is initialised.");
+  _method = method;
+  // The dual mesh control domain method integrates over the control domains of the dual mesh, so
+  // every element has to carry one.  The finite element method needs only the element itself.
+  if (isDual())
   {
     std::set<ElementType> refused;
     for (const auto & el : _mesh->elements())
@@ -66,52 +71,12 @@ Problem::Problem(std::shared_ptr<Mesh> mesh, Method method, CoordinateSystem coo
       const ElementType t = *refused.begin();
       std::ostringstream os;
       os << "The mesh contains " << elementTypeName(t)
-         << " elements, which cannot be used with the "
-         << (_method == Method::DualMesh ? "dual mesh control domain method"
-                                         : "vertex-centred finite volume method, which "
-                                           "integrates over the same control domains,")
-         << " because " << ReferenceElement::get(t).dualMeshLimitation() << ". "
-         << elementTypeName(t)
-         << " elements work with the finite element method (method='FEM') and the "
-            "cell-centred finite volume method (method='ZFVM').";
+         << " elements, which cannot be used with the dual mesh control domain method because "
+         << ReferenceElement::get(t).dualMeshLimitation() << ". " << elementTypeName(t)
+         << " elements work with the finite element method (method='FEM').";
       throw InputError(os.str());
     }
   }
-  if (_method == Method::FiniteVolumeCell)
-    _cells = std::make_shared<CellMesh>(*_mesh);
-}
-
-const CellMesh &
-Problem::cellMesh() const
-{
-  if (!_cells)
-    throw InputError("cellMesh() is only available for the cell-centred finite volume method.");
-  return *_cells;
-}
-
-Index
-Problem::numEntities() const
-{
-  return _cells ? _cells->numEntities() : _mesh->numNodes();
-}
-
-const Point &
-Problem::entityPoint(Index i) const
-{
-  return _cells ? _cells->entityPoint(i) : _mesh->node(i);
-}
-
-std::vector<Index>
-Problem::boundaryEntities(const std::string & name) const
-{
-  if (_cells)
-  {
-    if (!_mesh->hasBoundary(name))
-      throw InputError("The cell-centred finite volume method needs a side set; '" + name +
-                       "' is not one. Node sets have no degrees of freedom in this method.");
-    return _cells->boundaryEntities(*_mesh, name);
-  }
-  return _mesh->boundaryNodes(name);
 }
 
 void
@@ -194,13 +159,13 @@ Problem::addVariable(const std::string & name,
   // Grow the solution, keeping existing values.
   Vector U = Vector::Zero(numDofs());
   const int nold = numVariables() - 1;
-  if (nold > 0 && _U.size() == numEntities() * nold)
-    for (Index n = 0; n < numEntities(); ++n)
+  if (nold > 0 && _U.size() == _mesh->numNodes() * nold)
+    for (Index n = 0; n < _mesh->numNodes(); ++n)
       for (int k = 0; k < nold; ++k)
         U[n * numVariables() + k] = _U[n * nold + k];
   _U = U;
-  for (Index n = 0; n < numEntities(); ++n)
-    _U[dof(n, v.index)] = v.initial_condition->value(entityPoint(n), _time);
+  for (Index n = 0; n < _mesh->numNodes(); ++n)
+    _U[dof(n, v.index)] = v.initial_condition->value(_mesh->node(n), _time);
   updateDependentDofs(_U);
   return v.index;
 }
@@ -235,7 +200,7 @@ Problem::updateDependentDofs(Vector & U) const
 void
 Problem::interpolateFirstOrderVariables(Vector & U) const
 {
-  if (!_mixed_order || _cells)
+  if (!_mixed_order)
     return;
   const int nv = numVariables();
   double N[kMaxElementNodes];
@@ -547,52 +512,20 @@ Problem::addNodalLoad(std::shared_ptr<NodalLoad> load)
   _initialized = false;
 }
 
-bool
-Problem::integratesFace(const CellFace & f) const
-{
-  const Index integrated = numIntegratedElements();
-  const bool owner = f.owner < integrated;
-  if (f.neighbor < 0)
-    return owner;
-  const bool neighbor = f.neighbor < integrated;
-  if (owner == neighbor)
-    return owner;
-  if (_global_element_numbers.empty())
-    throw std::logic_error("Problem: a face between an integrated cell and a ghost cell needs the "
-                           "global numbers of the elements.");
-  const Index here = _global_element_numbers[owner ? f.owner : f.neighbor];
-  const Index there = _global_element_numbers[owner ? f.neighbor : f.owner];
-  return here < there;
-}
-
-bool
-Problem::integratedEntity(Index i) const
-{
-  if (!_cells)
-    return true;
-  const Index integrated = numIntegratedElements();
-  if (_cells->isCell(i))
-    return i < integrated;
-  return _cells->faces()[_cells->faceOfBoundaryEntity(i)].owner < integrated;
-}
-
 void
 Problem::setGhostElements(Index first)
 {
   _num_integrated_elements = first;
-  // The cells of elements added to the mesh since the problem was made.
-  if (_cells && _cells->numCells() != _mesh->numElements())
-    _cells = std::make_shared<CellMesh>(*_mesh);
   // The nodes added with the ghost elements take their initial values; the values of the other nodes are kept.
   const int nv = numVariables();
   const Eigen::Index old_size = _U.size();
-  Vector U = Vector::Zero(numEntities() * nv);
+  Vector U = Vector::Zero(_mesh->numNodes() * nv);
   const Eigen::Index kept = std::min<Eigen::Index>(old_size, U.size());
   U.head(kept) = _U.head(kept);
   for (const auto & v : _vars)
     if (v.initial_condition)
-      for (Index n = old_size / std::max(nv, 1); n < numEntities(); ++n)
-        U[dof(n, v.index)] = v.initial_condition->value(entityPoint(n), _time);
+      for (Index n = old_size / std::max(nv, 1); n < _mesh->numNodes(); ++n)
+        U[dof(n, v.index)] = v.initial_condition->value(_mesh->node(n), _time);
   _U = U;
   _initialized = false;
 }
@@ -619,10 +552,6 @@ Problem::buildConstraints()
   _primary_of.clear();
   if (_constraints.empty())
     return;
-  if (_cells)
-    throw InputError("'" + _constraints.front()->name() +
-                     "': the cell-centered finite volume method (zfvm) has its unknowns at cells, "
-                     "and constraints join nodes; use fem, hfvm or dmcdm.");
   if (_constraints_outside)
     return;
   // Every pair joins two degrees of freedom into one unknown (a union-find), so that a node joined in several directions, such as a corner of a doubly periodic domain, ends in one group.
@@ -708,7 +637,7 @@ Problem::buildNodeGradients()
   const Index nn = _mesh->numNodes();
   const int dim = _mesh->dimension();
   if (dim != _mesh->spaceDimension())
-    throw InputError("The linear upwind and limited schemes of the node-based methods need a "
+    throw InputError("The linear upwind and limited schemes of DMCDM need a "
                      "mesh of the dimension of its space (not a surface or a line in space).");
   std::vector<std::set<Index>> around(static_cast<std::size_t>(nn));
   for (const auto & el : _mesh->elements())
@@ -757,6 +686,8 @@ Problem::initialize()
   if (_initialized)
     return;
   _singularity_checked = false;
+  _levels_checked = false;
+  _levels.clear();
   _singularity_pattern_rows = -1;
   _singularity_pattern_nonzeros = -1;
   if (_vars.empty())
@@ -770,13 +701,13 @@ Problem::initialize()
     for (const auto & v : _vars)
       if (v.order == VariableOrder::First)
         first += (first.empty() ? "'" : ", '") + v.name + "'";
-    if (_method != Method::FiniteElement)
+    if (isDual())
       throw InputError(
           "The variable " + first +
           " is declared first order on a mesh with quadratic elements. Mixed-order "
           "interpolation (the Taylor-Hood element) is a finite element construction and needs "
-          "method='FEM'. The dual mesh and finite volume methods interpolate every variable at "
-          "the order of the mesh; for them, declare the variable with the mesh order.");
+          "method='FEM'. The dual mesh control domain method interpolates every variable at "
+          "the order of the mesh; for it, declare the variable with the mesh order.");
     for (const auto & el : _mesh->elements())
       if (el.numCorners() < el.numNodes() &&
           ReferenceElement::get(elementCornerType(el.type)).numNodes() > MappedPoint::kMaxCorners)
@@ -797,19 +728,18 @@ Problem::initialize()
   for (const auto & k : _kernels)
     if (k->isTimeKernel())
       _new_time_only[static_cast<std::size_t>(k->variable())] = 0;
-  // The second-order advection schemes of the node-based methods take the gradient at the nodes.
+  // The second-order advection schemes of DMCDM take the gradient at the nodes.
   _gradient_offsets.clear();
-  if (_method == Method::DualMesh || _method == Method::FiniteVolumeVertex)
+  if (isDual())
     for (const auto & k : _kernels)
       if (k->needsSideGradients())
       {
         if (_parallel)
           throw InputError(
               "'" + k->name() +
-              "': the linear upwind and limited schemes of the node-based methods reconstruct "
-              "the gradient at a node from the nodes around it, which a part of a distributed "
-              "mesh does not hold at its interfaces yet. Use them on one process, the cell-centred "
-              "method ZFVM, or the upwind scheme.");
+              "': the linear upwind and limited schemes of DMCDM reconstruct the gradient at a "
+              "node from the nodes around it, which a part of a distributed mesh does not hold "
+              "at its interfaces yet. Use them on one process, or the upwind scheme.");
         buildNodeGradients();
         break;
       }
@@ -841,10 +771,7 @@ Problem::initialize()
     m->setStateOffset(_state_record);
     _state_record += m->stateSize();
   }
-  _state[0].assign(_state_record > 0 ? _mesh->numElements() : 0, OwnerState{});
-  _state[1].assign(
-      _state_record > 0 && _method == Method::FiniteVolumeCell ? cellMesh().faces().size() : 0,
-      OwnerState{});
+  _state.assign(_state_record > 0 ? _mesh->numElements() : 0, OwnerState{});
   buildGroups();
   buildInterfacePairs();
   markActiveDofs();
@@ -903,27 +830,6 @@ Problem::markActiveDofs()
 {
   const int nv = numVariables();
   _active_dof.assign(numDofs(), 0);
-  if (_cells)
-  {
-    for (Index c = 0; c < _cells->numCells(); ++c)
-      for (int v = 0; v < nv; ++v)
-      {
-        const int block = _cells->cellBlock(c);
-        const auto & vb = _vars[v].blocks;
-        if (!vb.empty() && !vb.count(block))
-          continue;
-        bool has = false;
-        for (const auto & k : _kernels)
-          has = has || (k->variable() == v && k->activeOnBlock(block));
-        if (!has)
-          continue;
-        _active_dof[dof(c, v)] = 1;
-        for (int fi : _cells->cellFaces(c))
-          if (_cells->faces()[fi].boundary_entity >= 0)
-            _active_dof[dof(_cells->faces()[fi].boundary_entity, v)] = 1;
-      }
-    return;
-  }
   for (Index e = 0; e < _mesh->numElements(); ++e)
   {
     const auto & el = _mesh->element(e);
@@ -1010,8 +916,8 @@ void
 Problem::applyInitialConditions()
 {
   for (const auto & v : _vars)
-    for (Index n = 0; n < numEntities(); ++n)
-      _U[dof(n, v.index)] = v.initial_condition->value(entityPoint(n), _time);
+    for (Index n = 0; n < _mesh->numNodes(); ++n)
+      _U[dof(n, v.index)] = v.initial_condition->value(_mesh->node(n), _time);
   updateDependentDofs(_U);
 }
 
@@ -1019,8 +925,8 @@ std::vector<double>
 Problem::values(const std::string & var) const
 {
   const int v = variableIndex(var);
-  std::vector<double> out(numEntities());
-  for (Index n = 0; n < numEntities(); ++n)
+  std::vector<double> out(_mesh->numNodes());
+  for (Index n = 0; n < _mesh->numNodes(); ++n)
     out[n] = _U[dof(n, v)];
   return out;
 }
@@ -1029,9 +935,9 @@ void
 Problem::setValues(const std::string & var, const std::vector<double> & vals)
 {
   const int v = variableIndex(var);
-  if (static_cast<Index>(vals.size()) != numEntities())
+  if (static_cast<Index>(vals.size()) != _mesh->numNodes())
     throw InputError("setValues: expected one value per degree of freedom entity.");
-  for (Index n = 0; n < numEntities(); ++n)
+  for (Index n = 0; n < _mesh->numNodes(); ++n)
     _U[dof(n, v)] = vals[n];
   updateDependentDofs(_U);
 }
@@ -1081,13 +987,6 @@ Problem::coordFactor(const Point & x) const
     return 4.0 * M_PI * x[0] * x[0];
   }
   return 1.0;
-}
-
-double
-Problem::boundaryEntityFactor(const Point & x) const
-{
-  const double c = coordFactor(x);
-  return c != 0.0 ? c : 1.0;
 }
 
 void
@@ -1219,7 +1118,6 @@ Problem::bindState(QpContext & ctx) const
     ctx.state_new = nullptr;
     return;
   }
-  auto & owners = _state[ctx.state_domain];
   const std::size_t R = static_cast<std::size_t>(_state_record);
   if (ctx.state_key == kCentroidStateKey)
   {
@@ -1227,9 +1125,9 @@ Problem::bindState(QpContext & ctx) const
     // volume points.
     scratch_old.assign(R, 0.0);
     scratch_new.assign(R, 0.0);
-    if (static_cast<std::size_t>(ctx.state_owner) < owners.size())
+    if (static_cast<std::size_t>(ctx.state_owner) < _state.size())
     {
-      const auto & o = owners[ctx.state_owner];
+      const auto & o = _state[ctx.state_owner];
       int count = 0;
       for (std::size_t i = 0; i < o.keys.size(); ++i)
         if ((o.keys[i] >> 56) == 0)
@@ -1246,7 +1144,7 @@ Problem::bindState(QpContext & ctx) const
     ctx.state_new = scratch_new.data();
     return;
   }
-  auto & o = owners.at(static_cast<std::size_t>(ctx.state_owner));
+  auto & o = _state.at(static_cast<std::size_t>(ctx.state_owner));
   std::size_t i = 0;
   while (i < o.keys.size() && o.keys[i] != ctx.state_key)
     ++i;
@@ -1264,58 +1162,51 @@ Problem::bindState(QpContext & ctx) const
 void
 Problem::commitState()
 {
-  for (auto & owners : _state)
-    for (auto & o : owners)
-    {
-      o.committed = o.trial;
-      o.start = o.trial;
-    }
+  for (auto & o : _state)
+  {
+    o.committed = o.trial;
+    o.start = o.trial;
+  }
 }
 
 void
 Problem::startStateFromCommitted()
 {
-  for (auto & owners : _state)
-    for (auto & o : owners)
-      o.start = o.committed;
+  for (auto & o : _state)
+    o.start = o.committed;
 }
 
 void
 Problem::startStateFromTrial()
 {
-  for (auto & owners : _state)
-    for (auto & o : owners)
-      o.start = o.trial;
+  for (auto & o : _state)
+    o.start = o.trial;
 }
 
 Problem::StateSnapshot
 Problem::snapshotState() const
 {
   StateSnapshot s;
-  for (int d = 0; d < 2; ++d)
-    for (const auto & o : _state[d])
-    {
-      s.keys[d].push_back(o.keys);
-      s.values[d].push_back(o.committed);
-    }
+  for (const auto & o : _state)
+  {
+    s.keys.push_back(o.keys);
+    s.values.push_back(o.committed);
+  }
   return s;
 }
 
 void
 Problem::restoreState(const StateSnapshot & s)
 {
-  for (int d = 0; d < 2; ++d)
+  if (s.keys.size() != _state.size())
+    throw InputError("restoreState: the snapshot belongs to a different problem.");
+  for (std::size_t i = 0; i < _state.size(); ++i)
   {
-    if (s.keys[d].size() != _state[d].size())
-      throw InputError("restoreState: the snapshot belongs to a different problem.");
-    for (std::size_t i = 0; i < _state[d].size(); ++i)
-    {
-      auto & o = _state[d][i];
-      o.keys = s.keys[d][i];
-      o.committed = s.values[d][i];
-      o.start = o.committed;
-      o.trial = o.committed;
-    }
+    auto & o = _state[i];
+    o.keys = s.keys[i];
+    o.committed = s.values[i];
+    o.start = o.committed;
+    o.trial = o.committed;
   }
 }
 

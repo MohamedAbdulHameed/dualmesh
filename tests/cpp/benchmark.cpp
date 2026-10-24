@@ -99,9 +99,7 @@ struct TaylorGreen : Function
 int
 projection(int n, int steps, int order, int vectors, const std::string & method_name)
 {
-  const Method method = method_name == "dmcdm"  ? Method::DualMesh
-                        : method_name == "hfvm" ? Method::FiniteVolumeVertex
-                                                : Method::FiniteElement;
+  const Method method = method_name == "dmcdm" ? Method::DualMesh : Method::FiniteElement;
   auto & comm = Communicator::world();
   const double two_pi = 2.0 * std::acos(-1.0);
   std::vector<double> x = grid(n);
@@ -206,10 +204,8 @@ main(int argc, char ** argv)
             << static_cast<long>(n) * n * n << " elements, " << 3L * (n + 1) * (n + 1) * (n + 1)
             << " degrees of freedom)\n\n";
 
-  for (auto [name, method] :
-       std::vector<std::pair<std::string, Method>>{{"dmcdm", Method::DualMesh},
-                                                   {"fem", Method::FiniteElement},
-                                                   {"hfvm", Method::FiniteVolumeVertex}})
+  for (auto [name, method] : std::vector<std::pair<std::string, Method>>{
+           {"dmcdm", Method::DualMesh}, {"fem", Method::FiniteElement}})
   {
     std::cout << name << "\n";
     double serial = 0;

@@ -54,7 +54,7 @@ def _stress_problem(mesh, material, displacements, coordinates="cartesian", meth
 # ---------------------------------------------------------------------------
 # Small strain limit
 # ---------------------------------------------------------------------------
-@pytest.mark.parametrize("method", ["fem", "dmcdm", "hfvm", "zfvm"])
+@pytest.mark.parametrize("method", ["fem", "dmcdm"])
 def test_at_small_strain_the_finite_strain_stress_is_the_small_strain_stress(method):
     """A thick tube under a pressure of 1e-5 E: strains of order 1e-5, so
     the two formulations agree to about 1e-5 relative."""
@@ -97,7 +97,7 @@ def test_a_neo_hookean_bar_stretched_uniaxially_has_the_exact_nominal_stress(str
     pytest.importorskip("scipy")
     mesh = dm.generate_box_mesh(0, 1, 0, 1, 0, 1, 2, 2, 2)
     p = _stress_problem(
-        mesh, "finite_strain_stress", ["ux", "uy", "uz"], stress_update="neo_Hookean"
+        mesh, "finite_strain_stress", ["ux", "uy", "uz"], stress_update="neo-Hookean"
     )
     for v, side in (("ux", "left"), ("uy", "bottom"), ("uz", "back")):
         p.add_boundary_condition("Dirichlet", side, variable=v, value=0.0)
@@ -118,7 +118,7 @@ def test_a_neo_hookean_bar_stretched_uniaxially_has_the_exact_nominal_stress(str
 # ---------------------------------------------------------------------------
 # Objectivity
 # ---------------------------------------------------------------------------
-@pytest.mark.parametrize("update", ["rotated_small_strain", "neo_Hookean"])
+@pytest.mark.parametrize("update", ["rotated_small_strain", "neo-Hookean"])
 def test_a_rigid_rotation_rotates_the_stress_and_adds_none(update):
     """A unit square in plane strain is stretched by 1e-3 along x (a steady
     solve), then turned by 90 degrees in 45 steps with the stretch held.  The
@@ -200,7 +200,7 @@ def _tube_reference(b, c, pressure):
     return lambda radius: solution.sol(radius)[0] - radius
 
 
-@pytest.mark.parametrize("method", ["fem", "dmcdm", "hfvm", "zfvm"])
+@pytest.mark.parametrize("method", ["fem", "dmcdm"])
 def test_a_thick_tube_inflated_to_large_strain_by_a_follower_pressure(method):
     """The inner radius grows by about 25 per cent; the displacements converge
     to the reference at second order."""
@@ -219,7 +219,7 @@ def test_a_thick_tube_inflated_to_large_strain_by_a_follower_pressure(method):
             ["u"],
             coordinates="axisymmetric",
             method=method,
-            stress_update="neo_Hookean",
+            stress_update="neo-Hookean",
         )
         p.add_boundary_condition(
             "pressure",
@@ -237,7 +237,7 @@ def test_a_thick_tube_inflated_to_large_strain_by_a_follower_pressure(method):
     assert rates.min() > 1.8
 
 
-@pytest.mark.parametrize("method", ["fem", "dmcdm", "zfvm"])
+@pytest.mark.parametrize("method", ["fem", "dmcdm"])
 def test_the_axisymmetric_formulation_inflates_the_same_tube(method):
     """The tube of the previous test meshed in r-z (the axial displacement held
     at zero on the ends, so plane strain): the radial displacement matches the
@@ -252,7 +252,7 @@ def test_the_axisymmetric_formulation_inflates_the_same_tube(method):
         ["ur", "uz"],
         coordinates="axisymmetric",
         method=method,
-        stress_update="neo_Hookean",
+        stress_update="neo-Hookean",
     )
     p.add_boundary_condition("Dirichlet", ["top", "bottom"], variable="uz", value=0.0)
     p.add_boundary_condition(
@@ -276,7 +276,7 @@ def test_the_neo_hookean_elastic_strain_is_the_green_lagrange_strain_of_the_stre
     pytest.importorskip("scipy")
     mesh = dm.generate_box_mesh(0, 1, 0, 1, 0, 1, 2, 2, 2)
     p = _stress_problem(
-        mesh, "finite_strain_stress", ["ux", "uy", "uz"], stress_update="neo_Hookean"
+        mesh, "finite_strain_stress", ["ux", "uy", "uz"], stress_update="neo-Hookean"
     )
     for v, side in (("ux", "left"), ("uy", "bottom"), ("uz", "back")):
         p.add_boundary_condition("Dirichlet", side, variable=v, value=0.0)

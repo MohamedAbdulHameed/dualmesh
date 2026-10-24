@@ -891,7 +891,7 @@ public:
         "creep, to strain increments measured in a frame that rotates with the material (the "
         "Hughes-Winget midpoint rule), so that rotations produce no stress. This update suits "
         "metals and ceramics, whose elastic strains stay small while their total strains may be "
-        "large. stress_update = neo_Hookean is the compressible neo-Hookean hyperelastic law P = "
+        "large. stress_update = neo-Hookean is the compressible neo-Hookean hyperelastic law P = "
         "mu (F - F^-T) + lambda ln(J) F^-T, exact for any deformation and without creep, applied "
         "to the part of F left after the eigenstrains (F = F_e F_eig). 'volumetric_strain' is J - 1, "
         "the change of volume per unit volume. Also declares "
@@ -900,7 +900,7 @@ public:
     p.addOptional("stress_update",
                   ParameterKind::String,
                   std::string("rotated_small_strain"),
-                  "rotated_small_strain or neo_Hookean. Default rotated_small_strain: the "
+                  "rotated_small_strain or neo-Hookean. Default rotated_small_strain: the "
                   "material laws of the library, including creep, carried to finite "
                   "rotation and strain.");
     return p;
@@ -908,12 +908,12 @@ public:
   explicit FiniteStrainStress(const InputParameters & p) : SmallStrainStress(p)
   {
     const auto u = p.getString("stress_update");
-    if (u != "rotated_small_strain" && u != "neo_Hookean")
+    if (u != "rotated_small_strain" && u != "neo-Hookean")
       throw InputError("'" + name() +
                        "': stress_update must be rotated_small_strain or "
-                       "neo_Hookean, not '" +
+                       "neo-Hookean, not '" +
                        u + "'.");
-    _neo_hookean = u == "neo_Hookean";
+    _neo_hookean = u == "neo-Hookean";
     if (_formulation == Formulation::PlaneStress)
       throw InputError("'" + name() +
                        "': finite strain is available in plane_strain, axisymmetric, "

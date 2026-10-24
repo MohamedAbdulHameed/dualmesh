@@ -9,10 +9,10 @@ temperatures, displacements, velocities, or quantities defined by the user),
 each governed by a conservation law written as a sum of named terms. Every term may depend on
 every field. All the fields are solved together as one monolithic system by
 Newton's method, with an exact Jacobian computed by automatic differentiation.
-The same problem description is discretized, by changing one keyword, with the
-Galerkin **finite element method**, the vertex-centered or cell-centered **finite
-volume method**, or the **dual mesh control domain method** (DMCDM) of
-J. N. Reddy. The core is written in C++17 and is driven from Python.
+The same problem description is discretized with the Galerkin **finite element
+method** (FEM) for solids or the **dual mesh control domain method** (DMCDM) of
+J. N. Reddy for fluids, which conserves mass and heat in every control volume.
+By default the method follows the physics. The core is written in C++17 and is driven from Python.
 
 A model is described in physical terms: **physics** such as `heat_transfer`,
 `solid_mechanics` and `fluid_dynamics`, their **boundary conditions**,
@@ -33,7 +33,7 @@ import dualmesh as dm
 
 mesh = dm.generate_rectangle_mesh(x_min=0.0, x_max=0.1, y_min=0.0, y_max=0.05, num_x_elements=10, num_y_elements=5)
 
-problem = dm.Problem(mesh, method="dmcdm")  # or method="fem"
+problem = dm.Problem(mesh, method="DMCDM")  # or method="FEM"
 heat = problem.add_physics("heat_transfer", thermal_conductivity=20.0, heat_source=1.0e6)
 heat.add_boundary_condition("temperature = 40", boundary="left")
 heat.add_boundary_condition("temperature = 10", boundary="right")
@@ -75,7 +75,7 @@ with $u = v = 0$ on $\partial \Omega$ and $u = 0$ at $t = 0$, reads
 import dualmesh as dm
 
 mesh = dm.generate_rectangle_mesh(x_min=0.0, x_max=1.0, y_min=0.0, y_max=1.0, num_x_elements=20, num_y_elements=20)
-problem = dm.Problem(mesh, method="dmcdm")
+problem = dm.Problem(mesh, method="DMCDM")
 
 system = problem.add_physics(
     "general_form_PDE",
@@ -144,9 +144,8 @@ reconstruction is needed.
 
 ## Features
 
-- **Methods**: Galerkin finite elements, vertex-centered and cell-centered
-  finite volumes, and the dual mesh control domain method, selected by one
-  argument. An element type or a physics that a method cannot treat correctly
+- **Methods**: Galerkin finite elements for solids and the dual mesh control
+  domain method for fluids, chosen by the physics or by one argument. An element type or a physics that a method cannot treat correctly
   is refused with an explanation.
 - **Elements**: `Edge2`, `Edge3`, `Tri3`, `Tri6`, `Quad4`, `Quad8`, `Quad9`,
   `Tet4`, `Tet10`, `Hex8`, `Hex20`, `Hex27`, `Wedge6` and `Pyramid5`, mixed
@@ -207,9 +206,8 @@ reconstruction is needed.
   the method: PETSc's star forests (`gather_scatter="petsc"`) or gslib, the
   gather-scatter of Nek5000 (`gather_scatter="gslib"`). The linear systems are
   solved by PETSc, by default with the algebraic multigrid of hypre, whose
-  iteration count does not grow with the number of processes. Every method
-  runs in parallel, the cell-centered one with two layers of ghost cells, and
-  so do periodic boundaries, gap conditions between bodies on different
+  iteration count does not grow with the number of processes. Both methods
+  run in parallel, and so do periodic boundaries, gap conditions between bodies on different
   processes, post-processors and checkpoints.
 - **Quadrature per kernel**: Gauss rules, midpoint, trapezoid, Simpson, nodal
   lumping, interface and control-domain trapezoid rules, and selective reduced

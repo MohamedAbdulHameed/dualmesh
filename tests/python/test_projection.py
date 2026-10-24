@@ -14,7 +14,7 @@ import pytest
 NU = 0.1
 
 
-METHODS = ["fem", "dmcdm", "hfvm"]
+METHODS = ["fem", "dmcdm"]
 
 
 def taylor_green(
@@ -212,12 +212,6 @@ def flow(**parameters):
 def test_unsupported_settings_are_refused(parameters, message):
     with pytest.raises(ValueError, match=message):
         flow(**parameters)
-
-
-def test_the_cell_centered_method_is_refused():
-    problem = flow(formulation="pressure", method="zfvm")
-    with pytest.raises(ValueError, match="fem, dmcdm and hfvm"):
-        problem.solve_transient(end_time=0.1, time_step=0.05, report="none")
 
 
 @pytest.mark.parametrize(

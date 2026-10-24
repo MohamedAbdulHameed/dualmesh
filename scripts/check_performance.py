@@ -23,16 +23,10 @@ from pathlib import Path
 BUDGETS = {
     ("assembly", "heat conduction, 32 x 32 Quad4", "fem"): 0.05,
     ("assembly", "heat conduction, 32 x 32 Quad4", "dmcdm"): 0.05,
-    ("assembly", "heat conduction, 32 x 32 Quad4", "hfvm"): 0.05,
-    ("assembly", "heat conduction, 32 x 32 Quad4", "zfvm"): 0.05,
     ("assembly", "plane elasticity, 32 x 32 Quad4", "fem"): 0.05,
     ("assembly", "plane elasticity, 32 x 32 Quad4", "dmcdm"): 0.05,
-    ("assembly", "plane elasticity, 32 x 32 Quad4", "hfvm"): 0.05,
-    ("assembly", "plane elasticity, 32 x 32 Quad4", "zfvm"): 0.05,
     ("assembly", "pressure-velocity flow, 32 x 32 Quad4", "fem"): 0.15,
     ("assembly", "pressure-velocity flow, 32 x 32 Quad4", "dmcdm"): 0.15,
-    ("assembly", "pressure-velocity flow, 32 x 32 Quad4", "hfvm"): 0.15,
-    ("assembly", "pressure-velocity flow, 32 x 32 Quad4", "zfvm"): 0.15,
 }
 
 

@@ -58,7 +58,7 @@ FORBIDDEN_WORDS = {
     "std": "standard_deviation",
     "k": "thermal_conductivity or the full name",
     "temp": "temperature",
-    "co" "efficient": "coeff (the standard abbreviation, used in every name)",
+    "coefficient": "coeff (the standard abbreviation, used in every name)",
     "coef": "coeff",
     "volumetric": "vol",
     "volume": "vol",
@@ -102,7 +102,9 @@ DASH = re.compile(r"\s--\s|—|–")
 
 
 def _words(name: str) -> list[str]:
-    return [w for w in name.split("_") if w]
+    """The words of a name: the underscore stands for a space, and a hyphen joins two names, as
+    in Euler-Bernoulli."""
+    return [w for w in re.split(r"[_-]", name) if w]
 
 
 #: Parameters named by the symbol of their term in a printed equation, by the decision of the

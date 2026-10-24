@@ -4,16 +4,15 @@
 The formulation keeps the pressure as an unknown and interpolates it like the
 velocity, which is stable only with the residual-based stabilisation of the
 mass equation (pressure-stabilising Petrov-Galerkin for the finite element
-method and its control volume counterparts).  The tests check
+method and its control volume counterpart in DMCDM).  The tests check
 
-* the orders of convergence, by manufactured solutions, for all four methods,
+* the orders of convergence, by manufactured solutions, for both methods,
   on distorted quadrilateral, triangular, axisymmetric and three-dimensional
   meshes, for the Stokes and the Navier-Stokes equations;
 * the physics, against the lid-driven cavity of Ghia et al. (1982) and the
   natural convection benchmark of de Vahl Davis (1983);
 * that Newton's method converges quadratically, which it does only with an
-  exact Jacobian, including the Jacobian of the cell sources of the
-  cell-centred method.
+  exact Jacobian.
 
 With linear elements the theory of the stabilised equal-order methods
 guarantees first order for the velocity in H1 and for the pressure in L2
@@ -33,7 +32,7 @@ import pytest
 sympy = pytest.importorskip("sympy")
 from dualmesh import mms  # noqa: E402
 
-METHODS = ["fem", "dmcdm", "hfvm", "zfvm"]
+METHODS = ["fem", "dmcdm"]
 _ROOT = Path(__file__).resolve().parents[2]
 
 # A divergence-free velocity (from a stream function) and a pressure with no
@@ -91,28 +90,17 @@ def test_manufactured_flow_on_distorted_quadrilaterals(method, density):
 
 @pytest.mark.parametrize("method", METHODS)
 def test_manufactured_flow_on_triangles(method):
-    """The pressure of the cell-centred method converges at first order on triangles (measured
-    1.06: the errors 0.36, 0.17 and 0.082), the others at 1.65 to 1.70.  Its mass flux is weighted
-    by the parameter tau of the element methods, whose viscous limit h^2 / (12 nu) is that of
-    linear elements; the earlier h^2 / (4 nu) gave it 1.33 (0.040 at n = 32), with velocity
-    errors twice as large for every method.  A weight made for cells (the classical 1 / A_p of
-    Rhie and Chow) is plan item 9."""
+    """The pressure converges at 1.65 to 1.70 on triangles."""
     study = _flow_study(CARTESIAN, 2, outflow={"right": (1.0, 0.0)}, density=1.0)
     result = study.convergence_study(lambda n: _square(n, "Tri3"), [8, 16, 32], method=method)
-    if method == "zfvm":
-        assert result.order("velocity_x", "l2") > 1.8
-        assert result.order("velocity_x", "h1") > 0.9
-        assert result.order("pressure", "l2") > 1.0
-        return
     _check(result, "velocity_x")
 
 
 @pytest.mark.parametrize("method", METHODS)
 def test_manufactured_axisymmetric_flow_including_the_axis(method):
     """The axis r = 0 is part of the domain.  The radial momentum equation
-    carries the hoop stress sigma_tt / r = (2 mu u_r / r - p) / r, and the
-    cell-centred method evaluates fluxes on the axis itself, which needs the
-    manufactured forcing in a form that is finite there."""
+    carries the hoop stress sigma_tt / r = (2 mu u_r / r - p) / r, which needs the
+    manufactured forcing in a form that is finite on the axis."""
     study = _flow_study(
         AXISYMMETRIC,
         2,
@@ -126,7 +114,7 @@ def test_manufactured_axisymmetric_flow_including_the_axis(method):
     _check(result, "velocity_r")
 
 
-@pytest.mark.parametrize("method", ["fem", "zfvm"])
+@pytest.mark.parametrize("method", ["fem"])
 def test_manufactured_flow_in_three_dimensions(method):
     """Pre-asymptotic on these meshes, so only the ratio of successive errors
     is checked: at least 2.5 for the velocity and 2 for the pressure (the
@@ -154,9 +142,7 @@ def test_manufactured_flow_in_three_dimensions(method):
 @pytest.mark.parametrize("method", METHODS)
 def test_newton_converges_quadratically(method):
     """The steps of Newton's method on a Navier-Stokes problem started away
-    from the solution satisfy s_{k+1} <= C s_k^2.  Before the cell-source
-    gradients of the cell-centred method were differentiated, that method
-    converged only linearly, at a rate of about 0.1 per iteration."""
+    from the solution satisfy s_{k+1} <= C s_k^2."""
     study = _flow_study(CARTESIAN, 2, outflow={"right": (1.0, 0.0)}, density=20.0)
     problem = study.build(_square(16), method=method)
     for variable in ("velocity_x", "velocity_y", "pressure"):
@@ -177,7 +163,6 @@ def _cavity(method, n, reynolds_number):
         dynamic_viscosity=1.0,
         density=reynolds_number,
         formulation="pressure",
-        pressure_pin_point=(0.5, 0.0),
     )
     problem.add_boundary_condition(
         "Dirichlet",
@@ -221,7 +206,7 @@ def test_cavity_matches_ghia(method):
     assert np.max(np.abs(v - reference.GHIA_V)) < 0.015
 
 
-@pytest.mark.parametrize("method", ["fem", "dmcdm", "zfvm"])
+@pytest.mark.parametrize("method", ["fem", "dmcdm"])
 def test_natural_convection_with_the_pressure_formulation(method):
     """de Vahl Davis at Ra = 10^5 on the 32 by 32 graded mesh.  The buoyancy
     force is part of the stabilisation and scales with the load factor like
@@ -240,7 +225,6 @@ def test_natural_convection_with_the_pressure_formulation(method):
         dynamic_viscosity=example.PRANDTL,
         density=1.0,
         formulation="pressure",
-        pressure_pin_point=(0.5, 0.0),
     )
     problem.add_coupling(
         "nonisothermal_flow",
@@ -261,57 +245,6 @@ def test_natural_convection_with_the_pressure_formulation(method):
     reference = example.BENCHMARK[rayleigh_number]
     for key in ("nusselt", "u_max", "v_max"):
         assert computed[key] == pytest.approx(reference[key], rel=3e-2), key
-
-
-def test_cell_centred_jacobian_of_a_gradient_source_is_exact():
-    """The convective inertia rho u . grad u is a cell source of the
-    cell-centred method that depends on the reconstructed gradient.  Its
-    Jacobian, applied to a random direction, must match a central difference
-    of the residual to the accuracy of the difference."""
-    mesh = dm.generate_rectangle_mesh(0, 1, 0, 1, 6, 6, element_type="Tri3")
-    problem = dm.Problem(mesh, method="zfvm")
-    problem.add_physics(
-        "fluid_dynamics",
-        dynamic_viscosity=1.0,
-        density=30.0,
-        formulation="pressure",
-    )
-    rng = np.random.default_rng(3)
-    count = len(problem.entity_points())
-    for variable in ("velocity_x", "velocity_y", "pressure"):
-        problem.set_values(variable, rng.uniform(-1, 1, count))
-    values = {v: problem.values(v).copy() for v in ("velocity_x", "velocity_y", "pressure")}
-    residual, jacobian = problem.linear_system()
-    direction = rng.uniform(-1, 1, residual.size)
-    epsilon = 1e-6
-
-    def shifted(sign):
-        for index, variable in enumerate(("velocity_x", "velocity_y", "pressure")):
-            problem.set_values(variable, values[variable] + sign * epsilon * direction[index::3])
-        return problem.linear_system()[0]
-
-    difference = (shifted(1.0) - shifted(-1.0)) / (2 * epsilon)
-    exact = jacobian @ direction
-    assert np.max(np.abs(exact - difference)) < 1e-6 * np.max(np.abs(exact))
-
-
-def test_cell_centred_axis_needs_no_boundary_condition():
-    """On the axis of an axisymmetric problem the coordinate factor r
-    vanishes, which used to leave the cell-centred method's boundary entities
-    there with an empty equation and the matrix singular.  The axis is now a
-    symmetry line without a condition, and the solution converges at second
-    order."""
-    study = mms.ManufacturedSolution(
-        {"u": "cos(x)*sin(y) + x*x"}, dimension=2, coordinates="axisymmetric"
-    )
-    study.add_physics("general_form_PDE", variables="u", c=1.0)
-    result = study.convergence_study(
-        lambda n: dm.generate_rectangle_mesh(0, 1, 0, 1, n, n),
-        [8, 16, 32],
-        method="zfvm",
-        boundary=["right", "top", "bottom"],
-    )
-    assert result.order("u", "l2") > 1.9
 
 
 def test_point_dirichlet_fixes_the_nearest_entity():

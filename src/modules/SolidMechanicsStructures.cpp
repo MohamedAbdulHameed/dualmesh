@@ -145,7 +145,7 @@ public:
                   "correction factor, 5/6 for a homogeneous rectangular section. It is used "
                   "by beam_Timoshenko_displacement, beam_Timoshenko_mixed, "
                   "circular_plate_first_order and plate_first_order, and ignored by "
-                  "beam_Euler_Bernoulli_mixed and circular_plate_classical_mixed, which are "
+                  "beam_Euler-Bernoulli_mixed and circular_plate_classical_mixed, which are "
                   "shear-rigid theories.");
     p.addOptional(
         "foundation_modulus",
@@ -1226,7 +1226,7 @@ void
 registerStructuralMemberObjects(Factory & f)
 {
   const std::string m = "solid_mechanics";
-  f.add<BeamEulerBernoulliMixed>("beam_Euler_Bernoulli_mixed", ObjectCategory::Kernel, m);
+  f.add<BeamEulerBernoulliMixed>("beam_Euler-Bernoulli_mixed", ObjectCategory::Kernel, m);
   f.add<BeamTimoshenkoDisplacement>("beam_Timoshenko_displacement", ObjectCategory::Kernel, m);
   f.add<BeamTimoshenkoMixed>("beam_Timoshenko_mixed", ObjectCategory::Kernel, m);
   f.add<CircularPlateFirstOrder>("circular_plate_first_order", ObjectCategory::Kernel, m);

@@ -211,12 +211,7 @@ def _solver_options(**kwargs) -> _core.SolverOptions:
 
 #: The methods, written as the abbreviations they are (CODE_AND_DOCS_RULES 4.1); the lower-case
 #: spelling is accepted.
-METHODS = {"fem": "FEM", "dmcdm": "DMCDM", "hfvm": "HFVM", "zfvm": "ZFVM"}
-
-
-def _method_name(method: str) -> str:
-    """The method in capitals, the way the input writes it."""
-    return METHODS.get(str(method).lower(), method)
+METHODS = {"fem": "FEM", "dmcdm": "DMCDM"}
 
 
 #: The preconditioners of the linear solvers: those of a Krylov method on the whole system, the
@@ -351,21 +346,13 @@ class Problem:
     mesh:
         The primal mesh of finite elements.
     method:
-        The discretization.  ``"dmcdm"`` is the dual mesh control domain method
-        (the default), and ``"fem"`` is the Galerkin finite element method.
-        ``"hfvm"`` is the vertex-centred finite volume method, which uses the
-        same control domains as the dual mesh method and two-point gradients at
-        their interfaces (the half-control volume formulation of Reddy,
-        Chapter 3).  ``"zfvm"`` is the cell-centred finite volume method, with
-        one unknown per element and one per boundary face (the zero-thickness
-        control volume formulation, and the layout used by OpenFOAM).  The rest
-        of the problem definition is identical for all four, which makes them
-        directly comparable.
-    boundary_gradient:
-        Only for ``"zfvm"``: ``"first_order"`` (the two-point difference
-        between the cell and the boundary node, the default) or
-        ``"second_order"`` (the one-sided quadratic of Eq. (3.2.14) of the
-        book, through the boundary node and the two nearest cells).
+        The discretization: ``"FEM"``, the Galerkin finite element method, for
+        solids, or ``"DMCDM"``, the dual mesh control domain method, which
+        conserves mass and heat in every control volume, for fluids.  The
+        default, ``"automatic"``, takes DMCDM when the problem has a
+        ``fluid_dynamics`` of the pressure formulation and FEM otherwise, and
+        is decided when the physics are built.  The rest of the problem
+        definition is the same for both.
     coordinates:
         ``"cartesian"``, ``"axisymmetric"`` (the integrals carry the factor
         :math:`2 \\pi r`, with :math:`r` the first coordinate), or
@@ -378,15 +365,14 @@ class Problem:
         as well, which gives the serial answer.  In a distributed problem
         every process defines the same physics and objects, each assembles
         the elements of its own part of the mesh, and :meth:`solve` takes the
-        distributed linear solvers (see :meth:`solve`).  Every method runs
-        distributed; for ``"zfvm"`` each part also holds two layers of the
-        cells of the other parts.
+        distributed linear solvers (see :meth:`solve`).  Both methods run
+        distributed.
     partitioner:
         The partitioner of PETSc that splits the elements of a distributed problem among the processes: ``"automatic"`` (the default: PT-Scotch, else ParMETIS), ``"ptscotch"``, ``"parmetis"`` or ``"simple"``.
         See :func:`dualmesh.partition_mesh`.
     gather_scatter:
         The library that exchanges, between the processes of a distributed problem, the values at the nodes that several of them hold.
-        ``"petsc"`` (the default) is PETSc's star forests, which also carry PETSc's own vectors and matrices.
+        ``"PETSc"`` (the default) is PETSc's star forests, which also carry PETSc's own vectors and matrices.
         ``"gslib"`` is the gather-scatter library of Nek5000, which at setup times pairwise exchanges, a crystal router and an all-reduce and keeps the fastest for the mesh at hand (:func:`dualmesh.have_gslib`).
         The answer is the same with either; the time per exchange may differ, mostly on many processes.
     """
@@ -394,16 +380,22 @@ class Problem:
     def __init__(
         self,
         mesh,
-        method: str = "DMCDM",
+        method: str = "automatic",
         coordinates: str = "cartesian",
-        boundary_gradient: str = "first_order",
         distributed: bool | None = None,
         partitioner: str = "automatic",
         gather_scatter: str = "petsc",
     ):
         if distributed is None:
             distributed = _core.mpi_size() > 1
-        method = _method_name(method)
+        # The automatic method starts as FEM and becomes DMCDM if a flow is built (_build_physics).
+        automatic = str(method).lower() == "automatic"
+        self._automatic_method = "open" if automatic else "given"
+        given, method = method, "FEM" if automatic else METHODS.get(str(method).lower())
+        if method is None:
+            raise _core.InputError(
+                f"Unknown method '{given}'. Use 'FEM' (solids), 'DMCDM' (fluids) or 'automatic'."
+            )
         self._distributed = None
         _destroy_collectively()
         if distributed:
@@ -420,7 +412,6 @@ class Problem:
             mesh = self._problem.mesh
         else:
             self._problem = _core.Problem(mesh, method.lower(), coordinates)
-        self._problem.set_boundary_gradient(boundary_gradient)
         self._mesh = mesh
         self._objects: list = []  # keeps Python-defined objects alive
         self._init_postprocessing()
@@ -430,7 +421,6 @@ class Problem:
         self._couplings: dict = {}
         self.method = method
         self.coordinates = coordinates
-        self.boundary_gradient = boundary_gradient
 
     def set_num_threads(self, num_threads: int) -> None:
         """Number of threads used by the assembly loops.
@@ -464,26 +454,13 @@ class Problem:
         self._extra_step_callback = None
         self._domain_volume = None
 
-    @property
-    def is_cell_centered(self) -> bool:
-        """True when the unknowns sit at cell centroids instead of mesh nodes."""
-        return self._problem.is_cell_centered()
-
     def entity_points(self) -> np.ndarray:
         """Positions of the degrees of freedom, one row each, in the order of
         :meth:`values`.
 
-        For the dual mesh, finite element and vertex-centred finite volume
-        methods these are the mesh nodes.  For the cell-centred finite volume
-        method they are the cell centroids first and then the boundary face
-        centroids.
+        These are the mesh nodes.
         """
-        n = self._problem.num_entities()
-        return np.asarray([self._problem.entity_point(i) for i in range(n)])
-
-    def boundary_entities(self, boundary: str) -> list[int]:
-        """Degree of freedom indices that carry the values of a boundary."""
-        return list(self._problem.boundary_entities(boundary))
+        return np.asarray(self._mesh.points())
 
     # ---- definition ------------------------------------------------------
     @_changes_model
@@ -677,9 +654,22 @@ class Problem:
 
     def _build_physics(self) -> None:
         """Generate the objects of the physics and couplings not built yet."""
-        new = [p for p in getattr(self, "_physics", {}).values() if not p._built]
+        new = [p for p in self._physics.values() if not p._built]
         if not new:
             return
+        # The automatic method: DMCDM for a flow of the pressure formulation, FEM otherwise,
+        # chosen when the physics are first built.
+        flow = any(p.type_name == "fluid_dynamics" and p.formulation == "pressure" for p in new)
+        if self._automatic_method == "open":
+            if flow:
+                self._problem.set_method("dmcdm")
+                self.method = "DMCDM"
+            self._automatic_method = "chosen"
+        elif self._automatic_method == "chosen" and flow and self.method == "FEM":
+            raise _core.InputError(
+                "The method was chosen as FEM when the problem was first solved, before this flow "
+                "was added. Give method='DMCDM' to dm.Problem for the flow."
+            )
         for physics in new:
             physics._build(self)
             physics._built = True
@@ -720,8 +710,8 @@ class Problem:
         :class:`~dualmesh.Output` group: the solve writes the fields once, at
         the end.  Default None: the solve writes no file.
 
-        Keyword arguments are solver options: ``nonlinear_solver`` (``"newton"``,
-        ``"picard"``, or ``"linear"``), ``max_iterations``, ``relative_tolerance``,
+        Keyword arguments are solver options: ``nonlinear_solver`` (``"Newton"``,
+        ``"Picard"``, or ``"linear"``), ``max_iterations``, ``relative_tolerance``,
         ``absolute_tolerance``, ``step_tolerance``, ``relaxation`` (the
         acceleration parameter of direct iteration), ``line_search``
         (``"automatic"``, the default, which is backtracking when the limited
@@ -730,11 +720,11 @@ class Problem:
         ``"backtracking"``, which halves a Newton step until the residual norm
         falls) and ``max_line_search_steps``
         (default 10), ``load_factors`` (load
-        stepping), ``linear_solver`` (``"automatic"``, the default, ``"lu"``,
-        ``"bicgstab"``, ``"gmres"``, ``"cg"`` or ``"petsc"``),
-        ``preconditioner`` (``"ilu"``, the default, ``"ilut"``, ``"amg"``,
-        ``"jacobi"``, ``"none"``, the block preconditioners of
-        pressure-velocity flow ``"lsc"``, ``"pcd"`` and ``"pressure_mass"``,
+        stepping), ``linear_solver`` (``"automatic"``, the default, ``"LU"``,
+        ``"BiCGStab"``, ``"GMRES"``, ``"CG"`` or ``"PETSc"``),
+        ``preconditioner`` (``"ILU"``, the default, ``"ILUT"``, ``"AMG"``,
+        ``"Jacobi"``, ``"none"``, the block preconditioners of
+        pressure-velocity flow ``"LSC"``, ``"PCD"`` and ``"pressure_mass"``,
         or the split by physics ``"physics_blocks"``),
         ``amg_strength_threshold``,
         ``linear_tolerance``, ``linear_max_iterations``, ``gmres_restart``,
@@ -745,7 +735,7 @@ class Problem:
         ``"automatic"`` factorises the system directly where that is cheap,
         which is always in one dimension, up to :math:`10^5` unknowns in two
         and up to a few thousand in three.  A larger flow is solved by
-        flexible GMRES with the least squares commutator (``"lsc"``), and any
+        flexible GMRES with the least squares commutator (``"LSC"``), and any
         other larger system by the conjugate gradient method or BiCGSTAB
         preconditioned by algebraic multigrid, then by BiCGSTAB with an
         incomplete LU factorisation, and then by the direct solver, each one
@@ -758,10 +748,10 @@ class Problem:
         factorise and the least squares commutator for a larger one, GAMG with
         the rigid body modes for a solid, the split by physics for a solid
         coupled to other physics, and GMRES with hypre BoomerAMG otherwise,
-        with MUMPS when an iteration fails), ``"lu"`` (MUMPS) or ``"petsc"``
+        with MUMPS when an iteration fails), ``"LU"`` (MUMPS) or ``"PETSc"``
         (the Krylov method and preconditioner given by ``petsc_options``).
-        ``preconditioner`` may be ``"lsc"``, ``"pcd"``, ``"pressure_mass"``,
-        ``"physics_blocks"`` or ``"amg"``.  :doc:`/theory/parallel` gives the
+        ``preconditioner`` may be ``"LSC"``, ``"PCD"``, ``"pressure_mass"``,
+        ``"physics_blocks"`` or ``"AMG"``.  :doc:`/theory/parallel` gives the
         method and the iteration counts.
         """
         level = report_level(report, "Problem.solve")
@@ -1293,9 +1283,7 @@ class Problem:
     def values(self, variable: str) -> np.ndarray:
         """Values of a variable, one per degree of freedom entity.
 
-        For every method except ``"zfvm"`` these are nodal values indexed by
-        node.  For ``"zfvm"`` they are cell values followed by boundary face values.
-        Use :meth:`entity_points` for the matching coordinates.
+        These are nodal values indexed by node.  Use :meth:`entity_points` for the matching coordinates.
         """
         return self._problem.values(variable)
 
@@ -1444,11 +1432,7 @@ class Problem:
         the same, one per component.  Missing components are taken as zero, and
         without it the seminorm is returned as ``nan``.
 
-        :math:`u_h` is the field the method actually represents: the element
-        interpolation of the nodal values for ``dmcdm``, ``fem`` and ``hfvm``,
-        and for ``zfvm`` the linear reconstruction
-        :math:`U_c + G_c \\cdot (x - x_c)` in every cell, whose gradient is the
-        reconstructed cell gradient.  The integrals use a Gauss rule of
+        :math:`u_h` is the element interpolation of the nodal values.  The integrals use a Gauss rule of
         ``quadrature_points`` per direction on every element (zero chooses the
         polynomial order plus two, which over-integrates the leading term of
         the error) and include the coordinate factor.  The sum runs on several
@@ -1610,8 +1594,7 @@ class Problem:
 
     def write_csv(self, filename: str, variables: Sequence[str] = ()) -> None:
         """Write the values of the variables as comma-separated values: one
-        row for each degree of freedom (a node, or a cell and a boundary face
-        of the cell-centred method), with its coordinates.  The header names
+        row for each node, with its coordinates.  The header names
         every column with its unit, for example ``temperature (K)``.
         ``variables`` selects the variables (default: all of them)."""
         from .tables import column_header

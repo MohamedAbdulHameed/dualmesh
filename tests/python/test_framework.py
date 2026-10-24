@@ -105,7 +105,7 @@ def test_uniform_refinement_keeps_boundaries():
     assert len(refined.boundary_nodes("left")) == 5
     # and the refined mesh still solves the same problem
     for candidate in (mesh, refined):
-        problem = dm.Problem(candidate)
+        problem = dm.Problem(candidate, method="DMCDM")
         problem.add_variable("u")
         problem.add_kernel("diffusion", variable="u")
         problem.add_boundary_condition("Dirichlet", "left", variable="u", value=1.0)
@@ -145,7 +145,7 @@ def test_mesh_from_arrays_and_predicates():
 # ---------------------------------------------------------------------------
 def test_unknown_parameter_is_reported_with_the_accepted_names():
     mesh = dm.generate_line_mesh(start=0.0, end=1.0, num_elements=2)
-    problem = dm.Problem(mesh)
+    problem = dm.Problem(mesh, method="DMCDM")
     problem.add_variable("u")
     with pytest.raises(ValueError, match="Unknown parameter 'conductivity'"):
         problem.add_kernel("diffusion", variable="u", conductivity=1.0)
@@ -153,7 +153,7 @@ def test_unknown_parameter_is_reported_with_the_accepted_names():
 
 def test_missing_required_parameter_is_reported():
     mesh = dm.generate_line_mesh(start=0.0, end=1.0, num_elements=2)
-    problem = dm.Problem(mesh)
+    problem = dm.Problem(mesh, method="DMCDM")
     problem.add_variable("u")
     with pytest.raises(ValueError, match="Missing required parameter 'variable'"):
         problem.add_kernel("diffusion")
@@ -161,7 +161,7 @@ def test_missing_required_parameter_is_reported():
 
 def test_unknown_variable_and_boundary_are_reported():
     mesh = dm.generate_line_mesh(start=0.0, end=1.0, num_elements=2)
-    problem = dm.Problem(mesh)
+    problem = dm.Problem(mesh, method="DMCDM")
     problem.add_variable("u")
     problem.add_kernel("diffusion", variable="u")
     with pytest.raises(ValueError, match="the mesh has no boundary 'norht'"):
@@ -200,7 +200,7 @@ def test_blocks_allow_different_materials_in_one_mesh():
     layered.add_nodeset("left", [0])
     layered.add_nodeset("right", [layered.num_nodes - 1])
 
-    problem = dm.Problem(layered)
+    problem = dm.Problem(layered, method="DMCDM")
     problem.add_variable("temperature")
     problem.add_kernel(
         "heat_conduction",
@@ -227,7 +227,7 @@ def test_blocks_allow_different_materials_in_one_mesh():
 def test_point_source_and_reaction_balance():
     """A point heat source in a bar leaves through the two fixed ends."""
     mesh = dm.generate_line_mesh(start=0.0, end=1.0, num_elements=10)
-    problem = dm.Problem(mesh)
+    problem = dm.Problem(mesh, method="DMCDM")
     problem.add_variable("temperature")
     problem.add_kernel("diffusion", variable="temperature")
     problem.add_point_source("point_source", variable="temperature", value=2.0, points=[0.5])
@@ -247,7 +247,7 @@ def test_point_source_and_reaction_balance():
 
 def test_radiative_boundary_condition_is_nonlinear_and_converges():
     mesh = dm.generate_line_mesh(start=0.0, end=0.1, num_elements=10)
-    problem = dm.Problem(mesh)
+    problem = dm.Problem(mesh, method="DMCDM")
     problem.add_variable("temperature", initial_condition=1000.0)
     problem.add_kernel("heat_conduction", variable="temperature", thermal_conductivity=20.0)
     problem.add_boundary_condition("Dirichlet", "left", variable="temperature", value=1000.0)
@@ -273,7 +273,7 @@ def test_spherical_coordinates_reproduce_the_analytical_solution():
     """Conduction in a sphere with uniform generation: T = T0 + g (R^2 - r^2) / (6k)."""
     radius, conductivity, generation, surface = 0.2, 5.0, 1.0e5, 50.0
     mesh = dm.generate_line_mesh(start=0.0, end=radius, num_elements=20)
-    problem = dm.Problem(mesh, coordinates="spherical")
+    problem = dm.Problem(mesh, method="DMCDM", coordinates="spherical")
     problem.add_variable("temperature")
     problem.add_kernel("heat_conduction", variable="temperature", thermal_conductivity=conductivity)
     problem.add_kernel("body_force", variable="temperature", value=generation)
@@ -304,7 +304,7 @@ def test_three_dimensional_conduction_and_elasticity():
         num_y_elements=3,
         num_z_elements=3,
     )
-    conduction = dm.Problem(mesh)
+    conduction = dm.Problem(mesh, method="DMCDM")
     conduction.add_variable("temperature")
     conduction.add_kernel("heat_conduction", variable="temperature", thermal_conductivity=2.0)
     conduction.add_boundary_condition("Dirichlet", "left", variable="temperature", value=100.0)
@@ -316,7 +316,7 @@ def test_three_dimensional_conduction_and_elasticity():
     # and the heat flow is k A dT/dx = 2 * 0.25 * 100 / 1
     assert conduction.total_reaction("temperature", "left") == pytest.approx(50.0, rel=1e-9)
 
-    bar = dm.Problem(mesh)
+    bar = dm.Problem(mesh, method="DMCDM")
     bar.add_physics(
         "solid_mechanics",
         youngs_modulus=1000.0,
@@ -336,7 +336,7 @@ def test_three_dimensional_conduction_and_elasticity():
 def test_transient_conduction_against_the_fourier_series():
     length, diffusivity, end_time = 1.0, 1.0, 0.05
     mesh = dm.generate_line_mesh(start=0.0, end=length, num_elements=40)
-    problem = dm.Problem(mesh)
+    problem = dm.Problem(mesh, method="DMCDM")
     problem.add_variable("temperature", initial_condition=1.0)
     problem.add_kernel("heat_conduction", variable="temperature", thermal_conductivity=diffusivity)
     problem.add_kernel(
@@ -364,7 +364,7 @@ def test_transient_conduction_against_the_fourier_series():
 def test_lumped_and_consistent_time_derivatives_agree_when_refined():
     def solve(quadrature, num_elements):
         mesh = dm.generate_line_mesh(start=0.0, end=1.0, num_elements=num_elements)
-        problem = dm.Problem(mesh)
+        problem = dm.Problem(mesh, method="DMCDM")
         problem.add_variable("temperature", initial_condition=1.0)
         problem.add_kernel("diffusion", variable="temperature")
         problem.add_kernel("time_derivative", variable="temperature", quadrature=quadrature)
@@ -414,7 +414,7 @@ def test_python_kernel_with_exact_derivatives():
 
     def solve(python):
         mesh = dm.generate_line_mesh(start=0.0, end=1.0, num_elements=10)
-        problem = dm.Problem(mesh)
+        problem = dm.Problem(mesh, method="DMCDM")
         problem.add_variable("u")
         problem.add_kernel("diffusion", variable="u")
         if python:
@@ -455,7 +455,7 @@ def test_a_python_kernel_reads_the_state_of_the_last_step():
 
     def define(python):
         mesh = dm.generate_line_mesh(start=0.0, end=1.0, num_elements=20)
-        problem = dm.Problem(mesh)
+        problem = dm.Problem(mesh, method="DMCDM")
         problem.add_variable("u", initial_condition=lambda x, y, z, t: np.sin(np.pi * x))
         if python:
             problem.add_kernel(PythonTimeDerivative(variable="u"))
@@ -494,7 +494,7 @@ class RecordingFlux(dm.PythonBoundaryCondition):
 @pytest.mark.parametrize("nonlinear_solver, picard", [("newton", False), ("picard", True)])
 def test_a_python_object_sees_the_linearisation_and_the_boundary(nonlinear_solver, picard):
     RecordingSource.seen = set()
-    problem = dm.Problem(dm.generate_line_mesh(start=0.0, end=1.0, num_elements=4))
+    problem = dm.Problem(dm.generate_line_mesh(start=0.0, end=1.0, num_elements=4), method="DMCDM")
     problem.add_variable("u")
     problem.add_kernel("diffusion", variable="u")
     problem.add_kernel(RecordingSource(variable="u"))
@@ -511,7 +511,7 @@ def test_python_material_reproduces_the_builtin_nonlinearity():
         mesh = dm.generate_rectangle_mesh(
             x_min=0.0, x_max=0.1, y_min=0.0, y_max=0.05, num_x_elements=10, num_y_elements=5
         )
-        problem = dm.Problem(mesh)
+        problem = dm.Problem(mesh, method="DMCDM")
         problem.add_variable("temperature")
         if use_python_material:
             problem.add_property(TemperatureDependentConductivity())
@@ -561,7 +561,7 @@ def test_python_nodal_boundary_condition():
     mesh = dm.generate_rectangle_mesh(
         x_min=0.0, x_max=1.0, y_min=0.0, y_max=1.0, num_x_elements=8, num_y_elements=8
     )
-    problem = dm.Problem(mesh)
+    problem = dm.Problem(mesh, method="DMCDM")
     problem.add_variable("u")
     problem.add_kernel("diffusion", variable="u")
     problem.add_boundary_condition(PrescribedProfile(variable="u", boundary="top", amplitude=2.0))
@@ -588,7 +588,7 @@ def test_the_symmetric_solvers_agree_with_the_direct_solver(linear_solver):
 
     def define():
         mesh = dm.generate_rectangle_mesh(x=[0, 1], y=[0, 1], num_elements=[10, 10])
-        problem = dm.Problem(mesh)
+        problem = dm.Problem(mesh, method="DMCDM")
         problem.add_variable("u")
         problem.add_kernel("diffusion", variable="u")
         problem.add_kernel("body_force", variable="u", value=1.0)
@@ -633,7 +633,7 @@ def _three_dimensional_problem(method, n=8):
     return problem
 
 
-@pytest.mark.parametrize("method", ["fem", "dmcdm", "zfvm"])
+@pytest.mark.parametrize("method", ["fem", "dmcdm"])
 @pytest.mark.parametrize(
     "options",
     [
@@ -671,7 +671,7 @@ def test_the_automatic_solver_factorises_small_and_two_dimensional_systems():
     mesh = dm.generate_rectangle_mesh(
         x_min=0.0, x_max=1.0, y_min=0.0, y_max=1.0, num_x_elements=30, num_y_elements=30
     )
-    problem = dm.Problem(mesh)
+    problem = dm.Problem(mesh, method="DMCDM")
     problem.add_variable("u")
     problem.add_kernel("diffusion", variable="u")
     problem.add_kernel("body_force", variable="u", value=1.0)
@@ -703,7 +703,7 @@ def test_a_compiled_function_keeps_the_assembly_threaded():
     mesh = dm.generate_rectangle_mesh(
         x_min=0.0, x_max=1.0, y_min=0.0, y_max=1.0, num_x_elements=4, num_y_elements=4
     )
-    problem = dm.Problem(mesh)
+    problem = dm.Problem(mesh, method="DMCDM")
     problem.add_variable("u")
     problem.add_kernel("diffusion", variable="u")
     problem.add_kernel("body_force", variable="u", value=dm.parsed_function("x*y"))
@@ -714,7 +714,7 @@ def test_a_compiled_function_keeps_the_assembly_threaded():
 
 def test_divergence_is_reported():
     mesh = dm.generate_line_mesh(start=0.0, end=1.0, num_elements=10)
-    problem = dm.Problem(mesh)
+    problem = dm.Problem(mesh, method="DMCDM")
     problem.add_variable("u", initial_condition=1.0)
     problem.add_kernel("diffusion", variable="u")
     # an exponentially growing source with no solution nearby
@@ -791,7 +791,7 @@ def test_a_python_callable_parameter_forces_serial_assembly():
     mesh = dm.generate_rectangle_mesh(
         x_min=0.0, x_max=1.0, y_min=0.0, y_max=1.0, num_x_elements=30, num_y_elements=30
     )
-    problem = dm.Problem(mesh)
+    problem = dm.Problem(mesh, method="DMCDM")
     problem.add_variable("u")
     problem.add_kernel("diffusion", variable="u")
     assert problem.thread_safe  # nothing from Python yet

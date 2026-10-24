@@ -597,7 +597,7 @@ class HeatTransfer(Physics):
     )
     advection_scheme: str | None = parameter(
         None,
-        description="How the heat that a flow carries (with a nonisothermal_flow coupling) is discretised: 'SUPG' (streamline upwind Petrov-Galerkin, with FEM, DMCDM and HFVM), 'limited' (the upstream face value blended towards the central one by the van Albada limiter, bounded and second order, with the control volume methods), 'linear_upwind' (second order, not bounded), 'upwind' (bounded, first order) or 'central' (no stabilisation, which oscillates where convection dominates). Default: SUPG for FEM, DMCDM and HFVM, limited for ZFVM, which measured the closest on boundary layers and jumps. Where conduction matters as much as convection (resolved natural convection), central can be closer.",
+        description="How the heat that a flow carries (with a nonisothermal_flow coupling) is discretised: 'SUPG' (streamline upwind Petrov-Galerkin), the face fluxes of DMCDM 'limited' (the upstream face value blended towards the central one by the van Albada limiter, bounded and second order), 'linear_upwind' (second order, not bounded) and 'upwind' (bounded, first order), or 'central' (no stabilisation, which oscillates where convection dominates). Default SUPG, which measured the closest on boundary layers and jumps. Where conduction matters as much as convection (resolved natural convection), central can be closer.",
     )
     initial_condition: float | str | None = parameter(
         None,
@@ -1136,7 +1136,7 @@ STRUCTURAL = ("plate", "beam", "circular_plate")
 #: The theories of each structural formulation; the first is the default.
 THEORIES = {
     "plate": ("first_order",),
-    "beam": ("Euler_Bernoulli", "Timoshenko"),
+    "beam": ("Euler-Bernoulli", "Timoshenko"),
     "circular_plate": ("first_order", "classical"),
 }
 
@@ -1192,7 +1192,7 @@ class SolidMechanics(Physics):
     )
     theory: str | None = parameter(
         None,
-        description="The theory of a structural formulation: Euler_Bernoulli (default) or Timoshenko for a beam, first_order (default) or classical for a circular plate, first_order for a plate.",
+        description="The theory of a structural formulation: Euler-Bernoulli (default) or Timoshenko for a beam, first_order (default) or classical for a circular plate, first_order for a plate.",
     )
     form: str | None = parameter(
         None,
@@ -1463,7 +1463,7 @@ class SolidMechanics(Physics):
 
     def _third(self) -> str:
         """The third variable of a beam or a circular plate."""
-        mixed = self.theory in ("Euler_Bernoulli", "classical") or (
+        mixed = self.theory in ("Euler-Bernoulli", "classical") or (
             self.theory == "Timoshenko" and self.form != "displacement"
         )
         return "bending_moment" if mixed else "phi"
@@ -1556,7 +1556,7 @@ class SolidMechanics(Physics):
         third = variables[2]
         if self.formulation == "beam":
             model = {
-                ("Euler_Bernoulli", "bending_moment"): "beam_Euler_Bernoulli_mixed",
+                ("Euler-Bernoulli", "bending_moment"): "beam_Euler-Bernoulli_mixed",
                 ("Timoshenko", "bending_moment"): "beam_Timoshenko_mixed",
                 ("Timoshenko", "phi"): "beam_Timoshenko_displacement",
             }[(self.theory, third)]
@@ -1851,7 +1851,7 @@ class SolidMechanics(Physics):
 # ---------------------------------------------------------------------------
 # Incompressible flow
 # ---------------------------------------------------------------------------
-FLOW_FORMULATIONS = ("penalty", "pressure", "Taylor_Hood")
+FLOW_FORMULATIONS = ("penalty", "pressure", "Taylor-Hood")
 FLOW_TIME_INTEGRATIONS = ("monolithic", "projection")
 
 
@@ -1866,7 +1866,7 @@ class FluidDynamics(Physics):
     r"""The steady or transient flow of an incompressible Newtonian fluid:
     ρ (v·∇)v = −∇p + μ Δv + f, ∇·v = 0. The penalty
     formulation eliminates the pressure, the pressure formulation keeps it
-    with equal-order interpolation and stabilisation, and the Taylor_Hood
+    with equal-order interpolation and stabilisation, and the Taylor-Hood
     formulation keeps it with a quadratic velocity and a linear pressure."""
 
     type_name: ClassVar[str] = "fluid_dynamics"
@@ -1887,31 +1887,18 @@ class FluidDynamics(Physics):
     )
     formulation: str = parameter(
         "penalty",
-        description="penalty, pressure or Taylor_Hood. Default penalty, which every method except the cell-centred finite volume method supports. Taylor_Hood needs method='FEM' and a quadratic mesh.",
+        description="penalty, pressure or Taylor-Hood. Default penalty. Taylor-Hood needs method='FEM' and a quadratic mesh.",
     )
     penalty_parameter: float = parameter(
         1.0e8,
         description="Penalty parameter gamma of the penalty formulation, p = −γ ∇·v. Default 1e8, large enough for the velocity to be divergence-free to about 1e-8 of its gradient in non-dimensional problems.",
     )
-    #: The pressure variable of the pressure and Taylor_Hood formulations.
+    #: The pressure variable of the pressure and Taylor-Hood formulations.
     pressure: ClassVar[str] = "pressure"
-    stabilization: bool | None = parameter(
-        None,
-        description="Pressure stabilisation of the mass equation of the pressure formulation. Default: on, which the equal-order interpolation needs.",
-    )
-    streamline_stabilization: bool | None = parameter(
-        None,
-        description="Streamline stabilisation (SUPG) of the momentum equations of the pressure formulation. Default: on when density > 0 and the advection scheme is central.",
-    )
     body_force: Sequence[float | str] | None = parameter(
         None,
         unit="N/m^3",
         description="Body force per unit volume, one value per component, each a constant or an expression of (x, y, z, t). It enters the momentum equations and their streamline stabilisation. Default none.",
-    )
-    pressure_pin_point: Sequence[float] | None = parameter(
-        None,
-        unit="m",
-        description="A point where the pressure is held at zero, which an enclosed flow needs because its pressure is otherwise determined up to a constant. Default none.",
     )
     mass_flux_boundaries: Sequence[str] | None = parameter(
         None,
@@ -1928,7 +1915,7 @@ class FluidDynamics(Physics):
     )
     time_integration: str = parameter(
         "monolithic",
-        description="How a transient solve advances the flow: monolithic (the default: Newton's method on the velocity and the pressure together, with the theta method of solve_transient) or projection (the splitting of Nek5000 and nekRS: a pressure Poisson equation, then one Helmholtz equation per velocity component, with BDFk and EXTk of order time_order). The projection needs formulation='pressure' and method 'FEM', 'DMCDM' or 'HFVM'.",
+        description="How a transient solve advances the flow: monolithic (the default: Newton's method on the velocity and the pressure together, with the theta method of solve_transient) or projection (the splitting of Nek5000 and nekRS: a pressure Poisson equation, then one Helmholtz equation per velocity component, with BDFk and EXTk of order time_order). The projection needs formulation='pressure' and method 'FEM' or 'DMCDM'.",
     )
     time_order: int = parameter(
         2,
@@ -1959,25 +1946,10 @@ class FluidDynamics(Physics):
             raise InputError(
                 f"fluid_dynamics: unknown formulation '{self.formulation}'. Use {', '.join(FLOW_FORMULATIONS)}."
             )
-        if self.formulation == "Taylor_Hood":
-            if self.stabilization:
-                raise InputError(
-                    "fluid_dynamics: the Taylor-Hood element is stable without pressure stabilisation, so leave 'stabilization' unset."
-                )
-            if self.streamline_stabilization:
-                raise InputError(
-                    "fluid_dynamics: streamline stabilisation is not available with the Taylor-Hood element, whose momentum residual omits the viscous term of the quadratic velocity. Use a finer mesh, or formulation='pressure'."
-                )
-        elif self.formulation == "penalty" and (
-            self.stabilization or self.streamline_stabilization
-        ):
-            raise InputError(
-                "fluid_dynamics: 'stabilization' and 'streamline_stabilization' apply to the pressure formulations only."
-            )
 
     @property
     def _pressure_formulation(self) -> bool:
-        return self.formulation in ("pressure", "Taylor_Hood")
+        return self.formulation in ("pressure", "Taylor-Hood")
 
     @property
     def velocities(self) -> list[str]:
@@ -2020,11 +1992,11 @@ class FluidDynamics(Physics):
         return len(self.velocities)
 
     def _variable_order(self) -> dict:
-        return {self.pressure: "first"} if self.formulation == "Taylor_Hood" else {}
+        return {self.pressure: "first"} if self.formulation == "Taylor-Hood" else {}
 
     def _attach(self, problem) -> None:
         self._resolve(problem.coordinates, problem.mesh.dimension)
-        if self.formulation == "Taylor_Hood":
+        if self.formulation == "Taylor-Hood":
             if problem.method != "FEM":
                 raise InputError(
                     f"{label(self.type_name, self.name)}: the Taylor-Hood element needs the finite element method, dm.Problem(mesh, method='FEM'). The other methods use formulation='pressure'."
@@ -2038,22 +2010,10 @@ class FluidDynamics(Physics):
     def _build(self, problem) -> None:
         velocities, restrict = list(self.velocities), self._restriction()
         existing = set(problem._problem.object_names())
-        taylor_hood = self.formulation == "Taylor_Hood"
-        stabilization = (
-            False if taylor_hood else (True if self.stabilization is None else self.stabilization)
-        )
-        # The advection of the momentum: the streamline stabilisation for the methods of the
-        # elements and of the dual mesh, and the bounded second-order face flux (limited) for the
-        # cell-centred method, which measured the closer to the reference on the cavity at
-        # Re = 100 and 1000, the Kovasznay flow and natural convection (24 October 2026).
-        # streamline_stabilization=True keeps the central form with SUPG on ZFVM as well.
-        cells = problem.method == "ZFVM"
-        supg = self.streamline_stabilization
-        if supg is None:
-            supg = (
-                self._pressure_formulation and stabilization and self.density != 0.0 and not cells
-            )
-        advection_scheme = "limited" if cells and not supg else "central"
+        # The equal-order pressure needs the pressure stabilisation of the mass equation, and the
+        # inertia takes the streamline stabilisation (SUPG). The Taylor-Hood element needs neither.
+        stabilization = self.formulation == "pressure"
+        supg = stabilization and self.density != 0.0
         force = (
             [f if isinstance(f, str) else float(f) for f in self.body_force]
             if self.body_force is not None
@@ -2098,7 +2058,6 @@ class FluidDynamics(Physics):
                     variable=variable,
                     velocities=velocities,
                     density=self.density,
-                    advection_scheme=advection_scheme,
                     **restrict,
                 )
             if force[component] != 0.0:
@@ -2138,13 +2097,6 @@ class FluidDynamics(Physics):
                     variable=self.pressure,
                     velocities=velocities,
                 )
-            if self.pressure_pin_point is not None:
-                problem.add_boundary_condition(
-                    "point_Dirichlet",
-                    variable=self.pressure,
-                    point=[float(c) for c in self.pressure_pin_point],
-                    value=0.0,
-                )
         else:
             problem.add_property("penalty_pressure", velocities=velocities, **restrict)
         if self.time_integration == "projection":
@@ -2168,7 +2120,7 @@ class FluidDynamics(Physics):
 
         if not self._pressure_formulation:
             raise InputError(
-                f"{label(self.type_name, self.name)}: manufactured solutions need formulation='pressure' or 'Taylor_Hood', which keep the pressure as a variable."
+                f"{label(self.type_name, self.name)}: manufactured solutions need formulation='pressure' or 'Taylor-Hood', which keep the pressure as a variable."
             )
         x = _symbols()[0]
         u = [fields[v] for v in self.velocities]
@@ -2304,16 +2256,10 @@ class NonisothermalFlow(Coupling):
     def _build(self, problem) -> None:
         heat, flow = self.heat_transfer, self.fluid_dynamics
         restrict = flow._restriction()
-        # The heat that the flow carries.  By default the streamline stabilisation (SUPG) for the
-        # methods of the elements and of the dual mesh, and the bounded second-order face flux
-        # (limited) for the cell-centred method, which measured the closest on the boundary layer,
-        # the skew jump and natural convection (24 October 2026).
-        cells = problem.method == "ZFVM"
-        scheme = heat.advection_scheme or ("limited" if cells else "SUPG")
-        if scheme == "SUPG" and cells:
-            raise InputError(
-                "heat_transfer: advection_scheme 'SUPG' is the streamline stabilisation of FEM, DMCDM and HFVM, and this problem uses ZFVM, whose schemes are 'limited' (the default), 'linear_upwind', 'upwind' and 'central'."
-            )
+        # The heat that the flow carries: by default the streamline stabilisation (SUPG), which
+        # measured the closest on the boundary layer, the skew jump and natural convection
+        # (24 October 2026).
+        scheme = heat.advection_scheme or "SUPG"
         problem.add_kernel(
             "heat_convection",
             variable=heat.temperature,

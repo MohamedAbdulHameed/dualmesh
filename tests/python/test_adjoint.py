@@ -10,7 +10,7 @@ import dualmesh as dm
 import pytest
 from dualmesh._core import InputError
 
-METHODS = ("fem", "dmcdm", "hfvm", "zfvm")
+METHODS = ("fem", "dmcdm")
 
 
 def heat_problem(method="fem", nonlinear=False):

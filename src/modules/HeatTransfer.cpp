@@ -150,7 +150,6 @@ public:
     _cp = getFunction(problem, "specific_heat");
     _scheme = advectionScheme(problem, _scheme_text, name());
     _mass = _face_flux ? massConservationKernel(problem) : nullptr;
-    _cells = problem.isCellCentered();
   }
   // The term is the source rho c_p v . grad T, or with an advection scheme of a control volume
   // method a face flux with the face value T_f that the scheme takes from the two sides: the
@@ -171,7 +170,7 @@ public:
   {
     if (!_face_flux)
       return false;
-    const ADVector3 w = advectingVelocity(ctx, _mass, _cells, _v);
+    const ADVector3 w = advectingVelocity(ctx, _mass, _v);
     velocity = 0.0;
     for (std::size_t d = 0; d < _v.size(); ++d)
       velocity += w[d].value() * ctx.normal[d];
@@ -179,7 +178,7 @@ public:
   }
   void computeFlux(const QpContext & ctx, ADVector3 & F) const override
   {
-    const ADVector3 w = advectingVelocity(ctx, _mass, _cells, _v);
+    const ADVector3 w = advectingVelocity(ctx, _mass, _v);
     double velocity = 0.0;
     for (std::size_t d = 0; d < _v.size(); ++d)
       velocity += w[d].value() * ctx.normal[d];
@@ -206,7 +205,6 @@ private:
   AdvectionScheme _scheme = AdvectionScheme::Central;
   /// The mass equation whose conserved velocity a face flux carries, or nullptr.
   const Kernel * _mass = nullptr;
-  bool _cells = false;
 };
 
 /// The streamline upwind Petrov-Galerkin stabilisation of the heat that a flow carries (Brooks
@@ -229,8 +227,8 @@ public:
         "the factor 9 of MOOSE), the last term in a transient solve. Without the conduction term the residual of the exact "
         "solution is k Laplacian(T), not zero, so the stabilisation adds an error of the order of "
         "tau k |Laplacian(T)|: small where convection dominates, where tau is about h / (2 |v|), "
-        "and zero for a harmonic temperature. For FEM, DMCDM and HFVM, at the dual faces for the "
-        "last two, as momentum_stabilization is.");
+        "and zero for a harmonic temperature. For FEM and DMCDM, at the dual faces for DMCDM, as "
+        "momentum_stabilization is.");
     p.addRequired("velocities",
                   ParameterKind::StringList,
                   "Names of the velocity variables, one per mesh dimension, in coordinate order.");
@@ -252,10 +250,6 @@ public:
   void initialSetup(Problem & problem) override
   {
     Kernel::initialSetup(problem);
-    if (problem.method() == Method::FiniteVolumeCell)
-      throw InputError("heat_streamline_stabilization '" + name() +
-                       "' is for FEM, DMCDM and HFVM. The cell-centred method ZFVM takes the "
-                       "limited face scheme of heat_convection instead.");
     _v.clear();
     for (const auto & n : _params.getStringList("velocities"))
       _v.push_back(problem.variableIndex(n));

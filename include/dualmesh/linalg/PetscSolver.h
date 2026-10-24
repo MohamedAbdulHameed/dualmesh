@@ -21,7 +21,7 @@
 // process.  The default, when no options are given, is GMRES with a direct
 // factorisation (LU in serial, MUMPS in parallel when PETSc has it), because
 // that is the robust choice for the non-symmetric and saddle-point matrices
-// the dual mesh, finite volume and pressure-velocity discretisations produce.
+// the dual mesh and pressure-velocity discretisations produce.
 #pragma once
 
 #include "dualmesh/core/Types.h"

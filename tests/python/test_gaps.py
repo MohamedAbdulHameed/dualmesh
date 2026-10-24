@@ -27,8 +27,8 @@ from dualmesh.materials import gas
 from scipy.optimize import brentq
 from test_jacobian import compare, finite_difference_jacobian
 
-METHODS = ["fem", "dmcdm", "hfvm", "zfvm"]
-VERTEX_METHODS = ["fem", "dmcdm", "hfvm"]
+METHODS = ["fem", "dmcdm"]
+VERTEX_METHODS = ["fem", "dmcdm"]
 
 # The inner slab is 0 < x < A, the gap A < x < B, the outer slab B < x < C.
 A, B, C = 1.0e-2, 1.005e-2, 2.0e-2
@@ -178,17 +178,6 @@ def test_a_given_conductance_is_exact_on_matching_meshes_with_the_vertex_methods
     for num_x in (2, 4) if dimension == 3 else (4, 8):
         problem = given_conductance_problem(two_slabs(dimension, num_x, 2, 2), method)
         assert given_conductance_error(problem) < 1e-9
-
-
-@pytest.mark.parametrize("dimension", [1, 2])
-def test_a_given_conductance_converges_at_second_order_with_the_cell_centred_method(dimension):
-    errors = [
-        given_conductance_error(
-            given_conductance_problem(two_slabs(dimension, num_x, 2, 2), "zfvm")
-        )
-        for num_x in (4, 8, 16, 32)
-    ]
-    assert convergence_rates(errors).min() > 1.9
 
 
 @pytest.mark.parametrize("dimension", [2, 3])

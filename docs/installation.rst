@@ -54,7 +54,7 @@ Optional: MPI and PETSc
 The distributed solver needs MPI and PETSc: it communicates through PETSc's
 star forests and solves with PETSc's Krylov methods and preconditioners, so a
 build with MPI always uses PETSc.  A serial build may use PETSc too, for
-``linear_solver="petsc"``.  With conda the packages are ``openmpi`` and
+``linear_solver="PETSc"``.  With conda the packages are ``openmpi`` and
 ``petsc`` from conda-forge (PETSc there includes hypre and MUMPS); on Debian or
 Ubuntu they are ``libopenmpi-dev`` and ``libpetsc-real-dev``.  PETSc is located
 with ``pkg-config``, so a PETSc built from source is found by adding

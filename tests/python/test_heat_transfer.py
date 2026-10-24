@@ -202,7 +202,7 @@ def bus_bar_like_problem(conductivity_polynomial=(1.0,)):
     mesh = dm.generate_rectangle_mesh(
         x_min=0.0, x_max=0.2, y_min=0.0, y_max=0.1, num_x_elements=8, num_y_elements=8
     )
-    problem = dm.Problem(mesh)
+    problem = dm.Problem(mesh, method="DMCDM")
     problem.add_variable("temperature", initial_condition=0.0)
     problem.add_kernel(
         "heat_conduction",
@@ -262,7 +262,7 @@ def bus_bar(nx, ny, conductivity_polynomial=(1.0,), conductivity=20.0):
     mesh = dm.generate_rectangle_mesh(
         x_min=0.0, x_max=0.1, y_min=0.0, y_max=0.05, num_x_elements=nx, num_y_elements=ny
     )
-    problem = dm.Problem(mesh)
+    problem = dm.Problem(mesh, method="DMCDM")
     problem.add_variable("temperature")
     problem.add_kernel(
         "heat_conduction",
@@ -350,7 +350,7 @@ def test_example_5_4_4_advection_diffusion(peclet, num_elements, x_values, expec
         num_x_elements=num_elements,
         num_y_elements=num_elements,
     )
-    problem = dm.Problem(mesh)
+    problem = dm.Problem(mesh, method="DMCDM")
     problem.add_variable("u")
     problem.add_kernel("diffusion", variable="u", diffusivity=1.0 / peclet)
     problem.add_kernel(

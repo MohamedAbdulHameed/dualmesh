@@ -76,7 +76,7 @@ equilibrium equations.
         (
             "Structural members: beams and plates",
             {
-                "beam_Euler_Bernoulli_mixed",
+                "beam_Euler-Bernoulli_mixed",
                 "beam_Timoshenko_displacement",
                 "beam_Timoshenko_mixed",
                 "circular_plate_first_order",

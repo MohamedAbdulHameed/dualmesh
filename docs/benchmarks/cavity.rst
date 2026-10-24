@@ -24,13 +24,12 @@ The setup
    import dualmesh as dm
 
    mesh = dm.generate_rectangle_mesh(0, 1, 0, 1, 128, 128)
-   problem = dm.Problem(mesh, method="dmcdm")  # fem, hfvm, zfvm
+   problem = dm.Problem(mesh, method="DMCDM")  # or FEM
    flow = problem.add_physics(
        "fluid_dynamics",
        dynamic_viscosity=1.0,
        density=1000.0,
        formulation="pressure",
-       pressure_pin_point=(0.5, 0.0),
    )
    flow.add_boundary_condition(["velocity_x = 1", "velocity_y = 0"], boundary="top", scale_with_load=True)
    # added last, so that the top corners belong to the walls
@@ -38,7 +37,7 @@ The setup
    problem.solve(load_factors=list(np.linspace(0.1, 1.0, 10)))
 
 Newton's method reaches the steady state with the lid speed raised in ten load
-steps.  The Taylor-Hood element takes ``formulation="Taylor_Hood"`` on ``Quad9``
+steps.  The Taylor-Hood element takes ``formulation="Taylor-Hood"`` on ``Quad9``
 elements, half as many per side.  The projection time integration
 (``time_integration="projection"``) marches the flow from rest on the
 :math:`64 \times 64` mesh at a Courant number of one half until the velocity
@@ -71,18 +70,6 @@ Results
      - 0.0015
      - 0.0116
      - 0.0030
-   * - HFVM
-     - 0.0491
-     - 0.0122
-     - 0.0027
-     - 0.0138
-     - 0.0037
-   * - ZFVM
-     - (none)
-     - 0.0576
-     - 0.0148
-     - 0.0465
-     - 0.0150
    * - FEM, Taylor-Hood
      - 0.0251
      - 0.0052
@@ -101,26 +88,19 @@ Results
      -
      - 0.0128
      -
-   * - HFVM, projection
      -
      - 0.0193
      -
      - 0.0196
      -
 
-The three node methods converge to the reference at second order: the
+Both methods converge to the reference at second order: the
 difference falls by a factor of 3.6 to 5.0 from :math:`n = 32` to 64 and from 64
 to 128, and is below 0.004 on the :math:`128 \times 128` mesh.  The quadratic
 velocity of the Taylor-Hood element is 1.3 to 2.3 times closer on the same
 number of nodes.  The differences of the stabilized methods are about half of
 those before the parameter :math:`\tau` took the factor 9 on its viscous term
-(:doc:`../theory/heat_and_fluids`): DMCDM had 0.0741, 0.0198 and 0.0062.  The
-cell-centered method has no converged solution on :math:`32 \times 32` cells:
-Newton's method diverges with ten load steps (at the load factor 0.8).  On finer
-meshes it converges to the reference, about seven times farther from it than
-the node methods.  On :math:`256 \times 256` cells its Newton iterations with the
-serial direct solver take more than the ten minutes allowed to one run on the
-development laptop, and that mesh is left out.
+(:doc:`../theory/heat_and_fluids`): DMCDM had 0.0741, 0.0198 and 0.0062.
 
 The projection time integration reaches a steady state about as close to the
 reference as the monolithic solution for the finite element method, and farther

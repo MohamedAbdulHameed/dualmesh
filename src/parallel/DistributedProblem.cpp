@@ -27,104 +27,11 @@
 namespace dualmesh
 {
 
-namespace
-{
-/// For every local cell of a distributed mesh, given by its global element number @p ids: the sides that are faces of the boundary of the domain (bit s for side s), and the number of such faces of all elements with smaller numbers.
-/// Only the process that integrates a cell (@p integrated) sees all its neighbors and so knows its boundary faces (@p mask); every copy of the cell receives that process's answer.
-/// The offsets follow the global element numbers, so they do not depend on the partition.
-/// Returns the total number of boundary faces.
-Index
-boundaryFaceOffsets(const Communicator & comm,
-                    const std::vector<Index> & ids,
-                    Index integrated,
-                    std::vector<Index> & mask,
-                    std::vector<Index> & offset)
-{
-  const std::size_t n = ids.size();
-  const auto faces = [](Index m)
-  {
-    Index count = 0;
-    for (; m; m &= m - 1)
-      ++count;
-    return count;
-  };
-  offset.assign(n, 0);
-#ifdef DUALMESH_HAVE_PETSC
-  // Each element number has a home process in an even layout of the numbers; the integrating process tells the home the sides, the homes number the faces in the order of the element numbers, and every copy of a cell learns the answer from its home.
-  petsc::initialize();
-  Index largest = -1;
-  for (Index g : ids)
-    largest = std::max(largest, g);
-  PetscLayout layout;
-  DM_PETSC(PetscLayoutCreate(PETSC_COMM_WORLD, &layout));
-  DM_PETSC(PetscLayoutSetSize(layout, static_cast<PetscInt>(comm.max(largest) + 1)));
-  DM_PETSC(PetscLayoutSetUp(layout));
-  PetscInt home_count = 0;
-  DM_PETSC(PetscLayoutGetLocalSize(layout, &home_count));
-  PetscSF home;
-  DM_PETSC(PetscSFCreate(PETSC_COMM_WORLD, &home));
-  std::vector<PetscInt> remote(ids.begin(), ids.end());
-  DM_PETSC(PetscSFSetGraphLayout(
-      home, layout, static_cast<PetscInt>(n), nullptr, PETSC_COPY_VALUES, remote.data()));
-  DM_PETSC(PetscLayoutDestroy(&layout));
-  std::vector<PetscInt> leaf(n, 0), root(static_cast<std::size_t>(home_count), 0);
-  for (std::size_t c = 0; c < n; ++c)
-    leaf[c] = static_cast<Index>(c) < integrated ? static_cast<PetscInt>(mask[c]) : 0;
-  DM_PETSC(PetscSFReduceBegin(home, MPIU_INT, leaf.data(), root.data(), MPI_SUM));
-  DM_PETSC(PetscSFReduceEnd(home, MPIU_INT, leaf.data(), root.data(), MPI_SUM));
-  DM_PETSC(PetscSFBcastBegin(home, MPIU_INT, root.data(), leaf.data(), MPI_REPLACE));
-  DM_PETSC(PetscSFBcastEnd(home, MPIU_INT, root.data(), leaf.data(), MPI_REPLACE));
-  for (std::size_t c = 0; c < n; ++c)
-    mask[c] = leaf[c];
-  Index running = 0;
-  for (auto & r : root)
-  {
-    const Index count = faces(r);
-    r = static_cast<PetscInt>(running);
-    running += count;
-  }
-  const std::vector<Index> totals = comm.allGather(running);
-  Index before = 0, total = 0;
-  for (int r = 0; r < comm.size(); ++r)
-  {
-    if (r < comm.rank())
-      before += totals[r];
-    total += totals[r];
-  }
-  for (auto & r : root)
-    r += static_cast<PetscInt>(before);
-  DM_PETSC(PetscSFBcastBegin(home, MPIU_INT, root.data(), leaf.data(), MPI_REPLACE));
-  DM_PETSC(PetscSFBcastEnd(home, MPIU_INT, root.data(), leaf.data(), MPI_REPLACE));
-  DM_PETSC(PetscSFDestroy(&home));
-  for (std::size_t c = 0; c < n; ++c)
-    offset[c] = leaf[c];
-  return total;
-#else
-  // Without MPI one process integrates every cell.
-  (void) comm;
-  (void) integrated;
-  std::map<Index, std::size_t> order;
-  for (std::size_t c = 0; c < n; ++c)
-    order[ids[c]] = c;
-  Index running = 0;
-  for (const auto & [id, c] : order)
-  {
-    offset[c] = running;
-    running += faces(mask[c]);
-  }
-  return running;
-#endif
-}
-} // namespace
-
 DistributedProblem::DistributedProblem(const Mesh & global_mesh,
                                        Method method,
                                        CoordinateSystem coord,
                                        const DistributedOptions & options)
-    : DistributedProblem(distributeMesh(global_mesh,
-                                        Communicator::world(),
-                                        options.partitioner,
-                                        method == Method::FiniteVolumeCell ? 2 : 0),
+    : DistributedProblem(distributeMesh(global_mesh, Communicator::world(), options.partitioner),
                          method,
                          coord,
                          options)
@@ -140,20 +47,10 @@ DistributedProblem::DistributedProblem(LocalMesh part,
   if (!part.mesh || part.global_nodes.size() != static_cast<std::size_t>(part.mesh->numNodes()))
     throw InputError("The part of the mesh given to the distributed solver needs one global node "
                      "index per local node.");
-  // The cell-centered method integrates the faces of its cells, and the flux through a face between two parts needs the gradients of the cells on both sides, which are reconstructed from their neighbors: so every part needs the cells of other parts up to two layers away.
-  _cell_centered = method == Method::FiniteVolumeCell;
-  if (_cell_centered && _comm.any(part.ghost_layers < 2) && _comm.size() > 1)
-    throw InputError("The cell-centered finite volume method (zfvm) needs two layers of ghost "
-                     "cells around every part of a distributed mesh: build the parts with "
-                     "distributeMesh(mesh, comm, partitioner, 2).");
-  if (part.num_ghost_elements > 0 &&
-      part.global_elements.size() != static_cast<std::size_t>(part.mesh->numElements()))
-    throw InputError("A part of a mesh with ghost elements needs the global number of every "
-                     "element.");
   _mesh = std::move(part.mesh);
   _local_to_global = std::move(part.global_nodes);
   _global_elements = std::move(part.global_elements);
-  _num_owned_elements = _mesh->numElements() - part.num_ghost_elements;
+  _num_owned_elements = _mesh->numElements();
   Index largest = -1;
   for (Index g : _local_to_global)
     largest = std::max(largest, g);
@@ -162,23 +59,13 @@ DistributedProblem::DistributedProblem(LocalMesh part,
   _most_elements = _comm.max(_num_owned_elements);
 
   // The gather-scatter finds, from the global node numbers alone, which ranks share each node and which rank owns it.
-  // The unknowns of the cell-centered method sit at cells and faces instead, which are numbered once the cells are known (numberCellEntities).
-  if (!_cell_centered)
-  {
-    _gs.setup(_comm, _local_to_global, GatherScatter::library(_options.gather_scatter));
-    _owned_node.assign(_local_to_global.size(), 0);
-    for (std::size_t i = 0; i < _local_to_global.size(); ++i)
-      _owned_node[i] = _gs.owns(static_cast<Index>(i)) ? 1 : 0;
-    completeBoundaryNodes();
-    _owns_node = _owned_node;
-  }
+  shareNodes();
+  completeBoundaryNodes();
 
   _local = std::make_unique<Problem>(_mesh, method, coord);
   // The local problem's drivers solve the whole problem through this object.
   _local->setParallel(this);
   _local->setConstraintsHandledOutside(true);
-  if (part.num_ghost_elements > 0)
-    _local->setGhostElements(_num_owned_elements);
   // The local mesh holds only part of each side set, so a quantity defined by the measure of a whole side set (the total_force of a traction) takes the sum over the ranks.
   std::map<std::string, double> measures;
   for (const auto & [name, sides] : _mesh->sidesets())
@@ -237,7 +124,7 @@ DistributedProblem::fetchInterfaceGhosts()
   if (_global_elements.size() != static_cast<std::size_t>(_mesh->numElements()))
     throw InputError("An interface condition in a distributed problem needs the global numbers "
                      "of the elements of every part of the mesh.");
-  // The elements fetched here follow those of the part and its ghost layers.
+  // The elements fetched here follow those of the part.
   const Index first_ghost = _mesh->numElements();
   std::unordered_map<Index, Index> local_element, local_node;
   for (Index e = 0; e < first_ghost; ++e)
@@ -321,61 +208,13 @@ DistributedProblem::fetchInterfaceGhosts()
     return;
   // The ghost elements are read, not integrated, and their nodes are copies of nodes of other ranks.
   _local->setGhostElements(_num_owned_elements);
-  if (_cell_centered)
-    return;
-  _gs.setup(_comm, _local_to_global, GatherScatter::library(_options.gather_scatter));
-  _owned_node.assign(_local_to_global.size(), 0);
-  for (std::size_t i = 0; i < _local_to_global.size(); ++i)
-    _owned_node[i] = _gs.owns(static_cast<Index>(i)) ? 1 : 0;
-  _owns_node = _owned_node;
+  shareNodes();
 }
 
 void
-DistributedProblem::numberCellEntities()
+DistributedProblem::shareNodes()
 {
-  // The unknowns of the cell-centered method sit at the cells and at the faces of the boundary of the domain.
-  // A cell is numbered by its element; the faces follow all cells, in the order of the elements they belong to and of their sides, as in a serial problem, so that the numbering does not depend on the partition.
-  // The outer faces of the outermost ghost cells are no faces of the mesh: only this process has them, and they get no number.
-  const CellMesh & cm = _local->cellMesh();
-  const Index cells = cm.numCells();
-  std::vector<Index> element_ids = _global_elements;
-  if (element_ids.empty())
-    for (Index c = 0; c < cells; ++c)
-      element_ids.push_back(c);
-  std::vector<Index> mask(static_cast<std::size_t>(cells), 0), offset;
-  for (Index c = 0; c < _num_owned_elements; ++c)
-    for (int fi : cm.cellFaces(c))
-      if (cm.faces()[fi].neighbor < 0)
-        mask[c] |= Index(1) << cm.faces()[fi].side.second;
-  const Index boundary_faces =
-      boundaryFaceOffsets(_comm, element_ids, _num_owned_elements, mask, offset);
-  Index largest = -1;
-  for (Index g : element_ids)
-    largest = std::max(largest, g);
-  const Index num_elements = _comm.max(largest) + 1;
-  _local_to_global.assign(static_cast<std::size_t>(cm.numEntities()), -1);
-  std::vector<char> claims(static_cast<std::size_t>(cm.numEntities()), 0);
-  for (Index c = 0; c < cells; ++c)
-  {
-    _local_to_global[c] = element_ids[c];
-    claims[c] = c < _num_owned_elements ? 1 : 0;
-  }
-  for (Index b = cells; b < cm.numEntities(); ++b)
-  {
-    const CellFace & f = cm.faces()[cm.faceOfBoundaryEntity(b)];
-    const int side = f.side.second;
-    const Index sides = mask[f.owner];
-    if (!((sides >> side) & 1))
-      continue;
-    Index before = 0;
-    for (Index m = sides & ((Index(1) << side) - 1); m; m &= m - 1)
-      ++before;
-    _local_to_global[b] = num_elements + offset[f.owner] + before;
-    claims[b] = f.owner < _num_owned_elements ? 1 : 0;
-  }
-  _num_global_nodes = num_elements + boundary_faces;
-  // The process that integrates a cell owns it and its boundary faces.
-  _gs.setup(_comm, _local_to_global, GatherScatter::library(_options.gather_scatter), claims);
+  _gs.setup(_comm, _local_to_global, GatherScatter::library(_options.gather_scatter));
   _owned_node.assign(_local_to_global.size(), 0);
   for (std::size_t i = 0; i < _local_to_global.size(); ++i)
     _owned_node[i] = _gs.owns(static_cast<Index>(i)) ? 1 : 0;
@@ -407,10 +246,10 @@ DistributedProblem::joinConstraints()
     {
       std::vector<Index> ids;
       std::vector<double> xyz;
-      for (Index n : _local->boundaryEntities(boundary))
+      for (Index n : _local->mesh().boundaryNodes(boundary))
       {
         ids.push_back(_local_to_global[n]);
-        const Point & x = _local->entityPoint(n);
+        const Point & x = _local->mesh().node(n);
         xyz.insert(xyz.end(), x.begin(), x.end());
       }
       const auto all_ids = _comm.allGather(ids);
@@ -499,7 +338,7 @@ void
 DistributedProblem::agreePrescribedValues()
 {
   _prescribed_elsewhere.clear();
-  if (_local->constraints().empty() && !_has_ghosts && !_cell_centered)
+  if (_local->constraints().empty() && !_has_ghosts)
     return;
   // A prescribed value on one node of a group of joined nodes binds every copy, on every rank.
   const auto fixed = localPrescribed();
@@ -540,11 +379,7 @@ DistributedProblem::prepare()
   if (_prepared)
     return;
   fetchInterfaceGhosts();
-  if (_cell_centered && !_global_elements.empty())
-    _local->setGlobalElementNumbers(_global_elements);
   _local->initialize();
-  if (_cell_centered)
-    numberCellEntities();
   joinConstraints();
   // A degree of freedom that no local element touches may still be touched by
   // an element on another rank, so the mask of active degrees of freedom has
@@ -559,12 +394,7 @@ DistributedProblem::prepare()
   _local->overrideActiveDofs(global_active);
   // Concentrated loads are attached to a node, not to an element, so only the
   // owning rank may apply them.
-  const int nv = _local->numVariables();
-  std::vector<char> owned_entities(_local->numEntities(), 1);
-  for (Index i = 0; i < _local->numEntities(); ++i)
-    owned_entities[i] = _owns_node[i];
-  _local->setOwnedEntities(owned_entities);
-  (void) nv;
+  _local->setOwnedNodes(_owns_node);
   // A concentrated load given by coordinates is resolved to the nearest node,
   // and each process only sees its own part of the mesh, so every one of them
   // would find a nearest node of its own.  The process whose node is globally
@@ -625,7 +455,7 @@ DistributedProblem::prepare()
       _first_owned_dof += owned[r];
     Vector number = Vector::Zero(_local->numDofs());
     Index next = _first_owned_dof;
-    for (Index i = 0; i < _local->numEntities(); ++i)
+    for (Index i = 0; i < _local->mesh().numNodes(); ++i)
       if (_owned_node[i])
         for (int k = 0; k < _local->numVariables(); ++k)
           number[_local->dof(i, k)] = static_cast<double>(next++);
@@ -633,11 +463,6 @@ DistributedProblem::prepare()
     _global_dof.resize(_local->numDofs());
     for (Index i = 0; i < _local->numDofs(); ++i)
       _global_dof[i] = static_cast<Index>(std::llround(number[i]));
-    // An entity that only this process has is in no system.
-    for (Index i = 0; i < _local->numEntities(); ++i)
-      if (_local_to_global[i] < 0)
-        for (int k = 0; k < _local->numVariables(); ++k)
-          _global_dof[_local->dof(i, k)] = -1;
   }
   // The same numbering of the entities, for systems with one unknown per entity.
   {
@@ -650,16 +475,15 @@ DistributedProblem::prepare()
         _first_owned_entity += owned[r];
       _num_global_entities += owned[r];
     }
-    std::vector<double> number(static_cast<std::size_t>(_local->numEntities()), 0.0);
+    std::vector<double> number(static_cast<std::size_t>(_local->mesh().numNodes()), 0.0);
     Index next = _first_owned_entity;
-    for (Index i = 0; i < _local->numEntities(); ++i)
+    for (Index i = 0; i < _local->mesh().numNodes(); ++i)
       if (_owned_node[i])
         number[i] = static_cast<double>(next++);
     _gs.copyFromOwners(number.data(), 1);
     _global_entity.resize(number.size());
     for (std::size_t i = 0; i < number.size(); ++i)
-      _global_entity[i] =
-          _local_to_global[i] < 0 ? -1 : static_cast<Index>(std::llround(number[i]));
+      _global_entity[i] = static_cast<Index>(std::llround(number[i]));
   }
   _prepared = true;
 }
@@ -700,17 +524,6 @@ DistributedProblem::copyFromOwners(Vector & v) const
 {
   const int nv = _local->numVariables();
   _gs.copyFromOwners(v.data(), nv);
-  if (!_cell_centered)
-    return;
-  // The outer faces of the outermost ghost cells take the values of their cells, so that every local value lies among the values of the cells.
-  const CellMesh & cm = _local->cellMesh();
-  for (Index b = cm.numCells(); b < cm.numEntities(); ++b)
-    if (_local_to_global[b] < 0)
-    {
-      const Index c = cm.faces()[cm.faceOfBoundaryEntity(b)].owner;
-      for (int k = 0; k < nv; ++k)
-        v[_local->dof(b, k)] = v[_local->dof(c, k)];
-    }
 }
 
 double
@@ -740,7 +553,7 @@ DistributedProblem::globalSystem(const SparseMatrix & A, const Vector & b) const
   const std::vector<char> fixed = _local->constrainedDofs();
   const int nv = _local->numVariables();
   out.owned_dof.assign(static_cast<std::size_t>(_local->numDofs()), 0);
-  for (Index i = 0; i < _local->numEntities(); ++i)
+  for (Index i = 0; i < _local->mesh().numNodes(); ++i)
     if (_owned_node[i])
       for (int k = 0; k < nv; ++k)
         out.owned_dof[_local->dof(i, k)] = 1;
@@ -924,7 +737,7 @@ DistributedProblem::solveLinearSystem(const SparseMatrix & A,
   // rigid body modes, a solid coupled to other physics the split by physics, and any other
   // system algebraic multigrid (hypre BoomerAMG) inside GMRES, which scales with the number of
   // processes; MUMPS when the iteration fails.
-  const bool flow = !_local->isCellCentered() && _local->flowConstraint();
+  const bool flow = _local->flowConstraint();
   if (flow || _local->hasMixedOrder())
   {
     if (flow && !_local->preferDirectSolver(_num_global_dofs))
@@ -1103,7 +916,7 @@ DistributedProblem::summary() const
      << _comm.rank() << " holds " << _num_owned_elements << " elements";
   if (_mesh->numElements() > _num_owned_elements)
     os << " and " << _mesh->numElements() - _num_owned_elements << " ghost elements";
-  os << ", and " << _owned_node.size() << (_cell_centered ? " cells and faces" : " nodes")
+  os << ", and " << _owned_node.size() << " nodes"
      << " of which " << std::count(_owned_node.begin(), _owned_node.end(), 1) << " are owned";
   return os.str();
 }

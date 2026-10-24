@@ -35,7 +35,7 @@ CROSS_SECTIONS = {
 }
 
 
-def criticality(num_elements: int = 40, method: str = "fem") -> float:
+def criticality(num_elements: int = 40, method: str = "FEM") -> float:
     """The effective multiplication factor of the bare core."""
     mesh = dm.generate_rectangle_mesh(
         x_min=0.0,

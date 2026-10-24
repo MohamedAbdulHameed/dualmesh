@@ -60,7 +60,7 @@ loop.
 
 .. code-block:: python
 
-   for method in ("fem", "dmcdm"):
+   for method in ("FEM", "DMCDM"):
        problem = build(method)
        problem.solve(report="none")
        print(method, problem.sample("temperature", [[0.05, 0.0]])[0])
@@ -136,8 +136,7 @@ which format:
 
 ``formats``
    ``vtu`` (a VTK unstructured grid for ParaView and VisIt, the default) or
-   ``csv`` (one row for each node, or for each cell and boundary face of the
-   cell-centred method), or both.
+   ``csv`` (one row for each node), or both.
 
 ``checkpoint_interval``
    A transient study writes a checkpoint every this many accepted steps, and
@@ -190,33 +189,10 @@ files name each column with its unit, and the VTU files give the unit in the
 Location of the unknowns
 ------------------------
 
-Three of the four methods place their unknowns at the mesh nodes, and the fourth
-places them at element and boundary face centroids.  The rest of this chapter
-depends on this distinction.
-
-For ``dmcdm``, ``fem`` and ``hfvm`` there is one unknown per mesh node per
-variable, and ``problem.values("u")[i]`` is the value at ``mesh.points()[i]``.
-
-For ``zfvm`` the unknowns are the *entities* of the cell-centred mesh: first one
-per element, at its centroid, and then one per boundary face, at its centroid.
-There are therefore more unknowns than elements, and their numbering is
-unrelated to the node numbering.
-
-So that post-processing code need not branch on the method, the library exposes
-the positions of the degrees of freedom directly:
-
-.. code-block:: python
-
-   values = problem.values("temperature")  # one number per degree of freedom
-   points = problem.entity_points()  # (num_dofs, 3), the same order
-
-``points[i]`` is the position of ``values[i]`` for every method.  Code written
-against :meth:`~dualmesh.Problem.entity_points` works unchanged for all four
-discretisations, and code written against ``mesh.points()`` silently gives the
-wrong answer for ``zfvm``.  Use ``entity_points``.
-
-:attr:`~dualmesh.Problem.is_cell_centered` reports whether the method is
-cell-centred, for code that must distinguish the two cases.
+Both methods place their unknowns at the mesh nodes: there is one unknown per
+mesh node per variable, and ``problem.values("u")[i]`` is the value at
+``mesh.points()[i]``, which :meth:`~dualmesh.Problem.entity_points` also
+returns.
 
 Reading values out
 ------------------
@@ -231,10 +207,7 @@ Reading values out
 :meth:`~dualmesh.Problem.sample` interpolates at arbitrary points, as required
 for a comparison with a published table or for a plot along a line.  It
 locates the element containing each point and evaluates the interpolation there,
-returning ``nan`` for a point outside the mesh.  For the cell-centred method it
-reconstructs linearly from the cell value and the cell gradient, so that the
-sampled field is second-order accurate, while the cell values alone are
-piecewise constant.
+returning ``nan`` for a point outside the mesh.
 
 :meth:`~dualmesh.Problem.node_at` and :meth:`~dualmesh.Problem.nodes_where` find
 node numbers by position and by predicate, so that a boundary condition or a
@@ -340,9 +313,7 @@ that element of the squared difference between the computed gradient and a
 smoother gradient recovered from it [ZienkiewiczZhu1987]_.  It identifies the
 elements that carry most of the error, which is the information that the marking
 rules of :doc:`/theory/adaptivity` require.  It indicates the distribution of the
-error and gives no certified bound on its size.  It is unavailable for the
-cell-centred method, whose unknowns are cell values, and a request for it with
-that method raises an error that states this.
+error and gives no certified bound on its size.
 
 Writing files
 -------------
@@ -356,8 +327,7 @@ Writing files
 
 :meth:`~dualmesh.Problem.write_vtu` writes a VTK unstructured grid file
 containing the mesh, every variable as point data, and any property
-named in ``cell_properties`` as cell data.  For the cell-centred method the
-variables are written as cell data, because they are cell values.  Quadratic
+named in ``cell_properties`` as cell data.  Quadratic
 elements are written as the corresponding quadratic VTK cell types (e.g.,
 ``VTK_TRIANGLE`` becomes ``VTK_QUADRATIC_TRIANGLE``), with the node permutation
 that VTK's triquadratic hexahedron needs, so that a ``Hex27`` mesh is rendered
