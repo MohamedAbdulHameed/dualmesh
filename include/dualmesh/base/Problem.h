@@ -1026,6 +1026,8 @@ private:
   };
   bool _levels_checked = false;
   std::vector<PressureLevel> _levels;
+  /// Whether a kernel reads the Laplacian of the variables (Kernel::needsLaplacian).
+  bool _needs_laplacian = false;
   Vector _U;
   Vector _last_residual;
   double _time = 0.0;

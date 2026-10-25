@@ -728,6 +728,9 @@ Problem::initialize()
   for (const auto & k : _kernels)
     if (k->isTimeKernel())
       _new_time_only[static_cast<std::size_t>(k->variable())] = 0;
+  _needs_laplacian = false;
+  for (const auto & k : _kernels)
+    _needs_laplacian = _needs_laplacian || k->needsLaplacian();
   // The second-order advection schemes of DMCDM take the gradient at the nodes.
   _gradient_offsets.clear();
   if (isDual())
@@ -1092,6 +1095,43 @@ Problem::fillContext(QpContext & ctx,
   {
     ctx.u_lag = ctx.u;
     ctx.grad_u_lag = ctx.grad_u;
+  }
+  // The Laplacian of the variables of a quadratic element, in the coordinates of the problem: the
+  // Cartesian one, plus (c'/c) du/dr, with c the coordinate factor (1/r axisymmetric, 2/r
+  // spherical).  A linear element has none.
+  ctx.laplacian.clear();
+  ctx.laplacian_old.clear();
+  if (_needs_laplacian && ReferenceElement::get(el.type).order() == 2 &&
+      ReferenceElement::get(el.type).dimension() == dim)
+  {
+    double L[kMaxElementNodes];
+    mapLaplacian(*_mesh, el, fp, L);
+    const double r = fp.x[0];
+    const double radial = r > 0.0 ? (_coord == CoordinateSystem::Axisymmetric      ? 1.0 / r
+                                     : _coord == CoordinateSystem::SphericalRadial ? 2.0 / r
+                                                                                   : 0.0)
+                                  : 0.0;
+    ctx.laplacian.assign(nv, ADReal(0.0));
+    ctx.laplacian_old.assign(nv, 0.0);
+    for (int v = 0; v < nv; ++v)
+    {
+      if (_mixed_order && usesCornerShape(el, v))
+        continue;
+      double value = 0.0, old = 0.0;
+      for (int k = 0; k < num_nodes; ++k)
+      {
+        const double c = L[k] + radial * fp.dN[k][0];
+        value += c * cur_local[index(k, v)];
+        if (old_local)
+          old += c * (*old_local)[index(k, v)];
+      }
+      ADReal & lap = ctx.laplacian[v];
+      lap = ADReal::withZeroDerivatives(value, ld);
+      if (ld > 0)
+        for (int k = 0; k < num_nodes; ++k)
+          lap.setDerivative(index(k, v), L[k] + radial * fp.dN[k][0]);
+      ctx.laplacian_old[v] = old_local ? old : value;
+    }
   }
   ctx.u_old.assign(nv, 0.0);
   ctx.grad_u_old.assign(nv, {0, 0, 0});

@@ -143,6 +143,17 @@ Finite volume methods
    Hemisphere Publishing, Washington, DC, 1980.  The finite volume method in
    the form Chapter 3 of [Reddy2024]_ presents it.
 
+.. [JansenCollis1999] K. E. Jansen, S. S. Collis, C. Whiting and F. Shakib, "A
+   better consistency for low-order stabilized finite element methods",
+   *Computer Methods in Applied Mechanics and Engineering*, 174(1–2):153–170,
+   1999.  DOI: 10.1016/S0045-7825(98)00284-9.  The second derivatives of linear
+   elements recovered from the projected gradient.
+
+.. [Codina2002] R. Codina, "Stabilized finite element approximation of
+   transient incompressible flows using orthogonal subscales", *Computer
+   Methods in Applied Mechanics and Engineering*, 191(39–40):4295–4321, 2002.
+   DOI: 10.1016/S0045-7825(02)00337-7.  The orthogonal subscale stabilisation.
+
 .. [Jasak1996] H. Jasak, *Error Analysis and Estimation for the Finite Volume
    Method with Applications to Fluid Flows*, PhD thesis, Imperial College
    London, 1996.  The bounded face schemes in the form of its Eq. (3.66),

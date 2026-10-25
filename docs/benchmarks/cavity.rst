@@ -88,11 +88,6 @@ Results
      -
      - 0.0128
      -
-     -
-     - 0.0193
-     -
-     - 0.0196
-     -
 
 Both methods converge to the reference at second order: the
 difference falls by a factor of 3.6 to 5.0 from :math:`n = 32` to 64 and from 64

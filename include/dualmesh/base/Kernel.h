@@ -106,6 +106,9 @@ public:
   /// limited schemes).  DMCDM then reconstructs it at the nodes from the nodes
   /// around them (Problem::buildNodeGradients), and the flux depends on those nodes too.
   virtual bool needsSideGradients() const { return false; }
+  /// Whether the kernel reads the Laplacian of the variables at its points (QpContext::laplacian),
+  /// which quadratic elements give.
+  virtual bool needsLaplacian() const { return false; }
   /// For the mass equation of a flow: the velocity whose flux it conserves through the faces of
   /// the control volumes, w = v - tau r_m with its stabilisation.  An advective flux of the heat
   /// or the momentum with w conserves them exactly and sees no source from a discrete divergence.

@@ -461,6 +461,17 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- **The stabilised residual is consistent on quadratic elements.** The
+  momentum residual of the PSPG and SUPG terms takes the viscous term
+  - mu Laplacian(v), and the SUPG of the heat the conduction - k Laplacian(T),
+  from the second derivatives of the shape functions (exact for curved
+  elements, with the axisymmetric and spherical terms) and with the exact
+  Jacobian. Poiseuille flow is exact to round-off on Quad9 and Tri6 with both
+  methods. Linear elements, inside which the Laplacian vanishes, keep the
+  standard residual: their measured error on Poiseuille flow falls at second
+  order (1.1e-3 at the nodes on 32 cells across). The remedies measured for them
+  (the recovered Laplacian of Jansen et al. 1999, the orthogonal subscales of
+  Codina 2002) cost more than the refinement that gives the same gain.
 - **The method follows the physics by default.** `Problem(mesh)` takes
   DMCDM when the problem has a `fluid_dynamics` of the pressure formulation,
   and FEM otherwise. `method="FEM"` or `"DMCDM"` chooses one.

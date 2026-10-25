@@ -87,6 +87,11 @@ public:
   {
     return mode == LinearizationMode::Newton ? grad_u[v] : grad_u_lag[v];
   }
+  /// The Laplacian of each variable at the point, in the coordinates of the problem, and of its
+  /// old value: given by quadratic elements when a kernel needs it (Kernel::needsLaplacian), and
+  /// empty otherwise (the Laplacian of a linear element vanishes inside it).
+  std::vector<ADReal> laplacian;
+  std::vector<double> laplacian_old;
   double oldValue(int v) const { return u_old[v]; }
   const Point & oldGradient(int v) const { return grad_u_old[v]; }
 

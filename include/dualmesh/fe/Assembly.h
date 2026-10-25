@@ -59,6 +59,14 @@ void mapPoint(const Mesh & mesh, const Element & el, const Point & xi, MappedPoi
 /// linear element is local node a.
 void mapCornerShape(const Element & el, MappedPoint & mp);
 
+/// The Laplacian of every shape function of @p el at the mapped point @p mp, in @p laplacian, for
+/// an element of the dimension of its space: Hess_x N = A (Hess_xi N - sum_c dN/dx_c Hess_xi x_c)
+/// A^T with A = J^-T, which holds for curved elements too.  The reference Hessians are central
+/// differences of the reference gradients, exact to round-off on the elements up to quadratic
+/// order (a reference gradient is at most quadratic in each reference direction).
+void
+mapLaplacian(const Mesh & mesh, const Element & el, const MappedPoint & mp, double * laplacian);
+
 /// One integration point.
 struct IntegrationPoint
 {

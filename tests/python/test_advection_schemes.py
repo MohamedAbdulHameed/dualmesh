@@ -434,8 +434,8 @@ def test_supg_resolves_a_boundary_layer_without_oscillation():
 def test_supg_is_consistent_and_keeps_second_order_on_a_smooth_solution():
     """T = exp(x) sin(y) carried by v = (1, 0.5) with k = 0.01 and the matching heat source
     q = v . grad T.  T is harmonic, so the residual of the equation that SUPG adds is zero for the
-    exact solution, also without the conduction term that it leaves out, and the error falls at
-    second order as Galerkin's does.  A missing source or a wrong sign would leave a first-order
+    exact solution, also without the conduction term that linear elements leave out, and the error
+    falls at second order as Galerkin's does.  A missing source or a wrong sign would leave a first-order
     term."""
     vx, vy = 1.0, 0.5
     source = f"exp(x)*({vx}*sin(y) + {vy}*cos(y))"
@@ -462,6 +462,40 @@ def test_supg_is_consistent_and_keeps_second_order_on_a_smooth_solution():
         errors.append(np.abs(problem.values("temperature") - exact).max())
     orders = [np.log2(errors[i] / errors[i + 1]) for i in range(2)]
     assert min(orders) > 1.8, errors
+
+
+@pytest.mark.parametrize("method", ["FEM", "DMCDM"])
+@pytest.mark.parametrize("element_type", ["Quad9", "Tri6"])
+def test_supg_of_quadratic_elements_holds_the_conduction(method, element_type):
+    """T = x^2 + y^2 carried by v = (1, 0.5) with k = 0.01 and the matching heat source
+    q = v . grad T - k Laplacian(T).  T is not harmonic, so the residual of SUPG vanishes for it
+    only with the conduction term, which quadratic elements give; they represent T exactly, and the
+    solution is exact (measured 1e-13 at the nodes)."""
+    vx, vy, k = 1.0, 0.5, 0.01
+    mesh = dm.generate_rectangle_mesh(
+        x=[0, 1], y=[0, 1], num_elements=[4, 4], element_type=element_type
+    )
+    problem = dm.Problem(mesh, method=method)
+    flow = problem.add_physics(
+        "fluid_dynamics", density=1.0, dynamic_viscosity=1.0, formulation="pressure"
+    )
+    heat = problem.add_physics(
+        "heat_transfer",
+        thermal_conductivity=k,
+        heat_source=f"2*x*{vx} + 2*y*{vy} - 4*{k}",
+        advection_scheme="SUPG",
+    )
+    problem.add_coupling("nonisothermal_flow", heat_transfer=heat, fluid_dynamics=flow)
+    flow.add_boundary_condition(
+        [f"velocity_x = {vx}", f"velocity_y = {vy}"], boundary=["left", "bottom", "top"]
+    )
+    heat.add_boundary_condition(
+        "temperature = x^2 + y^2", boundary=["left", "right", "bottom", "top"]
+    )
+    problem.solve(report="none")
+    x = mesh.points()
+    error = np.abs(problem.values("temperature") - x[:, 0] ** 2 - x[:, 1] ** 2).max()
+    assert error < 1e-10, error
 
 
 def test_the_supg_residual_holds_a_heat_source_added_as_a_kernel():

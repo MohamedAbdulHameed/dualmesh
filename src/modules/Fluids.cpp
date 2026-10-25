@@ -24,9 +24,10 @@
 // Hughes, Franca and Balestra (1986) and Tezduyar (1991): the mass balance is
 // written as
 //
-//     div [ v - tau r_m ] = 0 ,   r_m = rho (dv/dt + (v . grad) v) + grad p - f ,
+//     div [ v - tau r_m ] = 0 ,   r_m = rho (dv/dt + (v . grad) v) + grad p - mu Laplacian(v) - f ,
 //
-// where r_m is the momentum residual without its viscous part.  In the
+// where r_m is the momentum residual, whose viscous term quadratic elements give and linear ones,
+// inside which it vanishes, leave out.  In the
 // canonical form -div F + S = 0 the mass equation has the flux
 // F = -(v - tau r_m).  For the finite element method this is the Galerkin
 // mass equation plus the PSPG term sum_e (tau r_m, grad q)_e; for the control
@@ -442,9 +443,11 @@ private:
 // The pressure-velocity formulation
 // ---------------------------------------------------------------------------
 
-/// The strong momentum residual without its viscous part,
+/// The strong momentum residual,
 ///
-///   r_m = rho (du/dt + (u . grad) u) + grad p - f ,
+///   r_m = rho (du/dt + (u . grad) u) + grad p - mu Laplacian(u) - f ,
+///
+/// with the viscous term on quadratic elements only (it vanishes inside a linear one),
 ///
 /// and the stabilisation parameter of Tezduyar (1991), written per unit density
 /// so that it also covers a Stokes flow (rho = 0):
@@ -475,6 +478,7 @@ public:
     const int dim = problem.mesh().dimension();
     _v = resolveVelocities(problem, velocities, dim);
     _p = pressure;
+    _axisymmetric = problem.coordinateSystem() == CoordinateSystem::Axisymmetric;
     _rho = _rho_time = _mu = nullptr;
     _forces.assign(static_cast<std::size_t>(dim), {});
     _buoyancy.assign(static_cast<std::size_t>(dim), {});
@@ -570,7 +574,8 @@ public:
     return 1.0 / sqrt(inverse2);
   }
 
-  /// Component i of r_m, the residual of the momentum equation without its viscous term.  In a
+  /// Component i of r_m, the residual of the momentum equation (the viscous term on quadratic
+  /// elements).  In a
   /// step of the theta method it is the residual of the discrete equation: the time difference,
   /// the pressure gradient at the new time (Problem::steadyWeight), and the other terms weighted
   /// by theta at the new time and by 1 - theta at the old one.  It then vanishes for the
@@ -598,11 +603,21 @@ public:
   bool hasTimeTerm() const { return _time_term; }
 
 private:
+  /// The radial component of the vector Laplacian of an axisymmetric flow without swirl is the
+  /// scalar Laplacian of v_r less v_r / r^2: the factor 1 / r^2 for component @p i, zero otherwise.
+  double hoop(const QpContext & ctx, int i) const
+  {
+    return _axisymmetric && i == 0 && ctx.x[0] > 0.0 ? 1.0 / (ctx.x[0] * ctx.x[0]) : 0.0;
+  }
   /// The terms of r_m besides the time difference and the pressure gradient, at the new state:
   /// the inertia, minus the body forces, plus the buoyancy.
   ADReal steadyResidual(const QpContext & ctx, int i) const
   {
     ADReal r(0.0);
+    // The viscous term - mu Laplacian(v_i), which quadratic elements give.  It vanishes inside
+    // a linear element, whose residual therefore leaves it out (see Problem::fillContext).
+    if (!ctx.laplacian.empty())
+      r -= _mu->value(ctx.x, ctx.time) * (ctx.laplacian[_v[i]] - hoop(ctx, i) * ctx.value(_v[i]));
     const double rho = density(ctx);
     if (rho != 0.0)
     {
@@ -630,6 +645,8 @@ private:
   {
     const double t = ctx.time - ctx.dt;
     double r = 0.0;
+    if (!ctx.laplacian_old.empty())
+      r -= _mu->value(ctx.x, t) * (ctx.laplacian_old[_v[i]] - hoop(ctx, i) * ctx.oldValue(_v[i]));
     const double rho = ctx.inertia * _rho->value(ctx.x, t);
     if (rho != 0.0)
     {
@@ -662,6 +679,7 @@ private:
   };
   std::vector<int> _v;
   int _p = -1;
+  bool _axisymmetric = false;
   FunctionPtr _rho, _rho_time, _mu;
   bool _time_term = false;
   std::vector<std::vector<Force>> _forces;
@@ -729,7 +747,8 @@ public:
         "variable as the flux F = -(v - tau r_m). The term tau r_m is the residual-based pressure "
         "stabilisation (PSPG for the finite element method, momentum interpolation for the "
         "dual mesh control domain method) that makes equal-order velocity and pressure stable. Here r_m is "
-        "the momentum residual without its viscous part and tau is the parameter of Tezduyar. Set "
+        "the momentum residual, whose viscous term quadratic elements give and linear ones leave "
+        "out (it vanishes inside them), and tau is the parameter of Tezduyar. Set "
         "'stabilization' to false for Taylor-Hood elements, which are stable without it. The "
         "density, the viscosity, the body forces and the buoyancy of r_m are read from the "
         "momentum kernels of the velocities. The boundary condition mass_flux must be applied "
@@ -769,6 +788,7 @@ public:
   bool threadSafe() const override { return Kernel::threadSafe() && _r.threadSafe(); }
   bool hasFlux() const override { return true; }
   bool isMassConservation() const override { return true; }
+  bool needsLaplacian() const override { return _stabilize; }
   bool residualHasTimeDerivative() const override { return _stabilize && _r.hasTimeTerm(); }
   bool flowCoefficients(const QpContext & ctx, FlowCoefficients & c) const override
   {
@@ -850,6 +870,7 @@ public:
   bool threadSafe() const override { return Kernel::threadSafe() && _r.threadSafe(); }
   bool hasFlux() const override { return true; }
   bool residualHasTimeDerivative() const override { return _r.hasTimeTerm(); }
+  bool needsLaplacian() const override { return true; }
   bool atNewTime() const override { return true; }
   void computeFlux(const QpContext & ctx, ADVector3 & F) const override
   {

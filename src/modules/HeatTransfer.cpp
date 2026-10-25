@@ -221,13 +221,13 @@ public:
         "test function w. The residual r is the sum of the sources of every other kernel of the "
         "temperature (the convection rho c_p v . grad T, the heat sources, the heat capacity "
         "term), each weighted as the assembly weights it, that is the residual of the energy "
-        "equation without its conduction term, whose second derivatives vanish on linear "
-        "elements. An advection of the temperature written as a flux is refused. tau = [(2 |v| / h)^2 + 9 (4 kappa / h^2)^2 + "
+        "equation, with the conduction - k Laplacian(T) on quadratic elements (the gradient of k "
+        "left out) and without it on linear ones, inside which it vanishes. An advection of the temperature written as a flux is refused. tau = [(2 |v| / h)^2 + 9 (4 kappa / h^2)^2 + "
         "(2 / dt)^2]^(-1/2), kappa = k / (rho c_p) (Brooks and Hughes 1982, Tezduyar 1991, with "
-        "the factor 9 of MOOSE), the last term in a transient solve. Without the conduction term the residual of the exact "
-        "solution is k Laplacian(T), not zero, so the stabilisation adds an error of the order of "
-        "tau k |Laplacian(T)|: small where convection dominates, where tau is about h / (2 |v|), "
-        "and zero for a harmonic temperature. For FEM and DMCDM, at the dual faces for DMCDM, as "
+        "the factor 9 of MOOSE), the last term in a transient solve. On linear elements the residual "
+        "of the exact solution is k Laplacian(T), not zero, so the stabilisation adds an error of "
+        "the order of tau k |Laplacian(T)|: small where convection dominates, where tau is about "
+        "h / (2 |v|), and zero for a harmonic temperature. For FEM and DMCDM, at the dual faces for DMCDM, as "
         "momentum_stabilization is.");
     p.addRequired("velocities",
                   ParameterKind::StringList,
@@ -281,6 +281,7 @@ public:
   }
   bool hasFlux() const override { return true; }
   bool residualHasTimeDerivative() const override { return true; }
+  bool needsLaplacian() const override { return true; }
   void computeFlux(const QpContext & ctx, ADVector3 & F) const override
   {
     // r: the sources of the steady terms, each with the load factor its kernel is assembled with,
@@ -303,6 +304,11 @@ public:
       if (weight != 0.0)
         r += weight * k->computeSource(ctx);
     }
+    // The conduction - k Laplacian(T), which quadratic elements give (zero inside a linear one).
+    // The gradient of k is left out: the residual is exact for a conductivity constant in space
+    // and temperature.
+    if (!ctx.laplacian.empty())
+      r -= _k.value(ctx) * ctx.laplacian[variable()];
     const double rc = _rho->value(ctx.x, ctx.time) * _cp->value(ctx.x, ctx.time);
     const double h = ctx.element >= 0 ? _h[ctx.element] : 1.0;
     ADReal speed2(1e-300);

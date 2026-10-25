@@ -641,13 +641,14 @@ The stabilised mass flux
 ^^^^^^^^^^^^^^^^^^^^^^^^
 
 Let :math:`\mathbf{r}_m` be the residual of the momentum equation in its
-strong form, without the viscous term,
+strong form,
 
 .. math::
    :label: pv_residual
 
    \mathbf{r}_m = \rho \left( \frac{\partial \mathbf{v}}{\partial t}
-   + (\mathbf{v} \cdot \nabla) \mathbf{v} \right) + \nabla p - \mathbf{f} .
+   + (\mathbf{v} \cdot \nabla) \mathbf{v} \right) + \nabla p - \mu \Delta \mathbf{v}
+   - \mathbf{f} .
 
 ``mass_conservation`` replaces the mass flux :math:`-\mathbf{v}` by
 
@@ -656,9 +657,33 @@ strong form, without the viscous term,
 
    \mathbf{F} = \tau\, \mathbf{r}_m - \mathbf{v} .
 
-The exact solution makes :math:`\mathbf{r}_m` equal to the viscous force
-:math:`\nabla \cdot (\mu \nabla \mathbf{v})`, which is zero for a linear
-velocity field, so the added term is (almost) consistent.  For the Galerkin
+Quadratic elements give the viscous term from the second derivatives of their
+shape functions, :math:`\mathbf{H}_x N = \mathbf{A} (\mathbf{H}_\xi N -
+\sum_c \partial N/\partial x_c\, \mathbf{H}_\xi x_c) \mathbf{A}^{\mathsf{T}}`
+with :math:`\mathbf{A} = \mathbf{J}^{-\mathsf{T}}`, which holds for curved
+elements too, plus the terms of the axisymmetric and spherical Laplacians.  The
+residual of the exact solution is then zero, and the stabilisation is
+consistent: Poiseuille flow, whose velocity does not depend on :math:`x` and
+whose pressure is linear, is exact to round-off at the nodes on ``Quad9`` and
+``Tri6`` elements with both methods (``tests/python/test_poiseuille.py``).
+
+Inside a linear element the Laplacian of the interpolant vanishes, so the
+residual of linear elements leaves the viscous term out, as MOOSE and COMSOL
+do.  The residual of the exact solution is then :math:`-\mu \Delta \mathbf{v}`,
+and the stabilisation adds an error of order :math:`h^2` in the velocity.  On
+Poiseuille flow with 8, 16 and 32 cells across, the largest nodal error of the
+velocity is :math:`1.8 \times 10^{-2}`, :math:`4.4 \times 10^{-3}` and
+:math:`1.1 \times 10^{-3}`, and that of the pressure 1.2, 0.48 and 0.22, first
+order, with the largest values next to the walls.  Two remedies were measured
+on 25 October 2026.  The recovered Laplacian of [JansenCollis1999]_ and the orthogonal
+subscales of [Codina2002]_ lowered the error of the Kovasznay flow by a third,
+and the orthogonal subscales made Poiseuille flow exact.  The orthogonal
+subscales were not better in every case: the cavity at :math:`Re = 1000` was
+closer without them.  Both cost more than the refinement that gives the same
+gain.  The recovered Laplacian couples each node to two rings of neighbours,
+and lagged it took 3 to 10 times the Newton iterations.  The orthogonal
+subscales need a projection of the residual, lagged (8 to 30 times the
+iterations) or as unknowns.  For the Galerkin
 finite element method, integrating :math:`\nabla \psi \cdot \mathbf{F}` over
 the domain gives the mass equation plus
 :math:`\int \tau \nabla \psi \cdot \mathbf{r}_m\,\mathrm{d}\Omega`, which is exactly
@@ -1396,8 +1421,8 @@ and :math:`v_m` the largest vertical velocity on the horizontal centreline.  The
 Nusselt numbers agree to within 0.3 % and the velocity maxima to within 1.8 %,
 except :math:`v_m` at :math:`Ra = 10^6`, which is 2.4 % high, where the wall jet
 is thinnest.  On a :math:`64 \times 64` mesh this value is 221.4.  The heat
-carries the default streamline stabilisation, whose residual leaves the
-conduction term out.  That costs a little here, where conduction matters as
+carries the default streamline stabilisation, whose residual on these linear
+elements leaves the conduction term out.  That costs a little here, where conduction matters as
 much as convection: with ``advection_scheme="central"`` the differences were
 0.2 % and 0.6 % (1.8 % for :math:`v_m` at :math:`Ra = 10^6`).  The finite
 element method gives Nusselt numbers within 0.2 % of the same values.  The heat entering at the hot wall leaves at the cold

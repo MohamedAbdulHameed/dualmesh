@@ -173,6 +173,57 @@ mapPoint(const Mesh & mesh, const Element & el, const Point & xi, MappedPoint & 
 }
 
 void
+mapLaplacian(const Mesh & mesh, const Element & el, const MappedPoint & mp, double * laplacian)
+{
+  const auto & ref = ReferenceElement::get(el.type);
+  const int dim = ref.dimension(), nn = ref.numNodes();
+  // Hess_xi N_a by central differences of the reference gradients: H[a][j][l] = d2 N_a / dxi_j dxi_l.
+  constexpr double step = 1e-3;
+  double H[kMaxElementNodes][3][3] = {};
+  double N[kMaxElementNodes];
+  Point plus[kMaxElementNodes], minus[kMaxElementNodes];
+  for (int l = 0; l < dim; ++l)
+  {
+    Point xp = mp.xi, xm = mp.xi;
+    xp[l] += step;
+    xm[l] -= step;
+    ref.shape(xp, N, plus);
+    ref.shape(xm, N, minus);
+    for (int a = 0; a < nn; ++a)
+      for (int j = 0; j < dim; ++j)
+        H[a][j][l] = (plus[a][j] - minus[a][j]) / (2.0 * step);
+  }
+  // Hess_xi x_c, and G = A^T A with A[i][j] = Jinv[j][i].
+  double X[3][3][3] = {};
+  for (int b = 0; b < nn; ++b)
+  {
+    const Point & x = mesh.node(el.nodes[b]);
+    for (int c = 0; c < 3; ++c)
+      for (int j = 0; j < dim; ++j)
+        for (int l = 0; l < dim; ++l)
+          X[c][j][l] += H[b][j][l] * x[c];
+  }
+  double G[3][3] = {};
+  for (int j = 0; j < dim; ++j)
+    for (int l = 0; l < dim; ++l)
+      for (int i = 0; i < 3; ++i)
+        G[j][l] += mp.Jinv[j][i] * mp.Jinv[l][i];
+  for (int a = 0; a < nn; ++a)
+  {
+    double sum = 0.0;
+    for (int j = 0; j < dim; ++j)
+      for (int l = 0; l < dim; ++l)
+      {
+        double m = H[a][j][l];
+        for (int c = 0; c < 3; ++c)
+          m -= mp.dN[a][c] * X[c][j][l];
+        sum += G[j][l] * m;
+      }
+    laplacian[a] = sum;
+  }
+}
+
+void
 mapCornerShape(const Element & el, MappedPoint & mp)
 {
   const auto & linear = ReferenceElement::get(elementCornerType(el.type));
