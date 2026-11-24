@@ -1,0 +1,627 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+"""Verification of the plane elasticity module against Chapter 9 of Reddy's book."""
+
+from __future__ import annotations
+
+import math
+
+import dualmesh
+import numpy
+import pytest
+
+
+def plane_elasticity_problem(
+    mesh,
+    youngs_modulus,
+    poissons_ratio,
+    thickness=1.0,
+    formulation="plane_stress",
+    method="dmcdm",
+    coordinates="cartesian",
+):
+    """Set up a two-dimensional elasticity problem with displacements (u, v)."""
+    problem = dualmesh.Problem(mesh, method=method, coordinates=coordinates)
+    problem.add_variable("u")
+    problem.add_variable("v")
+    problem.add_property(
+        "small_strain_stress",
+        displacements=["u", "v"],
+        formulation=formulation,
+        youngs_modulus=youngs_modulus,
+        poissons_ratio=poissons_ratio,
+    )
+    for variable in ("u", "v"):
+        problem.add_kernel(
+            "stress_divergence",
+            variable=variable,
+            displacements=["u", "v"],
+            thickness=thickness,
+        )
+    return problem
+
+
+def test_example_9_8_1_uniform_edge_stress():
+    """A quadrant of a plate under uniform edge stress: u(a) = t0 a / E exactly."""
+    youngs_modulus, poissons_ratio = 207.0e9, 0.25
+    edge_stress, side, thickness = 1.0e6, 1.0, 0.01
+    mesh = dualmesh.generate_rectangle_mesh(
+        x_min=0.0, x_max=side, y_min=0.0, y_max=side, num_x_elements=4, num_y_elements=4
+    )
+    problem = plane_elasticity_problem(mesh, youngs_modulus, poissons_ratio, thickness=thickness)
+    problem.add_boundary_condition("Dirichlet", "left", variable="u", value=0.0)
+    problem.add_boundary_condition("Dirichlet", "bottom", variable="v", value=0.0)
+    problem.add_boundary_condition(
+        "traction",
+        "right",
+        variable="u",
+        traction=edge_stress,
+    )
+    problem.solve()
+
+    expected = edge_stress * side / youngs_modulus  # 0.4831e-5 m
+    right_edge = problem.mesh.boundary_nodes("right")
+    assert problem.values("u")[right_edge] == pytest.approx(expected, rel=1e-12)
+    assert expected == pytest.approx(0.4831e-5, rel=1e-3)
+    # The stress field is exactly uniform: sigma_xx = t0, sigma_yy = sigma_xy = 0.
+    stress = problem.property_at_centroids("stress")
+    assert stress[:, 0] == pytest.approx(edge_stress, rel=1e-9)
+    assert stress[:, 1] == pytest.approx(0.0, abs=1e-6 * edge_stress)
+    assert stress[:, 5] == pytest.approx(0.0, abs=1e-6 * edge_stress)
+
+
+@pytest.mark.parametrize(
+    "num_elements, displacement_u, displacement_v, stress_xx",
+    [
+        (1, 10.784, 1.961, 277.78),
+        (2, 11.058, 1.946, 277.78),
+        (4, 11.146, 1.992, 287.27),
+        (8, 11.161, 1.995, 306.57),
+    ],
+)
+def test_example_9_8_2_plate_with_edge_load(
+    num_elements, displacement_u, displacement_v, stress_xx
+):
+    """Table 9.8.1 (DMCDM rows): cantilevered plate under a uniform edge load."""
+    width, height, thickness = 120.0, 160.0, 0.036
+    youngs_modulus, poissons_ratio = 30.0e6, 0.25
+    edge_load = 10.0  # In lb/in: the force per unit length of the edge
+    mesh = dualmesh.generate_rectangle_mesh(
+        x_min=0.0,
+        x_max=width,
+        y_min=0.0,
+        y_max=height,
+        num_x_elements=num_elements,
+        num_y_elements=num_elements,
+    )
+    problem = plane_elasticity_problem(mesh, youngs_modulus, poissons_ratio, thickness=thickness)
+    for variable in ("u", "v"):
+        problem.add_boundary_condition("Dirichlet", "left", variable=variable, value=0.0)
+    problem.add_boundary_condition(
+        "traction",
+        "right",
+        variable="u",
+        traction=edge_load / thickness,
+    )
+    problem.solve()
+
+    corner = problem.node_at((width, 0.0), tolerance=1e-9)
+    assert problem.values("u")[corner] * 1e4 == pytest.approx(displacement_u, abs=5e-3)
+    assert problem.values("v")[corner] * 1e4 == pytest.approx(displacement_v, abs=5e-3)
+    # Stress at the centre of the element closest to (x, y) = (width/(2 n), height/(2 n)).
+    stress = problem.property_at_centroids("stress")
+    centroids = numpy.array(
+        [problem.mesh.element_centroid(e) for e in range(problem.mesh.num_elements)]
+    )
+    target = numpy.array([width / (2 * num_elements), height / (2 * num_elements)])
+    element = int(numpy.argmin(numpy.linalg.norm(centroids[:, :2] - target, axis=1)))
+    assert stress[element, 0] == pytest.approx(stress_xx, rel=2e-4)
+
+
+def pressurized_cylinder_exact(radius, inner, outer, pressure, youngs_modulus, poissons_ratio):
+    """Plane-strain thick cylinder under internal pressure (Reddy, Eq. 9.9.24)."""
+    factor = pressure * inner**2 * (1 + poissons_ratio) / (youngs_modulus * (outer**2 - inner**2))
+    return factor * ((1 - 2 * poissons_ratio) * radius + outer**2 / radius)
+
+
+def pressurized_cylinder(element_type, radial_elements, angular_elements, method="dmcdm"):
+    """Quarter of the thick cylinder of Section 9.9.4.1 under internal pressure."""
+    inner, outer = 0.05, 0.1
+    pressure, youngs_modulus, poissons_ratio = 120.0e6, 200.0e9, 0.3
+    mesh = dualmesh.generate_annulus_mesh(
+        inner_radius=inner,
+        outer_radius=outer,
+        num_radial_elements=radial_elements,
+        num_angular_elements=angular_elements,
+        start_angle=0.0,
+        end_angle=90.0,
+        element_type=element_type,
+    )
+    problem = plane_elasticity_problem(
+        mesh, youngs_modulus, poissons_ratio, formulation="plane_strain", method=method
+    )
+    # Symmetry: no normal displacement on the two straight edges.
+    problem.add_boundary_condition("Dirichlet", "start", variable="v", value=0.0)
+    problem.add_boundary_condition("Dirichlet", "end", variable="u", value=0.0)
+    for variable in ("u", "v"):
+        problem.add_boundary_condition(
+            "pressure",
+            "inner",
+            variable=variable,
+            displacements=["u", "v"],
+            pressure=pressure,
+        )
+    problem.solve()
+    radial_displacement = problem.values("u") * 1e3  # Metres -> millimetres
+    return problem, radial_displacement
+
+
+@pytest.mark.parametrize(
+    "radial_elements, angular_elements, inner_u, outer_u",
+    [
+        # Table 9.9.1, DMCDM columns for quadrilaterals (in millimetres).  The
+        # book gives the number of subdivisions across the wall and the total
+        # element count (40 and 152 here), from which the number of
+        # circumferential subdivisions follows.
+        (4, 10, 0.05611, 0.03603),
+        (8, 19, 0.05692, 0.03630),
+        (12, 29, 0.05708, 0.03636),
+    ],
+)
+def test_example_9_9_4_1_pressurized_cylinder_quadrilaterals(
+    radial_elements, angular_elements, inner_u, outer_u
+):
+    inner, outer = 0.05, 0.1
+    problem, displacement = pressurized_cylinder("Quad4", radial_elements, angular_elements)
+    computed_inner = displacement[problem.node_at((inner, 0.0))]
+    computed_outer = displacement[problem.node_at((outer, 0.0))]
+    # The book does not state how the circumference is discretized beyond the
+    # total element count, so the agreement is to about half a percent.
+    assert computed_inner == pytest.approx(inner_u, abs=5e-4)
+    assert computed_outer == pytest.approx(outer_u, abs=5e-4)
+
+
+def test_pressurized_cylinder_converges_to_the_analytical_solution():
+    inner, outer = 0.05, 0.1
+    pressure, youngs_modulus, poissons_ratio = 120.0e6, 200.0e9, 0.3
+    exact_inner = (
+        pressurized_cylinder_exact(inner, inner, outer, pressure, youngs_modulus, poissons_ratio)
+        * 1e3
+    )
+    exact_outer = (
+        pressurized_cylinder_exact(outer, inner, outer, pressure, youngs_modulus, poissons_ratio)
+        * 1e3
+    )
+    assert exact_inner == pytest.approx(0.05720, abs=1e-5)  # Table 9.9.1
+    assert exact_outer == pytest.approx(0.03640, abs=1e-5)
+    errors = []
+    for element_type in ("Quad4", "Tri3"):
+        previous = None
+        for radial_elements, angular_elements in [(4, 10), (8, 19), (12, 29), (16, 38)]:
+            problem, displacement = pressurized_cylinder(
+                element_type, radial_elements, angular_elements
+            )
+            error = abs(displacement[problem.node_at((inner, 0.0))] - exact_inner)
+            if previous is not None:
+                assert error < previous  # Monotone convergence
+            previous = error
+        errors.append(previous / exact_inner)
+    # On the finest mesh both element types are within one percent.
+    assert max(errors) < 0.01
+
+
+def test_triangles_reproduce_the_finite_element_method_in_elasticity():
+    """For constant-coefficient elasticity on linear triangles DMCDM == FEM."""
+    mesh = dualmesh.generate_annulus_mesh(
+        inner_radius=0.05,
+        outer_radius=0.1,
+        num_radial_elements=4,
+        num_angular_elements=10,
+        element_type="Tri3",
+    )
+    solutions = []
+    for method in ("dmcdm", "fem"):
+        problem = plane_elasticity_problem(
+            mesh, 200.0e9, 0.3, formulation="plane_strain", method=method
+        )
+        problem.add_boundary_condition("Dirichlet", "start", variable="v", value=0.0)
+        problem.add_boundary_condition("Dirichlet", "end", variable="u", value=0.0)
+        for variable in ("u", "v"):
+            problem.add_boundary_condition(
+                "pressure",
+                "inner",
+                variable=variable,
+                displacements=["u", "v"],
+                pressure=120.0e6,
+            )
+        problem.solve()
+        solutions.append(problem.values("u"))
+    scale = numpy.max(numpy.abs(solutions[0]))
+    assert solutions[0] == pytest.approx(solutions[1], rel=1e-9, abs=1e-10 * scale)
+
+
+def test_plate_with_a_circular_hole_stress_concentration():
+    """A large plate with a hole under uniaxial tension: sigma_max / sigma = 3."""
+    hole_radius, outer_radius = 1.0, 20.0
+    applied_stress = 1.0
+    mesh = dualmesh.generate_annulus_mesh(
+        inner_radius=hole_radius,
+        outer_radius=outer_radius,
+        num_radial_elements=30,
+        num_angular_elements=30,
+        radial_bias=1.15,
+    )
+    problem = plane_elasticity_problem(mesh, 1.0, 0.3)
+    problem.add_boundary_condition("Dirichlet", "start", variable="v", value=0.0)
+    problem.add_boundary_condition("Dirichlet", "end", variable="u", value=0.0)
+    # Remote uniaxial tension in x: t = (sigma n_x, 0) on the outer arc.
+    problem.add_boundary_condition(
+        "traction",
+        "outer",
+        variable="u",
+        traction=lambda x, y, z, t: applied_stress * x / math.hypot(x, y),
+    )
+    problem.add_boundary_condition(
+        "traction",
+        "outer",
+        variable="v",
+        traction=0.0,
+    )
+    problem.solve()
+
+    # The hoop stress at the top of the hole (x = 0, y = a) is 3 sigma.
+    stress = problem.property_at_centroids("stress")
+    centroids = numpy.array(
+        [problem.mesh.element_centroid(e) for e in range(problem.mesh.num_elements)]
+    )
+    radius = numpy.hypot(centroids[:, 0], centroids[:, 1])
+    near_hole = radius < hole_radius * 1.05
+    top = near_hole & (centroids[:, 1] > centroids[:, 0])
+    assert numpy.max(stress[top, 0]) == pytest.approx(3.0 * applied_stress, rel=0.05)
+
+
+def test_axisymmetric_pressurized_cylinder_matches_plane_strain():
+    """The same cylinder solved as a one-dimensional axisymmetric problem."""
+    inner, outer = 0.05, 0.1
+    pressure, youngs_modulus, poissons_ratio = 120.0e6, 200.0e9, 0.3
+    mesh = dualmesh.generate_rectangle_mesh(
+        x_min=inner, x_max=outer, y_min=0.0, y_max=0.01, num_x_elements=40, num_y_elements=1
+    )
+    problem = dualmesh.Problem(mesh, coordinates="axisymmetric")
+    problem.add_variable("u")
+    problem.add_variable("v")
+    problem.add_property(
+        "small_strain_stress",
+        displacements=["u", "v"],
+        formulation="axisymmetric",
+        youngs_modulus=youngs_modulus,
+        poissons_ratio=poissons_ratio,
+    )
+    for variable in ("u", "v"):
+        problem.add_kernel("stress_divergence", variable=variable, displacements=["u", "v"])
+    # Plane strain: no axial displacement (held between rigid walls).
+    problem.add_boundary_condition("Dirichlet", ["bottom", "top"], variable="v", value=0.0)
+    problem.add_boundary_condition(
+        "pressure",
+        "left",
+        variable="u",
+        displacements=["u", "v"],
+        pressure=pressure,
+    )
+    problem.add_boundary_condition(
+        "pressure",
+        "left",
+        variable="v",
+        displacements=["u", "v"],
+        pressure=pressure,
+    )
+    problem.solve()
+
+    radii = numpy.linspace(inner, outer, 9)
+    exact = [
+        pressurized_cylinder_exact(r, inner, outer, pressure, youngs_modulus, poissons_ratio)
+        for r in radii
+    ]
+    computed = problem.sample("u", numpy.column_stack([radii, numpy.full_like(radii, 0.005)]))
+    assert computed == pytest.approx(exact, rel=2e-3)
+
+
+# ---------------------------------------------------------------------------
+# Thermal stress
+# ---------------------------------------------------------------------------
+steel_youngs_modulus = 200.0e9
+steel_poissons_ratio = 0.3
+expansion_coefficient = 1.2e-5
+temperature_rise = 100.0
+
+
+def thermal_problem(formulation, restrained, method="dmcdm"):
+    """A unit square heated uniformly by ``TEMPERATURE_RISE``.
+
+    With ``restrained=True`` every edge is held fixed, so the strain is zero
+    everywhere and the stress is the thermal stress of a fully constrained
+    body.  With ``restrained=False`` only the rigid body motion is removed, so
+    the body expands freely and the in-plane stress must vanish.
+    """
+    mesh = dualmesh.generate_rectangle_mesh(
+        x_min=0.0, x_max=1.0, y_min=0.0, y_max=1.0, num_x_elements=3, num_y_elements=3
+    )
+    problem = dualmesh.Problem(mesh, method=method)
+    problem.add_variable("disp_x")
+    problem.add_variable("disp_y")
+    problem.add_variable("temperature")
+    problem.add_kernel("diffusion", variable="temperature")
+    problem.add_boundary_condition(
+        "Dirichlet",
+        mesh.sideset_names(),
+        variable="temperature",
+        value=temperature_rise,
+    )
+    problem.add_property(
+        "thermal_expansion_eigenstrain",
+        eigenstrain_name="thermal_strain",
+        temperature="temperature",
+        linear_expansion_coefficient=expansion_coefficient,
+        stress_free_temperature=0.0,
+    )
+    problem.add_property(
+        "small_strain_stress",
+        displacements=["disp_x", "disp_y"],
+        youngs_modulus=steel_youngs_modulus,
+        poissons_ratio=steel_poissons_ratio,
+        formulation=formulation,
+        eigenstrain_names=["thermal_strain"],
+    )
+    problem.add_kernel("stress_divergence", displacements=["disp_x", "disp_y"])
+    if restrained:
+        for boundary in mesh.sideset_names():
+            problem.add_boundary_condition(
+                "Dirichlet",
+                boundary,
+                variable="disp_x",
+                value=0.0,
+            )
+            problem.add_boundary_condition(
+                "Dirichlet",
+                boundary,
+                variable="disp_y",
+                value=0.0,
+            )
+    else:
+        problem.add_boundary_condition("Dirichlet", "left", variable="disp_x", value=0.0)
+        problem.add_boundary_condition(
+            "Dirichlet",
+            "bottom",
+            variable="disp_y",
+            value=0.0,
+        )
+    problem.solve()
+    return problem
+
+
+@pytest.mark.parametrize("method", ["dmcdm", "fem"])
+def test_plane_strain_thermal_stress_of_a_fully_restrained_body(method):
+    r"""For a body that cannot move at all, the strain is zero and the
+    three-dimensional law gives
+
+        sigma_ij = -(3 lambda + 2 mu) alpha dT delta_ij = -E alpha dT / (1 - 2 nu) delta_ij,
+
+    in every direction, the in-plane ones and the out-of-plane one alike.
+    Plane strain is that law with eps_zz held at zero, so it must reproduce the
+    same number; an implementation that leaves the zz column of the stiffness
+    empty gets E alpha dT / [(1 + nu)(1 - 2 nu)] instead, which is too small by
+    a factor of 1 + nu.
+    """
+    problem = thermal_problem("plane_strain", restrained=True, method=method)
+    stress = numpy.asarray(problem.property_at_centroids("stress"))
+    expected = (
+        -steel_youngs_modulus
+        * expansion_coefficient
+        * temperature_rise
+        / (1.0 - 2.0 * steel_poissons_ratio)
+    )
+    assert stress[:, 0] == pytest.approx(expected, rel=1e-10)
+    assert stress[:, 1] == pytest.approx(expected, rel=1e-10)
+    assert stress[:, 2] == pytest.approx(expected, rel=1e-10)
+    assert stress[:, 5] == pytest.approx(0.0, abs=1e-3)
+
+
+@pytest.mark.parametrize("method", ["dmcdm", "fem"])
+def test_plane_stress_thermal_stress_of_a_fully_restrained_body(method):
+    """In plane stress the out-of-plane strain is free and the out-of-plane
+    stress is zero, which condenses the law down to
+    sigma_xx = sigma_yy = -E alpha dT / (1 - nu)."""
+    problem = thermal_problem("plane_stress", restrained=True, method=method)
+    stress = numpy.asarray(problem.property_at_centroids("stress"))
+    expected = (
+        -steel_youngs_modulus
+        * expansion_coefficient
+        * temperature_rise
+        / (1.0 - steel_poissons_ratio)
+    )
+    assert stress[:, 0] == pytest.approx(expected, rel=1e-10)
+    assert stress[:, 1] == pytest.approx(expected, rel=1e-10)
+    assert stress[:, 2] == pytest.approx(0.0, abs=1e-3)
+
+
+def test_free_thermal_expansion_in_plane_strain():
+    r"""A body free to expand in the plane but held in the third direction has
+    no in-plane stress, an out-of-plane stress of -E alpha dT, and an in-plane
+    strain of (1 + nu) alpha dT rather than alpha dT: the material is pushed
+    sideways by the restraint through the thickness.
+    """
+    problem = thermal_problem("plane_strain", restrained=False)
+    stress = numpy.asarray(problem.property_at_centroids("stress"))
+    reference = steel_youngs_modulus * expansion_coefficient * temperature_rise
+    assert stress[:, 0] == pytest.approx(0.0, abs=1e-6 * reference)
+    assert stress[:, 1] == pytest.approx(0.0, abs=1e-6 * reference)
+    assert stress[:, 2] == pytest.approx(-reference, rel=1e-10)
+
+    points = problem.node_coordinates()
+    right_edge = numpy.flatnonzero(numpy.isclose(points[:, 0], 1.0))
+    expected_stretch = (1.0 + steel_poissons_ratio) * expansion_coefficient * temperature_rise
+    assert problem.values("disp_x")[right_edge] == pytest.approx(expected_stretch, rel=1e-9)
+
+
+def test_free_thermal_expansion_in_plane_stress():
+    """With the third direction free as well, the body expands by alpha dT and
+    carries no stress at all."""
+    problem = thermal_problem("plane_stress", restrained=False)
+    stress = numpy.asarray(problem.property_at_centroids("stress"))
+    reference = steel_youngs_modulus * expansion_coefficient * temperature_rise
+    assert numpy.abs(stress).max() < 1e-6 * reference
+    points = problem.node_coordinates()
+    right_edge = numpy.flatnonzero(numpy.isclose(points[:, 0], 1.0))
+    expected = expansion_coefficient * temperature_rise
+    assert problem.values("disp_x")[right_edge] == pytest.approx(expected, rel=1e-9)
+
+
+def test_three_dimensional_thermal_stress_matches_plane_strain():
+    """The same fully restrained problem in three dimensions must give exactly
+    the plane strain answer, which is the statement that the two formulations
+    describe the same material law."""
+    mesh = dualmesh.generate_box_mesh(
+        x_min=0.0,
+        x_max=1.0,
+        y_min=0.0,
+        y_max=1.0,
+        z_min=0.0,
+        z_max=1.0,
+        num_x_elements=2,
+        num_y_elements=2,
+        num_z_elements=2,
+    )
+    problem = dualmesh.Problem(mesh)
+    for name in ("disp_x", "disp_y", "disp_z"):
+        problem.add_variable(name)
+    problem.add_variable("temperature")
+    problem.add_kernel("diffusion", variable="temperature")
+    problem.add_boundary_condition(
+        "Dirichlet",
+        mesh.sideset_names(),
+        variable="temperature",
+        value=temperature_rise,
+    )
+    problem.add_property(
+        "thermal_expansion_eigenstrain",
+        eigenstrain_name="thermal_strain",
+        temperature="temperature",
+        linear_expansion_coefficient=expansion_coefficient,
+        stress_free_temperature=0.0,
+    )
+    problem.add_property(
+        "small_strain_stress",
+        displacements=["disp_x", "disp_y", "disp_z"],
+        youngs_modulus=steel_youngs_modulus,
+        poissons_ratio=steel_poissons_ratio,
+        formulation="three_dimensional",
+        eigenstrain_names=["thermal_strain"],
+    )
+    for name in ("disp_x", "disp_y", "disp_z"):
+        problem.add_kernel(
+            "stress_divergence", variable=name, displacements=["disp_x", "disp_y", "disp_z"]
+        )
+        for boundary in mesh.sideset_names():
+            problem.add_boundary_condition(
+                "Dirichlet",
+                boundary,
+                variable=name,
+                value=0.0,
+            )
+    problem.solve()
+    stress = numpy.asarray(problem.property_at_centroids("stress"))
+    expected = (
+        -steel_youngs_modulus
+        * expansion_coefficient
+        * temperature_rise
+        / (1.0 - 2.0 * steel_poissons_ratio)
+    )
+    for component in range(3):
+        assert stress[:, component] == pytest.approx(expected, rel=1e-10)
+
+
+# ---------------------------------------------------------------------------
+# The one isotropic stress object: plane stress, the defaults and the refusals
+# ---------------------------------------------------------------------------
+def _uniaxial_plane_stress(**solid_inputs):
+    # A plate of 2 x 1 m under the traction T on its right edge, symmetric on the left and the
+    # bottom: a uniform uniaxial stress.
+    mesh = dualmesh.generate_rectangle_mesh(0.0, 2.0, 0.0, 1.0, num_elements=[4, 2])
+    problem = dualmesh.Problem(mesh, method="fem")
+    solid = problem.add_physics("solid_mechanics", formulation="plane_stress", **solid_inputs)
+    solid.add_boundary_condition("symmetry", boundary="left")
+    solid.add_boundary_condition("symmetry", boundary="bottom")
+    solid.add_boundary_condition("traction = [T, 0]", boundary="right", T=5.0e7)
+    problem.solve(report="none")
+    return problem
+
+
+def test_plane_stress_gives_the_out_of_plane_strain_and_the_volumetric_strain():
+    Young, nu, traction = 2.0e11, 0.3, 5.0e7
+    problem = _uniaxial_plane_stress(youngs_modulus=Young, poissons_ratio=nu)
+    strain = problem.property_at_centroids("strain")
+    axial = traction / Young
+    assert numpy.allclose(strain[:, 0], axial, rtol=1e-10)
+    assert numpy.allclose(strain[:, 1], -nu * axial, rtol=1e-10)
+    assert numpy.allclose(strain[:, 2], -nu * axial, rtol=1e-10)
+    assert numpy.allclose(problem.property_at_centroids("volumetric_strain"), (1 - 2 * nu) * axial)
+    stress = problem.property_at_centroids("stress")
+    assert numpy.allclose(stress[:, 0], traction, rtol=1e-10)
+    assert numpy.abs(stress[:, 1:]).max() < 1e-6 * traction
+    # The von Mises stress is formed only when something reads it, as here after the solve.
+    assert numpy.allclose(problem.property_at_centroids("von_mises_stress"), traction, rtol=1e-10)
+
+
+def _stress_object(problem, **inputs):
+    problem.add_variable("u")
+    problem.add_variable("v")
+    problem.add_property("small_strain_stress", displacements=["u", "v"], **inputs)
+    problem.add_kernel("stress_divergence", displacements=["u", "v"])
+
+
+@pytest.mark.parametrize(
+    "coordinates, inputs, message",
+    [
+        ("cartesian", dict(formulation="plane_strain"), "Young's modulus is not given"),
+        (
+            "axisymmetric",
+            dict(formulation="plane_strain", youngs_modulus=1.0e9),
+            "Use the axisymmetric formulation",
+        ),
+        (
+            "cartesian",
+            dict(formulation="axisymmetric", youngs_modulus=1.0e9),
+            "needs coordinates = 'axisymmetric'",
+        ),
+    ],
+)
+def test_the_stress_object_refuses_by_name(coordinates, inputs, message):
+    mesh = dualmesh.generate_rectangle_mesh(1.0, 2.0, 0.0, 1.0, num_elements=[2, 2])
+    problem = dualmesh.Problem(mesh, method="fem", coordinates=coordinates)
+    with pytest.raises(ValueError, match=message):
+        _stress_object(problem, **inputs)
+        problem.initialize()
+
+
+def test_a_condition_refuses_kernels_of_different_thicknesses():
+    mesh = dualmesh.mesh_from_arrays(
+        [[0, 0], [1, 0], [2, 0], [0, 1], [1, 1], [2, 1]],
+        [[0, 1, 4, 3], [1, 2, 5, 4]],
+        element_type="Quad4",
+        blocks=[1, 2],
+    )
+    mesh.add_bounding_box_sidesets()
+    problem = dualmesh.Problem(mesh, method="fem")
+    _stress_object(problem, formulation="plane_stress", youngs_modulus=1.0e9, poissons_ratio=0.3)
+    problem.add_kernel("stress_divergence", displacements=["u", "v"], thickness=0.5, block=["2"])
+    problem.add_boundary_condition("traction", "right", variable="u", traction=1.0e6)
+    with pytest.raises(ValueError, match="have the thicknesses"):
+        problem.initialize()
+
+
+def test_symmetry_on_a_single_node_is_refused():
+    mesh = dualmesh.generate_rectangle_mesh(0.0, 1.0, 0.0, 1.0, num_elements=[2, 2])
+    mesh.add_nodeset("corner", [0])
+    problem = dualmesh.Problem(mesh, method="fem")
+    solid = problem.add_physics("solid_mechanics", formulation="plane_strain", youngs_modulus=1e9)
+    with pytest.raises(ValueError, match="determines its plane"):
+        solid.add_boundary_condition("symmetry", boundary="corner")

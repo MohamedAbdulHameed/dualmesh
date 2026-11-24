@@ -1,0 +1,64 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+"""Bending of a functionally graded beam.
+
+A pinned-pinned beam of length L = 100 in under a uniform load is analysed
+with the three dual mesh beam models, for several values of the power-law
+index n of the through-thickness grading.  Half the beam is modelled.
+"""
+
+import dualmesh
+
+length, width, height = 100.0, 1.0, 1.0
+modulus_top, modulus_bottom, Poisson_ratio = 30.0e6, 3.0e6, 0.3
+load = 0.5
+# The theory and, for Timoshenko, the form of each beam model.
+models = {
+    "Euler-Bernoulli": ("Euler-Bernoulli", None),
+    "Timoshenko, displacement": ("Timoshenko", "displacement"),
+    "Timoshenko, mixed": ("Timoshenko", None),
+}
+
+
+def solve(model, power_law_index, num_elements=16):
+    stiffness = dualmesh.fgm.beam_stiffness(
+        modulus_top=modulus_top,
+        modulus_bottom=modulus_bottom,
+        power_law_index=power_law_index,
+        height=height,
+        width=width,
+        poissons_ratio=Poisson_ratio,
+    )
+    mesh = dualmesh.generate_line_mesh(start=0.0, end=length / 2, num_elements=num_elements)
+    problem = dualmesh.Problem(mesh)
+    theory, form = models[model]
+    beam = problem.add_physics(
+        "solid_mechanics",
+        formulation="beam",
+        theory=theory,
+        beam_formulation=form,
+        extensional_stiffness=stiffness.extensional,
+        coupling_stiffness=stiffness.coupling,
+        bending_stiffness=stiffness.bending,
+        # The Euler-Bernoulli beam has no shear deformation, so it takes no shear stiffness.
+        **({"shear_stiffness": stiffness.shear} if theory == "Timoshenko" else {}),
+        transverse_load=load,
+    )
+    # Pinned at the left end, where the physics holds the moment at zero, and the right end is
+    # the centre of the beam, a plane of symmetry.
+    beam.add_boundary_condition(["disp_x = 0", "disp_z = 0"], boundary="left")
+    beam.add_boundary_condition("symmetry", boundary="right")
+    problem.solve(report="none")
+    return problem, stiffness
+
+
+if __name__ == "__main__":
+    print("   n   " + "".join(f"{m:>26s}" for m in models))
+    for power_law_index in (0.0, 1.0, 2.0, 3.0, 5.0, 10.0, 20.0):
+        row = []
+        for model in models:
+            problem, stiffness = solve(model, power_law_index)
+            reduced = stiffness.bending - stiffness.coupling**2 / stiffness.extensional
+            centre = problem.values("disp_z")[-1]
+            row.append(centre * reduced / (load * length**4) * 10)
+        print(f"{power_law_index:5.1f}" + "".join(f"{value:26.4f}" for value in row))
+    print("(normalized centre deflection w Dhat / (q0 L^4) x 10)")

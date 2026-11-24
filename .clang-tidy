@@ -1,0 +1,12 @@
+# Checks for bugs and undefined behavior. The style is checked by
+# clang-format.
+Checks: >
+  -*,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-narrowing-conversions,
+  clang-analyzer-*,
+  performance-*,
+  -performance-enum-size
+WarningsAsErrors: ""
+HeaderFilterRegex: "include/dualmesh/.*"

@@ -1,0 +1,47 @@
+name: FEniCSx
+
+# Runs the FEniCSx counterparts of the benchmarks and keeps their results as an artifact.
+# Start it by hand: gh workflow run FEniCSx --ref <branch> [-f scripts='["Cook"]']
+on:
+  workflow_dispatch:
+    inputs:
+      scripts:
+        description: The scripts of verification/fenicsx to run, as a JSON list
+        default: '["Kovasznay", "cavity", "dfg_steady", "Cook"]'
+
+permissions:
+  contents: read
+
+jobs:
+  fenicsx:
+    name: FEniCSx ${{ matrix.script }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        script: ${{ fromJSON(inputs.scripts) }}
+    defaults:
+      run:
+        shell: bash -el {0}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: mamba-org/setup-micromamba@f457c30a868e4760d3a6fcea5f25dc655b8edf39 # v3.2.1
+        with:
+          environment-file: verification/fenicsx/environment.yml
+      - name: Run
+        working-directory: verification/fenicsx
+        env:
+          SCRIPT: ${{ matrix.script }}
+          # Both ranks run on one machine: shared memory, not the network cards of the runner.
+          UCX_TLS: self,sm
+        run: |
+          set -o pipefail
+          mkdir -p results
+          mpirun -n 2 python "$SCRIPT.py" 2>&1 | tee "results/$SCRIPT.log"
+      - name: Keep the results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: fenicsx-${{ matrix.script }}
+          path: verification/fenicsx/results

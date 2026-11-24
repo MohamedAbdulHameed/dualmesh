@@ -1,0 +1,12 @@
+# Conda environment of the FEniCSx counterparts of the dualmesh benchmarks.
+#   micromamba create -y -f environment.yml
+name: fenicsx
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - fenics-dolfinx=0.9.0
+  - mpich
+  - numpy
+  - gmsh
+  - python-gmsh

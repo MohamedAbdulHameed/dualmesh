@@ -1,0 +1,111 @@
+// SPDX-License-Identifier: LGPL-2.1-or-later
+//
+// Base class of every user-configurable object (kernels, boundary conditions,
+// property objects, loads).
+// An object is built from a validated InputParameters dictionary and later set up against a Problem, at which point names (variables, functions, properties) are resolved.
+#pragma once
+
+#include "dualmesh/core/Function.h"
+#include "dualmesh/core/InputParameters.h"
+#include "dualmesh/fe/ReferenceElement.h"
+
+#include <memory>
+#include <set>
+#include <string>
+#include <vector>
+
+namespace dualmesh
+{
+
+class Problem;
+
+/// A Function-valued parameter @p param of the object @p owner: a constant, the name of a
+/// function, or a function.  A parameter without a value is refused, never taken as zero.
+FunctionPtr functionParameter(const Problem & problem,
+                              const InputParameters & params,
+                              const std::string & param,
+                              const std::string & owner);
+
+class Object
+{
+public:
+  explicit Object(const InputParameters & params);
+  virtual ~Object() = default;
+
+  /// Parameters common to all objects.
+  static InputParameters validParams();
+
+  const std::string & name() const { return _name; }
+  const std::string & type() const { return _type; }
+  const InputParameters & parameters() const { return _params; }
+
+  /// Resolve names against the problem (called once before solving).
+  virtual void initialSetup(Problem & problem);
+
+  /// Whether this object may be evaluated from several threads at once.
+  /// Objects implemented in C++ are thread safe because they only read their
+  /// own parameters and write into the integration-point context, which is
+  /// private to each thread.  Objects implemented in Python are not, because
+  /// calling back into the interpreter requires the global interpreter lock;
+  /// the Python bindings override this to return false, and the problem then
+  /// assembles serially.
+  ///
+  /// A C++ object is still unsafe when one of its parameters holds a function
+  /// that is not, which is what happens when a Python callable is passed
+  /// straight to a parameter, as in value=lambda x, y, z, t: ...  The default
+  /// implementation therefore checks every function-valued parameter as well,
+  /// and an override in a derived class should call it rather than simply
+  /// returning true.
+  virtual bool threadSafe() const { return parametersAreThreadSafe(); }
+
+  /// True when no function stored in this object's parameters refuses to be
+  /// called from several threads.
+  bool parametersAreThreadSafe() const;
+
+protected:
+  /// Resolve a Function-valued parameter (constant, function name, or object).
+  FunctionPtr getFunction(Problem & problem, const std::string & param) const;
+
+  InputParameters _params;
+  std::string _name;
+  std::string _type;
+};
+
+/// Common base of objects that contribute to the residual of one variable.
+class ResidualObject : public Object
+{
+public:
+  explicit ResidualObject(const InputParameters & params);
+  static InputParameters validParams();
+  /// Add 'block', 'quadrature' and 'reduced_integration', the parameters of an object that is integrated over elements or sides.
+  static void addIntegrationParams(InputParameters & p);
+
+  void initialSetup(Problem & problem) override;
+
+  /// Index of the variable (equation) this object contributes to.
+  int variable() const { return _var; }
+  const std::string & variableName() const { return _var_name; }
+  /// Block ids this object acts on (empty = everywhere).
+  const std::set<int> & blocks() const { return _blocks; }
+  bool activeOnBlock(int b) const { return _blocks.empty() || _blocks.count(b); }
+  const QuadratureSpec & quadrature() const { return _quad; }
+  /// Whether the object is data that drives the problem (a source, a body force, a prescribed
+  /// flux or load), which the continuation of a steady solve ramps up (QpContext::data_fraction).
+  virtual bool isLoad() const { return false; }
+  /// Whether the term is taken at the new time only in a step of the theta method (weight 1 at
+  /// the new time, none at the old), as every term of an equation without a time derivative
+  /// is: the pressure gradient, through which the pressure, which has no time derivative, enters
+  /// the momentum equations (Problem::steadyWeight).
+  virtual bool atNewTime() const { return false; }
+
+protected:
+  /// Resolve a coupled variable name given by parameter @p param.
+  int coupledVariable(Problem & problem, const std::string & param) const;
+
+  std::string _var_name;
+  int _var = -1;
+  std::set<int> _blocks;
+  QuadratureSpec _quad;
+};
+
+} // namespace dualmesh

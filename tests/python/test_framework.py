@@ -1,0 +1,341 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+"""Tests of the framework itself: meshes, parameters, solvers, examples.
+
+These complement the verification suite (which checks published results) by
+exercising the machinery: mesh generation and file input/output, parameter
+validation and its error messages, blocks, point sources, transient
+integration, three-dimensional elements, spherical coordinates, objects
+written in Python, the examples and the command-line tools.
+"""
+
+from __future__ import annotations
+
+import math
+
+import dualmesh
+import numpy
+import pytest
+
+
+# ---------------------------------------------------------------------------
+# parameters and error messages
+# ---------------------------------------------------------------------------
+def test_unknown_parameter_is_reported_with_the_accepted_names():
+    mesh = dualmesh.generate_line_mesh(start=0.0, end=1.0, num_elements=2)
+    problem = dualmesh.Problem(mesh, method="DMCDM")
+    problem.add_variable("u")
+    with pytest.raises(ValueError, match="Unknown parameter 'conductivity'"):
+        problem.add_kernel("diffusion", variable="u", conductivity=1.0)
+
+
+def test_missing_required_parameter_is_reported():
+    mesh = dualmesh.generate_line_mesh(start=0.0, end=1.0, num_elements=2)
+    problem = dualmesh.Problem(mesh, method="DMCDM")
+    problem.add_variable("u")
+    with pytest.raises(ValueError, match="Missing required parameter 'variable'"):
+        problem.add_kernel("diffusion")
+
+
+def test_unknown_variable_and_boundary_are_reported():
+    mesh = dualmesh.generate_line_mesh(start=0.0, end=1.0, num_elements=2)
+    problem = dualmesh.Problem(mesh, method="DMCDM")
+    problem.add_variable("u")
+    problem.add_kernel("diffusion", variable="u")
+    with pytest.raises(ValueError, match="the mesh has no boundary 'norht'"):
+        problem.add_boundary_condition("Dirichlet", "norht", variable="u", value=0.0)
+
+
+# ---------------------------------------------------------------------------
+# physics of the framework objects
+# ---------------------------------------------------------------------------
+def test_blocks_allow_different_materials_in_one_mesh():
+    """Two-layer wall: the flux is continuous and the interface value is known."""
+    left_conductivity, right_conductivity = 1.0, 3.0
+    mesh = dualmesh.generate_line_mesh(coordinates=numpy.linspace(0.0, 2.0, 21))
+    # Block 0 for x < 1, block 1 for x > 1
+    layered = dualmesh.Mesh(1)
+    for point in numpy.asarray(mesh.points()):
+        layered.add_node([float(point[0]), 0.0, 0.0])
+    for element in range(mesh.num_elements):
+        nodes = mesh.element_nodes(element)
+        centre = 0.5 * sum(float(numpy.asarray(mesh.points())[n][0]) for n in nodes)
+        layered.add_element("Edge2", list(nodes), 0 if centre < 1.0 else 1)
+    layered.add_bounding_box_sidesets()
+    layered.add_nodeset("left", [0])
+    layered.add_nodeset("right", [layered.num_nodes - 1])
+
+    problem = dualmesh.Problem(layered, method="DMCDM")
+    problem.add_variable("temperature")
+    problem.add_kernel(
+        "heat_conduction",
+        variable="temperature",
+        thermal_conductivity=left_conductivity,
+        block=["0"],
+    )
+    problem.add_kernel(
+        "heat_conduction",
+        variable="temperature",
+        thermal_conductivity=right_conductivity,
+        block=["1"],
+    )
+    problem.add_boundary_condition("Dirichlet", "left", variable="temperature", value=100.0)
+    problem.add_boundary_condition("Dirichlet", "right", variable="temperature", value=0.0)
+    problem.solve()
+
+    # Series resistance: T_interface = 100 * R_right / (R_left + R_right)
+    resistance_left, resistance_right = 1.0 / left_conductivity, 1.0 / right_conductivity
+    expected = 100.0 * resistance_right / (resistance_left + resistance_right)
+    assert problem.sample("temperature", [[1.0]])[0] == pytest.approx(expected, rel=1e-12)
+
+
+def test_point_source_and_reaction_balance():
+    """A point heat source in a bar leaves through the two fixed ends."""
+    mesh = dualmesh.generate_line_mesh(start=0.0, end=1.0, num_elements=10)
+    problem = dualmesh.Problem(mesh, method="DMCDM")
+    problem.add_variable("temperature")
+    problem.add_kernel("diffusion", variable="temperature")
+    problem.add_point_source(variable="temperature", value=2.0, points=[0.5])
+    problem.add_boundary_condition(
+        "Dirichlet",
+        ["left", "right"],
+        variable="temperature",
+        value=0.0,
+    )
+    problem.solve()
+    # Symmetric: half the source leaves through each end
+    assert -problem.boundary_flux("temperature", "left") == pytest.approx(-1.0, rel=1e-12)
+    assert -problem.boundary_flux("temperature", "right") == pytest.approx(-1.0, rel=1e-12)
+    # Peak value: q L / 4 for a unit conductivity
+    assert problem.sample("temperature", [[0.5]])[0] == pytest.approx(0.5, rel=1e-12)
+
+
+def test_radiative_boundary_condition_is_nonlinear_and_converges():
+    mesh = dualmesh.generate_line_mesh(start=0.0, end=0.1, num_elements=10)
+    problem = dualmesh.Problem(mesh, method="DMCDM")
+    problem.add_variable("temperature", initial_condition=1000.0)
+    problem.add_kernel("heat_conduction", variable="temperature", thermal_conductivity=20.0)
+    problem.add_boundary_condition("Dirichlet", "left", variable="temperature", value=1000.0)
+    problem.add_boundary_condition(
+        "radiative_heat_flux",
+        "right",
+        variable="temperature",
+        emissivity=0.8,
+        ambient_temperature=300.0,
+    )
+    result = problem.solve()
+    assert result.converged
+    temperature = problem.values("temperature")
+    assert 300.0 < temperature[-1] < 1000.0
+    # The heat conducted to the surface must equal the heat radiated away
+    Stefan_Boltzmann = 5.670374419e-8
+    radiated = 0.8 * Stefan_Boltzmann * (temperature[-1] ** 4 - 300.0**4)
+    conducted = 20.0 * (temperature[-2] - temperature[-1]) / 0.01
+    assert conducted == pytest.approx(radiated, rel=1e-3)
+
+
+def test_spherical_coordinates_reproduce_the_analytical_solution():
+    """Conduction in a sphere with uniform generation: T = T0 + g (R^2 - r^2) / (6k)."""
+    radius, conductivity, generation, surface = 0.2, 5.0, 1.0e5, 50.0
+    mesh = dualmesh.generate_line_mesh(start=0.0, end=radius, num_elements=20)
+    problem = dualmesh.Problem(mesh, method="DMCDM", coordinates="spherical")
+    problem.add_variable("temperature")
+    problem.add_kernel("heat_conduction", variable="temperature", thermal_conductivity=conductivity)
+    problem.add_kernel("body_force", variable="temperature", value=generation)
+    problem.add_boundary_condition(
+        "Dirichlet",
+        "right",
+        variable="temperature",
+        value=surface,
+    )
+    problem.solve()
+    r = numpy.linspace(0.0, radius, 21)
+    exact = surface + generation * (radius**2 - r**2) / (6 * conductivity)
+    assert problem.values("temperature") == pytest.approx(exact, rel=1e-3)
+    # The heat leaving the surface is the heat generated in the sphere
+    generated = generation * 4.0 / 3.0 * math.pi * radius**3
+    assert -problem.boundary_flux("temperature", "right") == pytest.approx(-generated, rel=1e-12)
+
+
+def test_three_dimensional_conduction_and_elasticity():
+    mesh = dualmesh.generate_box_mesh(
+        x_min=0.0,
+        x_max=1.0,
+        y_min=0.0,
+        y_max=0.5,
+        z_min=0.0,
+        z_max=0.5,
+        num_x_elements=6,
+        num_y_elements=3,
+        num_z_elements=3,
+    )
+    conduction = dualmesh.Problem(mesh, method="DMCDM")
+    conduction.add_variable("temperature")
+    conduction.add_kernel("heat_conduction", variable="temperature", thermal_conductivity=2.0)
+    conduction.add_boundary_condition("Dirichlet", "left", variable="temperature", value=100.0)
+    conduction.add_boundary_condition("Dirichlet", "right", variable="temperature", value=0.0)
+    conduction.solve()
+    # The exact solution is linear in x, which the method reproduces exactly
+    points = numpy.asarray(mesh.points())
+    assert conduction.values("temperature") == pytest.approx(100.0 * (1.0 - points[:, 0]), abs=1e-9)
+    # And the heat flow is k A dT/dx = 2 * 0.25 * 100 / 1
+    assert -conduction.boundary_flux("temperature", "left") == pytest.approx(50.0, rel=1e-9)
+
+    bar = dualmesh.Problem(mesh, method="DMCDM")
+    bar.add_physics(
+        "solid_mechanics",
+        youngs_modulus=1000.0,
+        poissons_ratio=0.3,
+        formulation="three_dimensional",
+    )
+    bar.add_boundary_condition("Dirichlet", "left", variable="disp_x", value=0.0)
+    bar.add_boundary_condition("Dirichlet", "bottom", variable="disp_y", value=0.0)
+    bar.add_boundary_condition("Dirichlet", "back", variable="disp_z", value=0.0)
+    bar.add_boundary_condition("traction", "right", variable="disp_x", traction=10.0)
+    bar.solve()
+    # Uniaxial tension: u(L) = sigma L / E, and the lateral strain is -nu times it
+    assert bar.values("disp_x").max() == pytest.approx(10.0 * 1.0 / 1000.0, rel=1e-9)
+    assert bar.values("disp_y").min() == pytest.approx(-0.3 * 10.0 / 1000.0 * 0.5, rel=1e-9)
+
+
+def test_transient_conduction_against_the_Fourier_series():
+    length, diffusivity, end_time = 1.0, 1.0, 0.05
+    mesh = dualmesh.generate_line_mesh(start=0.0, end=length, num_elements=40)
+    problem = dualmesh.Problem(mesh, method="DMCDM")
+    problem.add_variable("temperature", initial_condition=1.0)
+    problem.add_kernel("heat_conduction", variable="temperature", thermal_conductivity=diffusivity)
+    problem.add_kernel(
+        "heat_conduction_time_derivative", variable="temperature", density=1.0, specific_heat=1.0
+    )
+    problem.add_boundary_condition(
+        "Dirichlet",
+        ["left", "right"],
+        variable="temperature",
+        value=0.0,
+    )
+    problem.solve_transient(end_time=end_time, time_step=0.001, time_scheme="Crank-Nicolson")
+
+    x = numpy.linspace(0.05, 0.95, 10)
+    exact = numpy.zeros_like(x)
+    for n in range(1, 400, 2):
+        exact += (
+            (4.0 / (n * math.pi))
+            * numpy.sin(n * math.pi * x / length)
+            * math.exp(-((n * math.pi / length) ** 2) * diffusivity * end_time)
+        )
+    assert problem.sample("temperature", x.reshape(-1, 1)) == pytest.approx(exact, abs=1e-3)
+
+
+# ---------------------------------------------------------------------------
+# objects written in Python
+# ---------------------------------------------------------------------------
+class exponential_source(dualmesh.PythonKernel):
+    """S = -a exp(-b u): a nonlinear source written in Python."""
+
+    def compute_source(self, ctx):
+        return -self.magnitude * dualmesh.exp(-self.rate * ctx.value(self.variable))
+
+
+class recording_source(dualmesh.PythonKernel):
+    """A zero source that records the linearisation and the boundary flag it is called with."""
+
+    seen: set = set()
+
+    def compute_source(self, ctx):
+        recording_source.seen.add(("kernel", ctx.is_picard, ctx.on_boundary))
+        return 0.0 * ctx.value(self.variable)
+
+
+def _three_dimensional_problem(method, n=8):
+    """A nonsymmetric 3D problem with a variable coefficient."""
+    mesh = dualmesh.generate_box_mesh(
+        x_min=0.0,
+        x_max=1.0,
+        y_min=0.0,
+        y_max=1.0,
+        z_min=0.0,
+        z_max=1.0,
+        num_x_elements=n,
+        num_y_elements=n,
+        num_z_elements=n,
+        element_type="Tet4",
+    )
+    problem = dualmesh.Problem(mesh, method=method)
+    problem.add_variable("u")
+    problem.add_kernel("diffusion", variable="u", diffusivity="1 + x*y")
+    problem.add_kernel("advection", variable="u", velocity=[1.0, 0.5, 0.0])
+    problem.add_kernel("body_force", variable="u", value="sin(pi*x)*z")
+    problem.add_boundary_condition(
+        "Dirichlet",
+        list(mesh.sideset_names()),
+        variable="u",
+        value="x*y",
+    )
+    return problem
+
+
+@pytest.mark.parametrize("method", ["fem", "dmcdm"])
+@pytest.mark.parametrize(
+    "petsc_options",
+    [
+        None,
+        "-ksp_type bcgs -pc_type ilu",
+        "-ksp_type gmres -ksp_gmres_restart 100 -pc_type ilu",
+        "-ksp_type gmres -ksp_gmres_restart 100 -pc_type hypre -pc_hypre_type boomeramg",
+        "-ksp_type gmres -pc_type jacobi -ksp_max_it 20000",
+    ],
+)
+def test_the_iterative_solvers_agree_with_the_direct_solver(method, petsc_options):
+    """Every combination reaches the direct solution to the linear tolerance,
+    on a nonsymmetric system (advection) of each discretisation."""
+    direct = _three_dimensional_problem(method)
+    direct.solve(petsc_options="-ksp_type preonly -pc_type lu")
+    iterative = _three_dimensional_problem(method)
+    result = iterative.solve(petsc_options=petsc_options)
+    assert numpy.allclose(iterative.values("u"), direct.values("u"), rtol=0, atol=1e-9)
+    assert result.linear_iterations > 0 or petsc_options is None
+
+
+def test_divergence_is_reported():
+    mesh = dualmesh.generate_line_mesh(start=0.0, end=1.0, num_elements=10)
+    problem = dualmesh.Problem(mesh, method="DMCDM")
+    problem.add_variable("u", initial_condition=1.0)
+    problem.add_kernel("diffusion", variable="u")
+    # An exponentially growing source with no solution nearby
+    problem.add_kernel(exponential_source(variable="u", magnitude=1.0e8, rate=-5.0))
+    problem.add_boundary_condition("Dirichlet", ["left", "right"], variable="u", value=0.0)
+    with pytest.raises(RuntimeError, match="did not converge"):
+        problem.solve(max_iterations=3)
+    result = problem.solve(max_iterations=3, error_on_divergence=False)
+    assert not result.converged
+
+
+def test_a_python_callable_parameter_forces_serial_assembly():
+    """A Python callable can be given straight to a parameter, as in
+    ``value=lambda x, y, z, t: ...``.  It is then held inside the object's
+    parameters rather than registered as a named function, but it still calls
+    back into the interpreter, so it still has to switch the assembly onto one
+    thread.  Without this the threaded element loop deadlocks on the global
+    interpreter lock as soon as the mesh is large enough to be split between
+    threads.
+    """
+    mesh = dualmesh.generate_rectangle_mesh(
+        x_min=0.0, x_max=1.0, y_min=0.0, y_max=1.0, num_x_elements=30, num_y_elements=30
+    )
+    problem = dualmesh.Problem(mesh, method="DMCDM")
+    problem.add_variable("u")
+    problem.add_kernel("diffusion", variable="u")
+    assert problem.thread_safe  # Nothing from Python yet
+
+    problem.add_kernel("body_force", variable="u", value=lambda x, y, z, t: x + y)
+    assert not problem.thread_safe
+    problem.set_num_threads(2)
+    assert problem.effective_threads() == 1
+
+    problem.add_boundary_condition(
+        "Dirichlet",
+        mesh.sideset_names(),
+        variable="u",
+        value=0.0,
+    )
+    problem.solve()  # Must finish rather than hang
+    assert numpy.isfinite(problem.values("u")).all()

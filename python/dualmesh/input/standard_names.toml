@@ -1,0 +1,236 @@
+# The vocabulary of dualmesh: one table per standard name.
+#
+# Each table holds these keys:
+#   unit         the unit in the International System of Units (SI). The dimension
+#                follows from it, so the file does not repeat it.
+#   shape        "scalar", "vector", "tensor" or "scalar_or_tensor".
+#   description  one line that says what the quantity is.
+#   ISO_name     the name in ISO 80000, only where it differs from the standard name.
+#                ISO is the International Organization for Standardization.
+#   value        a physical constant only: its value with its unit.
+#
+# A vector takes the components <name>_x, <name>_y and <name>_z.
+# A tensor takes the components <name>_xx, <name>_xy, <name>_xz, <name>_yx and so on.
+# In axisymmetric coordinates, the suffixes are r for the radius and z for the axis,
+# as in <name>_r, <name>_z and <name>_rz.
+
+# Fields
+
+[temperature]
+unit = "K"
+shape = "scalar"
+description = "thermodynamic temperature"
+ISO_name = "thermodynamic temperature"
+
+[displacement]
+unit = "m"
+shape = "vector"
+description = "displacement of a material point"
+
+[velocity]
+unit = "m/s"
+shape = "vector"
+description = "flow velocity"
+
+[pressure]
+unit = "Pa"
+shape = "scalar"
+description = "pressure of a fluid"
+
+[concentration]
+unit = "mol/m^3"
+shape = "scalar"
+description = "amount of a species per volume"
+
+[damage]
+unit = "1"
+shape = "scalar"
+description = "crack indicator from 0 (intact) to 1 (broken)"
+
+# Derived results and internal state
+
+[heat_flux]
+unit = "W/m^2"
+shape = "vector"
+description = "heat flow per area"
+ISO_name = "density of heat flow rate"
+
+[stress]
+unit = "Pa"
+shape = "tensor"
+description = "Cauchy stress"
+
+[strain]
+unit = "1"
+shape = "tensor"
+description = "small or logarithmic strain"
+
+[von_Mises_stress]
+unit = "Pa"
+shape = "scalar"
+description = "equivalent stress of the stress deviator"
+
+[plastic_strain]
+unit = "1"
+shape = "tensor"
+description = "plastic part of the strain"
+
+[equivalent_plastic_strain]
+unit = "1"
+shape = "scalar"
+description = "accumulated plastic strain"
+
+# Physical properties
+
+[density]
+unit = "kg/m^3"
+shape = "scalar"
+description = "mass per volume"
+
+[specific_heat_capacity]
+unit = "J/(kg*K)"
+shape = "scalar"
+description = "heat capacity per mass at constant pressure"
+ISO_name = "specific heat capacity at constant pressure"
+
+[thermal_conductivity]
+unit = "W/(m*K)"
+shape = "scalar_or_tensor"
+description = "Fourier law coefficient"
+
+[linear_expansion_coefficient]
+unit = "1/K"
+shape = "scalar"
+description = "relative change of length per temperature change"
+
+[stress_free_temperature]
+unit = "K"
+shape = "scalar"
+description = "temperature of zero thermal strain"
+
+[Young_modulus]
+unit = "Pa"
+shape = "scalar"
+description = "uniaxial elastic modulus"
+
+[Poisson_ratio]
+unit = "1"
+shape = "scalar"
+description = "lateral contraction per axial extension"
+ISO_name = "Poisson number"
+
+[shear_modulus]
+unit = "Pa"
+shape = "scalar"
+description = "elastic modulus in shear"
+
+[yield_stress]
+unit = "Pa"
+shape = "scalar"
+description = "equivalent stress at the onset of plastic flow"
+
+[dynamic_viscosity]
+unit = "Pa*s"
+shape = "scalar"
+description = "Newtonian viscosity"
+
+[diffusivity]
+unit = "m^2/s"
+shape = "scalar_or_tensor"
+description = "Fick law coefficient"
+ISO_name = "diffusion coefficient"
+
+[burnup]
+unit = "J/kg"
+shape = "scalar"
+description = "fission energy released per unit mass of initial heavy metal"
+
+# Sources and loads
+
+[volumetric_heat_source]
+unit = "W/m^3"
+shape = "scalar"
+description = "heat produced per volume and time"
+
+[body_force_density]
+unit = "N/m^3"
+shape = "vector"
+description = "force per volume"
+
+[traction]
+unit = "Pa"
+shape = "vector"
+description = "force per area on a surface"
+
+[heat_transfer_coefficient]
+unit = "W/(m^2*K)"
+shape = "scalar"
+description = "convective heat flux per temperature difference"
+ISO_name = "surface coefficient of heat transfer"
+
+[ambient_temperature]
+unit = "K"
+shape = "scalar"
+description = "temperature of the surroundings"
+
+[emissivity]
+unit = "1"
+shape = "scalar"
+description = "radiative emissivity of a surface"
+
+# Geometry and time
+
+[thickness]
+unit = "m"
+shape = "scalar"
+description = "out-of-plane thickness of a plane problem or a shell"
+
+[time]
+unit = "s"
+shape = "scalar"
+description = "time"
+ISO_name = "duration"
+
+[time_step]
+unit = "s"
+shape = "scalar"
+description = "step of a transient run"
+
+# Physical constants. The values come from the table of the National Institute of
+# Standards and Technology (NIST) of the values that the Committee on Data of the
+# International Science Council (CODATA) recommends,
+# https://physics.nist.gov/cuu/Constants/Table/allascii.txt, accessed 2026-11-19.
+# The first four are exact in the SI of 2019. The molar gas constant is the exact
+# product of the Avogadro and Boltzmann constants. The Stefan-Boltzmann constant
+# follows from exact constants but has infinitely many digits, so it is rounded to
+# the ten digits of the table.
+
+[Boltzmann_constant]
+unit = "J/K"
+shape = "scalar"
+value = "1.380649e-23 J/K"
+description = "Boltzmann constant, exact in the SI of 2019"
+
+[Avogadro_constant]
+unit = "1/mol"
+shape = "scalar"
+value = "6.02214076e23 1/mol"
+description = "Avogadro constant, exact in the SI of 2019"
+
+[elementary_charge]
+unit = "C"
+shape = "scalar"
+value = "1.602176634e-19 C"
+description = "elementary charge, exact in the SI of 2019"
+
+[molar_gas_constant]
+unit = "J/(mol*K)"
+shape = "scalar"
+value = "8.31446261815324 J/(mol*K)"
+description = "molar gas constant, the exact product of the Avogadro and Boltzmann constants"
+
+[Stefan_Boltzmann_constant]
+unit = "W/(m^2*K^4)"
+shape = "scalar"
+value = "5.670374419e-8 W/(m^2*K^4)"
+description = "Stefan-Boltzmann constant, rounded to ten digits"

@@ -1,0 +1,209 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+"""The input of a simulation solves to the exact answer of its problem: a heated slab, a slab
+cooled by convection and a bar pulled by a traction. The same problem given in other units,
+or read from a YAML file, gives the same answer, and an input that no physics reads, or that
+leaves out what a physics needs, is refused with its key."""
+
+import csv
+
+import dualmesh
+import numpy
+import pytest
+
+length, conductivity, source, wall_temperature = 0.1, 45.0, 1.0e6, 300.0
+
+
+def heated_slab(size="0.1 m", cells=20):
+    """A slab of conductivity k with a uniform heat source q, held at the temperature T0 at
+    both faces: T(x) = T0 + q x (L - x) / (2 k)."""
+    slab = dualmesh.problem(mesh={"segment": {"length": size, "cells": cells}})
+    slab.physics("heat_conduction")
+    slab.properties(thermal_conductivity="45 W/(m*K)", volumetric_heat_source="1 MW/m^3")
+    slab.boundary_conditions("left", temperature="300 K")
+    slab.boundary_conditions("right", temperature="300 K")
+    return slab
+
+
+def exact_slab_temperature(x):
+    return wall_temperature + source * x * (length - x) / (2 * conductivity)
+
+
+def test_a_heated_slab_takes_the_exact_temperature_at_the_nodes():
+    """Linear elements in one dimension are exact at the nodes for a uniform source."""
+    solution = heated_slab().solve(report="none")
+    x = solution.coordinates("temperature")[:, 0]
+    temperature = solution.field("temperature")[:, 0]
+    assert temperature == pytest.approx(exact_slab_temperature(x), rel=1e-10)
+
+
+def test_the_same_slab_in_millimetres_gives_the_same_temperatures():
+    in_metres = heated_slab().solve(report="none")
+    in_millimetres = heated_slab(size="100 mm").solve(report="none")
+    assert in_millimetres.field("temperature") == pytest.approx(
+        in_metres.field("temperature"), rel=1e-12
+    )
+
+
+def test_the_same_slab_read_from_a_YAML_file_gives_the_same_temperatures(tmp_path):
+    slab = heated_slab()
+    slab.to_YAML(tmp_path / "slab.yaml")
+    read_back = dualmesh.problem.from_file(tmp_path / "slab.yaml")
+    assert read_back.to_tree() == slab.to_tree()
+    assert read_back.solve(report="none").field("temperature") == pytest.approx(
+        slab.solve(report="none").field("temperature"), rel=1e-12
+    )
+
+
+def test_a_slab_cooled_by_convection_has_the_heat_flow_of_its_series_resistance():
+    """The heat flow through a slab of conductivity k and thickness L into a fluid at T_a with the
+    coefficient h is q = (T_0 - T_a) / (L/k + 1/h), and the cooled face is at T_0 - q L/k."""
+    hot, ambient, coefficient = 400.0, 300.0, 250.0
+    slab = dualmesh.problem(mesh={"segment": {"length": "0.1 m", "cells": 10}})
+    slab.physics("heat_conduction")
+    slab.properties(thermal_conductivity="45 W/(m*K)")
+    slab.boundary_conditions("left", temperature="400 K")
+    slab.boundary_conditions(
+        "right",
+        convection={"heat_transfer_coefficient": "250 W/(m^2*K)", "ambient_temperature": "300 K"},
+    )
+    slab.postprocessor("heat_to_air", boundary_flux="heat_flux", boundary="right")
+    solution = slab.solve(report="none")
+    flow = (hot - ambient) / (length / conductivity + 1.0 / coefficient)
+    x = solution.coordinates("temperature")[:, 0]
+    temperature = solution.field("temperature")[:, 0]
+    assert temperature[numpy.argmax(x)] == pytest.approx(
+        hot - flow * length / conductivity, rel=1e-10
+    )
+    assert solution.postprocessor("heat_to_air")[-1] == pytest.approx(flow, rel=1e-8)
+    assert solution.unit("heat_to_air") == "W/m^2"
+
+
+def test_a_bar_pulled_by_a_traction_stretches_by_sigma_L_over_E():
+    """In plane stress a uniform traction sigma gives u_x = sigma x / E and u_y = -nu sigma y / E."""
+    bar = dualmesh.problem(mesh={"rectangle": {"size": ["2 m", "0.5 m"], "cells": [8, 2]}})
+    bar.physics("solid_mechanics", formulation="plane_stress")
+    bar.properties(Young_modulus="200 GPa", Poisson_ratio=0.3)
+    bar.boundary_conditions("left", displacement_x="0 m")
+    bar.boundary_conditions("bottom", displacement_y="0 m")
+    bar.boundary_conditions("right", traction=["100 MPa", "0 Pa"])
+    solution = bar.solve(report="none")
+    x, y = solution.coordinates("displacement").T
+    displacement = solution.field("displacement")
+    assert displacement[:, 0] == pytest.approx(1.0e8 * x / 2.0e11, rel=1e-9, abs=1e-15)
+    assert displacement[:, 1] == pytest.approx(-0.3 * 1.0e8 * y / 2.0e11, rel=1e-9, abs=1e-15)
+
+
+def test_a_property_that_no_physics_reads_is_refused():
+    slab = heated_slab()
+    slab.properties(Young_modulus="200 GPa")
+    with pytest.raises(
+        dualmesh.input_error, match=r"properties\.Young_modulus: no physics of the problem reads"
+    ):
+        slab.solve(report="none")
+
+
+def test_a_property_that_a_physics_needs_is_asked_for():
+    slab = dualmesh.problem(mesh={"segment": {"length": "1 m", "cells": 4}})
+    slab.physics("heat_conduction")
+    slab.boundary_conditions("left", temperature="300 K")
+    with pytest.raises(
+        dualmesh.input_error, match="heat_conduction needs the property thermal_conductivity"
+    ):
+        slab.solve(report="none")
+
+
+def test_a_transient_run_writes_its_fields_and_its_postprocessors_with_their_units(
+    tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    slab = heated_slab(cells=10)
+    slab.properties(density="7850 kg/m^3", specific_heat_capacity="490 J/(kg*K)")
+    slab.initial_conditions(temperature="300 K")
+    slab.time(end_time="40 s", initial_time_step="10 s", step_control={"by": "fixed"})
+    slab.postprocessor("peak", maximum="temperature")
+    slab.output(file="slab", interval=2, fields=["temperature"])
+    solution = slab.solve(report="none")
+    assert solution.times == pytest.approx([10.0, 20.0, 30.0, 40.0])
+    assert sorted(path.name for path in tmp_path.glob("slab_*.vtu")) == [
+        "slab_0000.vtu",
+        "slab_0001.vtu",
+        "slab_0002.vtu",
+    ]
+    assert (tmp_path / "slab.pvd").exists()
+    with open(tmp_path / "slab.csv") as file:
+        rows = list(csv.reader(file))
+    assert rows[0] == ["time [s]", "peak [K]"]
+    assert [float(row[0]) for row in rows[1:]] == pytest.approx(solution.output_times)
+    # The peak rises from 300 K and stays below the steady peak.
+    peaks = [float(row[1]) for row in rows[1:]]
+    assert peaks[0] >= 300.0 and peaks[-1] > 300.0
+    assert all(peak < exact_slab_temperature(length / 2) for peak in peaks)
+    assert peaks == sorted(peaks)
+
+
+def test_the_bus_bar_example_gives_the_temperature_of_Reddy(tmp_path, monkeypatch):
+    """Example 5.4.3 of Reddy's book, as examples/bus_bar.py writes it: 83.142 degC at the middle
+    of the bottom edge, given to three decimals."""
+    import importlib.util
+    from pathlib import Path
+
+    monkeypatch.chdir(tmp_path)
+    path = Path(__file__).resolve().parents[2] / "examples" / "bus_bar.py"
+    specification = importlib.util.spec_from_file_location("bus_bar_example", path)
+    example = importlib.util.module_from_spec(specification)
+    specification.loader.exec_module(example)
+    solution = example.bus_bar().solve(report="none")
+    assert solution.postprocessor("temperature_bottom")[-1] - 273.15 == pytest.approx(
+        83.142, abs=5e-4
+    )
+    assert (tmp_path / "bus_bar.pvd").exists() and (tmp_path / "bus_bar.csv").exists()
+
+
+def test_the_cooling_fin_example_gives_the_temperatures_of_Reddy():
+    """The fin of examples/cooling_fin.py, five DMCDM elements, against the book to two decimals."""
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[2] / "examples" / "cooling_fin.py"
+    specification = importlib.util.spec_from_file_location("cooling_fin_example", path)
+    example = importlib.util.module_from_spec(specification)
+    specification.loader.exec_module(example)
+    solution = example.fin().solve(report="none")
+    order = solution.coordinates("temperature")[:, 0].argsort()
+    excess = solution.field("temperature")[order, 0] - example.ambient_temperature
+    assert excess == pytest.approx(example.published_excess_temperatures, abs=5e-3)
+
+
+def test_a_pressure_on_every_face_compresses_a_plane_strain_block_uniformly():
+    """A pressure p on the faces of a block in plane strain gives the strain
+    -p (1 + nu)(1 - 2 nu)/E in both directions, the out-of-plane stress -2 nu p held by the
+    plane strain."""
+    block = dualmesh.problem(mesh={"rectangle": {"size": ["1 m", "0.5 m"], "cells": [4, 2]}})
+    block.physics("solid_mechanics", formulation="plane_strain")
+    block.properties(Young_modulus="200 GPa", Poisson_ratio=0.3)
+    block.boundary_conditions("left", displacement_x="0 m")
+    block.boundary_conditions("bottom", displacement_y="0 m")
+    block.boundary_conditions("right", pressure="10 MPa")
+    block.boundary_conditions("top", pressure="10 MPa")
+    solution = block.solve(report="none")
+    strain = -1.0e7 * (1 + 0.3) * (1 - 2 * 0.3) / 2.0e11
+    x, y = solution.coordinates("displacement").T
+    displacement = solution.field("displacement")
+    assert displacement[:, 0] == pytest.approx(strain * x, rel=1e-9, abs=1e-16)
+    assert displacement[:, 1] == pytest.approx(strain * y, rel=1e-9, abs=1e-16)
+
+
+def test_the_stress_at_a_point_of_a_pulled_bar_is_the_applied_traction():
+    """A uniform traction of 100 MPa gives sigma_xx = 100 MPa and sigma_yy = 0 at every point."""
+    bar = dualmesh.problem(mesh={"rectangle": {"size": ["2 m", "0.5 m"], "cells": [8, 2]}})
+    bar.physics("solid_mechanics", formulation="plane_stress")
+    bar.properties(Young_modulus="200 GPa", Poisson_ratio=0.3)
+    bar.boundary_conditions("left", displacement_x="0 m")
+    bar.boundary_conditions("bottom", displacement_y="0 m")
+    bar.boundary_conditions("right", traction=["100 MPa", "0 Pa"])
+    bar.postprocessor("axial", point_value="stress_xx", point=["0.7 m", "0.3 m"])
+    bar.postprocessor("lateral", point_value="stress_yy", point=["1.3 m", "0.1 m"])
+    solution = bar.solve(report="none")
+    assert solution.postprocessor("axial")[-1] == pytest.approx(1.0e8, rel=1e-9)
+    assert solution.postprocessor("lateral")[-1] == pytest.approx(0.0, abs=1e-3)
+    assert solution.unit("axial") == "Pa"
