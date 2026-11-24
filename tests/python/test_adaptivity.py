@@ -158,11 +158,35 @@ def test_refinement_leaves_no_hanging_node():
         assert problem.values("u") == pytest.approx(expected, abs=1e-11)
 
 
-def test_refinement_of_a_non_triangular_mesh_is_refused_with_a_reason():
+def test_a_marked_quadrilateral_splits_into_four_and_leaves_nodes_hanging():
+    """The cell at the origin of 2 by 2 quadrilaterals splits into four children, which come from
+    it; its two neighbours across a side stay whole, with a node hanging in the middle of the
+    shared side."""
     mesh = dualmesh.generate_rectangle_mesh(
         x_min=0.0, x_max=1.0, y_min=0.0, y_max=1.0, num_x_elements=2, num_y_elements=2
     )
-    with pytest.raises(Exception, match="triangular"):
+    centres = numpy.asarray(
+        [numpy.mean([mesh.points()[n] for n in cell[1]], axis=0) for cell in mesh.cells()]
+    )
+    corner = int(numpy.argmin(centres[:, 0] + centres[:, 1]))
+    refined, parents = dualmesh.refine_marked(mesh, numpy.arange(4) == corner)
+    assert refined.num_elements == 7
+    assert sorted(parents.tolist()).count(corner) == 4
+    # Four edge middles, two of them hanging, and the centre.
+    assert refined.num_nodes == 9 + 5
+
+
+def test_refinement_of_a_quadratic_quadrilateral_mesh_is_refused_with_a_reason():
+    mesh = dualmesh.generate_rectangle_mesh(
+        x_min=0.0,
+        x_max=1.0,
+        y_min=0.0,
+        y_max=1.0,
+        num_x_elements=2,
+        num_y_elements=2,
+        element_type="Quad9",
+    )
+    with pytest.raises(Exception, match="Quad4 or Hex8"):
         dualmesh.refine_marked(mesh, numpy.ones(mesh.num_elements, dtype=bool))
 
 
@@ -326,6 +350,87 @@ def test_a_transient_run_adapts_the_mesh_to_the_front_that_enters_from_a_heated_
     temperature = solution.field("temperature")
     assert temperature.min() >= 300.0 - 1e-6
     assert temperature.max() <= 400.0 + 1e-6
+
+
+@pytest.mark.parametrize("cell_type", ["triangle", "quadrilateral"])
+def test_a_plate_pulled_by_a_traction_keeps_its_momentum_through_the_adapted_meshes(cell_type):
+    """A steel plate L = 1 m long, on rollers on its bottom and free otherwise, pulled on its right
+    side by sigma = 1 MPa from t = 0.  Its x-momentum grows as sigma H t whatever the waves inside,
+    and the generalized-alpha method keeps that balance exactly, so the mean displacement is
+    sigma t^2 / (2 rho L).  The mesh adapts to the waves every two steps by refinement alone,
+    which carries the displacement and the velocity as the same functions, so the mean stays
+    exact.  A run that went on from rest on each new mesh would lose the momentum."""
+    sigma, rho, end_time = 1e6, 7850.0, 2e-4
+    plate = dualmesh.problem(
+        mesh={"rectangle": {"size": ["1 m", "0.25 m"], "cells": [8, 2], "cell_type": cell_type}}
+    )
+    plate.physics("solid_mechanics", formulation="plane_strain")
+    plate.properties(Young_modulus="200 GPa", Poisson_ratio=0.3, density=f"{rho} kg/m^3")
+    plate.boundary_conditions("bottom", displacement_y="0 m")
+    plate.boundary_conditions("right", traction=[f"{sigma} Pa", "0 Pa"])
+    plate.time(end_time=f"{end_time} s", initial_time_step="2e-5 s", step_control={"by": "fixed"})
+    plate.postprocessor("mean", average="displacement_x")
+    plate.mesh_adaptivity(
+        indicator="gradient_recovery",
+        field="displacement",
+        refine_fraction=0.5,
+        coarsen_fraction=0.0,
+        interval=2,
+        maximum_refinement_level=2,
+    )
+    solution = plate.solve(report="none")
+    assert solution.times[-1] == pytest.approx(end_time)
+    assert len(solution.coordinates("displacement")) > 9 * 3
+    exact = sigma * end_time**2 / (2 * rho * 1.0)
+    assert solution.postprocessor("mean")[-1] == pytest.approx(exact, rel=1e-6)
+
+
+@pytest.mark.parametrize("element_type", ["Tri3", "Quad4"])
+def test_a_body_falling_under_its_weight_keeps_its_velocity_across_a_change_of_mesh(element_type):
+    """A steel square on rollers on its left side, pulled down by its weight rho g and free
+    otherwise: every point falls as u_y = -g t^2 / 2 with the velocity -g t, on any mesh, and the
+    generalized-alpha method integrates the constant acceleration exactly.  The run stops at
+    t_1 = 0.01 s, every cell is refined, the displacement and the velocity reached are carried to the
+    new mesh, and the run goes on to t_2 = 0.02 s.  A run that went on from rest would fall
+    g t_1 (t_2 - t_1), half the exact fall, short."""
+    from dualmesh.adaptivity import _Hierarchy
+
+    g, rho, t_1, t_2, dt = 9.81, 7850.0, 0.01, 0.02, 0.002
+
+    def falling(mesh):
+        problem = dualmesh.Problem(mesh)
+        solid = problem.add_physics(
+            "solid_mechanics",
+            formulation="plane_strain",
+            youngs_modulus=200e9,
+            poissons_ratio=0.3,
+            density=rho,
+            body_force=[0.0, -rho * g],
+        )
+        solid.add_boundary_condition("disp_x = 0", boundary="left")
+        return problem
+
+    hierarchy = _Hierarchy(
+        dualmesh.generate_rectangle_mesh(0.0, 1.0, 0.0, 1.0, 4, 4, element_type=element_type)
+    )
+    first = falling(hierarchy.mesh())
+    first.solve_transient(end_time=t_1, time_step=dt, report="none")
+    reached = {name: first.gathered_values(name) for name in ("disp_x", "disp_y")}
+    velocity = first.gathered_velocities()
+    assert set(velocity) == {"disp_x", "disp_y"}
+    assert velocity["disp_y"] == pytest.approx(-g * t_1, rel=1e-6)
+    cells = hierarchy.mesh().num_elements
+    assert hierarchy.adapt(numpy.ones(cells, bool), numpy.zeros(cells, bool), 1)
+
+    second = falling(hierarchy.mesh())
+    for name, values in reached.items():
+        second.set_gathered_values(name, hierarchy.transfer(values))
+    second.set_gathered_velocities({name: hierarchy.transfer(v) for name, v in velocity.items()})
+    second.solve_transient(end_time=t_2, start_time=t_1, time_step=dt, report="none")
+    assert hierarchy.mesh().num_elements > cells
+    assert second.gathered_values("disp_y") == pytest.approx(-0.5 * g * t_2**2, rel=1e-6)
+    assert second.gathered_velocities()["disp_y"] == pytest.approx(-g * t_2, rel=1e-6)
+    assert numpy.abs(second.gathered_values("disp_x")).max() < 1e-9 * 0.5 * g * t_2**2
 
 
 # ---------------------------------------------------------------------------

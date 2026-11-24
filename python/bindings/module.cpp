@@ -914,22 +914,6 @@ PYBIND11_MODULE(_core, m)
         py::arg("y"),
         py::arg("element_type") = "Quad4",
         py::arg("diagonal") = "alternate");
-  m.def(
-      "refine_marked",
-      [](const Mesh & mesh, const std::vector<int> & marked)
-      {
-        // pybind11 maps std::vector<char> to a sequence of one-character
-        // strings, so the flags cross the boundary as integers.
-        Bisection hierarchy(mesh);
-        hierarchy.refine(std::vector<char>(marked.begin(), marked.end()),
-                         std::numeric_limits<int>::max());
-        return py::make_tuple(hierarchy.mesh(), hierarchy.origins());
-      },
-      py::arg("mesh"),
-      py::arg("marked"),
-      "Refine the marked triangles once by newest-vertex bisection, keeping the mesh "
-      "conforming. Returns the refined mesh and, for every element of it, the index of the "
-      "element it came from.");
   py::class_<Subdivision>(m, "Subdivision")
       .def(py::init<const Mesh &>(), py::arg("mesh"))
       .def(
@@ -1394,6 +1378,18 @@ PYBIND11_MODULE(_core, m)
            py::arg("variable"),
            py::arg("values"),
            "Set a variable from its values at every node of the global mesh.")
+      .def("gathered_node_values",
+           &DistributedProblem::gatheredNodeValues,
+           py::arg("local"),
+           py::arg("width"),
+           "The values of every node of the global mesh, width per node, on every rank, from "
+           "width values per local node. Collective.")
+      .def("local_node_values",
+           &DistributedProblem::localNodeValues,
+           py::arg("global_values"),
+           py::arg("width"),
+           "The values of the local nodes, width per node, from width values per node of the "
+           "global mesh.")
       .def("total_outflow",
            &DistributedProblem::totalOutflow,
            py::arg("variable"),

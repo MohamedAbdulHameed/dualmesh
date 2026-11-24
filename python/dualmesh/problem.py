@@ -324,9 +324,14 @@ def _adapt_in_time(validated, engine, variables, writer, accepted, report, optio
         state = {
             name: engine.gathered_values(name) for names in variables.values() for name in names
         }
+        # The velocity of a second-order equation is a state of the step too: the new problem
+        # goes on from the velocity reached, not from that of the initial condition.
+        velocity = engine.gathered_velocities()
         if hierarchy.adapt(refine, coarsen, max_level):
             state = {name: hierarchy.transfer(v) for name, v in state.items()}
+            velocity = {name: hierarchy.transfer(v) for name, v in velocity.items()}
             engine, _, variables = build_problem(validated, hierarchy.mesh())
+            engine.set_gathered_velocities(velocity)
             add_postprocessors(
                 engine,
                 validated.get("postprocessors", {}),

@@ -609,13 +609,33 @@ DistributedProblem::solveTransient(const TransientOptions & transient,
 std::vector<double>
 DistributedProblem::gatheredValues(const std::string & variable) const
 {
-  const auto local_values = _local->values(variable);
-  std::vector<double> global(_num_global_nodes, 0.0);
+  return gatheredNodeValues(_local->values(variable), 1);
+}
+
+std::vector<double>
+DistributedProblem::gatheredNodeValues(const std::vector<double> & local, int width) const
+{
+  const std::size_t w = static_cast<std::size_t>(width);
+  if (local.size() != _local_to_global.size() * w)
+    throw std::logic_error("dualmesh: the values are not of the local nodes.");
+  std::vector<double> global(static_cast<std::size_t>(_num_global_nodes) * w, 0.0);
   for (std::size_t i = 0; i < _local_to_global.size(); ++i)
     if (_owns_node[i])
-      global[_local_to_global[i]] = local_values[i];
+      for (std::size_t c = 0; c < w; ++c)
+        global[static_cast<std::size_t>(_local_to_global[i]) * w + c] = local[i * w + c];
   _comm.sumInPlace(global);
   return global;
+}
+
+std::vector<double>
+DistributedProblem::localNodeValues(const std::vector<double> & global, int width) const
+{
+  const std::size_t w = static_cast<std::size_t>(width);
+  std::vector<double> local(_local_to_global.size() * w);
+  for (std::size_t i = 0; i < _local_to_global.size(); ++i)
+    for (std::size_t c = 0; c < w; ++c)
+      local[i * w + c] = global.at(static_cast<std::size_t>(_local_to_global[i]) * w + c);
+  return local;
 }
 
 std::vector<double>
@@ -639,10 +659,7 @@ void
 DistributedProblem::setGatheredValues(const std::string & variable,
                                       const std::vector<double> & global)
 {
-  std::vector<double> local(_local_to_global.size());
-  for (std::size_t i = 0; i < _local_to_global.size(); ++i)
-    local[i] = global.at(static_cast<std::size_t>(_local_to_global[i]));
-  _local->setValues(variable, local);
+  _local->setValues(variable, localNodeValues(global, 1));
 }
 
 void

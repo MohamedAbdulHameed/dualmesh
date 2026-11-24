@@ -114,7 +114,9 @@ What is in place
      - OpenMP threads in assembly, and MPI across processes.
    * - Meshes
      - Built-in generators, every format that meshio reads, local refinement
-       of triangular meshes and uniform refinement of all linear types.
+       and coarsening of triangles and tetrahedra by bisection and of
+       quadrilaterals and hexahedra with hanging nodes, in serial and in
+       parallel, and uniform refinement of all linear types.
    * - Verification
      - Analytical solutions, published values, benchmarks, OpenFOAM cross-checks, and
        a method-of-manufactured-solutions study of every method and element.

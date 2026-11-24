@@ -9,18 +9,16 @@ solved again.  The three steps are separate functions here, so that a
 calculation can replace any one of them, and
 :func:`solve_with_adaptive_refinement` runs the usual loop over all three.
 
-The refinement is conforming: no node is left hanging in the middle of a
-neighbour's edge.  That is a requirement of the dual mesh method rather than a
-convenience.  A hanging node owns a control domain on its own side of the edge
-and nothing on the other, so the control domains stop covering the domain
-exactly once, flux leaves one control domain without entering another, and the
-discretisation loses the conservation property it is built on.  Conformity is
-kept by newest-vertex bisection: a marked triangle is cut through the middle of
-its refinement edge, and every triangle that shares a cut edge is cut too.  Its
-triangles fall into finitely many shapes however often they are cut, and it is
-the refinement for which adaptive methods are proved to converge at the optimal
-rate.  :class:`~dualmesh._core.Bisection` keeps the history of the cuts, so a
-mesh can also be coarsened back, and it is available for triangular meshes.
+Triangles and tetrahedra are refined by bisection, which keeps the mesh
+conforming.  Newest-vertex bisection keeps the triangles in finitely many shapes
+however often they are cut, and it is the refinement for which adaptive methods
+are proved to converge at the optimal rate.  Tetrahedra are cut across their
+longest edge.  Quadrilaterals and hexahedra split into :math:`2^d` children, with
+:math:`d` the dimension, and nodes hang on the sides of the neighbours that stay
+whole, with a 2:1 balance across every side.  FEM constrains a hanging value to
+the side it lies on.  DMCDM splits the large cell into control-domain pieces that
+meet those of the small cells, so the balance stays conservative.  The hierarchy
+keeps the history of the cuts, so a mesh can also be coarsened back.
 
 A worked example::
 
@@ -115,24 +113,30 @@ class _Hierarchy:
             )
         self._core.project(name, projection)
 
+    def origins(self) -> numpy.ndarray:
+        """The cell of the initial mesh that each cell comes from."""
+        return numpy.asarray(self._core.origins())
+
     def transfer(self, values, width: int = 1) -> numpy.ndarray:
         """Values at the nodes of the mesh before the last change, carried to the current one."""
         return numpy.asarray(self._core.transfer(numpy.asarray(values, dtype=float), width))
 
 
 def refine_marked(mesh, marked: Sequence[bool]):
-    """Refine the marked elements once by newest-vertex bisection, keeping the
-    mesh conforming.
+    """Refine the marked elements once.
 
-    ``marked`` holds one flag per element.  More elements than those marked
-    are bisected, because the neighbours of a bisected edge have to be
-    bisected too.  Returns ``(refined_mesh, parents)``, where ``parents[i]`` is
-    the index in ``mesh`` of the element that element ``i`` of the refined mesh
-    came from; a field stored per element is carried over with it.
+    A triangle or a tetrahedron is bisected, and so are the neighbours that keep the mesh
+    conforming.  A quadrilateral or a hexahedron splits into :math:`2^d` children, with
+    :math:`d` the dimension, and so do the neighbours that keep a 2:1 balance, with nodes
+    hanging on the sides of the cells that stay whole.  ``marked`` holds one flag per element.
+    Returns
+    ``(refined_mesh, parents)``, where ``parents[i]`` is the index in ``mesh`` of the element that
+    element ``i`` of the refined mesh came from; a field stored per element is carried over with
+    it.
     """
-    flags = [int(bool(m)) for m in numpy.asarray(marked).ravel()]
-    refined, parents = _core.refine_marked(mesh, flags)
-    return refined, numpy.asarray(parents, dtype=numpy.int64)
+    hierarchy = _Hierarchy(mesh)
+    hierarchy.refine(numpy.asarray(marked).ravel())
+    return hierarchy.mesh(), numpy.asarray(hierarchy.origins(), dtype=numpy.int64)
 
 
 def mark_by_fraction(indicators, fraction: float = 0.3) -> numpy.ndarray:
@@ -289,9 +293,13 @@ def solve_with_adaptive_refinement(
     # One hierarchy of bisections for the whole loop, so that the triangles keep their refinement
     # edges from one cycle to the next, as newest-vertex bisection needs.
     hierarchy = _Hierarchy(mesh)
+    start = {}
     for cycle in range(num_cycles):
         with inner_study():
             problem = build_problem(mesh)
+            # The solve starts from the solution of the last mesh, carried to this one.
+            for name, values in start.items():
+                problem.set_gathered_values(name, values)
             problem.solve()
         indicators = numpy.sqrt(sum(problem.gathered_error_indicator(name) ** 2 for name in names))
         result.problem, result.mesh = problem, mesh
@@ -312,10 +320,14 @@ def solve_with_adaptive_refinement(
         marked = marker(indicators)
         if not marked.any():
             break
+        reached = {
+            name: problem.gathered_values(name) for name in problem._problem.variable_names()
+        }
         hierarchy.refine(marked)
         for name, projection in (boundaries or {}).items():
             hierarchy.project(name, projection)
         mesh = hierarchy.mesh()
+        start = {name: hierarchy.transfer(values) for name, values in reached.items()}
     if level != "none" and root:
         print(result.summary())
     return result

@@ -146,6 +146,12 @@ public:
   std::vector<double> gatheredElementValues(const std::vector<double> & local) const;
   /// Set @p variable from its values at every node of the global mesh.
   void setGatheredValues(const std::string & variable, const std::vector<double> & global);
+  /// The values of every node of the global mesh, @p width per node, on every rank, from
+  /// @p local, @p width per local node (of which the owned ones count).  Collective.
+  std::vector<double> gatheredNodeValues(const std::vector<double> & local, int width) const;
+  /// The values of the local nodes, @p width per node, from @p global, @p width per node of the
+  /// global mesh.
+  std::vector<double> localNodeValues(const std::vector<double> & global, int width) const;
 
   /// Write one ".vtu" file per rank plus a ".pvtu" index that ParaView and
   /// VisIt open as a single data set.  @p base is the file name without an

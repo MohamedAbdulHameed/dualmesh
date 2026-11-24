@@ -22,9 +22,9 @@ Bisection::Bisection(const Mesh & initial)
                              : (_type == ElementType::Tet4 || _type == ElementType::Tet10);
   for (const auto & el : initial.elements())
     if (!simplices || el.type != _type || (_dimension != 2 && _dimension != 3))
-      throw InputError("Local refinement and coarsening need a triangular mesh (Tri3 or Tri6) or "
-                       "a tetrahedral mesh (Tet4 or Tet10) of one element type: bisection keeps "
-                       "it conforming, as the dual mesh method needs.");
+      throw InputError(
+          "Local refinement and coarsening need a mesh of one element type: Tri3, Tri6, Tet4 or "
+          "Tet10, refined by bisection, or Quad4 or Hex8, refined by subdivision.");
   const ReferenceElement & reference_element = ReferenceElement::get(_type);
   for (const auto & el : initial.elements())
   {

@@ -413,37 +413,26 @@ The two methods treat a hanging node differently.
 What is refined, and what is not
 --------------------------------
 
-**Local refinement and coarsening are available for meshes of ``Tri3``,
-``Tri6``, ``Tet4`` and ``Tet10`` elements by bisection, and of ``Quad4`` and
-``Hex8`` elements by subdivision.**  In a distributed problem, every process
-that holds a hanging node also holds the nodes it depends on, and every
-process that holds a large cell holds the nodes that hang on its sides.  :func:`~dualmesh.refine_marked` raises
-an error, naming the reason, for any other element type.
+**Local refinement and coarsening are available for meshes of one element type:
+``Tri3``, ``Tri6``, ``Tet4`` and ``Tet10`` by bisection, and ``Quad4`` and ``Hex8``
+by subdivision.**  :func:`~dualmesh.refine_marked` and the adaptive loops raise an
+error, naming the reason, for any other mesh.  In a distributed problem, every
+process that holds a hanging node also holds the nodes it depends on, and every
+process that holds a large cell holds the nodes that hang on its sides.
 
-Uniform refinement is available for all of them.
+Uniform refinement is available for more element types.
 :meth:`~dualmesh.Mesh.refined` splits every element at once: an ``Edge2`` into
 two, a ``Tri3`` into four, a ``Quad4`` into four, a ``Tet4`` into eight, a
 ``Hex8`` into eight, a ``Wedge6`` into eight prisms and a ``Pyramid5`` into six
-pyramids and four tetrahedra.  Because every
-element is subdivided, no hanging node can arise and the result is conforming.
-Quadratic meshes are refused.  To obtain a refined quadratic mesh, refine the
-linear mesh first and promote the result with
-:meth:`~dualmesh.Mesh.second_order`.
+pyramids and four tetrahedra.  Because every element is subdivided, no hanging
+node can arise and the result is conforming.  Quadratic meshes are refused.  To
+obtain a refined quadratic mesh, refine the linear mesh first and promote the
+result with :meth:`~dualmesh.Mesh.second_order`.
 
-A user with a quadrilateral, tetrahedral or hexahedral mesh therefore has two
-options.  The first is to refine uniformly with
-:meth:`~dualmesh.Mesh.refined`.  This option is appropriate when the solution
-has no localised feature, but it multiplies the number of unknowns by four in
-two dimensions and by eight in three, so only a few rounds are affordable.  The
-error indicator remains useful in this case as a diagnostic, because it shows
-where the error is concentrated even when the mesh cannot be refined locally.
-The second option is to build the mesh from ``Tri3`` elements from the start
-(:func:`~dualmesh.generate_rectangle_mesh` takes ``element_type="Tri3"``, and
-:func:`~dualmesh.mesh_from_arrays` accepts an arbitrary triangulation), which
-makes the full adaptive loop available.  The library provides no function that
-converts an existing quadrilateral mesh into a triangular one, so that
-conversion, if needed, must be done by the user or the mesh generator.  Local
-refinement of a three-dimensional mesh is not available by any route.
+A mesh of prisms or pyramids is therefore refined uniformly.  Each round
+multiplies the number of unknowns by eight, so only a few rounds are affordable.
+The error indicator still shows where the error is concentrated, as a
+diagnostic.
 
 A measured benchmark: the L-shaped domain
 -----------------------------------------
@@ -559,11 +548,18 @@ on every new mesh to build a new problem there:
        build, initial_mesh, variable="u", num_cycles=4
    )
 
-Rebuilding the problem on each mesh keeps the boundary conditions, the property
-objects and the initial state exactly as the user wrote them, at the cost
-of discarding the previous solution as a starting guess.  For a nonlinear
-problem in which that guess is valuable, call the three steps directly.  The
-loop stops early if the marker selects nothing, or if ``max_elements`` is given
+Rebuilding the problem on each mesh keeps the boundary conditions and the
+property objects exactly as the user wrote them.  The solve on each new mesh
+starts from the solution of the last mesh, carried to the new one, which saves
+Newton iterations in a nonlinear problem.  The loop stops early if the marker selects nothing, or if ``max_elements`` is given
 and the mesh has grown past it.  A ``callback(cycle, problem, indicators)`` is
 invoked after every solve, and a calculation can use it to write output files
 or to record a convergence history like the table above.
+
+A transient run of the input adapts the mesh every ``interval`` accepted time
+steps and goes on from the state it reached.  At each change of the mesh, the
+fields are carried to the new mesh as the interpolant of the old one, and so is
+the velocity of a second-order equation, such as the balance of momentum of a
+solid with a density.  Refinement alone carries both as the same functions, so
+the momentum of a solid is kept exactly.  The run goes on with the time step
+that the step control chose before the change.

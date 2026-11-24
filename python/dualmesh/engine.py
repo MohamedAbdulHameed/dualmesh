@@ -318,6 +318,8 @@ class Problem:
         # True while the solution is a converged steady solution of the model as it stands.
         self._steady_solution = False
         self._couplings: dict = {}
+        # The velocity that a run continued from another mesh starts from (set_gathered_velocities).
+        self._continued_velocity: dict = {}
         self.method = method
         self.coordinates = coordinates
 
@@ -367,22 +369,59 @@ class Problem:
 
     # ---- definition ------------------------------------------------------
     def _set_initial_velocity(self, time: float) -> None:
-        """The initial velocity of the second-order variables, from the initial_condition of
-        their physics (at rest without one).  A run that continues another keeps the velocity it
+        """The initial velocity of the second-order variables: the one given by
+        set_gathered_velocities, else that of the initial_condition of their physics (at rest
+        without one).  A run that continues another of the same problem keeps the velocity it
         reached."""
         names = list(self._problem.variable_names())
         points = self.node_coordinates()
         velocity = numpy.zeros(len(points) * len(names))
         for physics in self._physics.values():
             for variable in physics.variable_names():
+                index = names.index(variable)
+                if variable in self._continued_velocity:
+                    whole = self._continued_velocity[variable]
+                    velocity[index :: len(names)] = (
+                        self._distributed.local_node_values(list(whole), 1)
+                        if self._distributed is not None
+                        else whole
+                    )
+                    continue
                 value = physics._initial_velocity(variable)
                 if value is None:
                     continue
                 f = _core.ParsedFunction(str(value))
-                index = names.index(variable)
                 for node, p in enumerate(points):
                     velocity[node * len(names) + index] = f(p[0], p[1], p[2], time)
         self._problem.set_initial_velocity(list(velocity))
+
+    def gathered_velocities(self) -> dict:
+        """The velocity that the last transient run reached, for each variable of a second-order
+        equation, at every node of the whole mesh, on every process: zero before a run, and an
+        empty dict for a problem without inertia.  Collective in a distributed problem."""
+        self._build_physics()
+        second_order = list(self._problem.second_order_variables())
+        if not second_order:
+            return {}
+        names = list(self._problem.variable_names())
+        local = numpy.asarray(self._problem.velocity(), dtype=float)
+        if local.size == 0:
+            local = numpy.zeros(len(self.node_coordinates()) * len(names))
+        whole = (
+            numpy.asarray(self._distributed.gathered_node_values(list(local), len(names)))
+            if self._distributed is not None
+            else local
+        )
+        return {name: whole[names.index(name) :: len(names)].copy() for name in second_order}
+
+    def set_gathered_velocities(self, velocities: dict) -> None:
+        """Start the next transient run with these velocities, given at every node of the whole
+        mesh for variables of second-order equations, in place of those of the initial conditions:
+        for a run that goes on from the state that another reached, such as after a change of the
+        mesh."""
+        self._continued_velocity = {
+            name: numpy.asarray(values, dtype=float).ravel() for name, values in velocities.items()
+        }
 
     @_changes_model
     def add_variable(

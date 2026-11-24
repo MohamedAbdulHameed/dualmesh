@@ -1,15 +1,13 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 //
-// Local refinement and coarsening of a mesh of linear triangles by newest-vertex bisection, and of
-// a mesh of linear tetrahedra by longest-edge bisection.
+// Local refinement and coarsening of a mesh of triangles by newest-vertex bisection, and of a mesh
+// of tetrahedra by longest-edge bisection.
 //
-// The dual mesh method needs a conforming mesh: a hanging node owns a control domain on its own
-// side of an edge and nothing on the other, so the control domains stop tiling the domain and the
-// balance loses its conservation.  Newest-vertex bisection keeps the mesh conforming, its
-// triangles fall into finitely many similarity classes however often they are bisected, so they
-// cannot degenerate, and it is the refinement of the proofs that adaptive methods converge at the
-// optimal rate (Binev, Dahmen and DeVore, Numer. Math. 97 (2004) 219-268; Stevenson, Found.
-// Comput. Math. 7 (2007) 245-269).
+// Bisection keeps the mesh conforming, so no node hangs.  Newest-vertex bisection keeps the
+// triangles in finitely many similarity classes however often they are bisected, so they cannot
+// degenerate, and it is the refinement of the proofs that adaptive methods converge at the optimal
+// rate (Binev, Dahmen and DeVore, Numer. Math. 97 (2004) 219-268, and Stevenson, Found. Comput.
+// Math. 7 (2007) 245-269).
 //
 // Each triangle lists its refinement edge first and its newest vertex last, [a, b, c].  Its
 // bisection puts the node m at the middle of the refinement edge a-b and gives the children

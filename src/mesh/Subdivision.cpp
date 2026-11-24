@@ -28,8 +28,9 @@ Subdivision::Subdivision(const Mesh & initial)
 {
   for (const auto & el : initial.elements())
     if (el.type != _type || (_dimension != 2 && _dimension != 3))
-      throw InputError("Local refinement and coarsening by subdivision need a mesh of "
-                       "quadrilaterals (Quad4) or of hexahedra (Hex8).");
+      throw InputError(
+          "Local refinement and coarsening need a mesh of one element type: Tri3, Tri6, Tet4 or "
+          "Tet10, refined by bisection, or Quad4 or Hex8, refined by subdivision.");
   const ReferenceElement & reference = ReferenceElement::get(_type);
   const int corners = 1 << _dimension;
   for (int k = 0; k < corners; ++k)
