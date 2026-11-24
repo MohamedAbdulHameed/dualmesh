@@ -103,6 +103,16 @@ unit = "1/K"
 shape = "scalar"
 description = "relative change of length per temperature change"
 
+[volumetric_expansion_coefficient]
+unit = "1/K"
+shape = "scalar"
+description = "relative change of volume per temperature change, the buoyancy of a heated fluid"
+
+[reference_temperature]
+unit = "K"
+shape = "scalar"
+description = "temperature at which the density of a heated fluid is given"
+
 [stress_free_temperature]
 unit = "K"
 shape = "scalar"

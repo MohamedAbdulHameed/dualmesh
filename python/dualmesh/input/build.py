@@ -27,6 +27,8 @@ engine_property_names = {
     "dynamic_viscosity": "dynamic_viscosity",
     "linear_expansion_coefficient": "linear_expansion_coefficient",
     "stress_free_temperature": "stress_free_temperature",
+    "volumetric_expansion_coefficient": "volumetric_expansion_coefficient",
+    "reference_temperature": "reference_temperature",
 }
 # The properties that the kernels read by name, from property objects on their regions. The
 # volumetric heat source is a source term on each region, which may read the fields, and the others are numbers of a physics or a coupling: the density of a flow or of a moving solid, the
@@ -53,12 +55,14 @@ Stefan_Boltzmann_constant = 5.670374419e-8
 
 
 class region_view:
-    """Whether a problem is transient and has gravity, as the physics functions of
-    `physics_options` ask."""
+    """What the physics functions of `physics_options` ask of a problem: whether it is transient,
+    has gravity, has a flow and is heated."""
 
-    def __init__(self, transient: bool, gravity: bool = False):
+    def __init__(self, transient: bool, gravity: bool = False, physics=()):
         self.transient = transient
         self.gravity = gravity
+        self.flow = "fluid_dynamics" in physics
+        self.heated = "heat_conduction" in physics
 
 
 def fail(path: str, message: str):
@@ -182,7 +186,9 @@ def build_problem(validated: dict, engine_mesh=None):
         if finite and name in ("Young_modulus", "Poisson_ratio"):
             continue
         if name in property_objects or (
-            name == "density" and "heat_conduction" in physics and transient
+            name == "density"
+            and "heat_conduction" in physics
+            and (transient or "fluid_dynamics" in physics)
         ):
             _add_property(problem, mesh, engine_mesh, name, properties[name], coordinate_system)
 
@@ -199,6 +205,7 @@ def build_problem(validated: dict, engine_mesh=None):
             engine_mesh,
             coordinate_system,
             gravity,
+            physics,
         )
     if "volumetric_heat_source" in properties:
         _add_heat_source(
@@ -231,10 +238,22 @@ def build_problem(validated: dict, engine_mesh=None):
             ),
         )
     if "heat_conduction" in engine_physics and "fluid_dynamics" in engine_physics:
+        # Under gravity the fluid takes the Boussinesq force -rho beta (T - T_0) g, on top of
+        # its weight rho g, which the flow took with its density at T_0.
+        buoyancy = {}
+        if gravity is not None:
+            buoyancy = {
+                "gravity": gravity,
+                **{
+                    name: constant_everywhere(properties[name], name, join("properties", name))
+                    for name in ("volumetric_expansion_coefficient", "reference_temperature")
+                },
+            }
         problem.add_coupling(
             "nonisothermal_flow",
             heat_transfer=engine_physics["heat_conduction"],
             fluid_dynamics=engine_physics["fluid_dynamics"],
+            **buoyancy,
         )
     variables = _variables(engine_physics)
     _add_boundary_conditions(
@@ -264,12 +283,6 @@ def _gravity(validated: dict, physics: dict, engine_mesh, coordinate_system: str
             "in axisymmetric coordinates gravity acts along the axis z, so its radial component "
             "is 0.",
         )
-    if {"heat_conduction", "fluid_dynamics"} <= set(physics):
-        fail(
-            "gravity",
-            "a heated flow under gravity needs the volumetric expansion coefficient of the "
-            "fluid for its buoyancy, which the input does not take yet in this version.",
-        )
     return g
 
 
@@ -278,7 +291,7 @@ def _check_properties(physics: dict, properties: dict, transient: bool, gravity:
     stops the run."""
     needed, readable = {}, set()
     for name in physics:
-        reads = physics_functions[name](region_view(transient, gravity))
+        reads = physics_functions[name](region_view(transient, gravity, physics))
         for property_name in reads["needed"]:
             needed.setdefault(property_name, name)
         readable.update(reads["needed"], reads["optional"])
@@ -332,12 +345,22 @@ def _add_heat_source(problem, mesh, engine_mesh, entry: dict, coordinate_system:
 
 
 def _add_physics(
-    problem, name, entry, properties, initial, transient, engine_mesh, coordinate_system, gravity
+    problem,
+    name,
+    entry,
+    properties,
+    initial,
+    transient,
+    engine_mesh,
+    coordinate_system,
+    gravity,
+    physics,
 ):
     path = join("physics", name)
     if name == "heat_conduction":
         options = {"thermal_conductivity": "thermal_conductivity"}
-        if transient:
+        # The heat capacity stores heat in time and carries it with a flow.
+        if transient or "fluid_dynamics" in physics:
             options.update(density="density", specific_heat="specific_heat")
         if "temperature" in initial:
             options["initial_condition"] = float(initial["temperature"])

@@ -13,13 +13,13 @@ flow_formulations = ("equal_order", "Taylor-Hood")
 
 
 def heat_conduction(properties):
-    """The energy balance of a body at rest, with the flux of Fourier's law.
+    """The energy balance, with the flux of Fourier's law.
 
-    A transient problem reads the density and the specific heat capacity, and a steady one
-    does not.
+    A transient problem reads the density and the specific heat capacity, and so does a flow
+    that carries the heat, steady or transient.  A steady body at rest reads neither.
     """
     needed = ["thermal_conductivity"]
-    if properties.transient:
+    if properties.transient or properties.flow:
         needed += ["density", "specific_heat_capacity"]
     return {"needed": needed, "optional": ["volumetric_heat_source"]}
 
@@ -45,9 +45,14 @@ def fluid_dynamics(properties, formulation="equal_order"):
     """The balance of mass and momentum of an incompressible Newtonian fluid.
 
     `formulation` is equal_order, with a pressure stabilization, or Taylor-Hood, a quadratic
-    velocity and a linear pressure on a quadratic mesh with FEM.
+    velocity and a linear pressure on a quadratic mesh with FEM.  A heated fluid under gravity
+    reads its volumetric expansion coefficient and the reference temperature at which its
+    density holds, for the Boussinesq buoyancy.
     """
-    return {"needed": ["density", "dynamic_viscosity"], "optional": ["body_force_density"]}
+    needed = ["density", "dynamic_viscosity"]
+    if properties.heated and properties.gravity:
+        needed += ["volumetric_expansion_coefficient", "reference_temperature"]
+    return {"needed": needed, "optional": ["body_force_density"]}
 
 
 physics_functions = {

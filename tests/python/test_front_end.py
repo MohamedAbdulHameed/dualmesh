@@ -287,11 +287,108 @@ def test_a_heated_flow_under_gravity_asks_for_its_expansion_coefficient():
     cavity.physics("heat_conduction")
     cavity.physics("fluid_dynamics")
     cavity.properties(
-        thermal_conductivity="0.6 W/(m*K)", density="1000 kg/m^3", dynamic_viscosity="1e-3 Pa*s"
+        thermal_conductivity="0.6 W/(m*K)",
+        specific_heat_capacity="4182 J/(kg*K)",
+        density="1000 kg/m^3",
+        dynamic_viscosity="1e-3 Pa*s",
     )
     cavity.gravity(["0 m/s^2", "-9.81 m/s^2"])
-    with pytest.raises(dualmesh.input_error, match="volumetric expansion coefficient"):
+    with pytest.raises(
+        dualmesh.input_error,
+        match="fluid_dynamics needs the property volumetric_expansion_coefficient",
+    ):
         cavity.solve(report="none")
+
+
+def test_a_steady_flow_carries_heat_with_its_heat_capacity():
+    """Water in plug flow at U = 1e-6 m/s through a channel L = 1 m long, between walls that move
+    with it, heated by q = 10 W/m^3, enters at T_in = 300 K and leaves through an insulated
+    outlet.  The temperature solves rho c_p U T' = k T'' + q, so with a = rho c_p U / k,
+    T = T_in + q / (rho c_p U) (x - (exp(a (x - L)) - exp(-a L)) / a).  A heat capacity of 1
+    in place of c_p would make the temperature rise 4182 times larger."""
+    U, rho, c_p, k, q, L = 1e-6, 1000.0, 4182.0, 0.6, 10.0, 1.0
+    channel = dualmesh.problem(mesh={"rectangle": {"size": [f"{L} m", "0.1 m"], "cells": [40, 2]}})
+    channel.physics("heat_conduction")
+    channel.physics("fluid_dynamics")
+    channel.properties(
+        thermal_conductivity=f"{k} W/(m*K)",
+        specific_heat_capacity=f"{c_p} J/(kg*K)",
+        density=f"{rho} kg/m^3",
+        dynamic_viscosity="1e-3 Pa*s",
+        volumetric_heat_source=f"{q} W/m^3",
+    )
+    for side in ("left", "bottom", "top"):
+        channel.boundary_conditions(side, velocity=["1e-6 m/s", "0 m/s"])
+    channel.boundary_conditions("left", temperature="300 K")
+    channel.boundary_conditions("right", pressure="0 Pa")
+    solution = channel.solve(report="none")
+    x = solution.coordinates("temperature")[:, 0]
+    a = rho * c_p * U / k
+    rise = q / (rho * c_p * U) * (x - (numpy.exp(a * (x - L)) - numpy.exp(-a * L)) / a)
+    computed = solution.field("temperature") - 300.0
+    assert numpy.abs(computed - rise).max() < 5e-3 * q * L / (rho * c_p * U)
+
+
+def test_a_heated_fluid_at_its_reference_temperature_stays_at_rest():
+    """Water in a tank whose walls are all at the reference temperature T_0 takes no buoyancy:
+    it stays at rest, at T_0, with the hydrostatic pressure rho g (H - y)."""
+    tank = dualmesh.problem(mesh={"rectangle": {"size": ["1 m", "1 m"], "cells": [6, 6]}})
+    tank.physics("heat_conduction")
+    tank.physics("fluid_dynamics")
+    tank.properties(
+        thermal_conductivity="0.6 W/(m*K)",
+        specific_heat_capacity="4182 J/(kg*K)",
+        density="1000 kg/m^3",
+        dynamic_viscosity="1e-3 Pa*s",
+        volumetric_expansion_coefficient="2.1e-4 1/K",
+        reference_temperature="293.15 K",
+    )
+    tank.gravity(["0 m/s^2", f"-{gravity_g} m/s^2"])
+    for side in ("left", "right", "bottom", "top"):
+        tank.boundary_conditions(side, temperature="293.15 K")
+    for side in ("left", "right", "bottom"):
+        tank.boundary_conditions(side, velocity=["0 m/s", "0 m/s"])
+    tank.boundary_conditions("top", pressure="0 Pa")
+    solution = tank.solve(report="none")
+    assert solution.field("temperature") == pytest.approx(293.15, abs=1e-9)
+    assert numpy.abs(solution.field("velocity")).max() < 1e-10
+    y = solution.coordinates("pressure")[:, 1]
+    assert solution.field("pressure") == pytest.approx(
+        1000.0 * gravity_g * (1.0 - y), rel=1e-8, abs=1e-6
+    )
+
+
+def test_air_in_a_heated_cavity_convects_heat_at_the_Nusselt_number_of_de_Vahl_Davis():
+    """Air (Prandtl number Pr = 0.71) in a square cavity L = 0.1 m wide, its left wall 1 K
+    warmer than its right one, insulated at the top and the bottom.  The expansion coefficient
+    sets the Rayleigh number Ra = g beta Delta T L^3 / (nu alpha) to 10^4, at which the average
+    Nusselt number Nu = Q / (k Delta T), with Q the heat flow through the hot wall per unit
+    depth, is 2.243 (de Vahl Davis 1983).  The uniform mesh of 40 by 40 cells puts four cells
+    across the boundary layers, about L Ra^(-1/4) = L / 10 thick."""
+    L, delta_T, rho, mu, k, Pr, Ra = 0.1, 1.0, 1.2, 1.8e-5, 0.025, 0.71, 1.0e4
+    c_p = Pr * k / mu
+    nu, alpha = mu / rho, k / (rho * c_p)
+    beta = Ra * nu * alpha / (gravity_g * delta_T * L**3)
+    cavity = dualmesh.problem(mesh={"rectangle": {"size": [f"{L} m", f"{L} m"], "cells": [40, 40]}})
+    cavity.physics("heat_conduction")
+    cavity.physics("fluid_dynamics")
+    cavity.properties(
+        thermal_conductivity=f"{k} W/(m*K)",
+        specific_heat_capacity=f"{c_p!r} J/(kg*K)",
+        density=f"{rho} kg/m^3",
+        dynamic_viscosity=f"{mu} Pa*s",
+        volumetric_expansion_coefficient=f"{beta!r} 1/K",
+        reference_temperature="293.15 K",
+    )
+    cavity.gravity(["0 m/s^2", f"-{gravity_g} m/s^2"])
+    for side in ("left", "right", "bottom", "top"):
+        cavity.boundary_conditions(side, velocity=["0 m/s", "0 m/s"])
+    cavity.boundary_conditions("left", temperature=f"{293.15 + delta_T / 2!r} K")
+    cavity.boundary_conditions("right", temperature=f"{293.15 - delta_T / 2!r} K")
+    cavity.postprocessor("hot_wall", boundary_flux="heat_flux", boundary="left")
+    solution = cavity.solve(report="none")
+    nusselt = -solution.postprocessor("hot_wall")[-1] / (k * delta_T)
+    assert nusselt == pytest.approx(2.243, rel=0.02)
 
 
 def test_gravity_takes_one_acceleration_per_direction_of_space():
