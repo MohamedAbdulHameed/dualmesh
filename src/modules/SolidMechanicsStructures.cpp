@@ -49,8 +49,9 @@ public:
     p.addOptional("variable",
                   ParameterKind::Names,
                   std::vector<std::string>{},
-                  "The variable (equation) this instance assembles. Default: every variable of "
-                  "the model, each with an instance of its own.");
+                  "The variable whose equation this instance assembles. Default: every variable "
+                  "of the model, each with an instance of its own, so that one call adds the "
+                  "whole model.");
   }
 
   static InputParameters validParams()
@@ -60,127 +61,135 @@ public:
         "youngs_modulus",
         ParameterKind::Function,
         0.0,
-        "Young's modulus E of the material: a constant, a function, or an expression of the "
-        "fields, the properties and the coordinates, in which z is the position through the "
-        "thickness, measured from the mid-surface (a functionally graded section). Given, the "
-        "section stiffnesses are the integrals of the material law through the thickness, at "
-        "'through_thickness_points' Gauss points, at every integration point. Default: the section "
-        "is given by its stiffnesses.");
+        "Young's modulus E (Pa) of the material, which gives the section by its material: a "
+        "constant, a function, or an expression of the fields, the properties and the "
+        "coordinates, in which z (m) is the position through the thickness measured from the "
+        "mid-surface, for a functionally graded section. The section stiffnesses are then the "
+        "integrals of the material law through the thickness, with 'through_thickness_points' "
+        "Gauss points at every integration point. Default none: the section is given by its "
+        "stiffnesses.");
     p.addOptional("poissons_ratio",
                   ParameterKind::Real,
                   1.0 / 3.0,
-                  "Poisson's ratio nu, with -1 < nu < 1/2: in a plate the hoop and cross-coupling "
-                  "terms of the stress resultants and, with youngs_modulus, the plate stiffness "
-                  "E/(1 - nu^2) and the shear modulus E/(2 (1 + nu)). Default 1/3, the default of "
-                  "the library.");
+                  "Poisson's ratio nu (dimensionless), with -1 < nu < 1/2. In a plate it sets the "
+                  "hoop and cross-coupling terms of the stress resultants. With youngs_modulus it "
+                  "also sets the plate factor 1/(1 - nu^2) and the shear modulus G = E/(2 (1 + "
+                  "nu)). Default 1/3, a value typical of metals.");
     p.addOptional("thickness",
                   ParameterKind::Real,
                   0.0,
-                  "Thickness h of a plate given by its material. Default none.");
+                  "Thickness H (m) of a plate given by its material. Default none, because a plate "
+                  "given by its stiffnesses needs no thickness and a beam takes a cross_section.");
     p.setRange("thickness", ParameterRange::Positive);
     p.addOptional(
         "cross_section",
         ParameterKind::RealMap,
         RealMap{},
-        "The cross-section of a beam given by its material: {width, height} for a rectangle, "
-        "through whose height the material law is integrated, or {area, second_moment} for a "
-        "homogeneous section. Default none.");
+        "The cross-section of a beam given by its material: {width, height} (m) for a rectangle, "
+        "through whose height the material law is integrated, or {area, second_moment} (m^2 and "
+        "m^4) for a homogeneous section. Default none, because a beam given by its stiffnesses "
+        "needs no section and a plate takes a thickness.");
     p.addOptional("shear_correction",
                   ParameterKind::Real,
                   5.0 / 6.0,
-                  "Shear correction factor K_s of a section given by its material. Default 5/6, a "
-                  "homogeneous rectangle, for a plate and a rectangular beam section. A beam "
-                  "section given by its area and second_moment has no known shape, so a model "
-                  "with shear needs it given.");
+                  "Shear correction factor K_s (dimensionless) of a section given by its material. "
+                  "Default 5/6, the value of a homogeneous rectangle, which suits a plate and a "
+                  "rectangular beam section. A beam section given by its area and second_moment "
+                  "has no known shape, so a model with transverse shear needs K_s given.");
     p.addOptional("through_thickness_points",
                   ParameterKind::Integer,
                   8L,
-                  "Gauss points through the thickness of a section given by its material, 1 to 20. "
-                  "Default 8, exact for a modulus that is a polynomial of degree up to 13 in z.");
-    p.addOptional(
-        "temperature",
-        ParameterKind::String,
-        std::string(""),
-        "The temperature variable of a thermal strain alpha (T - T_0), uniform through "
-        "the thickness, which the section integrates into the thermal force N_T and moment "
-        "M_T. It needs the section given by its material. Default none.");
-    p.addOptional(
-        "linear_expansion_coefficient",
-        ParameterKind::Function,
-        0.0,
-        "Linear thermal expansion coefficient alpha: a constant, a function or an "
-        "expression of the fields and of z, the position through the thickness. Default 0.");
+                  "Number of Gauss points through the thickness of a section given by its "
+                  "material, 1 to 20. Default 8, which integrates exactly a modulus that is a "
+                  "polynomial of degree up to 13 in z.");
+    p.addOptional("temperature",
+                  ParameterKind::String,
+                  std::string(""),
+                  "Name of the temperature variable T (K) of a thermal strain alpha (T - T_0), "
+                  "uniform through the thickness, which the section integrates into the thermal "
+                  "force N_T and the thermal moment M_T. It needs the section given by its "
+                  "material. Default none: no thermal strain.");
+    p.addOptional("linear_expansion_coefficient",
+                  ParameterKind::Function,
+                  0.0,
+                  "Linear expansion coefficient alpha (1/K): a constant, a function, or an "
+                  "expression of the fields and of z, the position through the thickness. "
+                  "Default 0: no thermal strain.");
     p.addOptional("stress_free_temperature",
                   ParameterKind::Real,
                   std::monostate{},
-                  "Temperature T_0 at which the section is free of thermal strain. Required with "
-                  "'temperature', because no value is right for every problem.");
+                  "Temperature T_0 (K) at which the section is free of thermal strain. Required "
+                  "with 'temperature', because no value is right for every problem.");
     p.addOptional("extensional_stiffness",
                   ParameterKind::Real,
                   std::monostate{},
-                  "Extensional stiffness A = integral of E dA over the cross-section, per unit "
-                  "width for plates. For every plate model give the plate stiffness, which "
-                  "already contains the factor 1/(1 - nu^2), because the kernel does not add this "
-                  "factor. In the mixed models A enters only through the combination Abar = (D A "
-                  "- B^2)/D.");
+                  "Extensional stiffness A, the integral of E dA over the cross-section (N for a "
+                  "beam, N/m for a plate, per unit width). For a plate give the plate stiffness, "
+                  "which contains the factor 1/(1 - nu^2), because the kernel does not add this "
+                  "factor. In the mixed models A enters only through Abar = (D A - B^2)/D. "
+                  "Required for a section given by its stiffnesses.");
     p.addOptional("coupling_stiffness",
                   ParameterKind::Real,
                   0.0,
-                  "Bending-extension coupling stiffness B = integral of E z dA. It is zero "
-                  "for a section that is symmetric about its reference surface and non-zero "
-                  "for a functionally graded or laminated one, where it couples the axial "
-                  "and bending equations. Because z is measured from the reference surface, "
-                  "B depends on where that surface was placed when A, B and D were "
-                  "computed.");
+                  "Bending-extension coupling stiffness B, the integral of E z dA (N m for a beam, "
+                  "N for a plate), with z measured from the reference surface. In a functionally "
+                  "graded or laminated section B couples the axial and bending equations, and its "
+                  "value depends on where the reference surface lies. Default 0, the value of a "
+                  "section symmetric about its reference surface.");
     p.addOptional("bending_stiffness",
                   ParameterKind::Real,
                   std::monostate{},
-                  "Bending stiffness D = integral of E z^2 dA. It must not be zero, because "
-                  "the mixed models divide by it: Abar = (D A - B^2)/D, Bbar = B/D, and the "
-                  "moment equation carries the term -M/D. For plates give the plate "
-                  "stiffness, which already contains 1/(1 - nu^2).");
+                  "Bending stiffness D, the integral of E z^2 dA (N m^2 for a beam, N m for a "
+                  "plate). It must not be zero, because the mixed models divide by it in Abar = "
+                  "(D A - B^2)/D, in Bbar = B/D and in the curvature M/D of the moment equation, "
+                  "with M the bending moment. For a plate give the plate stiffness, which "
+                  "contains 1/(1 - nu^2). Required for a section given by its stiffnesses.");
     p.addOptional("shear_stiffness",
                   ParameterKind::Real,
                   std::monostate{},
-                  "Transverse shear stiffness S = K_s integral of G dA, with K_s the shear "
-                  "correction factor, 5/6 for a homogeneous rectangular section. It is used "
-                  "by beam_Timoshenko_displacement, beam_Timoshenko_mixed, "
-                  "circular_plate_first_order and plate_first_order, and ignored by "
-                  "beam_Euler-Bernoulli_mixed and circular_plate_classical_mixed, which are "
-                  "shear-rigid theories.");
-    p.addOptional(
-        "foundation_modulus",
-        ParameterKind::Real,
-        0.0,
-        "Winkler elastic foundation modulus, which contributes the source c_f w to the transverse "
-        "equation. Its units are force per unit deflection per unit length for a beam and per "
-        "unit area for a plate. It must be non-negative, and the default 0 means no foundation.");
+                  "Transverse shear stiffness S, K_s times the integral of G dA (N for a beam, N/m "
+                  "for a plate), with K_s the shear correction factor, 5/6 for a homogeneous "
+                  "rectangular section. For a section given by its stiffnesses, "
+                  "beam_Timoshenko_displacement, beam_Timoshenko_mixed, "
+                  "circular_plate_first_order and plate_first_order require it. "
+                  "beam_Euler-Bernoulli_mixed and circular_plate_classical_mixed have no "
+                  "transverse shear deformation and refuse it.");
+    p.addOptional("foundation_modulus",
+                  ParameterKind::Real,
+                  0.0,
+                  "Winkler foundation modulus c_f (N/m^2 for a beam, N/m^3 for a plate), which "
+                  "adds the reaction c_f w to the transverse equilibrium. It must not be "
+                  "negative. Default 0: no foundation.");
     p.setRange("foundation_modulus", ParameterRange::NonNegative);
     p.addOptional(
         "transverse_load",
         ParameterKind::Function,
         0.0,
-        "Distributed load acting along the deflection w, in force per unit length for a beam "
-        "and force per unit area for a plate, as a constant or the name of a function. It "
-        "enters the transverse equation as the source -q, so a positive value pushes the "
-        "deflection positive.");
+        "Distributed load q along the deflection w (N/m for a beam, Pa for a plate), as a "
+        "constant or the name of a function. The transverse equilibrium is -div(V) + c_f w = q, "
+        "with V the transverse shear force, which carries the term N dw/dx of the axial force N "
+        "with von_karman. In the balance law dm/dt + div F = s of w, the load is part of the "
+        "source s = q - c_f w. A positive value pushes the deflection positive. Default 0: no "
+        "load.");
     p.addOptional("axial_load",
                   ParameterKind::Function,
                   0.0,
-                  "Distributed load along the axial or radial displacement u, entering that "
-                  "equation as the source -f. It is used by the three beam models and by "
-                  "both circular plate models, and ignored by plate_first_order, which takes "
-                  "its in-plane loads from 'in_plane_load' "
-                  "instead.");
+                  "Distributed load f along the axial or radial displacement u (N/m for a beam, Pa "
+                  "for a circular plate), as a constant or the name of a function. It is the right "
+                  "side of the equilibrium of u, -dN/dx = f for a beam with N the axial force, so "
+                  "in the balance law dm/dt + div F = s of u it is part of the source s. The three "
+                  "beam models and the two circular plate models use it. plate_first_order "
+                  "ignores it and takes its in-plane load from 'in_plane_load'. Default 0: no "
+                  "load.");
     p.addOptional("von_karman",
                   ParameterKind::Boolean,
                   false,
-                  "Include the von Karman moderate-rotation nonlinearity: the membrane "
-                  "strain gains the term (1/2)(dw/dx)^2 and the transverse flux gains the "
-                  "follower term N dw/dx. Turn it on when the deflection is of the order of "
-                  "the thickness or larger. It makes the problem nonlinear, so the solve "
-                  "needs Newton's method or direct iteration, and "
-                  "it must be set the same way on every instance of the model.");
+                  "Include the von Karman moderate-rotation nonlinearity: the membrane strain "
+                  "gains the slope term (1/2)(dw/dx)^2 along each axis, and the transverse shear "
+                  "force gains the term N dw/dx. Turn it on when the deflection is of the order "
+                  "of the thickness or larger. It makes the problem nonlinear, and it must be set "
+                  "the same way on every instance of the model. Default false: the linear theory "
+                  "of small deflections.");
     return p;
   }
 
@@ -473,18 +482,18 @@ public:
     p.addRequired(
         "axial_displacement",
         ParameterKind::String,
-        "Name of the variable holding the axial displacement u of the reference surface.");
+        "Name of the variable holding the axial displacement u (m) of the reference surface.");
     p.addRequired("transverse_displacement",
                   ParameterKind::String,
-                  "Name of the variable holding the transverse deflection w, measured positive in "
-                  "the direction in which a positive transverse load acts.");
+                  "Name of the variable holding the transverse deflection w (m), measured positive "
+                  "in the direction in which a positive transverse load acts.");
     p.addRequired(
         "bending_moment",
         ParameterKind::String,
-        "Name of the variable carrying the bending moment. In a mixed formulation the moment is "
-        "an independent unknown of the problem, and it needs its own boundary conditions: leave "
-        "it free at a clamped end, where the natural condition is the vanishing slope, and "
-        "prescribe it to be zero at a simply supported or free end.");
+        "Name of the variable holding the bending moment M (N m). In a mixed model the moment is "
+        "an unknown of its own, and it needs its own boundary conditions: leave it free at a "
+        "clamped end, where the natural condition is the vanishing slope, and prescribe it to be "
+        "zero at a simply supported or free end.");
     modelVariables(p, {"axial_displacement", "transverse_displacement", "bending_moment"});
     return p;
   }
@@ -557,10 +566,13 @@ public:
   {
     InputParameters p = BeamMixed::validParams();
     p.setClassDescription(
-        "Mixed Euler-Bernoulli beam model in terms of the axial displacement, the transverse "
-        "deflection, and the bending moment. The natural boundary "
-        "quantities are the axial force N, the shear force V = dM/dx + N dw/dx, and the "
-        "rotation dw/dx.");
+        "Mixed Euler-Bernoulli beam model, without transverse shear deformation, in terms of the "
+        "axial displacement u, the deflection w and the bending moment M. Each instance "
+        "assembles one of the three second-order equations: the axial equilibrium -dN/dx = f, "
+        "the transverse equilibrium -dV/dx + c_f w = q and the moment equation, which relates "
+        "the curvature to M/D. Here N is the axial force, V = dM/dx + N dw/dx the shear force, f "
+        "the axial load, q the transverse load, c_f the foundation modulus and D the bending "
+        "stiffness. The natural boundary quantities are N, V and the slope dw/dx.");
     return p;
   }
   explicit BeamEulerBernoulliMixed(const InputParameters & p) : BeamMixed(p, false) {}
@@ -573,9 +585,11 @@ public:
   {
     InputParameters p = BeamMixed::validParams();
     p.setClassDescription(
-        "Mixed Timoshenko beam model in terms of the axial displacement, the transverse "
-        "deflection, and the bending moment. The model is free of "
-        "shear locking, and the rotation is recovered as phi = -dw/dx + (1/S) dM/dx.");
+        "Mixed Timoshenko beam model, with transverse shear deformation, in terms of the axial "
+        "displacement u, the deflection w and the bending moment M. Its equations are those of "
+        "beam_Euler-Bernoulli_mixed, with the shear flexibility 1/S in the moment equation, S "
+        "being the shear stiffness. The model is free of shear locking. The rotation of the "
+        "cross-section follows as phi = -dw/dx + (1/S) dM/dx.");
     return p;
   }
   explicit BeamTimoshenkoMixed(const InputParameters & p) : BeamMixed(p, true) {}
@@ -591,21 +605,24 @@ public:
   {
     InputParameters p = StructuralKernel::validParams();
     p.setClassDescription(
-        "Displacement Timoshenko beam model in terms of the axial displacement, the "
-        "transverse deflection, and the rotation of the cross-section. The shear term must be "
-        "integrated at the centre of the element to avoid shear locking: add the kernel of the "
-        "rotation equation with quadrature = midpoint and reduced_integration = true, as "
-        "solid_mechanics with formulation = beam does. Integrated in full, a thin beam locks "
-        "(0.07 of the deflection at L/h = 100).");
+        "Displacement Timoshenko beam model in terms of the axial displacement u, the deflection "
+        "w and the rotation phi of the cross-section. The shear force is V = S (phi + dw/dx), "
+        "with S the shear stiffness. Integrate the shear term at the centre of the element to "
+        "avoid shear locking of a thin beam: add the kernel of the rotation equation with "
+        "quadrature = midpoint and reduced_integration = true, as solid_mechanics does for "
+        "formulation = beam with beam_formulation = displacement.");
     p.addRequired(
         "axial_displacement",
         ParameterKind::String,
-        "Name of the variable holding the axial displacement u of the reference surface.");
+        "Name of the variable holding the axial displacement u (m) of the reference surface.");
     p.addRequired("transverse_displacement",
                   ParameterKind::String,
-                  "Name of the variable holding the transverse deflection w, measured positive in "
-                  "the direction in which a positive transverse load acts.");
-    p.addRequired("rotation", ParameterKind::String, "Rotation phi_x of the cross-section.");
+                  "Name of the variable holding the transverse deflection w (m), measured positive "
+                  "in the direction in which a positive transverse load acts.");
+    p.addRequired("rotation",
+                  ParameterKind::String,
+                  "Name of the variable holding the rotation phi (rad) of the cross-section, "
+                  "positive when it adds to the slope dw/dx in the shear strain phi + dw/dx.");
     modelVariables(p, {"axial_displacement", "transverse_displacement", "rotation"});
     return p;
   }
@@ -679,29 +696,31 @@ public:
     InputParameters p = StructuralKernel::validParams();
     p.setClassDescription(
         "First-order shear deformation (Mindlin) model of an axisymmetric circular plate in terms "
-        "of the radial displacement, the deflection, and the rotation. Use it on a "
-        "one-dimensional radial mesh with coordinates = 'axisymmetric'. "
-        "The stiffnesses are the plate stiffnesses (they contain 1 / (1 - nu^2)).");
+        "of the radial displacement u, the deflection w and the rotation phi_r of the normal. Use "
+        "it on a one-dimensional radial mesh with coordinates = 'axisymmetric'. The stiffnesses "
+        "are plate stiffnesses, which contain 1/(1 - nu^2). The transverse shear force is Q_r = S "
+        "(phi_r + dw/dr), with S the shear stiffness and r the radius (m).");
     p.addRequired("radial_displacement",
                   ParameterKind::String,
-                  "Name of the variable holding the radial displacement u of the mid-plane.");
+                  "Name of the variable holding the radial displacement u (m) of the mid-plane.");
     p.addRequired("transverse_displacement",
                   ParameterKind::String,
-                  "Name of the variable holding the transverse deflection w, measured positive in "
-                  "the direction in which a positive transverse load acts.");
+                  "Name of the variable holding the transverse deflection w (m), measured positive "
+                  "in the direction in which a positive transverse load acts.");
     p.addRequired("rotation",
                   ParameterKind::String,
-                  "Name of the variable holding the rotation of the normal in the (r, z) plane. "
-                  "The sign convention follows the shear resultant Q_r = S (phi_r + dw/dr), so "
-                  "phi_r is positive when it adds to the slope.");
+                  "Name of the variable holding the rotation phi_r (rad) of the normal in the (r, "
+                  "z) plane, positive when it adds to the slope dw/dr in the shear resultant Q_r = "
+                  "S (phi_r + dw/dr).");
     p.addOptional("shear_treatment",
                   ParameterKind::String,
                   std::string("include"),
-                  "Which terms this instance contributes: 'include' (all of them), "
-                  "'exclude' (everything but the transverse shear force) or 'only' (the "
-                  "transverse shear force alone). Splitting the kernel in two lets the shear "
-                  "terms be integrated with a reduced rule, which removes shear locking in "
-                  "thin plates.");
+                  "Which terms this instance contributes: 'include' (all of them), 'exclude' "
+                  "(every term but the transverse shear force) or 'only' (the transverse shear "
+                  "force alone). An 'exclude' instance and an 'only' instance with quadrature = "
+                  "midpoint and reduced_integration = true integrate the shear terms at the "
+                  "element centre, which removes shear locking in thin plates. Default include: "
+                  "one instance assembles the whole model.");
     modelVariables(p, {"radial_displacement", "transverse_displacement", "rotation"});
     return p;
   }
@@ -852,9 +871,8 @@ private:
 // (1 - nu^2) D_rr Bbar_rr (u/r - (1/r) dw/dr), which would put the factor
 // B_rr = D_rr Bbar_rr on both u and dw/dr.  Inverting Eqs. (8.2.14) gives
 // M_tt - nu M_rr = (1 - nu^2)(B_rr u - D_rr dw/dr)/r, so the transverse term
-// carries D_rr, not B_rr.  The form used here is the one that follows from
-// Eq. (8.2.21), which the book states correctly, and it reproduces the
-// published results of Tables 8.6.1 and 8.6.2.
+// carries D_rr.  The form used here is the one that follows from
+// Eq. (8.2.21).
 // ---------------------------------------------------------------------------
 class CircularPlateClassicalMixed : public StructuralKernel
 {
@@ -864,25 +882,28 @@ public:
     InputParameters p = StructuralKernel::validParams();
     p.setClassDescription(
         "Mixed classical (Kirchhoff) plate model of an axisymmetric circular plate in terms of "
-        "the radial displacement, the deflection, and the radial bending moment (Reddy's DM-CP(M) "
-        "model). Use it on a one-dimensional radial mesh with coordinates = 'axisymmetric'. "
-        "The stiffnesses are the plate stiffnesses (they contain 1 / (1 - "
-        "nu^2)). The natural boundary quantities are r N_rr, r V_r, and the slope dw/dr, so a "
-        "clamped edge needs no condition on the moment equation and a simply supported edge "
-        "prescribes M_rr = 0.");
+        "the radial displacement u, the deflection w and the radial bending moment M_rr, the "
+        "mixed model of Reddy (2024), Section 8.2. Carrying M_rr as a third unknown turns the "
+        "fourth-order equation of w into three second-order equations. Use it on a "
+        "one-dimensional radial mesh with coordinates = 'axisymmetric'. The stiffnesses are "
+        "plate stiffnesses, which contain 1/(1 - nu^2). The natural boundary quantities are r "
+        "N_rr, r V_r and the slope dw/dr, with r the radius (m), N_rr the radial force and V_r "
+        "the transverse shear force. So a clamped edge needs no condition on the moment "
+        "equation, and a simply supported edge prescribes M_rr = 0.");
     p.addRequired("radial_displacement",
                   ParameterKind::String,
-                  "Name of the variable holding the radial displacement u of the mid-plane.");
+                  "Name of the variable holding the radial displacement u (m) of the mid-plane.");
     p.addRequired("transverse_displacement",
                   ParameterKind::String,
-                  "Name of the variable holding the transverse deflection w, measured positive in "
-                  "the direction in which a positive transverse load acts.");
+                  "Name of the variable holding the transverse deflection w (m), measured positive "
+                  "in the direction in which a positive transverse load acts.");
     p.addRequired(
         "bending_moment",
         ParameterKind::String,
-        "Name of the variable carrying the radial bending moment M_rr, the third unknown of the "
-        "mixed classical plate model. Prescribe it to be zero at a simply supported edge, and "
-        "leave it free at a clamped edge, where the vanishing slope is the natural condition.");
+        "Name of the variable holding the radial bending moment M_rr (N m/m), the third unknown "
+        "of the mixed classical plate model. Prescribe it to be zero at a simply supported edge, "
+        "and leave it free at a clamped edge, where the vanishing slope is the natural "
+        "condition.");
     modelVariables(p, {"radial_displacement", "transverse_displacement", "bending_moment"});
     return p;
   }
@@ -1012,41 +1033,43 @@ public:
   {
     InputParameters p = StructuralKernel::validParams();
     p.setClassDescription(
-        "First-order shear deformation (Mindlin) plate model with five variables "
-        "(u, v, w, phi_x, phi_y) and the von Karman nonlinearity. "
-        "The stiffnesses are the plate stiffnesses A, B, D (they contain 1 / (1 - nu^2)) and "
-        "the shear stiffness S. Evaluate the shear terms at the element centre "
-        "(reduced_integration = true) for thin plates.");
+        "First-order shear deformation (Mindlin) plate model with five variables, the in-plane "
+        "displacements u and v, the deflection w and the rotations phi_x and phi_y of the normal, "
+        "with the optional von Karman nonlinearity. The stiffnesses are the plate stiffnesses A, "
+        "B and D, which contain 1/(1 - nu^2), and the shear stiffness S. The transverse shear "
+        "forces are Q = S (phi + grad w). For a thin plate, integrate the shear terms at the "
+        "element centre with two instances, as 'shear_treatment' describes.");
     p.addRequired("in_plane_displacements",
                   ParameterKind::StringList,
-                  "Exactly two variable names, in the order (u along x, v along y). Any other "
-                  "count is an error.");
+                  "The two variables of the in-plane displacements (m), in the order u along x, v "
+                  "along y. Any other count is an error.");
     p.addRequired("transverse_displacement",
                   ParameterKind::String,
-                  "Name of the variable holding the transverse deflection w, measured positive in "
-                  "the direction in which a positive transverse load acts.");
-    p.addRequired(
-        "rotations",
-        ParameterKind::StringList,
-        "Exactly two variable names, in the order (phi_x, phi_y), the rotations of the normal in "
-        "the x-z and y-z planes. The sign convention follows the shear resultants Q = S (phi + "
-        "grad w), so phi_x is positive when it adds to dw/dx. Any other count is an error.");
+                  "Name of the variable holding the transverse deflection w (m), measured positive "
+                  "in the direction in which a positive transverse load acts.");
+    p.addRequired("rotations",
+                  ParameterKind::StringList,
+                  "The two variables of the rotations (rad) of the normal in the x-z and y-z "
+                  "planes, in the order phi_x, phi_y. phi_x is positive when it adds to dw/dx in "
+                  "the shear resultant Q_x = S (phi_x + dw/dx). Any other count is an error.");
     p.addOptional("shear_treatment",
                   ParameterKind::String,
                   std::string("include"),
-                  "Which terms this instance contributes: 'include' (all of them), "
-                  "'exclude' (everything but the transverse shear forces) or 'only' (the "
-                  "transverse shear forces alone). Splitting the kernel in two lets the shear "
-                  "terms be integrated with a reduced rule, which removes shear locking in "
-                  "thin plates.");
+                  "Which terms this instance contributes: 'include' (all of them), 'exclude' "
+                  "(every term but the transverse shear forces) or 'only' (the transverse shear "
+                  "forces alone). An 'exclude' instance and an 'only' instance with quadrature = "
+                  "midpoint and reduced_integration = true integrate the shear terms at the "
+                  "element centre, which removes shear locking in thin plates. Default include: "
+                  "one instance assembles the whole model.");
     p.addOptional(
         "in_plane_load",
         ParameterKind::StringList,
         std::vector<std::string>{"0", "0"},
-        "Distributed in-plane load (f_x, f_y), in force per unit area, each a number, a registered "
-        "function or an expression of x, y, z, t and the fields, entering the equations of the two "
-        "in-plane displacements as the sources -f_x and -f_y. It replaces the inherited "
-        "'axial_load', which this model ignores. Default zero.");
+        "Distributed in-plane load (f_x, f_y) (Pa), each a number, a registered function or an "
+        "expression of x, y, z, t and the fields. It is the right side of the in-plane "
+        "equilibrium -div(N) = f, with N the in-plane force, so in the balance law dm/dt + div F "
+        "= s of u and v it is part of the source s. It replaces the inherited 'axial_load', which "
+        "this model ignores. Default 0, 0: no load.");
     modelVariables(p, {"in_plane_displacements", "transverse_displacement", "rotations"});
     return p;
   }
@@ -1225,8 +1248,9 @@ memberVariables(InputParameters & p, std::vector<std::string> keys)
   p.addOptional("variable",
                 ParameterKind::Names,
                 std::vector<std::string>{},
-                "The variable (equation) this instance assembles. Default: every variable of the "
-                "member, each with an instance of its own.");
+                "The variable whose equation this instance assembles. Default: every variable of "
+                "the member, each with an instance of its own, so that one call adds the whole "
+                "member.");
 }
 
 /// The position of variable 'name' in 'names', or -1.
@@ -1247,12 +1271,16 @@ public:
   {
     InputParameters p = Kernel::validParams();
     p.setClassDescription(
-        "A truss: the bars of a line mesh in a space of one, two or three dimensions carry the "
-        "axial force N = EA eps, with eps the stretch along the bar, and no bending. "
-        "'body_force' is the load per volume, which the area turns into a load per length.");
+        "A truss: the straight bars of a line mesh in a space of one, two or three dimensions "
+        "carry the axial force N = E A epsilon and no bending, with epsilon = e . du/dl the "
+        "stretch along the unit direction e of the bar and l the length along it (m). In the "
+        "balance law dm/dt + div F = s of the displacement u_i, the flux is F = -N e_i e and the "
+        "source is A b_i, with b the 'body_force' per unit volume, which the area turns into a "
+        "load per unit length.");
     p.addRequired("displacements",
                   ParameterKind::StringList,
-                  "The displacements, one per dimension of space.");
+                  "The displacement variables (m), one per dimension of space, in the order of the "
+                  "coordinate axes.");
     p.addRequired("youngs_modulus", ParameterKind::Real, "Young's modulus E (Pa).");
     p.setRange("youngs_modulus", ParameterRange::Positive);
     p.addRequired("area", ParameterKind::Real, "The area A of the cross-section (m^2).");
@@ -1260,7 +1288,8 @@ public:
     p.addOptional("body_force",
                   ParameterKind::RealList,
                   std::vector<double>{},
-                  "The load per volume (N/m^3), one value per displacement. Default none.");
+                  "The body force b per unit volume (N/m^3), one value per displacement. Default "
+                  "none: no distributed load.");
     memberVariables(p, {"displacements"});
     return p;
   }
@@ -1340,35 +1369,47 @@ public:
   {
     InputParameters p = Kernel::validParams();
     p.setClassDescription(
-        "A shell of flat facets on a surface mesh of quadrilaterals in three dimensions: "
-        "membrane, Mindlin bending and transverse shear in the axes of each facet, and the "
-        "rotation about the normal tied to the rotation of the membrane. The unknowns are the "
-        "displacements and the rotations about the global axes. 'body_force' is the load per "
-        "volume, which the thickness turns into a load per area.");
-    p.addRequired("displacements", ParameterKind::StringList, "The displacements (x, y, z).");
+        "A shell of flat facets on a surface mesh of four-node quadrilaterals in three "
+        "dimensions: membrane, Mindlin bending and transverse shear in the axes of each facet, "
+        "and the rotation about the normal tied to the rotation of the membrane, so that the six "
+        "unknowns of a node have a stiffness where facets meet at an angle. The unknowns are the "
+        "displacements and the rotations about the global axes. The membrane stiffness is E "
+        "H/(1 - nu^2), the bending stiffness E H^3/(12 (1 - nu^2)) and the shear stiffness K_s G "
+        "H, with H the thickness and G = E/(2 (1 + nu)). 'body_force' is the load per unit "
+        "volume, which the thickness turns into a load per unit area.");
+    p.addRequired("displacements",
+                  ParameterKind::StringList,
+                  "The displacement variables (m) along x, y and z.");
     p.addRequired("rotations",
                   ParameterKind::StringList,
-                  "The rotations about the global axes x, y and z (rad).");
+                  "The rotation variables (rad) about the global axes x, y and z.");
     p.addRequired("youngs_modulus", ParameterKind::Real, "Young's modulus E (Pa).");
     p.setRange("youngs_modulus", ParameterRange::Positive);
-    p.addRequired("poissons_ratio", ParameterKind::Real, "Poisson's ratio nu.");
-    p.addRequired("thickness", ParameterKind::Real, "The thickness h (m).");
+    p.addRequired("poissons_ratio",
+                  ParameterKind::Real,
+                  "Poisson's ratio nu (dimensionless), with -1 < nu < 1/2.");
+    p.addRequired("thickness", ParameterKind::Real, "The thickness H (m).");
     p.setRange("thickness", ParameterRange::Positive);
     p.addOptional("shear_correction",
                   ParameterKind::Real,
                   5.0 / 6.0,
-                  "The shear correction factor k. Default 5/6, a homogeneous section.");
+                  "The shear correction factor K_s (dimensionless). Default 5/6, the value of a "
+                  "homogeneous section.");
     p.setRange("shear_correction", ParameterRange::Positive);
     p.addOptional("body_force",
                   ParameterKind::RealList,
                   std::vector<double>{},
-                  "The load per volume (N/m^3) in x, y and z. Default none.");
+                  "The body force per unit volume (N/m^3) along x, y and z. Default none: no "
+                  "distributed load.");
     p.addOptional("shear_treatment",
                   ParameterKind::String,
                   std::string("include"),
-                  "Which terms this instance contributes: 'include' (all), 'exclude' (all but the "
-                  "transverse shear) or 'only' (the transverse shear), so that the shear can be "
-                  "integrated at the centre of the element.");
+                  "Which terms this instance contributes: 'include' (all of them), 'exclude' (all "
+                  "but the transverse shear) or 'only' (the transverse shear alone). An 'exclude' "
+                  "instance and an 'only' instance with quadrature = midpoint and "
+                  "reduced_integration = true integrate the shear at the centre of the element, "
+                  "which keeps thin shells free of shear locking. Default include: one instance "
+                  "assembles every term.");
     memberVariables(p, {"displacements", "rotations"});
     return p;
   }

@@ -27,33 +27,35 @@ public:
   {
     InputParameters p = Kernel::validParams();
     p.setClassDescription(
-        "Heat conduction -div(k grad T) with k = k(x, t) * (c0 + c1 T + c2 T^2 + ...). "
-        "The natural boundary quantity n . (k grad T) is the heat flux entering the body.");
+        "Heat conduction: the term div q of the energy balance, with the heat flux "
+        "q = -k p(T) grad T in W/m^2. Here T is the temperature in K, k the thermal "
+        "conductivity and p(T) = c0 + c1 T + c2 T^2 + ... a polynomial of T. A Neumann "
+        "condition prescribes the heat flux -n . q entering the body, with n the outward unit "
+        "normal, and a boundary without a condition is insulated.");
     p.addOptional("thermal_conductivity",
                   ParameterKind::Function,
                   1.0,
-                  "Thermal conductivity k in watts per metre per kelvin: a constant, a registered "
-                  "function of (x, y, z, t), the name of a property, or an expression of the "
-                  "fields, x, y, z, t, the functions and the properties. It must be positive. "
-                  "'temperature_polynomial' multiplies it. Default 1.");
+                  "Thermal conductivity k in W/(m K): a constant, a registered function of x, y, "
+                  "z and t, the name of a property, or an expression of the fields, x, y, z, t, "
+                  "the functions and the properties. It must be positive, and "
+                  "'temperature_polynomial' multiplies it. Default 1, for a problem written in "
+                  "dimensionless form.");
     p.setRange("thermal_conductivity", ParameterRange::Positive);
     p.addOptional("temperature_polynomial",
                   ParameterKind::RealList,
                   std::vector<double>{1.0},
-                  "Coefficients c0, c1, ... of a polynomial that multiplies the base "
-                  "conductivity, giving k(x, t) (c0 + c1 T + c2 T^2 + ...). The default {1} "
-                  "leaves the conductivity unchanged, so a list given here must include its own "
-                  "constant term. The temperature is the current iterate under Newton's method "
-                  "and the previous one under direct iteration. The argument of the polynomial is "
-                  "the temperature itself, in the units of the variable, without subtraction of a "
-                  "reference temperature.");
+                  "Coefficients c0, c1, c2, ... of the polynomial p(T) = c0 + c1 T + c2 T^2 + ... "
+                  "that multiplies the conductivity. A list given here must include its constant "
+                  "term c0. The argument is the temperature in the units of the variable, with no "
+                  "reference temperature subtracted. Newton's method evaluates p at the current "
+                  "iterate, and direct iteration at the previous one. Default {1}, which leaves "
+                  "the conductivity unchanged.");
     deformation::addParameter(
         p,
-        "the heat conducts through the deformed body: the flux per unit undeformed area is "
-        "J k F^-1 F^-T Grad T, with Grad the gradient on the undeformed mesh. The heat "
-        "source and the heat capacity need no such change when they are given per unit "
-        "undeformed volume (the mass and the fissile atoms of an element do not change "
-        "as it deforms).");
+        "the heat conducts through the deformed body: the heat flux per unit undeformed area "
+        "is -J k F_d^-1 F_d^-T Grad T, with F_d the deformation gradient, J its determinant "
+        "and Grad the gradient on the undeformed mesh. The heat source and the heat capacity "
+        "need no such change when they are given per unit undeformed volume.");
     return p;
   }
   explicit HeatConduction(const InputParameters & p) : Kernel(p)
@@ -102,18 +104,21 @@ public:
   {
     InputParameters p = Kernel::validParams();
     p.setClassDescription(
-        "Convective transport of heat by a velocity field that is solved for in the same "
-        "problem, the advective term rho c_p (v . grad T) of the energy equation of an "
-        "incompressible flow. In an equal-order flow (FEM or DMCDM with the pressure "
-        "formulation) it carries the velocity w = v - tau r_m that the mass equation conserves: "
-        "the source rho c_p (w . grad T) for FEM, the face flux rho c_p (w . n)(T_f - T_C) for "
-        "DMCDM. The heat is then conserved exactly, against the discrete mass flux through the "
-        "boundary (Hughes and Wells 2005), and the temperature does not depend on its scale. "
-        "Without such a mass equation (the penalty and Taylor-Hood formulations) it is the source "
-        "S = rho c_p (v . grad T). Together with a buoyancy force in the momentum "
-        "equations (Boussinesq_buoyancy) it couples heat transfer and fluid flow in both "
-        "directions, and in Newton's method the coupling is exact: the derivatives with "
-        "respect to the velocities are carried through the automatic differentiation.");
+        "Convective transport of heat by a velocity v that the same problem solves for: the "
+        "term rho c_p v . grad T on the left side of the energy balance of an incompressible "
+        "flow, with rho the density, c_p the specific heat capacity and T the temperature. In "
+        "an equal-order flow, with the finite element method (FEM) or the dual mesh control "
+        "domain method (DMCDM) and the pressure formulation, the term carries the velocity "
+        "w = v - tau r_m that the mass equation conserves, with tau r_m the pressure "
+        "stabilization of mass_conservation. FEM then adds rho c_p w . grad T, and DMCDM the "
+        "face flux rho c_p (w . n)(T_f - T_C) for the control volume C on each side of a face, "
+        "with T_f the face value of the advection scheme and n the unit normal of the face. The "
+        "heat is then conserved exactly against the discrete mass flux through the boundary "
+        "(Hughes and Wells 2005), and the temperature does not depend on its scale. Without "
+        "such a mass equation, in the penalty and Taylor-Hood formulations, the term carries v. "
+        "With Boussinesq_buoyancy in the momentum equations, the term couples heat transfer and "
+        "fluid flow both ways. Newton's method takes the coupling exactly, because automatic "
+        "differentiation carries the derivatives with respect to the velocities.");
     p.addRequired("velocities",
                   ParameterKind::StringList,
                   "Names of the velocity variables, exactly one per mesh dimension and in "
@@ -121,13 +126,15 @@ public:
     p.addOptional("density",
                   ParameterKind::Function,
                   1.0,
-                  "Mass density rho, as a constant or the name of a function.");
+                  "Density rho in kg/m^3: a constant, a registered function, or an expression of "
+                  "x, y, z and t. Default 1, for a problem written in dimensionless form.");
     p.setRange("density", ParameterRange::Positive);
     p.addOptional("specific_heat",
                   ParameterKind::Function,
                   1.0,
-                  "Specific heat capacity c_p at constant pressure, as a constant or the name "
-                  "of a function.");
+                  "Specific heat capacity c_p at constant pressure in J/(kg K): a constant, a "
+                  "registered function, or an expression of x, y, z and t. Default 1, for a "
+                  "problem written in dimensionless form.");
     p.setRange("specific_heat", ParameterRange::Positive);
     addAdvectionSchemeParam(p);
     return p;
@@ -162,7 +169,7 @@ public:
   // mass equation tests with the functions of T (an equal-order flow), and with v otherwise: the
   // source for FEM, and for DMCDM the face flux rho c_p (w . n)(T_f - T_C) for the control
   // volume C on each side, with the face value T_f of the advection scheme (Hughes and Wells
-  // 2005; OpenFOAM's bounded form).  As the mass equation holds for every test function, the heat
+  // 2005).  As the mass equation holds for every test function, the heat
   // is conserved exactly: what the term takes from the nodes is the heat that the discrete mass
   // flux carries through the boundary, at the temperature of the node it leaves.  And it has no
   // part T div(w), so the temperature does not depend on its scale (kelvin or celsius) at any
@@ -232,34 +239,47 @@ public:
   {
     InputParameters p = Kernel::validParams();
     p.setClassDescription(
-        "Streamline upwind Petrov-Galerkin stabilisation of the convection of heat by a flow: the "
-        "flux F = tau v r, which adds the integral of tau (v . grad w) r to the equation of the "
-        "test function w. The residual r is the sum of the sources of every other kernel of the "
-        "temperature (the convection rho c_p v . grad T, the heat sources, the heat capacity "
-        "term), each weighted as the assembly weights it, that is the residual of the energy "
-        "equation, with the conduction - k Laplacian(T) on quadratic elements (the gradient of k "
-        "left out) and without it on linear ones, inside which it vanishes. An advection of the temperature written as a flux is refused. tau = [(2 |v| / h)^2 + 9 (4 kappa / h^2)^2 + "
-        "(2 / dt)^2]^(-1/2), kappa = k / (rho c_p) (Brooks and Hughes 1982, Tezduyar 1991, with "
-        "the factor 9 of MOOSE), the last term in a transient solve. On linear elements the residual "
-        "of the exact solution is k Laplacian(T), not zero, so the stabilisation adds an error of "
-        "the order of tau k |Laplacian(T)|: small where convection dominates, where tau is about "
-        "h / (2 |v|), and zero for a harmonic temperature. For FEM and DMCDM, at the dual faces for DMCDM, as "
-        "momentum_stabilization is.");
+        "Streamline upwind Petrov-Galerkin (SUPG) stabilization of the convection of heat by a "
+        "flow of velocity v (Brooks and Hughes 1982). It adds the flux F = -tau v r to the "
+        "energy balance dm/dt + div F = s, which in the finite element method (FEM) adds the "
+        "integral of tau (v . grad N_i) r to the equation of node i, with N_i its shape "
+        "function. The dual mesh control domain method (DMCDM) takes the same flux through the "
+        "faces of the control domains. The residual r is the strong residual of the energy "
+        "balance, rho c_p (dT/dt + v . grad T) - div(k grad T) - s, with rho the density, c_p "
+        "the specific heat capacity, k the thermal conductivity, T the temperature and s the "
+        "heat source. The code builds r from the other kernels of the temperature, each "
+        "weighted as the assembly weights it. Quadratic elements give the conduction as "
+        "-k Laplacian(T), without the gradient of k, and linear elements leave it out, since it "
+        "vanishes inside them. The parameter is tau = [(2 |v| / h)^2 + 9 (4 kappa / h^2)^2 + "
+        "(2 / dt)^2]^(-1/2), with h the element size, halved on a quadratic element, "
+        "kappa = k / (rho c_p) the thermal diffusivity and dt the time step, whose term enters "
+        "a transient solve only. The factor 9 gives tau = h^2 / (12 kappa) where diffusion "
+        "dominates. On linear elements r of the exact solution equals k Laplacian(T), so the "
+        "stabilization adds an error of the order of tau k |Laplacian(T)|, which is small where "
+        "convection dominates and zero for a harmonic temperature. The code refuses an "
+        "advection kernel of the temperature that is written as a flux, which is the case for "
+        "the conservative form and for a face flux advection scheme.");
     p.addRequired("velocities",
                   ParameterKind::StringList,
                   "Names of the velocity variables, one per mesh dimension, in coordinate order.");
     p.addOptional("density",
                   ParameterKind::Function,
                   1.0,
-                  "Mass density rho of the flow, for the diffusivity kappa of tau.");
+                  "Density rho of the flow in kg/m^3, for the diffusivity kappa of tau: a "
+                  "constant, a registered function, or an expression of x, y, z and t. Default "
+                  "1, for a problem written in dimensionless form.");
     p.setRange("density", ParameterRange::Positive);
-    p.addOptional(
-        "specific_heat", ParameterKind::Function, 1.0, "Specific heat c_p, for kappa of tau.");
+    p.addOptional("specific_heat",
+                  ParameterKind::Function,
+                  1.0,
+                  "Specific heat capacity c_p in J/(kg K), for the diffusivity kappa of tau: a "
+                  "constant, a registered function, or an expression of x, y, z and t. Default "
+                  "1, for a problem written in dimensionless form.");
     p.setRange("specific_heat", ParameterRange::Positive);
     p.addRequired("thermal_conductivity",
                   ParameterKind::String,
-                  "Thermal conductivity k, for kappa of tau: a number, a function, an expression "
-                  "or a property.");
+                  "Thermal conductivity k in W/(m K), for the diffusivity kappa of tau: a number, "
+                  "a registered function, an expression or the name of a property.");
     return p;
   }
   explicit HeatStreamlineStabilization(const InputParameters & p) : Kernel(p) {}
@@ -333,7 +353,7 @@ public:
     const ADReal kappa = _k.value(ctx) / rc;
     ADReal inverse2 = (4.0 / (h * h)) * speed2;
     // The factor 3 (9 on the square) gives the diffusive limit h^2 / (12 kappa) of the optimal
-    // parameter of linear elements, as MOOSE's navier_stokes module takes it (INSADTauMaterial).
+    // parameter of linear elements.
     const ADReal diffusive = 3.0 * 4.0 * kappa / (h * h);
     inverse2 += diffusive * diffusive;
     if (transient)
@@ -358,25 +378,28 @@ public:
   {
     InputParameters p = Kernel::validParams();
     p.setClassDescription(
-        "The heat capacity term of the transient energy equation. It contributes no flux and "
-        "the source S = rho c_p (T - T_old) / dt. It is a time kernel: it is skipped entirely "
-        "in a steady solve, and it is not multiplied by the time-integration weight theta, "
-        "which applies to the steady terms only.");
+        "The heat capacity term of the transient energy balance: the storage term dm/dt, with "
+        "m = rho c_p T, taken as rho c_p (T - T_old) / dt. Here rho is the density, c_p the "
+        "specific heat capacity, T the temperature, T_old the temperature at the start of the "
+        "step and dt the time step. A steady solve skips the term, and the weight theta of the "
+        "theta method, which multiplies the steady terms, does not multiply it.");
     p.addOptional("density",
                   ParameterKind::Function,
                   1.0,
-                  "Mass density rho in kilograms per cubic metre: a constant, a registered "
-                  "function, the name of a property, or an expression. Only the product of the "
-                  "density and the specific heat enters, so leave one of them at 1 if the "
-                  "volumetric heat capacity is known directly. Default 1.");
+                  "Density rho in kg/m^3: a constant, a registered function, the name of a "
+                  "property, or an expression. Only the product rho c_p enters, so leave one of "
+                  "the two at 1 when the volumetric heat capacity is known. Default 1, for a "
+                  "problem written in dimensionless form or with the volumetric heat capacity in "
+                  "'specific_heat'.");
     p.setRange("density", ParameterRange::Positive);
     p.addOptional("specific_heat",
                   ParameterKind::Function,
                   1.0,
-                  "Specific heat capacity c_p in joules per kilogram per kelvin: a constant, a "
-                  "registered function, the name of a property, or an expression. A "
-                  "temperature-dependent specific heat is evaluated at the new temperature, so "
-                  "the term is rho c_p(T) (T - T_old) / dt. Default 1.");
+                  "Specific heat capacity c_p in J/(kg K): a constant, a registered function, the "
+                  "name of a property, or an expression. A specific heat that depends on the "
+                  "temperature takes the new temperature, so the term is "
+                  "rho c_p(T) (T - T_old) / dt. Default 1, for a problem written in "
+                  "dimensionless form or with the volumetric heat capacity in 'density'.");
     p.setRange("specific_heat", ParameterRange::Positive);
     return p;
   }
@@ -405,32 +428,36 @@ public:
   {
     InputParameters p = IntegratedBC::validParams();
     p.setClassDescription(
-        "Grey-body radiation: n . (k grad T) = -emissivity sigma (T^4 - T_ambient^4) "
-        "(temperatures in kelvin).");
+        "Grey-body radiation from a surface: the heat flux leaving the body is "
+        "n . q = e sigma_SB (T^4 - T_a^4), with n the outward unit normal, q the heat flux, e "
+        "the emissivity, sigma_SB the Stefan-Boltzmann constant, T the temperature of the "
+        "surface and T_a the ambient temperature, both in K.");
     p.addOptional("emissivity",
                   ParameterKind::Real,
                   1.0,
-                  "Total hemispherical emissivity of the surface, dimensionless and between "
-                  "0 and 1, with 1 for a black body. The range is not checked. It is "
-                  "multiplied by the Stefan-Boltzmann constant once when the object is "
-                  "built, so neither may be changed afterwards.");
+                  "Total hemispherical emissivity e of the surface, dimensionless, between 0 and "
+                  "1. The code refuses a negative value and does not check the upper bound. The "
+                  "object multiplies it by the Stefan-Boltzmann constant once when it is built, "
+                  "so a later change to either has no effect. Default 1, a black body.");
     p.setRange("emissivity", ParameterRange::NonNegative);
     p.addOptional("stefan_boltzmann_constant",
                   ParameterKind::Real,
                   5.670374419e-8,
-                  "Stefan-Boltzmann constant, 5.670374419e-8 W/m^2/K^4 by default. Change it only "
-                  "to work in a different system of units. It is a physical constant and must not "
-                  "be used as a fitting parameter.");
+                  "Stefan-Boltzmann constant sigma_SB in W/(m^2 K^4). Change it only to work in "
+                  "another system of units. Default 5.670374419e-8, its value in SI units.");
     p.addOptional("ambient_temperature",
                   ParameterKind::Function,
                   0.0,
-                  "Temperature of the surroundings, which must be on an absolute scale because it "
-                  "enters as its fourth power: a value in degrees celsius gives a wrong result "
-                  "without any warning. The default 0 models radiation into deep space.");
+                  "Temperature T_a of the surroundings in K: a constant, a registered function, "
+                  "or an expression of x, y, z and t. It must be on an absolute scale, because "
+                  "it enters as its fourth power, and a value in degrees Celsius gives a wrong "
+                  "result without a warning. Default 0, radiation into deep space.");
     deformation::addParameter(
         p,
-        "the flux is per unit deformed area and is multiplied by the area ratio da/dA = |J F^-T N| "
-        "to give the flux per unit undeformed area.");
+        "the flux is per unit deformed area, and the code multiplies it by the area ratio "
+        "da/dA = |J F_d^-T N| to give the flux per unit undeformed area, with F_d the "
+        "deformation gradient, J its determinant and N the outward unit normal of the "
+        "undeformed boundary.");
     return p;
   }
   explicit RadiativeHeatFluxBC(const InputParameters & p)
@@ -474,32 +501,41 @@ public:
     InputParameters p = InterfaceBC::validParams();
     p.setClassDescription(
         "Heat transfer across a gap between two separate bodies, from the primary side set "
-        "'boundary' to the closest points of 'secondary_boundary': q = h (T_s - T_p) + sigma "
-        "F (T_s^4 - T_p^4), where q is the heat flux entering the primary body per unit "
-        "primary area and the secondary body receives the same heat. h is the gap "
-        "conductance and F the radiation exchange factor of two parallel grey surfaces, "
-        "1 / (1/eps_p + 1/eps_s - 1). The temperature variable is 'variable' on both "
-        "sides.");
+        "'boundary' to the closest points of 'secondary_boundary'. The heat flux entering the "
+        "primary body, per unit primary area, is q_g = h_g (T_s - T_p) + sigma_SB (T_s^4 - "
+        "T_p^4) / (1/e_p + 1/e_s - 1), and the secondary body loses the same heat. Here T_p and "
+        "T_s are the temperatures of the primary and secondary surfaces, h_g the gap "
+        "conductance, sigma_SB the Stefan-Boltzmann constant, and e_p and e_s the emissivities "
+        "of the two surfaces, whose radiation term is that of two parallel grey surfaces. The "
+        "temperature is 'variable' on both sides unless 'secondary_variable' names another.");
     p.addOptional("gap_conductance",
                   ParameterKind::Function,
                   0.0,
-                  "Gap conductance h in W/m^2/K, per unit area of the primary surface, as a "
-                  "constant or a function of position and time.");
+                  "Gap conductance h_g in W/(m^2 K), per unit area of the primary surface: a "
+                  "constant, a registered function, or an expression of x, y, z and t. Default "
+                  "0, no conduction across the gap.");
     p.addOptional("primary_emissivity",
                   ParameterKind::Real,
                   0.0,
-                  "Emissivity of the primary surface. Radiation is included when both "
-                  "emissivities are positive, and the temperatures must then be absolute.");
-    p.addOptional(
-        "secondary_emissivity", ParameterKind::Real, 0.0, "Emissivity of the secondary surface.");
+                  "Emissivity e_p of the primary surface. The radiation term acts only when both "
+                  "emissivities are positive, and the temperatures must then be in K. Default 0, "
+                  "no radiation across the gap.");
+    p.addOptional("secondary_emissivity",
+                  ParameterKind::Real,
+                  0.0,
+                  "Emissivity e_s of the secondary surface. Default 0, no radiation across the "
+                  "gap.");
     p.addOptional("stefan_boltzmann_constant",
                   ParameterKind::Real,
                   5.670374419e-8,
-                  "Stefan-Boltzmann constant in W/m^2/K^4.");
+                  "Stefan-Boltzmann constant sigma_SB in W/(m^2 K^4). Change it only to work in "
+                  "another system of units. Default 5.670374419e-8, its value in SI units.");
     deformation::addParameter(p,
-                              "the conductance is per unit deformed primary area, and the flux "
-                              "is multiplied by the area ratio da/dA = |J F^-T N| of the "
-                              "primary surface.");
+                              "the conductance is per unit deformed primary area, and the code "
+                              "multiplies the flux by the area ratio da/dA = |J F_d^-T N| of the "
+                              "primary surface, with F_d the deformation gradient, J its "
+                              "determinant and N the outward unit normal of the undeformed "
+                              "surface.");
     return p;
   }
   explicit GapHeatTransfer(const InputParameters & p) : InterfaceBC(p)

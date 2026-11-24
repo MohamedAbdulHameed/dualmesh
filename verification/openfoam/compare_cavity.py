@@ -128,6 +128,7 @@ def solve_with_dualmesh(resolution: int, Reynolds_number: float = 100.0):
         "fluid_dynamics",
         dynamic_viscosity=1.0,
         density=Reynolds_number,
+        formulation="penalty",
         penalty_parameter=1.0e8,
     )
     flow.add_boundary_condition(

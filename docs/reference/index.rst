@@ -1,25 +1,26 @@
 API reference
 =============
 
-This reference describes every public class, function and method of the
-``dualmesh`` Python package: the parameters each one takes, with their types
-and defaults, what it returns, and the inputs it refuses.  The user guide
-explains how the pieces fit together.  The physics, couplings, kernels,
-boundary conditions and property objects that are added by their type name
-(``problem.add_physics("heat_transfer", ...)``) are listed, with every
-parameter, in the :doc:`/objects`.
+This reference describes the public classes, functions and methods of the
+``dualmesh`` Python package: the parameters of each, with their types and
+defaults, and what each returns.  :doc:`/user_guide/index` explains how they
+work together.  The physics, couplings, kernels, boundary conditions and
+property objects that you add by type name, as in
+``problem.add_physics("heat_transfer", ...)``, list their parameters in
+:doc:`/objects`.
 
 .. code-block:: python
 
    import dualmesh
 
-The functions and classes of the top level are written ``dualmesh.<name>`` in the
-examples, and those of a submodule ``dualmesh.<module>.<name>``, for example
+The examples write a name of the top level as ``dualmesh.<name>`` and a name
+of a submodule as ``dualmesh.<module>.<name>``, for example
 ``dualmesh.mms.ManufacturedSolution``.
 
 .. toctree::
    :maxdepth: 1
 
+   input
    problem
    meshes
    physics

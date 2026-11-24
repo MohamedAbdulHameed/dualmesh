@@ -1,28 +1,74 @@
 Object reference
 ================
 
-Every kernel, boundary condition, property object and nodal load in dualmesh is a
-registered object with declared, validated parameters.  This part of the manual
-has one page for each of them, generated from that registry when the
-documentation is built, so a page can never describe a parameter the object
-does not have.
+Each kernel, boundary condition, nodal load, property object and constraint
+is a registered type with declared parameters.  When you add an object, the
+code checks every parameter you give against these declarations.  The pages of
+this reference are generated from the same declarations when the docs are
+built, so each page lists the parameters that the code accepts.  The reference
+also has a page for each physics and each coupling.
 
-Each page gives the object's purpose, its required parameters, its optional
-parameters with their defaults, and prose on how the object is used and what
-its keywords mean.  The three parameters that every object accepts (``block``,
-``quadrature`` and ``reduced_integration``) are explained
-once, in :doc:`/user_guide/problem_setup`, and are omitted from the individual
-pages.
+Each page gives the purpose of the type, its required parameters, and its
+optional parameters with their defaults.  Most pages end with an example.
 
-The same information is available at the prompt:
+Parameters from the base classes
+--------------------------------
+
+The types of one category share a base class, and the base class declares the
+parameters below.  Each page lists them with the parameters of its own type.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 70
+
+   * - Category
+     - Parameters of the base class
+   * - Kernel
+     - ``variable`` (required), ``block``, ``quadrature``,
+       ``reduced_integration``
+   * - Boundary condition
+     - ``variable`` and ``boundary`` (required), ``block``, ``quadrature``,
+       ``reduced_integration``
+   * - Nodal boundary condition
+     - ``variable`` and ``boundary`` (required)
+   * - Nodal load
+     - ``variable`` (required)
+   * - Property
+     - ``block``, ``property_factors``
+   * - Constraint
+     - none
+
+``variable`` names the variable whose equation the object acts on.  A list of
+variables creates the object once for each of them, with the same values of
+the other parameters.  ``boundary`` names the side sets or node sets where the
+condition applies.  :doc:`/user_guide/problem_setup` explains ``block``,
+``quadrature``, ``reduced_integration`` and ``property_factors``.
+
+Three types depart from the table:
+
+- The boundary condition ``gap_heat_transfer`` derives from the base class of
+  interface conditions, which adds ``secondary_boundary`` (required) and
+  ``secondary_variable``.
+- The nodal boundary condition ``point_Dirichlet`` takes a ``point`` in place of
+  ``boundary``.
+- Each constraint declares all of its parameters.  ``periodic`` takes an
+  optional ``variable``, and ``uniform_field`` a required one.
+
+Look up a type from Python
+--------------------------
+
+The registry gives the same information in Python:
 
 .. code-block:: python
 
    import dualmesh
 
-   dualmesh.registered_types()  # every object name
+   dualmesh.registered_types()  # every object type
    dualmesh.object_category("heat_conduction")  # 'kernel'
    print(dualmesh.describe_object("heat_conduction"))
+
+On the command line, ``dualmesh list`` prints the types and
+``dualmesh describe heat_conduction`` prints the parameters of one type.
 
 .. toctree::
    :maxdepth: 1

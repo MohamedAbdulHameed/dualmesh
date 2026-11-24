@@ -1,59 +1,71 @@
 Developing
 ==========
 
+This page is for contributors.  It describes the layout of the repository, the
+levels of the code, the rules that a new capability follows, how to write a
+kernel, and the commands that test, check and release the code.  Build the code
+in the source tree first, as :doc:`installation` describes.
+
 Layout
 ------
 
 .. code-block:: text
 
-   include/dualmesh/      public C++ headers
+   include/dualmesh/      the public C++ headers
+     base/                Object, Kernel, Property, Factory, Problem, QpContext
      core/                ADReal, InputParameters, Function, Types
-     mesh/                Mesh (nodes, elements, side sets, generators)
-     fe/                  ReferenceElement (dual mesh geometry), Assembly
-     base/                Object, Kernel, Property, Factory, Problem
-     modules/             the physics modules' public headers
-   src/                   the implementations, mirroring include/
+     fe/                  ReferenceElement (with the dual mesh geometry), Assembly
+     linalg/              the PETSc solvers and their choice
+     mesh/                Mesh, its bisection and its subdivision
+     modules/             the headers of the physics modules
+     parallel/            the distributed problem, its partition and its gather-scatter
+   src/                   the implementations, in the folders of include/
    python/bindings/       the pybind11 module
    python/dualmesh/       the Python package
-   tests/cpp/             C++ unit tests (self-contained, no framework needed)
-   tests/python/          the verification suite
-   verification/openfoam/ cross-verification scripts
-   examples/              runnable examples
+     input/               the input: its schema, its standard names and its build
+   tests/cpp/             the C++ tests
+   tests/python/          the Python tests
+   verification/          the verification and benchmark scripts
+   examples/              the example scripts and case files
+   scripts/               the checks, the benchmarks and the release script
    docs/                  this documentation
 
-One input design for every capability
--------------------------------------
+The levels of the code
+----------------------
 
-Every capability of dualmesh is used from Python through one input design.  A
-user describes a model in the terms of its physics, and the code generates
-the equations.  A capability belongs to one of three levels, and each level
-generates the level below without changing its meaning.
+A problem is built at one of three levels, and each level builds the level
+below it without changing its meaning.
 
 .. list-table::
    :header-rows: 1
-   :widths: 18 42 40
+   :widths: 14 40 46
 
    * - Level
-     - What the user adds
+     - What you give
      - Example
+   * - Input
+     - The sections of a problem, in physical terms and with units.  The input
+       lowers them onto the physics level.
+     - ``dualmesh.problem(mesh=...)``, ``problem.physics("heat_conduction")``,
+       or a case file run by ``dualmesh run``
    * - Physics
-     - A set of equations on any mesh, with its boundary conditions, and the
-       couplings between physics.
+     - A set of equations with its boundary conditions, and the couplings
+       between two physics.  A physics generates objects.
      - ``problem.add_physics("solid_mechanics", ...)``,
        ``problem.add_coupling("thermal_expansion", ...)``
    * - Object
-     - One term (kernel), property object or condition.
+     - One term (a kernel), a property object or a condition.
      - ``problem.add_kernel("body_force", ...)``
 
-A study of one model is a method of the model (``problem.solve()``,
-``problem.solve_transient(...)``).  A study of many models
-(adaptive refinement, convergence studies) takes a
-function that builds and solves one model.
+A study of one model is a method of the model, such as
+:meth:`dualmesh.Problem.solve` or :meth:`dualmesh.Problem.solve_transient`.  A
+study of many models, such as a convergence study, takes a function that builds
+and solves one model.
 
 Adding a capability
-~~~~~~~~~~~~~~~~~~~
+-------------------
 
-A new capability follows these rules, so that it fits the design without a
+A new capability follows these rules, so that it fits the levels without a
 special case.
 
 1. **Level.**  One term or condition is an object, a set of equations is a
@@ -61,51 +73,69 @@ special case.
    generates objects.
 2. **Names.**  Type names, parameters and keywords are full words in lower
    case joined by underscores.  Proper names and abbreviations keep their
-   capitals (``Dirichlet``, ``beam_Timoshenko_mixed``,
-   ``Robin``), and the very common abbreviations ``num``,
-   ``max`` and ``min`` are used.  The same quantity has the same name in
-   every module (e.g., ``poissons_ratio``, ``time_step``, ``time_scheme``,
-   ``standard_deviation``).  A Python class follows PEP 8 (``SolveResult``).
-3. **Declaration.**  Every parameter is declared once, with its type, its SI
-   unit, its default with the reason for the default, and a description of
-   its physical meaning.  C++ objects use ``InputParameters``, and Python
-   physics, couplings and input groups use
+   capitals, as in ``Dirichlet``, ``Robin`` and ``beam_Timoshenko_mixed``.  The
+   common abbreviations ``num``, ``max`` and ``min`` are allowed.  The same
+   quantity has the same name in every module, for example ``poissons_ratio``,
+   ``time_step``, ``time_scheme`` and ``standard_deviation``.  A Python class
+   follows PEP 8, as ``SolveResult`` does.
+3. **Declaration.**  Every parameter is declared once, with its type, its unit
+   in the International System of Units (SI), its default with the reason for the default, and a description of
+   its physical meaning.  C++ objects declare their parameters with
+   ``InputParameters``, and Python physics, couplings and input groups with
    :func:`dualmesh.parameters.parameter`.  The same declaration validates the
    input, answers ``dualmesh describe`` and generates the reference pages.
-   ``scripts/audit_names.py`` checks every public name and declaration
-   against rules 2 and 3 (forbidden abbreviations, capitals outside the
-   proper names, a missing description, a default without its reason, and a
-   semicolon, a dash or a Unicode symbol in a description), and the test
-   suite runs it.
 4. **One way to define each thing.**  Some pairs of inputs define the same
-   thing, for example ``traction`` and ``total_force``.  The code stops with
-   an error when the input gives the two inputs of such a pair.  The
-   documentation tells the user to give only one of them.
+   thing, for example ``traction`` and ``total_force``.  The code stops with an
+   error when the input gives both inputs of such a pair, and the
+   documentation tells you to give one of them.
 5. **Validation.**  A misspelled name is answered with the closest valid name
-   and the list of the valid ones, a missing required parameter is named with
-   its description, and a value outside its physical range is refused with a
+   and the list of the valid ones.  A missing required parameter is named with
+   its description.  A value outside its physical range is refused with a
    message that says what to do.
 6. **Physics.**  A physics declares its variables, fills in the variables,
-   components and thicknesses of its objects, and passes every other
-   parameter to them unchanged.  A property that is not given is read from
-   the property of the same name.  A new physics is a dataclass
-   subclass of :class:`dualmesh.physics.Physics` registered with
-   ``@register``, with the methods ``variables`` and ``_build``.
+   components and thicknesses of its objects, and passes every other parameter
+   to them unchanged.  A property that you don't give is read from the property
+   of the same name.  A new physics is a dataclass subclass of
+   :class:`dualmesh.physics.Physics`, registered with ``@register``, with the
+   methods ``variable_names`` and ``_build``.
 7. **Results.**  A result provides ``summary()``, ``to_dict()``,
    ``write_json(path)`` and ``write_csv(path)``.
-8. **Python style.**  ``ruff format`` with a line length of 100 characters,
-   a call with many inputs split into named pieces, and comments on their
-   own line.
+8. **Python style.**  The code follows ``ruff format`` with a line length of
+   100 characters.  A call with many inputs is split into named pieces, and a
+   comment has its own line.
 9. **Accuracy and speed.**  A new capability comes with a test against the
-   equivalent object-level input where one exists, a verification case
-   against a published or analytical result, an example script, a tutorial
-   section and its reference page.  A change to assembly or to a solver is
-   timed before and after.
+   equivalent object-level input where one exists, a verification case against
+   a published or analytical result, an example script, a tutorial section and
+   its reference page.  A change to the assembly or to a solver is timed before
+   and after, as `Check the performance`_ describes.
 
-Adding a kernel in C++
-----------------------
+``scripts/audit_names.py`` checks every public name and declaration against
+rules 2 and 3.  It reports a forbidden abbreviation, a capital outside the
+proper names, a missing description, a default without its reason, and a
+semicolon, a dash or a Unicode symbol in a description.  The Documentation job
+of the continuous integration (CI) workflow runs it.
 
-A kernel supplies a flux, a source, or both, and declares its parameters:
+Add a kernel in C++
+-------------------
+
+The kernels of an equation together make its residual
+
+.. math::
+
+   R = -\nabla \cdot \mathbf{G} + S = 0,
+
+where ``computeFlux`` of each kernel adds to the flux :math:`\mathbf{G}` and
+``computeSource`` adds to the source :math:`S`.  In the balance law
+:math:`\partial m/\partial t + \nabla \cdot \mathbf{F} = s` of the theory
+pages, with :math:`m` the stored quantity per volume, :math:`\mathbf{F}` its
+physical flux and :math:`s` its source per volume, the kernels give
+:math:`\mathbf{G} = -\mathbf{F}` and :math:`S = \partial m/\partial t - s`.
+For heat conduction, :math:`\mathbf{G} = k \nabla T`, with :math:`k` the
+thermal conductivity in :math:`\mathrm{W/(m\,K)}` and :math:`T` the temperature
+in :math:`\mathrm{K}`.
+
+A kernel declares its parameters in ``validParams`` and overrides the terms it
+supplies:
 
 .. code-block:: c++
 
@@ -116,11 +146,10 @@ A kernel supplies a flux, a source, or both, and declares its parameters:
      {
        InputParameters p = Kernel::validParams();
        p.setClassDescription("Reaction term c u^2.");
-       p.addOptional("coefficient", ParameterKind::Real, 1.0, "The coefficient c.");
+       p.addOptional("coefficient", ParameterKind::Real, 1.0, "The coefficient c. Default 1.");
        return p;
      }
-     explicit MyReaction(const InputParameters & p)
-       : Kernel(p), _c(p.getReal("coefficient")) {}
+     explicit MyReaction(const InputParameters & p) : Kernel(p), _c(p.getReal("coefficient")) {}
 
      bool hasSource() const override { return true; }
      ADReal computeSource(const QpContext & ctx) const override
@@ -133,190 +162,244 @@ A kernel supplies a flux, a source, or both, and declares its parameters:
      double _c;
    };
 
-Register it in the module's registration function, for example
+Register the kernel in the registration function of its module, for example
+``registerHeatTransferObjects`` in ``src/modules/HeatTransfer.cpp``:
 
 .. code-block:: c++
 
-   void registerHeatTransferObjects(Factory & f)
-   {
-     f.add<MyReaction>("my_reaction", ObjectCategory::Kernel, "heat_transfer");
-   }
+   f.add<MyReaction>("my_reaction", ObjectCategory::Kernel, m);
 
-and it becomes available by name from Python and in ``dualmesh list``.  Registration is made by an explicit call so that no object
-is dropped when the library is linked statically, as can happen with
-registration by static initialization.
+The kernel is then available by its name from Python and in ``dualmesh list``.
+Each module registers its objects by an explicit call, so a static link of the
+library keeps every object.
 
-Writing kernels correctly
--------------------------
+Write a kernel correctly
+~~~~~~~~~~~~~~~~~~~~~~~~
 
-* Use ``ctx.value(v)`` and ``ctx.gradient(v)`` for the quantities that carry
-  derivatives, and ``ctx.coefficient_value(v)`` /
-  ``ctx.coefficient_gradient(v)`` inside nonlinear *coefficients*.  The latter
-  return the current iterate under Newton's method and the previous iterate
-  under direct iteration, so that one kernel serves both schemes.
-* Never compare AD numbers to decide a branch that depends on the unknown
-  unless the derivative of the branch is intended.
-* Properties are requested by name with
-  ``problem.propertyRegistry().id("stress")`` in ``initialSetup`` and read with
-  ``ctx.property(id, component)``.  List them in ``requiredProperties()`` so
-  that a missing property is reported before the solve starts.
+* Read the quantities that carry derivatives with ``ctx.value(v)`` and
+  ``ctx.gradient(v)``.  Inside a nonlinear coefficient, read them with
+  ``ctx.coefficientValue(v)`` and ``ctx.coefficientGradient(v)``, which give
+  the current iterate under Newton's method and the previous iterate under
+  direct iteration.  One kernel then serves both schemes.
+* Decide a branch by comparing automatic differentiation numbers only when you
+  intend the derivative of that branch.
+* Request a property by name with ``problem.propertyRegistry().id("stress")``
+  in ``initialSetup``, and read it with ``ctx.property(id, component)``.  List
+  it in ``requiredProperties()``, so that the setup reports a missing property.
 
-Adding a kernel in Python
--------------------------
+Add a kernel in Python
+----------------------
 
-For prototyping, the same interface is available from Python, with exact
-derivatives:
+A subclass of :class:`dualmesh.PythonKernel` has the interface of a C++ kernel,
+with exact derivatives.  It overrides ``compute_flux``, ``compute_source`` or
+both, and it reads its keyword arguments as attributes.  The kernel of
+``examples/custom_kernel.py`` gives the flux of a bar whose stiffness depends
+on the strain:
 
-.. code-block:: python
+.. literalinclude:: ../examples/custom_kernel.py
+   :language: python
+   :pyobject: large_deformation_bar
 
-   import dualmesh
+The same file adds the kernel to a problem:
 
+.. literalinclude:: ../examples/custom_kernel.py
+   :language: python
+   :pyobject: solve
 
-   class ArrheniusSource(dualmesh.PythonKernel):
-       def setup(self, problem):
-           self.temperature = problem.variable_index(self.temperature_variable)
+Test the code
+-------------
 
-       def compute_source(self, ctx):
-           T = ctx.value(self.temperature)
-           return -self.pre_exponential * dualmesh.exp(-self.activation_energy / T)
+The C++ tests are in ``tests/cpp``.  ``unit_tests.cpp`` checks the automatic
+differentiation, the quadrature rules, the dual mesh of each element, the shape
+functions, the patch test and the mesh refinement.  ``parallel_tests.cpp``
+checks the partitioners and the distributed solver.  The Python tests are in
+``tests/python``.
 
+1. Run the C++ tests from the ``build`` folder of the source tree:
 
-   problem.add_kernel(
-       ArrheniusSource(
-           variable="temperature",
-           temperature_variable="temperature",
-           pre_exponential=1.0e6,
-           activation_energy=5000.0,
-       )
-   )
+   .. code-block:: console
 
-Testing
--------
+      ctest --test-dir build --output-on-failure
 
-* ``tests/cpp/unit_tests.cpp`` holds the fast structural tests: the automatic
-  differentiation, the quadrature rules, the geometric closure of the dual
-  mesh, and the patch test.
-* ``tests/python`` holds the verification suite.  Every value in it comes from
-  a published table, and a new case must cite its table in a comment.
-* Run both with ``ctest --test-dir build`` and ``pytest``.
+2. Run the distributed C++ tests on 1 to 4 processes.  ``--oversubscribe`` is
+   an option of Open MPI that allows more processes than cores:
 
-Style
------
+   .. code-block:: console
 
-C++ uses two-space indentation, ``_member`` variables, ``camelCase``
-functions and ``PascalCase`` types, and Python follows
-PEP 8 with descriptive, unabbreviated parameter names.  ``.clang-format`` and
-the ``ruff`` configuration in ``pyproject.toml`` encode both.
-Formatting is checked in continuous integration by clang-format **18** (the
-version on the ``ubuntu-latest`` runner).  Other major versions format some
-constructs differently, so format with version 18 (``brew install llvm@18`` on
-macOS, ``apt install clang-format-18`` on Ubuntu).  The check applied in
-continuous integration is
+      for n in 1 2 3 4
+      do
+        mpirun --oversubscribe -n $n ./build/dualmesh_parallel_tests
+      done
+
+3. Run the Python tests:
+
+   .. code-block:: console
+
+      pytest
+
+4. Run the distributed Python tests on 1 to 4 processes:
+
+   .. code-block:: console
+
+      for n in 1 2 3 4
+      do
+        mpirun --oversubscribe -n $n python -m pytest -q -p no:cacheprovider tests/python/test_parallel.py
+      done
+
+A new test compares a computed value with an exact solution, a manufactured
+solution or a published value, and its docstring names the source.
+
+Check names, style and documentation
+------------------------------------
+
+* Audit the public names and declarations:
+
+  .. code-block:: console
+
+     python scripts/audit_names.py
+
+* Check the naming rule and the comment rule in the sources.  Every comment
+  starts with a capital letter, unless it starts with an identifier written as
+  code:
+
+  .. code-block:: console
+
+     python scripts/check_names.py
+
+* Check the Python code with ruff 0.16.10:
+
+  .. code-block:: console
+
+     pip install ruff==0.16.10
+     ruff check python tests examples scripts
+     ruff format --check python tests examples scripts
+
+* Check the C++ format with clang-format 18.  The C++ code uses ``_member``
+  variables, ``camelCase`` functions and ``PascalCase`` types, and
+  ``.clang-format`` sets the layout.  The command prints nothing when every
+  file is formatted:
+
+  .. code-block:: console
+
+     pip install clang-format==18.1.8
+     find include src python/bindings tests/cpp -name '*.h' -o -name '*.cpp' | xargs clang-format --dry-run --Werror
+
+* Build the documentation with every warning as an error:
+
+  .. code-block:: console
+
+     pip install ".[docs,all]"
+     python -m sphinx -W --keep-going -b html docs docs/_build/html
+
+  Each ``.. contents::`` directive keeps the option
+  ``:class: this-will-duplicate-information-and-it-is-still-useful-here``,
+  which the release script checks.
+
+Check the performance
+---------------------
+
+``scripts/benchmark.py`` times one residual and Jacobian assembly of each
+method for heat conduction, plane elasticity and pressure-velocity flow, and
+``scripts/check_performance.py`` compares the times with their budgets:
 
 .. code-block:: console
 
-   find include src python/bindings tests/cpp \( -name '*.h' -o -name '*.cpp' \) \
-     -print0 | xargs -0 clang-format --dry-run --Werror
+   python scripts/benchmark.py --quick --only assembly --repeat 5 --output results.json
+   python scripts/check_performance.py results.json
 
-No output means success.
+The workflows
+-------------
 
-Making a release
-----------------
-
-The distribution is named ``dualmesh-multiphysics``.  It is imported as
-``dualmesh`` and its command is ``dualmesh``.  It is not published on PyPI:
-the wheels and the source distribution of a release are the artifacts of the
-tag-triggered Wheels workflow.  The repository
-(``MohamedAbdulHameed/dualmesh``), the Read the Docs project (``dualmesh``,
-https://dualmesh.readthedocs.io), the import name and the command all keep the
-name ``dualmesh``.  The first release, v0.1.0, was tagged on commit
-``bc96db4512378f525729f6dc48e83652fc982db6``.
-
-``scripts/release.py`` runs every step of a release as a gate and stops at the
-first one that fails.  It uses only the Python standard library.
+The CI workflow runs on every push to ``main`` and to a branch ``ci/<name>``,
+and on every pull request.  It runs the C++ tests, the distributed tests, the
+Python tests, the examples and the command line, the lint, the documentation,
+the sanitizers, the coverage and clang-tidy.  The workflows Benchmarks,
+Mutation tests and Performance run by hand, and the last two also run once a
+week.  Start the benchmarks of a branch with the GitHub command-line program:
 
 .. code-block:: console
 
-   python scripts/release.py check --version X.Y.Z   # gates 1-15, local
-   python scripts/release.py push  --version X.Y.Z   # gate 16
-   python scripts/release.py ci --wait               # gate 17
-   python scripts/release.py dry-run --wait          # gate 18
-   python scripts/release.py tag   --version X.Y.Z   # gate 19
-   python scripts/release.py monitor --version X.Y.Z --wait   # gate 20
+   gh workflow run Benchmarks --ref <branch>
 
-or ``python scripts/release.py release --version X.Y.Z`` for all of them in
-order.  ``python scripts/release.py check --dev`` runs the local gates at any
-time without requiring a new version.
+Make a release
+--------------
 
-The gates, in order:
+The distribution is named ``dualmesh-multiphysics``, its import name is
+``dualmesh`` and its command is ``dualmesh``.  It is not published on the
+Python Package Index (PyPI).  The wheels and the source distribution of a
+release are the artifacts of the Wheels workflow that the tag of the release
+starts.
 
-1. ``origin`` is the SSH remote of the GitHub repository
-   ``MohamedAbdulHameed/dualmesh``.
+``scripts/release.py`` runs each step of a release as a gate and stops at the
+first gate that fails.  It uses only the Python standard library.  Run the
+steps in order, from ``main``:
+
+.. code-block:: console
+
+   python scripts/release.py check --version X.Y.Z
+   python scripts/release.py push --version X.Y.Z
+   python scripts/release.py ci --wait
+   python scripts/release.py dry-run --wait
+   python scripts/release.py tag --version X.Y.Z
+   python scripts/release.py monitor --version X.Y.Z --wait
+
+``python scripts/release.py release --version X.Y.Z`` runs all six in order.
+``python scripts/release.py check --dev`` runs the local gates at any time,
+without a new version, and ``python scripts/release.py status`` prints the
+state of the release without changing it.
+
+
+The gates of ``check`` are:
+
+1. The remote ``origin`` is the SSH remote that the script expects.
 2. The branch is ``main``.
-3. ``git fetch`` and ``git pull --ff-only origin main`` succeed: the branch is
-   not behind ``origin/main`` and has not diverged from it.
-4. The working tree is clean and no tracked file contains a genuine merge
-   conflict.  ``git diff --check`` is unsuitable for this, because it reports
-   every reStructuredText title underline of seven ``=`` (``Solving`` over
-   ``=======``) as a leftover conflict marker.  The gate counts a line of ``=``
-   as a marker only between ``<<<<<<<`` and ``>>>>>>>``.
-5. ``pyproject.toml`` names the distribution ``dualmesh-multiphysics``, the
-   command ``dualmesh = "dualmesh.cli:main"`` and the documentation URL.
-6. The version is the same in ``pyproject.toml``, ``python/dualmesh/__init__.py``
-   and ``CITATION.cff`` (the documentation reads it from ``pyproject.toml``),
-   and ``CHANGELOG.md`` has a ``## [X.Y.Z] - YYYY-MM-DD`` section.
-7. The tag ``vX.Y.Z`` exists neither locally nor on ``origin``.
+3. ``git pull --ff-only origin main`` succeeds, and the branch is not behind
+   ``origin/main``.
+4. The working tree is clean, and no tracked file holds a merge conflict.  A
+   line of seven ``=`` counts as a conflict marker only between ``<<<<<<<`` and
+   ``>>>>>>>``, so the title underlines of reStructuredText pass.
+5. ``pyproject.toml`` names the distribution, maps the command ``dualmesh`` to
+   ``dualmesh.cli:main`` and gives the project URLs that the script expects.
+6. The version is the same in ``pyproject.toml``,
+   ``python/dualmesh/__init__.py`` and ``CITATION.cff``, and ``CHANGELOG.md``
+   has a section ``## [X.Y.Z] - YYYY-MM-DD``.
+7. The tag ``vX.Y.Z`` exists neither locally nor on ``origin``.  A static check
+   of the workflows follows: the wheel matrix, cibuildwheel v4.2.1 or newer,
+   every action pinned to a commit, the manual and the tag triggers of the
+   Wheels workflow, no upload to PyPI, and the class of every
+   ``.. contents::`` directive.
+8. clang-format 18 with ``--dry-run --Werror`` passes on every C++ file.
+9. The C++ library configures, builds and passes CTest.  ``--skip-cxx`` skips
+   this gate.
+10. ``ruff check`` and ``ruff format --check`` pass.
+11. The source distribution builds in isolation from ``git archive HEAD``, and
+    the wheel builds from that source distribution.
+12. ``twine check --strict`` passes.  The wheel holds only ``dualmesh/``, with
+    its compiled extension, and its ``.dist-info``, and the source distribution
+    holds no build products.
+13. The wheel, installed with its ``all``, ``test`` and ``docs`` extras in a new
+    virtual environment, passes the Python tests.
+14. The documentation builds with ``-W --keep-going``.
+15. The wheel alone, installed in another new virtual environment, reports the
+    version through ``import dualmesh``, its metadata and ``dualmesh --version``.
 
-   A further static gate checks the release configuration: the wheel matrix
-   ``[ubuntu-latest, macos-15-intel, macos-14, windows-latest]`` (which
-   excludes the retired macOS 13 runner), cibuildwheel v4.2.1 or later, the
-   ``workflow_dispatch`` trigger, no upload to PyPI, and the Furo class on
-   every ``.. contents::`` directive.
-8. clang-format 18 ``--dry-run --Werror`` on every C++ file.
-9. The C++ library is configured, built and tested with CTest.
-10. Ruff (``check`` and ``format --check``).
-11. The sdist is built in isolation, and the wheel is built from that sdist,
-    both from ``git archive HEAD`` so that no untracked or generated file can
-    leak in.
-12. ``twine check --strict``, and an audit of the wheel (only ``dualmesh/``
-    and its ``.dist-info``, with the compiled extension) and of the sdist (no
-    build products).
-13. The wheel is installed with its ``all``, ``test`` and ``docs`` extras into
-    a fresh virtual environment and the whole Python suite runs against it.
-14. The documentation is built strictly:
-    ``python -m sphinx -W --keep-going -b html docs docs/_build/html``.
-15. The wheel alone is installed into another fresh environment, and
-    ``import dualmesh``, ``importlib.metadata.version("dualmesh-multiphysics")``
-    and ``dualmesh --version`` all report the version.
-16. ``main`` is pushed, fast-forward only.
-17. The CI workflow passes on the pushed commit.
-18. The Wheels workflow is run by hand from ``main`` as a dry run, and every
-    wheel job and the sdist pass on the same commit.  The script starts the
-    run with the GitHub CLI when it is installed.  Otherwise the run is started
-    in the GitHub web interface by selecting Actions, Wheels, Run workflow and
-    the branch ``main``.
-19. Only then is the annotated tag created (``git tag -a vX.Y.Z -m "dualmesh
-    vX.Y.Z"``), checked to point to ``HEAD``, and pushed alone.
-20. The tag-triggered Wheels run is followed.  Its source distribution job
-    checks that the tag matches the package version, and every wheel and the
-    sdist must build and pass their tests.  They are kept as the artifacts of
-    that run.
+The later commands run the remaining gates:
 
-The following actions are prohibited, whatever a failure suggests:
+16. ``push`` pushes ``main``, fast-forward only.
+17. ``ci`` waits for the CI workflow to pass on the pushed commit.
+18. ``dry-run`` runs the Wheels workflow by hand from ``main``, and every wheel
+    and the source distribution must build and pass on that commit.  Without
+    the GitHub command-line program, start the run in the GitHub web interface
+    under Actions, Wheels, Run workflow, on the branch ``main``.
+19. ``tag`` checks the gates again, creates the annotated tag ``vX.Y.Z`` on
+    ``HEAD`` and pushes the tag alone.
+20. ``monitor`` follows the Wheels workflow of the tag.  Its source
+    distribution job checks that the tag matches the package version.
 
-* Never ``git push --force`` main, and never resolve a divergence with a
-  global ``--ours`` or ``--theirs``.  When ``git push`` is rejected with
-  "fetch first" (for example after a documentation edit made in the GitHub web
-  interface), run ``git fetch origin`` and ``git rebase origin/main``, resolve
-  file by file, rerun the checks and push normally.
-* Never tag a dirty tree, a commit that is not on ``origin/main``, or a commit
-  whose Wheels dry run has not passed.
-* Never upload to PyPI, where dualmesh is not published.
-* Never delete and re-push the tag of a released version.  Release the
-  correction as a new patch version.
-* Do not rename the repository, the Read the Docs project, the import or the
-  command, and do not change the distribution name back to ``dualmesh``.
-* Do not remove the ``:class: this-will-duplicate-information-and-it-is-still-useful-here``
-  option of the inline ``.. contents::`` blocks: Furo shows an error-style
-  warning for an inline table of contents without it, and the inline tables
-  are kept on purpose.
+Never force-push ``main``, and never resolve a divergence with a global
+``--ours`` or ``--theirs``.  When ``git push`` is rejected, run
+``git fetch origin`` and ``git rebase origin/main``, resolve each file, run the
+checks again and push.  Never tag a dirty tree, a commit that is not on
+``origin/main``, or a commit whose Wheels dry run has not passed.  Never delete
+and push again the tag of a released version: release the correction as a new
+patch version.

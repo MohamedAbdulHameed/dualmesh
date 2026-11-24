@@ -19,30 +19,33 @@ namespace dualmesh
 {
 
 // ---------------------------------------------------------------------------
-// Diffusion: F = k(x) p(u) grad u, p(u) = c0 + c1 u + c2 u^2 + ...
+// Diffusion: the kernel flux k(x) p(u) grad u, p(u) = c0 + c1 u + c2 u^2 + ...
 // ---------------------------------------------------------------------------
 InputParameters
 Diffusion::validParams()
 {
   InputParameters p = Kernel::validParams();
   p.setClassDescription(
-      "Diffusion term -div(k grad u), with k = k(x, t) * (c0 + c1 u + c2 u^2 + ...). The flux is "
-      "F = k grad u, and the natural boundary quantity is n . (k grad u).");
+      "The diffusion term div F of the balance law dm/dt + div F = s, with the flux "
+      "F = -k p(u) grad u. Here u is the variable, k the diffusivity and p(u) = c0 + c1 u + "
+      "c2 u^2 + ... a polynomial of u. A Neumann condition prescribes the inflow -n . F, with n "
+      "the outward unit normal, and a boundary without a condition has no inflow.");
   p.addOptional("diffusivity",
                 ParameterKind::Function,
                 1.0,
-                "Diffusivity k: a constant, a registered function of (x, y, z, t), the name of a "
+                "Diffusivity k: a constant, a registered function of x, y, z and t, the name of a "
                 "property, or an expression of the fields, x, y, z, t, the functions and the "
-                "properties. It must be positive. Default 1.");
+                "properties. It must be positive. Default 1, for a problem written in "
+                "dimensionless form.");
   p.setRange("diffusivity", ParameterRange::Positive);
   p.addOptional("solution_polynomial",
                 ParameterKind::RealList,
                 std::vector<double>{1.0},
-                "Coefficients c0, c1, ... of a polynomial p(u) = c0 + c1 u + c2 u^2 + ... that "
-                "multiplies the diffusivity, giving an effective k(x, t) p(u). The default {1} "
-                "leaves the diffusivity unchanged, so a list given here must include its own "
-                "constant term. The polynomial is evaluated at the current iterate under Newton's "
-                "method and at the previous iterate under direct iteration.");
+                "Coefficients c0, c1, c2, ... of the polynomial p(u) = c0 + c1 u + c2 u^2 + ... "
+                "that multiplies the diffusivity. A list given here must include its constant "
+                "term c0. Newton's method evaluates p at the current iterate, and direct "
+                "iteration at the previous one. Default {1}, which leaves the diffusivity "
+                "unchanged.");
   return p;
 }
 
@@ -86,17 +89,18 @@ AnisotropicDiffusion::validParams()
 {
   InputParameters p = Kernel::validParams();
   p.setClassDescription(
-      "Anisotropic diffusion with a constant tensor K: the flux is F_i = sum_j K_ij du/dx_j "
-      "and the source is zero, so the equation is -div(K grad u) = 0 and the natural "
-      "boundary quantity is n . (K grad u).");
+      "The anisotropic diffusion term div F of the balance law dm/dt + div F = s, with a "
+      "constant diffusivity tensor K and the flux F = -K grad u, whose component i is "
+      "F_i = -sum_j K_ij du/dx_j. A Neumann condition prescribes the inflow -n . F, with n the "
+      "outward unit normal.");
   p.addRequired("diffusivity_tensor",
                 ParameterKind::RealList,
-                "Entries of the constant diffusivity tensor K. Give either one value per "
-                "dimension, which is read as the diagonal (K_xx, K_yy, K_zz), or dimension "
-                "squared values, which are read row by row (K_xx, K_xy, K_yx, K_yy in two "
-                "dimensions). Any other count is an error. The tensor is constant in space and "
-                "time and is not checked for symmetry or positive definiteness. A non-symmetric K "
-                "gives a non-symmetric Jacobian.");
+                "Entries of the diffusivity tensor K, constant in space and time. One value per "
+                "dimension gives the diagonal (K_xx, K_yy, K_zz). The square of the dimension "
+                "gives the whole tensor, row by row (K_xx, K_xy, K_yx, K_yy in two dimensions). "
+                "Any other count is an error. The code does not check K for symmetry or positive "
+                "definiteness, and a K that is not symmetric gives a Jacobian that is not "
+                "symmetric.");
   return p;
 }
 
@@ -144,25 +148,24 @@ Reaction::validParams()
 {
   InputParameters p = Kernel::validParams();
   p.setClassDescription(
-      "A reaction term, which in structural problems is the restoring action of an "
-      "elastic foundation and in transport problems a decay or growth. It contributes no "
-      "flux and the source S = c u^p. With the default exponent 1 the term is linear.");
+      "The reaction source s = -c u^p of the balance law dm/dt + div F = s, with u the "
+      "variable. A positive c removes u, as a decay does in transport and an elastic foundation "
+      "does under a structure, and a negative c produces it.");
   p.addOptional("coefficient",
                 ParameterKind::Function,
                 1.0,
-                "Coefficient c in the source S = c u^p: a constant, a registered function, the "
+                "Coefficient c of the source s = -c u^p: a constant, a registered function, the "
                 "name of a property, or an expression of the fields, x, y, z, t, the functions "
-                "and the properties. The source enters the residual as written, so a positive c "
-                "removes u (a decay, or the restoring action of an elastic foundation) and a "
-                "negative c produces it. A coefficient that depends on the solution makes the "
-                "term nonlinear, and its derivative enters the Jacobian through the automatic "
-                "differentiation. Default 1.");
+                "and the properties. A coefficient that depends on the solution makes the term "
+                "nonlinear, and automatic differentiation carries its derivative into the "
+                "Jacobian. Default 1, for a problem written in dimensionless form.");
   p.addOptional("exponent",
                 ParameterKind::Real,
                 1.0,
-                "Exponent p in the source S = c u^p. The default 1 gives a linear reaction. Any "
-                "other value makes the term nonlinear. Direct iteration then linearizes it as c "
-                "u_previous^(p-1) u, and a non-integer p requires u to stay positive.");
+                "Exponent p of the source s = -c u^p. Any value other than 1 makes the term "
+                "nonlinear. Direct iteration then linearizes it as c u_previous^(p-1) u, with "
+                "u_previous the previous iterate, and a p that is not an integer requires u to "
+                "stay positive. Default 1, a linear reaction.");
   return p;
 }
 
@@ -193,18 +196,17 @@ BodyForce::validParams()
 {
   InputParameters p = Kernel::validParams();
   p.setClassDescription(
-      "The source term of any equation, per unit volume: the heat source (volumetric heat "
-      "generation, W/m^3) of an equation for a temperature, the body force (N/m^3) of an "
-      "equation for a displacement or a velocity, and the production rate of an equation for a "
-      "concentration. It contributes no flux and the source S = -f, so a positive value drives "
-      "the variable up (adds heat, pushes along the positive axis). The heat_transfer physics "
-      "adds it for its heat_source.");
+      "The source s of the balance law dm/dt + div F = s, per unit volume: the heat source in "
+      "W/m^3 of an equation for a temperature, the body force in N/m^3 of an equation for a "
+      "displacement or a velocity component, or the production rate of an equation for a "
+      "concentration. A positive value drives the variable up: it adds heat, or pushes along the "
+      "positive axis. The heat_transfer physics adds this kernel for its heat_source.");
   p.addOptional("value",
                 ParameterKind::Function,
                 1.0,
-                "The source f per unit volume, as a constant, a registered function of (x, y, z, "
-                "t), or an expression of x, y, z and t: for a temperature the heat source in "
-                "W/m^3. A positive value drives the variable up.");
+                "The source s per unit volume: a constant, a registered function of x, y, z and "
+                "t, or an expression of x, y, z and t. For a temperature it is the heat source in "
+                "W/m^3. Default 1, a unit source for a problem written in dimensionless form.");
   return p;
 }
 
@@ -229,19 +231,20 @@ TimeDerivative::validParams()
 {
   InputParameters p = Kernel::validParams();
   p.setClassDescription(
-      "The transient term of the equation. It contributes no flux and the source "
-      "S = c du/dt, with du/dt = (u - u_old) / dt, or by the Newmark relations of the "
-      "generalized-alpha method in an equation that also has a second time derivative (the "
-      "damping of a structure). It is a time kernel: it is skipped entirely in a steady "
-      "solve, and it is not multiplied by the time-integration weight theta, which applies "
-      "to the steady terms only.");
+      "The storage term c du/dt of the balance law dm/dt + div F = s, which is dm/dt with "
+      "m = c u for a capacity c constant in time. A step of the theta method takes "
+      "du/dt = (u - u_old) / dt, with u_old the variable at the start of the step and dt the "
+      "time step. In an equation that also has a second_time_derivative, du/dt follows the "
+      "Newmark relations of the generalized-alpha method, and the term is the damping of a "
+      "structure. A steady solve skips the term, and the weight theta of the theta method, "
+      "which multiplies the steady terms, does not multiply it.");
   p.addOptional("coefficient",
                 ParameterKind::Function,
                 1.0,
-                "Capacity coefficient c multiplying the time derivative: a constant, a registered "
-                "function of (x, y, z, t), the name of a property, or an expression of the fields. "
-                "For heat conduction it is the volumetric heat capacity rho c_p, for a mass "
-                "balance the porosity. Default 1.");
+                "Capacity c that multiplies du/dt: a constant, a registered function of x, y, z "
+                "and t, the name of a property, or an expression of the fields. For heat "
+                "conduction it is the volumetric heat capacity rho c_p, and for a mass balance "
+                "the porosity. Default 1, for a problem written in dimensionless form.");
   return p;
 }
 
@@ -266,16 +269,17 @@ SecondTimeDerivative::validParams()
 {
   InputParameters p = Kernel::validParams();
   p.setClassDescription(
-      "The inertia term c d2u/dt2 of the equation. It contributes no flux and the source "
-      "S = c d2u/dt2. A transient run integrates an equation with it by the generalized-alpha "
-      "method (or Newmark's average acceleration), and an eigenvalue study takes it as the "
-      "mass of the natural frequencies. It is skipped in a steady solve.");
+      "The inertia term c d2u/dt2 on the left side of the balance law dm/dt + div F = s, with "
+      "u the variable. A transient run integrates an equation with this term by the "
+      "generalized-alpha method, or by the average acceleration method of Newmark. An "
+      "eigenvalue study takes the term as the mass of the natural frequencies. A steady solve "
+      "skips it.");
   p.addOptional("coefficient",
                 ParameterKind::Function,
                 1.0,
-                "Coefficient c of the second time derivative: a constant, a registered function "
-                "of (x, y, z, t), the name of a property, or an expression of the fields. For a "
-                "solid it is the density rho (kg/m^3). Default 1.");
+                "Coefficient c of d2u/dt2: a constant, a registered function of x, y, z and t, "
+                "the name of a property, or an expression of the fields. For a solid it is the "
+                "density rho in kg/m^3. Default 1, for a problem written in dimensionless form.");
   return p;
 }
 
@@ -300,27 +304,27 @@ Advection::validParams()
 {
   InputParameters p = Kernel::validParams();
   p.setClassDescription(
-      "Advection by a prescribed velocity field v. The 'conservative' form uses the flux F = -v u "
-      "(so that -div F = div(v u)), and the 'non_conservative' form uses the source S = v . grad "
-      "u.");
+      "Advection of the variable u by a prescribed velocity field v. The conservative form adds "
+      "the advective flux F = v u to the balance law dm/dt + div F = s. The non_conservative "
+      "form adds v . grad u to its left side. The two forms agree where div v = 0.");
   p.addOptional("velocity",
                 ParameterKind::StringList,
                 std::vector<std::string>{"0", "0", "0"},
-                "The velocity components (vx, vy, vz), each a number, a registered function or an "
-                "expression of x, y, z, t and the fields. Missing trailing components are zero. "
-                "Default zero.");
+                "The velocity components (v_x, v_y, v_z) in m/s, each a number, a registered "
+                "function or an expression of x, y, z, t and the fields. Missing trailing "
+                "components are zero. Default zero in every component, which advects nothing.");
   p.addOptional("advection_form",
                 ParameterKind::String,
                 std::string("non_conservative"),
-                "Which of the two equivalent statements of the advection term to assemble. "
-                "'conservative' contributes the flux F = -v u, so the discrete term conserves u "
-                "exactly over the control domains. Use it when the velocity is divergence free or "
-                "when a conservation check matters. 'non_conservative', the default, contributes "
-                "the source S = v . grad u, which requires less computation and is the correct "
-                "reading when the equation is written in non-conservative form. With an "
-                "advection scheme other than central both are face fluxes: m u_f through each "
-                "face, or m (u_f - u_C) for the control volume C on each side, with m the "
-                "normal velocity times the face area. Any other string is an error.");
+                "The form of the advection term. 'conservative' adds the flux F = v u, which "
+                "conserves u over the control domains, for an equation written as div(v u). "
+                "'non_conservative' adds v . grad u, for an equation written in that form. With "
+                "an advection scheme other than central both forms are face fluxes, with m the "
+                "normal velocity times the face area: m u_f through each face for "
+                "'conservative', and m (u_f - u_C) for the control volume C on each side for "
+                "'non_conservative'. Any other string is an error. Default non_conservative, "
+                "which does not see the discrete divergence of the velocity: the solution then "
+                "does not change when a constant is added to it, and upwind stays bounded.");
   addAdvectionSchemeParam(p);
   return p;
 }
@@ -387,22 +391,22 @@ CoupledForce::validParams()
 {
   InputParameters p = Kernel::validParams();
   p.setClassDescription(
-      "A source proportional to another variable, which is how two equations of a "
-      "multiphysics problem are coupled. It contributes no flux and the source S = -c v. "
-      "The coupling is exact in Newton's method, because the derivative with respect to "
-      "the coupled variable is carried through the automatic differentiation.");
+      "A source proportional to another variable u_c, which couples two equations of a "
+      "multiphysics problem: the source of the balance law dm/dt + div F = s is s = c u_c. "
+      "Newton's method takes the coupling exactly, because automatic differentiation carries "
+      "the derivative with respect to u_c.");
   p.addRequired("coupled_variable",
                 ParameterKind::String,
-                "Name of the other variable that drives this equation. It must already "
-                "exist on the problem.");
+                "Name of the variable u_c that drives this equation. It must already exist on "
+                "the problem.");
   p.addOptional("coefficient",
                 ParameterKind::Function,
                 1.0,
-                "Coefficient c in the source S = -c v: a constant, a registered function, the "
+                "Coefficient c of the source s = c u_c: a constant, a registered function, the "
                 "name of a property (for a coefficient that differs between regions), or an "
                 "expression of the fields, x, y, z, t, the functions and the properties. A "
-                "positive c makes the coupled variable v a source for this equation, and a "
-                "negative c makes it a sink. Default 1.");
+                "positive c makes u_c a source for this equation, and a negative c makes it a "
+                "sink. Default 1, which adds u_c itself.");
   return p;
 }
 
@@ -429,13 +433,17 @@ InputParameters
 DirichletBC::validParams()
 {
   InputParameters p = NodalBC::validParams();
-  p.setClassDescription("Prescribed value u = g(x, t) (essential boundary condition).");
+  p.setClassDescription(
+      "Prescribes the value u = g(x, t) of the variable u at the nodes of a boundary, an "
+      "essential boundary condition.");
   p.addOptional("value",
                 ParameterKind::Function,
                 0.0,
-                "Prescribed value g(x, t), written directly into the solution at every node of "
-                "the boundary. When a steady solve ramps its data to converge, the value moves "
-                "from the starting state to g with the other data.");
+                "Prescribed value g(x, t): a constant, a registered function, or an expression of "
+                "x, y, z and t. The code writes it into the solution at every node of the "
+                "boundary. When a steady solve ramps its data to converge, the value moves from "
+                "the starting state to g with the other data. Default 0, the homogeneous "
+                "condition.");
   return p;
 }
 
@@ -459,13 +467,19 @@ PointDirichletBC::validParams()
 {
   InputParameters p = NodalBC::validParams();
   p.setClassDescription(
-      "Prescribed value u = g(x, t) at the single node nearest to a point. For a first-order "
-      "variable on a quadratic mesh the node is the nearest corner node.");
+      "Prescribes the value u = g(x, t) of the variable u at the one node nearest to a point, "
+      "for example to fix the level of a pressure that only its gradient enters. For a "
+      "first-order variable on a quadratic mesh the node is the nearest corner node.");
   p.remove("boundary");
   p.addRequired("point",
                 ParameterKind::RealList,
-                "The coordinates (x, y, z) of the point. Missing trailing coordinates are zero.");
-  p.addOptional("value", ParameterKind::Function, 0.0, "Prescribed value g(x, t).");
+                "The coordinates (x, y, z) of the point, in m. Missing trailing coordinates are "
+                "zero.");
+  p.addOptional("value",
+                ParameterKind::Function,
+                0.0,
+                "Prescribed value g(x, t): a constant, a registered function, or an expression of "
+                "x, y, z and t. Default 0, the homogeneous condition.");
   return p;
 }
 
@@ -519,22 +533,26 @@ NeumannBC::validParams()
 {
   InputParameters p = IntegratedBC::validParams();
   p.setClassDescription(
-      "Prescribed natural boundary quantity q = n . F, where F is the flux assembled by "
-      "the kernels of this variable. This is the secondary variable of the duality pair, "
-      "and it is the condition that applies by default on a boundary that carries no "
-      "condition at all, with q = 0.");
+      "Prescribes the inflow q = -n . F through a boundary, where F is the flux of the balance "
+      "law dm/dt + div F = s that the kernels of this variable assemble and n is the outward "
+      "unit normal. The inflow is the secondary variable of the duality pair. A boundary without "
+      "any condition has this condition with q = 0.");
   p.addOptional(
       "flux",
       ParameterKind::Function,
       0.0,
-      "Prescribed value of n . F. For a diffusion-type kernel F = k grad u, so a positive value "
-      "is an inflow of u into the body: for heat transfer, the heat flux entering the body. The "
-      "default 0 is the do-nothing condition, insulated for heat transfer and traction free for "
-      "elasticity. "
-      "It is a constant, a registered function, or an expression of the fields, their gradients (grad_x(u), grad_y(u), grad_z(u)), x, y, z and t, which is differentiated automatically.");
+      "Prescribed inflow q = -n . F. A positive value enters the body: for heat transfer it is "
+      "the heat flux into the body in W/m^2, and for the equation of a displacement component "
+      "it is the component of the traction in Pa. It is a constant, a registered function, or "
+      "an expression of the fields, their gradients (grad_x(u), grad_y(u), grad_z(u)), x, y, z "
+      "and t, which automatic differentiation differentiates. Default 0, the condition of a "
+      "boundary without one: insulated for heat transfer and free of traction for elasticity.");
   deformation::addParameter(p,
-                            "the flux is per unit deformed area and is multiplied by the area "
-                            "ratio da/dA = |J F^-T N| to give the flux per unit undeformed area.");
+                            "the flux is per unit deformed area, and the code multiplies it by "
+                            "the area ratio da/dA = |J F_d^-T N| to give the flux per unit "
+                            "undeformed area, with F_d the deformation gradient, J its "
+                            "determinant and N the outward unit normal of the undeformed "
+                            "boundary.");
   return p;
 }
 
@@ -560,34 +578,41 @@ RobinBC::validParams()
 {
   InputParameters p = IntegratedBC::validParams();
   p.setClassDescription(
-      "Mixed (Robin, convection) condition n . F = q0 - h (u - u_ambient), e.g. Newton's law "
-      "of cooling.");
+      "Mixed condition of Robin type, such as Newton's law of cooling. The inflow through the "
+      "boundary is -n . F = q_0 - h_t (u - u_a), where F is the flux of the balance law "
+      "dm/dt + div F = s, n the outward unit normal, u the variable, h_t the transfer "
+      "coefficient, u_a the ambient value and q_0 a prescribed inflow.");
   p.addOptional(
       "transfer_coefficient",
       ParameterKind::Function,
       0.0,
-      "Transfer, or film, coefficient h in n . F = q0 - h (u - u_ambient). It "
-      "should be non-negative: a positive h drives u towards 'ambient_value', "
-      "whereas a negative one drives it away and makes the problem unstable. The "
-      "default 0 switches the transfer term off and leaves a pure Neumann "
-      "condition of strength 'flux'. "
-      "Like 'flux' and 'ambient_value', it is a constant, a registered function, or an expression of the fields, their gradients, x, y, z and t.");
+      "Transfer, or film, coefficient h_t, in W/(m^2 K) for heat transfer: a constant, a "
+      "registered function, or an expression of the fields, their gradients, x, y, z and t. It "
+      "must not be negative, and a positive h_t drives u towards 'ambient_value'. Default 0, "
+      "which leaves the prescribed inflow 'flux' alone, as in a Neumann condition.");
   p.setRange("transfer_coefficient", ParameterRange::NonNegative);
   p.addOptional("ambient_value",
                 ParameterKind::Function,
                 0.0,
-                "Far-field value u_ambient that the transfer term drives u towards. It is used "
-                "only when 'transfer_coefficient' is non-zero. The default is 0, independent of "
-                "the initial condition, so leaving it unset cools the surface towards zero.");
+                "Ambient value u_a that the transfer term drives u towards: a constant, a "
+                "registered function, or an expression of the fields, their gradients, x, y, z "
+                "and t. It acts only when 'transfer_coefficient' is not zero. Default 0, which "
+                "does not follow the initial condition, so give it with every "
+                "'transfer_coefficient'.");
   p.addOptional(
       "flux",
       ParameterKind::Function,
       0.0,
-      "Prescribed part q0 of the natural quantity n . F, added to the transfer term. It carries "
-      "the same sign convention as Neumann: a positive value drives u into the body.");
+      "Prescribed inflow q_0, added to the transfer term, with the sign of the Neumann "
+      "condition: a positive value enters the body. It is a constant, a registered function, or "
+      "an expression of the fields, their gradients, x, y, z and t. Default 0, no prescribed "
+      "inflow.");
   deformation::addParameter(p,
-                            "the flux is per unit deformed area and is multiplied by the area "
-                            "ratio da/dA = |J F^-T N| to give the flux per unit undeformed area.");
+                            "the flux is per unit deformed area, and the code multiplies it by "
+                            "the area ratio da/dA = |J F_d^-T N| to give the flux per unit "
+                            "undeformed area, with F_d the deformation gradient, J its "
+                            "determinant and N the outward unit normal of the undeformed "
+                            "boundary.");
   return p;
 }
 
@@ -618,15 +643,14 @@ ConstantProperty::validParams()
 {
   InputParameters p = Property::validParams();
   p.setClassDescription(
-      "Declares scalar properties that are constant in space and time. The "
-      "properties are then available, by their names, to every kernel, boundary condition, "
-      "property object and expression on the same blocks: a coefficient given as the name of "
-      "a property, such as diffusivity = 'thermal_conductivity', reads it.");
+      "Declares scalar properties that are constant in space and time. Every kernel, boundary "
+      "condition, property object and expression on the same blocks reads them by name, as a "
+      "coefficient given as diffusivity = 'thermal_conductivity' does.");
   p.addRequired("properties",
                 ParameterKind::RealMap,
-                "The declared properties: name -> value, for example "
-                "{thermal_conductivity: 400.0}. The units are those that the objects reading them "
-                "expect, and they are not checked.");
+                "The declared properties, as name -> value pairs, for example "
+                "{thermal_conductivity: 400.0}. Each value is in the units that the objects "
+                "reading it expect, and the code does not check them.");
   return p;
 }
 
@@ -670,10 +694,10 @@ public:
   {
     InputParameters p = Property::validParams();
     p.setClassDescription(
-        "Multiplies properties computed by the property objects added before it, on its blocks, "
-        "by constant factors, given by 'property_factors'. It is intended for sensitivity and "
-        "uncertainty studies, in which a correlation is scaled without a change to the property "
-        "object that computes it.");
+        "Multiplies properties that the property objects added before it compute on its blocks "
+        "by the constant factors of 'property_factors'. It serves sensitivity and uncertainty "
+        "studies, which scale a correlation without a change to the property object that "
+        "computes it.");
     return p;
   }
   explicit PropertyScaling(const InputParameters & p) : Property(p)
@@ -691,16 +715,15 @@ FunctionProperty::validParams()
 {
   InputParameters p = Property::validParams();
   p.setClassDescription(
-      "Declares scalar properties whose values are functions of position and time. Use this "
-      "for a property that varies through the body, such as a graded conductivity. A property "
-      "that depends on the solution itself requires a parsed property, or a property object "
-      "written in Python or C++.");
+      "Declares scalar properties whose values are functions of position and time, such as a "
+      "graded conductivity. A property that depends on the solution needs a parsed property, "
+      "or a property object written in Python or C++.");
   p.addRequired("properties",
                 ParameterKind::StringMap,
-                "The declared properties: name -> a registered function or an expression of x, "
-                "y, z and t, for example {thermal_conductivity: '20 + 5*x'}. Each is evaluated at "
-                "every integration point, so the property may vary in space and time, "
-                "independently of the solution.");
+                "The declared properties, as name -> function pairs, with each function a "
+                "registered function or an expression of x, y, z and t, for example "
+                "{thermal_conductivity: '20 + 5*x'}. The code evaluates each function at every "
+                "integration point, independently of the solution.");
   return p;
 }
 
@@ -748,12 +771,14 @@ PeriodicBC::validParams()
 {
   InputParameters p = Constraint::validParams();
   p.setClassDescription(
-      "Periodic boundary condition: the field on the secondary boundary is the field on the "
+      "Periodic boundary condition: the field on the secondary boundary equals the field on the "
       "primary boundary, carried over by a translation. Every node of the secondary boundary "
-      "is joined to the node of the primary boundary at the translated position, and the two "
+      "is joined to the node of the primary boundary at the translated position. The two nodes "
       "act as one unknown whose equation collects both, so that its control domain wraps around "
-      "the domain. A node that is periodic in two directions (a corner) is joined to one primary. "
-      "The meshes of the two boundaries must match node by node after the translation.");
+      "the domain. A node that is periodic in two directions, at a corner, is joined to one "
+      "primary node. The meshes of the two boundaries must match node by node after the "
+      "translation, to within 10^-6 times the larger of the size of the primary boundary and "
+      "the length of the translation.");
   p.addRequired("primary", ParameterKind::String, "The side set or node set whose nodes are kept.");
   p.addRequired("secondary",
                 ParameterKind::String,
@@ -762,12 +787,14 @@ PeriodicBC::validParams()
                 ParameterKind::Names,
                 std::vector<std::string>{},
                 "The variable or variables that are periodic. Default: every variable of the "
-                "problem.");
+                "problem, as in a periodic cell.");
   p.addOptional("translation",
                 ParameterKind::RealList,
                 std::vector<double>{},
-                "The vector from a primary node to its secondary node (x, y and z components). "
-                "Default: the vector between the centroids of the two boundaries.");
+                "The vector from a primary node to its secondary node, in m (x, y and z "
+                "components). Default: the vector from the centroid of the primary nodes to the "
+                "centroid of the secondary nodes, which is the translation between two boundaries "
+                "that match.");
   return p;
 }
 

@@ -1,30 +1,34 @@
-F5: Lid-driven cavity at Re = 1000
-===================================
+Lid-driven cavity at Re = 1000
+==============================
+
+This page compares the centerline velocities of the lid-driven cavity with the
+fine-grid solution of Erturk, Corke and Gokcol [Erturk2005]_.  It uses the
+finite element method (FEM) and the dual mesh control domain method (DMCDM).
 
 The problem
 -----------
 
-The unit square is filled with a fluid whose top side, the lid, slides at the
-speed 1 and whose other sides are at rest.  With the density :math:`Re = 1000`
-and the viscosity 1 the Reynolds number is 1000.  The steady flow is one large
-vortex with two smaller ones in the lower corners.  Erturk, Corke and
-Gokcol [Erturk2005]_ solved it on a :math:`601 \times 601` grid to residuals below
-:math:`10^{-10}` and tabulated the velocity :math:`u` along the vertical
-centerline :math:`x = 0.5` and :math:`v` along the horizontal centerline
-:math:`y = 0.5` (their Tables 6 and 7).  Every method is compared with these 23
-values of each profile on uniform meshes of :math:`n \times n` ``Quad4``
-elements, by the largest difference.
+The unit square holds a fluid whose top side, the lid, slides at the speed 1,
+while the other sides are at rest.  With the density :math:`\rho = 1000` and
+the dynamic viscosity :math:`\mu = 1`, the Reynolds number
+:math:`Re = \rho U L / \mu`, with the lid speed :math:`U` and the side
+:math:`L`, is 1000.  The steady flow is one large vortex with two smaller ones
+in the lower corners.  [Erturk2005]_ solved it on a :math:`601 \times 601` grid
+and tabulated the velocity :math:`v_x` along the vertical centerline
+:math:`x = 0.5` and :math:`v_y` along the horizontal centerline
+:math:`y = 0.5` (their Tables 6 and 7).  Every method is compared with these
+23 values of each profile, by the largest difference, on uniform meshes of
+:math:`n \times n` ``Quad4`` elements.
 
 The setup
 ---------
 
 .. code-block:: python
 
-   import numpy
    import dualmesh
 
    mesh = dualmesh.generate_rectangle_mesh(0, 1, 0, 1, 128, 128)
-   problem = dualmesh.Problem(mesh, method="DMCDM")  # or FEM
+   problem = dualmesh.Problem(mesh, method="DMCDM")  # Or "FEM"
    flow = problem.add_physics(
        "fluid_dynamics",
        dynamic_viscosity=1.0,
@@ -32,18 +36,19 @@ The setup
        formulation="equal_order",
    )
    flow.add_boundary_condition(["velocity_x = 1", "velocity_y = 0"], boundary="top")
-   # added last, so that the top corners belong to the walls
+   # Added last, so that the two top corners belong to the walls
    flow.add_boundary_condition(["velocity_x = 0", "velocity_y = 0"], boundary=["left", "right", "bottom"])
    problem.solve()
 
-Newton's method reaches the steady state from the Stokes start, or, where it
-does not converge from it, by the continuation of the solve, which raises the
-lid speed from rest.  The Taylor-Hood element takes ``formulation="Taylor-Hood"`` on ``Quad9``
-elements, half as many per side.  The projection time integration
-(``time_integration="projection"``) marches the flow from rest on the
-:math:`64 \times 64` mesh at a Courant number of one half until the velocity
-changes by less than :math:`10^{-7}` per unit time, which it does by
-:math:`t = 150`.
+Where Newton's method does not converge from the Stokes start, the solve
+raises the lid speed from rest in steps.  The Taylor-Hood element, with a
+quadratic velocity and a linear pressure, takes ``formulation="Taylor-Hood"``
+and FEM on ``Quad9`` elements, half as many per side.  The projection time
+integration (``time_integration="projection"``) marches the flow from rest on
+the :math:`64 \times 64` mesh, with each time step set by the Courant number 0.5 (the distance the flow
+travels in a step over the element size), until the velocity changes by less than :math:`10^{-7}` per unit time.
+It reaches that state by :math:`t = 150` with FEM and :math:`t = 160` with
+DMCDM.
 
 Results
 -------
@@ -54,11 +59,11 @@ Results
    :widths: 30 14 14 14 14 14
 
    * - Method
-     - :math:`u`, :math:`n = 32`
-     - :math:`u`, 64
-     - :math:`u`, 128
-     - :math:`v`, 64
-     - :math:`v`, 128
+     - :math:`v_x`, :math:`n = 32`
+     - :math:`v_x`, 64
+     - :math:`v_x`, 128
+     - :math:`v_y`, 64
+     - :math:`v_y`, 128
    * - DMCDM
      - 0.0382
      - 0.0091
@@ -90,40 +95,45 @@ Results
      - 0.0128
      -
 
-Both methods converge to the reference at second order: the
-difference falls by a factor of 3.6 to 5.0 from :math:`n = 32` to 64 and from 64
-to 128, and is below 0.004 on the :math:`128 \times 128` mesh.  The quadratic
-velocity of the Taylor-Hood element is 1.3 to 2.3 times closer on the same
-number of nodes.  The differences of the stabilized methods are about half of
-those before the parameter :math:`\tau` took the factor 9 on its viscous term
-(:doc:`../theory/heat_and_fluids`): DMCDM had 0.0741, 0.0198 and 0.0062.
-
-The projection time integration reaches a steady state about as close to the
-reference as the monolithic solution for the finite element method, and farther
-for the two methods of the dual mesh.  The monolithic solves carry the
-streamline stabilization of the advection, and the splitting has none: at the
-cell Reynolds number of about 16 of the :math:`64 \times 64` mesh, the methods of
-the dual mesh need it more than the finite element method.
+Both methods converge to the reference at second order.  The difference falls
+by a factor of 3.6 to 5.0 each time :math:`n` doubles, and it is below 0.004 on
+the :math:`128 \times 128` mesh.  On the same nodes, the Taylor-Hood element
+is 1.3 to 1.8 times closer in :math:`v_x` and 2.5 to 2.8 times closer in
+:math:`v_y` than the equal-order elements.  On the :math:`64 \times 64` mesh,
+the difference of the projection time integration exceeds the difference of
+the steady solve by 5 to 10 % with FEM and by a factor of 1.6 to 1.8 with
+DMCDM.
 
 .. figure:: ../_static/figures/fluids/cavity_re1000_u.png
    :width: 85%
 
-   The velocity :math:`u` along the vertical centerline.
+   Velocity :math:`v_x` along the vertical centerline on the finest mesh of
+   every method, with the values of [Erturk2005]_ as circles.
 
 .. figure:: ../_static/figures/fluids/cavity_re1000_v.png
    :width: 85%
 
-   The velocity :math:`v` along the horizontal centerline.
+   Velocity :math:`v_y` along the horizontal centerline on the finest mesh of
+   every method, with the values of [Erturk2005]_ as circles.
 
 .. figure:: ../_static/figures/fluids/cavity_re1000_difference.png
    :width: 85%
 
-   The largest difference from [Erturk2005]_ against the element size.
+   Largest difference from [Erturk2005]_ in either velocity against the
+   element size :math:`h`.  For the Taylor-Hood element, :math:`h` is half
+   its element.
 
-Reproducing the results
------------------------
+Reproduce the results
+---------------------
 
-.. code-block:: console
+1. Run the script:
 
-   python verification/benchmarks/fluids/run_cavity.py              # about 8 minutes
-   python verification/benchmarks/fluids/run_cavity.py --plot-only  # the figures only
+   .. code-block:: console
+
+      python verification/benchmarks/fluids/run_cavity.py
+
+2. Redraw the figures from the cache:
+
+   .. code-block:: console
+
+      python verification/benchmarks/fluids/run_cavity.py --plot-only

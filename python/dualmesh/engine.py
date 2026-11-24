@@ -271,9 +271,9 @@ class Problem:
         See :func:`dualmesh.partition_mesh`.
     gather_scatter:
         The library that exchanges, between the processes of a distributed problem, the values at the nodes that several of them hold.
-        ``"PETSc"`` (the default) is PETSc's star forests, which also carry PETSc's own vectors and matrices.
+        ``"petsc"`` (the default) is PETSc's star forests, which also carry PETSc's own vectors and matrices.
         ``"gslib"`` is the gather-scatter library of Nek5000, which at setup times pairwise exchanges, a crystal router and an all-reduce and keeps the fastest for the mesh at hand (:func:`dualmesh.have_gslib`).
-        The answer is the same with either; the time per exchange may differ, mostly on many processes.
+        Both give the same answer, and the time per exchange may differ on many processes.
     """
 
     def __init__(

@@ -1,557 +1,623 @@
 Solving
 =======
 
-Once the variables, kernels, boundary conditions and property objects are in place, the
-problem is solved either once, for a steady state, or repeatedly in time.  This
-chapter explains both, and every option each takes.
+This page shows how to solve a problem once you have defined it: a steady
+solve, a transient solve, the settings of the nonlinear and the linear
+solvers, the remedies when a solve fails, and runs on several threads or
+processes.  :doc:`/theory/nonlinear_and_time` gives the theory of the
+nonlinear methods and of the time schemes, and :doc:`/theory/parallel` gives
+the theory of the parallel runs and of the linear solvers.
+
+The Portable, Extensible Toolkit for Scientific Computation (PETSc)
+[PETSc2023]_ solves the nonlinear and the linear systems, in the same way on
+one process and on several.
 
 .. contents::
    :local:
    :depth: 2
-   :class: this-will-duplicate-information-and-it-is-still-useful-here
 
-The steady solve
-----------------
+Where the settings go
+---------------------
+
+You give the settings of a solve in one of two places:
+
+- In the input, which ``dualmesh.problem(...)`` builds in Python and a YAML or
+  TOML case file holds for ``dualmesh run``.  The ``solver`` section sets the
+  tolerance of the nonlinear solve and the PETSc options, and the ``time``
+  section makes the analysis transient.  :doc:`input` lists every key.
+- At the object level, :meth:`~dualmesh.Problem.solve` and
+  :meth:`~dualmesh.Problem.solve_transient` take every setting on this page as
+  a keyword argument.  An unknown keyword raises a ``TypeError`` that lists
+  the known options of the nonlinear and the linear solve.
+
+The other settings on this page, such as ``nonlinear_solver`` or
+``max_iterations``, exist at the object level only.
+
+Solve a steady problem
+----------------------
+
+From the input
+~~~~~~~~~~~~~~
+
+Without a ``time`` section, ``solve`` of the input solves the steady problem.
+This square plate conducts heat between two sides held at different
+temperatures, and its ``solver`` section asks for a tighter tolerance and a
+direct linear solver:
+
+.. code-block:: python
+
+   import dualmesh
+
+   plate = dualmesh.problem(mesh={"rectangle": {"size": ["1 m", "1 m"], "cells": [8, 8]}})
+   plate.physics("heat_conduction")
+   plate.properties(thermal_conductivity="45 W/(m*K)")
+   plate.boundary_conditions("left", temperature="400 K")
+   plate.boundary_conditions("bottom", temperature="300 K")
+   plate.solver(relative_tolerance=1.0e-8, PETSc_options={"ksp_type": "preonly", "pc_type": "lu"})
+   solution = plate.solve()
+
+In a case file, the same ``solver`` section reads:
+
+.. code-block:: yaml
+
+   solver:
+     relative_tolerance: 1.0e-8
+     PETSc_options: {ksp_type: preonly, pc_type: lu}
+
+``relative_tolerance`` is the tolerance of `Set the convergence test`_.
+``PETSc_options`` maps PETSc option names, written without the leading dash,
+to their values as text or numbers, and takes every option of
+`Choose the linear solver`_.  The input refuses ``PETSc_options.snes_rtol``
+together with ``relative_tolerance``.
+
+The ``solve`` of the input prints one line that names the solve and then the
+result (``report="summary"``, the default).  ``report="full"`` also prints the
+problem and every iteration, and ``report="none"`` prints nothing.
+
+From Python
+~~~~~~~~~~~
 
 .. code-block:: python
 
    result = problem.solve()
    print(result.converged, result.total_iterations)
 
-:meth:`~dualmesh.Problem.solve` assembles the residual and the Jacobian,
-solves the linear system, and repeats until one of the convergence tests below
-passes.  SNES, the nonlinear solver of PETSc [PETSc2023]_, runs this
-iteration with the convergence test and the line search described below.  It
-returns a :class:`~dualmesh.SolveResult` and leaves the solution on the problem,
-where :meth:`~dualmesh.Problem.values` reads it out.
+:meth:`~dualmesh.Problem.solve` assembles the residual :math:`\mathbf{R}` of
+the vector :math:`\mathbf{U}` of the nodal unknowns and its Jacobian
+:math:`\mathbf{J} = \partial \mathbf{R} / \partial \mathbf{U}`, solves the
+linear system :math:`\mathbf{J}\, \delta\mathbf{U} = -\mathbf{R}` for the
+update :math:`\delta\mathbf{U}`, and repeats until the convergence test
+passes.  It leaves the solution on the problem, where
+:meth:`~dualmesh.Problem.values` reads it, and returns a
+:class:`~dualmesh.SolveResult` (see `Read the result`_).
 
-All options are keyword arguments.  An unknown keyword is an error that lists
-the ones that are known, so a typo does not become a silently ignored setting.
+``report`` sets what the solve prints: ``"full"`` (the default: the problem
+with every parameter, the defaults marked, the iterations and the result),
+``"summary"`` or ``"none"``.  ``output``, an :class:`~dualmesh.Output` group,
+writes the fields once, at the end (see :doc:`output`).
 
-Choosing the nonlinear method
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+A steady flow that starts at rest takes its first Newton iterate from the
+Stokes solution, the solution of the same problem without the inertia.
 
-``nonlinear_solver`` takes three values.
+Choose the nonlinear method
+---------------------------
+
+``nonlinear_solver`` takes one of three values, written in upper or lower
+case:
 
 ``"Newton"``
-   The default.  At each iteration the tangent matrix
-   :math:`J = \partial R / \partial U` is assembled and the correction
-   :math:`\delta U = -J^{-1} R` is applied.  The tangent is *exact*, because
-   every kernel is evaluated in forward-mode automatic differentiation
-   [Wengert1964]_, which requires neither hand-derived derivatives nor
-   finite-difference approximations.  The iteration therefore converges
-   quadratically: the number of correct digits doubles at each step once the
-   iterate is close enough to the solution.  The quadratic convergence can be
-   observed in ``result.history``.
+   The default.  Each iteration solves with the exact Jacobian, which every
+   kernel provides by forward-mode automatic differentiation [Wengert1964]_.
+   Near the solution, the number of correct digits doubles at each iteration.
 
 ``"Picard"``
-   Direct iteration, also called successive substitution.  The nonlinear
-   coefficients are evaluated at the previous iterate, the resulting linear
-   problem is solved, and the solution becomes the next iterate.  It converges
-   linearly, while Newton's method converges quadratically, but each iteration
-   is cheaper and its basin of attraction is often wider, so it is the usual
-   alternative when Newton's method diverges from a poor starting point.  The
-   ``relaxation`` option described below applies to this method.
+   Direct iteration.  Each iteration evaluates the nonlinear coefficients at
+   the last iterate and solves the linear problem that results.  It converges
+   linearly, at a lower cost per iteration than Newton's method, and it often
+   converges from a start where Newton's method diverges.
 
 ``"linear"``
-   Assemble once, solve once, and check the residual of the result.  Selecting
-   this option asserts that the problem is linear: if the residual after the
-   one solve is above ``relative_tolerance``, the solve stops with an error,
-   because the problem is nonlinear or the linear solver did not converge.
+   One assembly and one linear solve, followed by the convergence test.  Use
+   it for a linear problem.  When the residual after the solve fails the test,
+   the solve stops with an error: either the problem is nonlinear or the
+   linear solver did not converge.
 
-Convergence and its tolerances
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+``line_search`` applies to Newton's method:
 
-The iteration stops when the residual passes the test below.  The test has no
-unit, so a problem converges in the same iterations in metres and in
-millimetres (see :doc:`/theory/nonlinear_and_time`).
+``"automatic"``
+   The default.  Backtracking when a kernel needs it, which is the case of the
+   ``limited`` advection scheme, whose limiter has kinks on which the full
+   Newton step can cycle.  No line search otherwise.
 
-``relative_tolerance`` (default :math:`10^{-10}`)
-   The residual of every equation (the unknowns of one variable) is at most
-   this fraction of the size of its own terms, the reference residual.  A step
-   that starts almost converged needs no more iterations than that.
+``"backtracking"``
+   Halves the Newton step until the scaled residual norm falls, at most
+   ``max_line_search_steps`` times (default 10).  Each trial costs one
+   assembly of the residual.
 
-``max_iterations`` (default 50) limits the number of iterations.
-``error_on_divergence`` (default true) determines what happens when this limit
-is reached: with it true an exception is raised, and with it false the result
-is returned with ``converged`` false so that the caller can decide.  Set it
-false inside a loop that is expected to fail sometimes, such as a continuation
-study, and leave it true otherwise.
+``"none"``
+   Takes the full Newton step.
 
-``relaxation`` applies to an iteration without a line search (direct iteration,
-or Newton's method without one) and defaults to zero, meaning no relaxation.  With :math:`\gamma` set, the coefficients are evaluated at the
-weighted combination of the last two iterates
+``relaxation`` applies to an iteration without a line search, Picard or
+Newton.  It is a weight :math:`\gamma` from 0 to below 1, with the default 0
+for no relaxation.  From the second iteration on, the new iterate is
 
 .. math::
 
-   \bar{U} = (1 - \gamma) U^{(r)} + \gamma U^{(r-1)} ,
+   \mathbf{U}^{(r+1)} = (1 - \gamma)\, \tilde{\mathbf{U}}^{(r+1)} + \gamma\, \mathbf{U}^{(r)} ,
 
-so each update takes the fraction :math:`1 - \gamma` of its step.  A value from
-zero to below one under-relaxes and damps an oscillating iteration, and the code
-refuses any other.  Under-relaxation is the usual remedy for a direct iteration
-that oscillates without settling.
+with :math:`r` the iteration number and :math:`\tilde{\mathbf{U}}^{(r+1)}`
+the iterate that the full step reaches, so that each update takes the
+fraction :math:`1 - \gamma` of its step.  The code refuses a value outside
+this range.  Relaxation damps an iteration that oscillates without settling.
 
-The full report (``report="full"``, the default) prints the residual norm at
-every iteration. The residual norms show whether an iteration converges slowly
-or stalls.
+Set the convergence test
+------------------------
+
+The iteration converges when the residual of every equation is at most
+``relative_tolerance`` (default :math:`10^{-10}`) times the size of the terms
+of that equation, or at the level of round-off of its rows.  An equation is
+the set of rows of one variable.  The test has no unit, so a problem
+converges in the same iterations whatever units it is written in.
+
+``max_iterations`` (default 50) limits the number of iterations.
+``error_on_divergence`` (default true) sets what happens when the solve does
+not converge: with true, it raises an exception, and with false, it returns
+the result with ``converged`` false.  Set it to false in a loop of your own
+that expects some solves to fail.
+
+The iteration also stops when the residual grows to more than :math:`10^6`
+times its first value, or when the residual or the Jacobian has an entry that
+is not finite.
 
 Continuation
-~~~~~~~~~~~~
+------------
 
-A nonlinear problem that does not converge from its starting state often
-converges if its data are applied in increments, with each solve starting from
-the solution of the previous one.  A steady solve does this by itself when
-Newton's method fails on the problem itself: it ramps the sources, body forces,
-prescribed fluxes and loads up from zero, and the prescribed values from those
-of the starting state, while the terms that represent stiffness, conduction and
-viscosity keep their full value.  A step that converges doubles the next one and
-a step that fails is halved.  This is how a flow at a high Reynolds number, a
-strongly nonlinear material and the von Kármán plates and beams are driven to
-their solution, with no setting.  ``result.history`` records each step, with its
-``continuation_step`` and ``data_fraction``.
+When Newton's method does not converge on the problem itself, a steady solve
+applies the data in increments, each solve starting from the solution of the
+last one.  It ramps the data that drive the problem (the sources, the body
+forces and buoyancy, the prescribed fluxes, tractions and loads) up from
+zero, and the prescribed values from those of the starting state.  The terms
+of stiffness, conduction and viscosity keep their full value.
+
+The first increment is half the data.  An increment that converges doubles
+the next one, and an increment that fails is halved and taken again from the
+last converged state.  The continuation stops at the full data, or when the
+increment falls below :math:`1/1024` of the data.  It needs no setting, and
+the solve with ``nonlinear_solver="linear"`` does not take it.  The error
+message of a failed continuation states the fraction of the data it reached,
+and ``result.history`` records each increment with its ``continuation_step``
+and ``data_fraction``.
 
 .. _linear-solver-choice:
 
-The linear solver
-~~~~~~~~~~~~~~~~~
+Choose the linear solver
+------------------------
 
-PETSc [PETSc2023]_ solves each linearised system :math:`J \, \delta U = -R`,
-where :math:`J` is the Jacobian, :math:`\delta U` the Newton update and
-:math:`R` the residual.  A serial problem and a distributed one take the same
-path.  Without options, the solver chooses a method from the structure of the
-system.  ``petsc_options`` replaces that choice with PETSc's own options.
+Each iteration solves a linear system.  The solver chooses the method itself,
+or takes the one that your PETSc options give.
 
 The automatic choice
-   The solver factorises the system directly where the factorisation is
-   inexpensive: every one-dimensional system, two-dimensional systems up to
-   :math:`10^5` unknowns, and three-dimensional systems up to 4000 unknowns.
-   The factorisation is LU with partial pivoting [Demmel1999]_ on one process
-   and the parallel direct solver MUMPS [Amestoy2001]_ on several.  Pivoting
-   lets it factorise the saddle point systems of the Taylor-Hood element,
-   which have zeros on the diagonal.
+~~~~~~~~~~~~~~~~~~~~
 
-   These limits follow from the fill-in of a sparse factorisation.  With a
-   good ordering, the factors of a two-dimensional mesh problem with :math:`n`
-   unknowns hold :math:`O(n \log n)` entries and cost :math:`O(n^{3/2})`
-   operations.  The factors of a three-dimensional problem hold
-   :math:`O(n^{4/3})` entries and cost :math:`O(n^2)` operations
-   [George1973]_ [LiptonRoseTarjan1979]_.  A preconditioned Krylov iteration
-   costs a few matrix-vector products of :math:`O(n)` operations each per
-   iteration.
+Without PETSc options of the linear solver, the solver chooses a method from
+the structure of the system.  The choices are iterations of the generalised
+minimal residual method (GMRES) [Saad1993]_, or of flexible GMRES, which
+allows a preconditioner that changes from one iteration to the next.  Their
+preconditioners are PETSc's geometric algebraic multigrid (GAMG), the
+algebraic multigrid BoomerAMG of the hypre library [FalgoutYang2002]_, and
+the splits of `Split a flow or a coupled problem`_:
 
-   A larger system takes the iteration that suits its structure:
+.. list-table::
+   :header-rows: 1
 
-   - A flow takes flexible GMRES (the generalised minimal residual method
-     [Saad1993]_) with the Schur complement split and the least squares
-     commutator, ``-dualmesh_schur lsc`` below.
-   - A solid takes GMRES with smoothed aggregation multigrid (GAMG) and the
-     rigid body modes, described below.
-   - A solid coupled to other physics takes GMRES with the split by physics,
-     ``-dualmesh_split physics`` below.
-   - A system whose variables have elements of different orders, other than a
-     flow, is factorised.
-   - Any other system takes GMRES with the algebraic multigrid of hypre,
-     BoomerAMG [FalgoutYang2002]_.
+   * - System
+     - Solver
+   * - One dimension, two dimensions up to :math:`10^5` unknowns, three
+       dimensions up to 4000 unknowns
+     - The direct factorisation
+   * - A pressure-velocity flow
+     - Flexible GMRES with the Schur complement split ``lsc``
+   * - Variables of different element orders, other than a flow
+     - The direct factorisation
+   * - A solid alone
+     - GMRES with GAMG and the rigid body modes
+   * - A solid coupled to other physics
+     - Flexible GMRES with the split by physics
+   * - Any other system
+     - GMRES with BoomerAMG
 
-   When the iteration does not converge in 500 iterations, the direct
-   factorisation follows, from the iterate where the iteration stopped.  The
-   automatic choice is therefore at least as robust as the direct solver.
-   The iterations are preconditioned from the right, so the residual they
-   measure is the true residual of the system.
+The counts of unknowns are those of the whole problem, over all processes.
 
-   Within Newton's method, the automatic iterations solve each linear system
-   only as accurately as the current Newton step needs.  The tolerance of
-   Eisenstat and Walker [EisenstatWalker1996]_ is loose while the residual is
-   large and tightens as it falls, which keeps the quadratic convergence of
-   Newton's method and saves Krylov iterations in its first steps.  A direct
-   solve, a solver chosen with ``petsc_options`` and the solve of
-   ``nonlinear_solver="linear"`` take ``linear_tolerance`` instead.
+The direct factorisation is the MUltifrontal Massively Parallel sparse direct
+Solver (MUMPS) [Amestoy2001]_ when PETSc has it, on one process and on
+several.  MUMPS pivots, so it factorises the saddle point systems of the
+Taylor-Hood element, which have zeros on the diagonal.  Without MUMPS, the solver
+takes PETSc's own lower-upper (LU) factorisation on one process, which does
+not pivot, and block Jacobi with incomplete LU on several processes.
 
-``petsc_options``
-   PETSc's own options, as the string PETSc parses or as a dictionary, choose
-   the Krylov method and the preconditioner:
+When an iterative choice does not converge in 500 iterations, the solve goes
+on with the direct factorisation from the last nonlinear iterate.  GMRES with
+GAMG or BoomerAMG is preconditioned from the right, so it measures the true
+residual of the system.
 
-   .. code-block:: python
+Within a nonlinear iteration, the automatic iterative solvers take the tolerance of
+Eisenstat and Walker [EisenstatWalker1996]_, which is loose while the
+residual is large and tightens as it falls.  A direct solve, a solver you
+choose with ``petsc_options`` and the solve of ``nonlinear_solver="linear"``
+take ``linear_tolerance`` instead (default :math:`10^{-12}`, relative to the
+norm of the right-hand side).
 
-      problem.solve(petsc_options="-ksp_type preonly -pc_type lu")
-      problem.solve(petsc_options={"ksp_type": "cg", "pc_type": "gamg"})
-
-   ``linear_tolerance`` (default :math:`10^{-12}`, relative to the right-hand
-   side) is passed on as PETSc's ``ksp_rtol``, and the options may override
-   it.  The options that start with ``-snes_`` go to SNES, PETSc's nonlinear
-   solver, which runs Newton's method, for example ``-snes_monitor`` or
-   ``-snes_ksp_ew`` (the tolerance of Eisenstat and Walker with a solver of
-   your choice).  The test of convergence stays that of
-   ``relative_tolerance``.  The options of one solve are kept in a private options database, so
-   they apply to that solve alone.  A solve that does not converge raises an
-   error that gives PETSc's reason, ``DIVERGED_ITS`` for instance.  The input
-   file takes the same options under ``solver: PETSc_options``.
-
-   The unknowns are numbered node by node, all variables of a node together,
-   and the number of variables is given to PETSc as the block size of the
-   matrix.  PETSc's field split preconditioners need this numbering.  For the
-   pressure-velocity formulation of a two-dimensional flow, whose variables
-   are ``u``, ``v`` and ``pressure`` in that order, the Schur complement
-   preconditioner with algebraic multigrid on both blocks is
-
-   .. code-block:: python
-
-      options = (
-          "-ksp_type fgmres"
-          " -pc_type fieldsplit -pc_fieldsplit_0_fields 0,1 -pc_fieldsplit_1_fields 2"
-          " -pc_fieldsplit_type schur -pc_fieldsplit_schur_fact_type upper"
-          " -pc_fieldsplit_schur_precondition selfp"
-          " -fieldsplit_0_ksp_type preonly -fieldsplit_0_pc_type hypre"
-          " -fieldsplit_1_ksp_type preonly -fieldsplit_1_pc_type hypre"
-      )
-
-   On the cavity at :math:`Re = 100` on a :math:`64 \times 64` mesh it takes
-   about 58 iterations per Newton step, on one process and on four, where
-   :math:`Re` is the Reynolds number.  The same options converge for the
-   Taylor-Hood element, whose pressure block is zero, but more slowly.  On the
-   same cavity with :math:`32 \times 32` ``Quad9`` elements, which have the
-   nodes of the :math:`64 \times 64` linear mesh, they take about 134
-   iterations per Newton step at a relative tolerance of :math:`10^{-8}`,
-   compared with 66 for the equal-order element at the same tolerance.  The
-   ``selfp`` approximation of the Schur complement,
-   :math:`\mathbf{B}\, \mathrm{diag}(\mathbf{A})^{-1} \mathbf{B}^T`, suits
-   the stabilised element better.  For both elements the Schur splits
-   described next, which build their approximation of the Schur complement
-   from the flow, converge in fewer iterations.
-
-``-dualmesh_schur lsc``, ``pcd`` or ``pressure_mass``
-   The Schur complement split of a pressure-velocity flow, an option of
-   dualmesh-multiphysics that PETSc reads among its own.  The Jacobian is a
-   saddle point matrix
-
-   .. math::
-
-      \begin{bmatrix} \mathbf{F} & \mathbf{G} \\ \mathbf{D} & \mathbf{C} \end{bmatrix}
-
-   with the momentum block :math:`\mathbf{F}`, the pressure gradient
-   :math:`\mathbf{G}`, the discrete divergence :math:`\mathbf{D}` and the
-   pressure block :math:`\mathbf{C}`.  The pressure block is zero for the
-   Taylor-Hood element and the pressure Laplacian of the stabilisation for
-   the equal-order element.  The preconditioner is the block upper triangle
-
-   .. math::
-
-      \mathbf{P} = \begin{bmatrix} \mathbf{F} & \mathbf{G} \\ \mathbf{0} &
-      \hat{\mathbf{S}} \end{bmatrix},
-
-   with which GMRES converges in a number of iterations that depends only on
-   how well :math:`\hat{\mathbf{S}}` approximates the Schur complement
-   :math:`\mathbf{S} = \mathbf{C} - \mathbf{D}\mathbf{F}^{-1}\mathbf{G}`, a
-   dense matrix.  Up to its sign, which is measured from the coupling blocks
-   of the actual matrix,
-   :math:`\mathbf{S} \approx \mathbf{G}^T \mathbf{F}^{-1} \mathbf{G}`.  The
-   three splits differ in their approximation of it:
-
-   ``lsc``, the least squares commutator [ElmanHowleShadidShuttleworthTuminaro2006]_:
-      :math:`\hat{\mathbf{S}}^{-1} = \mathbf{A}_p^{-1} (\mathbf{G}^T
-      \mathbf{Q}_v^{-1} \mathbf{F} \mathbf{Q}_v^{-1} \mathbf{G})
-      \mathbf{A}_p^{-1}` with :math:`\mathbf{A}_p = \mathbf{G}^T
-      \mathbf{Q}_v^{-1} \mathbf{G}` and :math:`\mathbf{Q}_v` the lumped
-      velocity mass matrix.  It is built from the blocks of the matrix alone.
-   ``pcd``, the pressure convection-diffusion preconditioner [KayLoghinWathen2002]_,
-      in the form of [ElmanTuminaro2009]_:
-      :math:`\hat{\mathbf{S}}^{-1} = \mathbf{A}_p^{-1} \mathbf{F}_p
-      \mathbf{Q}_p^{-1}`, where :math:`\mathbf{F}_p` is the operator of the
-      momentum equation on the pressure space,
-      :math:`(\rho/\Delta t) \mathbf{M}_p + \theta(\mu \mathbf{K}_p + \rho
-      \mathbf{N}_p(\mathbf{v}))` at the current velocity :math:`\mathbf{v}`,
-      and :math:`\mathbf{Q}_p` is the lumped pressure mass matrix.  Here
-      :math:`\rho` is the density, :math:`\mu` the dynamic viscosity,
-      :math:`\Delta t` the time step, :math:`\theta` the weight of the time
-      scheme, and :math:`\mathbf{M}_p`, :math:`\mathbf{K}_p` and
-      :math:`\mathbf{N}_p` the pressure mass, diffusion and advection
-      matrices.  :math:`\mathbf{F}_p` carries the Robin condition
-      :math:`\mu\, \partial p/\partial n = \rho (\mathbf{v} \cdot
-      \mathbf{n})\, p` on the boundaries where the velocity is prescribed.
-      It acts at an inflow, since :math:`\mathbf{v} \cdot \mathbf{n} = 0` on
-      a wall.
-   ``pressure_mass``:
-      :math:`\hat{\mathbf{S}} = \mathbf{C}_{\mathrm{sym}} \pm (\tfrac{1}{\mu}
-      q, \psi)`, the pressure mass matrix scaled by the inverse viscosity and
-      the symmetric part :math:`\mathbf{C}_{\mathrm{sym}}` of the pressure
-      block.  For the Stokes equations it is spectrally equivalent to
-      :math:`\mathbf{S}` with bounds that do not depend on the mesh size, but
-      it ignores convection.
-
-   For the stabilised equal-order element, :math:`\mathbf{G}^T
-   \mathbf{Q}_v^{-1} \mathbf{G}` has the spurious pressure modes of the
-   element in its null space.  :math:`\mathbf{A}_p` and the middle factor of
-   ``lsc`` therefore take the element stabilisation of
-   [ElmanHowleShadidSilvesterTuminaro2007]_: the :math:`L^2` distance of the
-   pressure from its element mean, scaled by :math:`h^{-2}` and by
-   :math:`\theta\mu h^{-4} + \rho/(\Delta t\, h^2)`, with :math:`h` the
-   element size.  ``pcd`` applies :math:`\mathbf{A}_p^{-1}` once, to a vector
-   that keeps the spurious modes at full size, and takes this stabilisation a
-   hundred times larger.  Measured, the iteration counts are three to four
-   times higher with the factor 1, and change by less than 15 % between the
-   factors 100 and :math:`10^5`.  An assembled pressure Laplacian in place of
-   :math:`\mathbf{A}_p` needs a Robin condition at an outflow whose weight
-   changes the counts fivefold, which is why :math:`\mathbf{A}_p` is taken
-   from the matrix.
-
-   PETSc's Schur complement field split applies the approximation.  The
-   velocities, and any other unknown such as a temperature, form the split
-   ``0`` and the pressure the split ``1``.  The defaults are flexible GMRES
-   outside, the upper block-triangular factorisation, and one V-cycle of
-   BoomerAMG for :math:`\mathbf{F}` and for :math:`\mathbf{A}_p` (options
-   prefix ``fieldsplit_1_laplacian_``), with the coarsening and the
-   interpolation of [DeSterckYangHeys2006]_ and
-   [DeSterckFalgoutNoltingYang2008]_.  With them the least squares
-   commutator solves the three-dimensional Taylor-Hood cavity below 3.2 to 4.3
-   times faster than with BoomerAMG's defaults, in twice the iterations.
-   ``petsc_options`` may change any of them, for instance
-   ``{"dualmesh_schur": "lsc", "fieldsplit_0_pc_type": "lu"}`` for an exact
-   momentum solve.  With ``pcd`` and ``lsc`` the preconditioner of the split
-   ``1`` is the approximation itself, so the options
-   ``pc_fieldsplit_schur_precondition`` and ``fieldsplit_1_pc_type`` do not
-   apply.  ``pcd`` needs an accurate momentum solve: on the
-   three-dimensional cavity at :math:`Re = 400` with one V-cycle on
-   :math:`\mathbf{F}` it does not converge in 5000 iterations.
-
-   On a three-dimensional cavity at :math:`Re = 100` on two processes, with
-   the default block solvers, the least squares commutator against MUMPS
-   takes the following times for the whole steady solve of five Newton
-   iterations:
-
-   .. list-table::
-      :header-rows: 1
-
-      * - Element
-        - Unknowns
-        - MUMPS
-        - ``lsc``
-      * - Taylor-Hood (``Hex27``)
-        - 37 044
-        - 7.8 s
-        - 3.9 s
-      * -
-        - 97 556
-        - 22.2 s
-        - 13.3 s
-      * -
-        - 143 748
-        - 44.4 s
-        - 23.0 s
-
-   For the equal-order element (``Hex8``, 62 500 unknowns) it takes 8.1 s at
-   :math:`Re = 100` and 20.8 s at :math:`Re = 400`, where BoomerAMG on the
-   whole system with its defaults takes 29.9 s and 108 s.  BoomerAMG on the
-   whole system with the coarsening of the block solvers takes 3.3 s at
-   :math:`Re = 100` but stagnates at :math:`Re = 400`.
-
-``-dualmesh_split physics``
-   The split by physics, an option of dualmesh-multiphysics that PETSc reads
-   among its own.  The unknowns of each physics form a block: the
-   displacements of a solid together, and every other variable alone.  The
-   block lower-triangular preconditioner solves the blocks one after the
-   other, in the order in which the physics were added, each with GAMG on its
-   diagonal block, and moves the coupling to the earlier blocks to the
-   right-hand side.  A coupling that one physics drives, such as the thermal
-   expansion of a solid by a temperature, is then exact in the
-   preconditioner when that physics is added first.  On the heated plate of
-   :doc:`/user_guide/case_files`, refined from :math:`100 \times 20` to
-   :math:`400 \times 80` elements, it converges in 17 to 18 iterations at a
-   relative tolerance of :math:`10^{-10}`.  A flow is refused: its velocity
-   and pressure need ``-dualmesh_schur``, which takes any other unknown into
-   its first block.
-
-Smoothed aggregation with the rigid body modes
-   PETSc's smoothed aggregation multigrid (GAMG) [VanekMandelBrezina1996]_
-   builds a sequence of coarser problems from the matrix alone.  It groups
-   the nodes into aggregates of strongly connected neighbours, and on each
-   aggregate the coarse basis represents the *near null space* of the
-   operator exactly.  The near null space consists of the vectors on which
-   the operator nearly vanishes: the constant for a diffusion equation, and
-   the three translations and three rotations of a rigid body (two and one in
-   two dimensions) for elasticity.  dualmesh-multiphysics builds it from the
-   displacement variables of the stress property objects of the problem and
-   the constant of every other variable, and gives it to PETSc, also when
-   ``petsc_options`` chooses GAMG.  GMRES is preconditioned from the right,
-   so that it measures the true residual.  On a three-dimensional cantilever
-   on two processes it takes 54 and 51 iterations on meshes of 4 and 8
-   elements across, against 78 and 82 for BoomerAMG without the modes, and
-   28 % less time.
-
-For use with an external solver, :meth:`~dualmesh.Problem.linear_system` returns
-the residual and the Jacobian of the current Newton step as a NumPy array and a
-SciPy sparse matrix.
-
-Reading the result
+Give PETSc options
 ~~~~~~~~~~~~~~~~~~
 
-A :class:`~dualmesh.SolveResult` carries:
+``petsc_options`` takes PETSc's options as the string PETSc parses or as a
+dictionary.  In a dictionary, the value ``None`` or ``True`` gives an option
+without a value, and the value ``False`` leaves the option out:
+
+.. code-block:: python
+
+   problem.solve(petsc_options="-ksp_type preonly -pc_type lu")
+   problem.solve(petsc_options={"ksp_type": "cg", "pc_type": "gamg"})
+
+The options that start with ``-snes_`` go to SNES (Scalable Nonlinear
+Equations Solvers), the nonlinear solver of PETSc that runs the iteration,
+for example ``-snes_monitor`` or ``-snes_ksp_ew`` for the tolerance of
+Eisenstat and Walker with a solver of your choice.  The convergence test stays
+that of ``relative_tolerance``.  The other options replace the automatic
+choice of the linear solver, and a solver you choose this way must converge
+within 5000 iterations.  The options of one solve live in a private options
+database, so they apply to that solve alone.
+
+The unknowns are numbered node by node, all variables of a node together, and
+the number of variables is the block size of the matrix, which PETSc's field
+split preconditioners read.  For a two-dimensional flow, whose variables are
+``velocity_x``, ``velocity_y`` and ``pressure`` in that order, PETSc's own
+Schur complement split with algebraic multigrid on both blocks is:
+
+.. code-block:: python
+
+   options = (
+       "-ksp_type fgmres"
+       " -pc_type fieldsplit -pc_fieldsplit_0_fields 0,1 -pc_fieldsplit_1_fields 2"
+       " -pc_fieldsplit_type schur -pc_fieldsplit_schur_fact_type upper"
+       " -pc_fieldsplit_schur_precondition selfp"
+       " -fieldsplit_0_ksp_type preonly -fieldsplit_0_pc_type hypre"
+       " -fieldsplit_1_ksp_type preonly -fieldsplit_1_pc_type hypre"
+   )
+   problem.solve(petsc_options=options)
+
+Split a flow or a coupled problem
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Two options of dualmesh-multiphysics, which PETSc reads among its own, choose
+a split that PETSc cannot name.  A split you choose must converge within 5000
+iterations.
+
+``-dualmesh_schur lsc``, ``pcd`` or ``pressure_mass``
+   The Schur complement split of a pressure-velocity flow.  The velocities,
+   with any other unknown such as a temperature, form the split ``0``, and the
+   pressure forms the split ``1``.  The preconditioner is the upper block
+   triangle of the Jacobian, with an approximation of the Schur complement of
+   the pressure:
+
+   - ``lsc``, the least squares commutator
+     [ElmanHowleShadidShuttleworthTuminaro2006]_, built from the blocks of the
+     matrix alone.  The automatic choice takes it for a large flow.
+   - ``pcd``, the pressure convection-diffusion preconditioner
+     [KayLoghinWathen2002]_ in the form of [ElmanTuminaro2009]_, built from
+     the operator of the momentum equation on the pressure space.
+   - ``pressure_mass``, the pressure mass matrix divided by the dynamic
+     viscosity, with the symmetric part of the pressure block.  It ignores
+     convection, so it suits the Stokes equations.
+
+   The equal-order element takes the stabilisation of
+   [ElmanHowleShadidSilvesterTuminaro2007]_ in ``lsc`` and ``pcd``.  The
+   defaults are flexible GMRES outside, the upper block-triangular
+   factorisation, and one V-cycle of BoomerAMG for the momentum block and for
+   the pressure operator: the pressure Laplacian of ``lsc`` and ``pcd``
+   (options prefix ``fieldsplit_1_laplacian_``) or the approximation of
+   ``pressure_mass`` (options prefix ``fieldsplit_1_``).  BoomerAMG takes the
+   HMIS coarsening [DeSterckYangHeys2006]_ and the extended+i interpolation
+   [DeSterckFalgoutNoltingYang2008]_, and GAMG takes its place when PETSc has
+   no hypre.  Your options refine these defaults,
+   for example ``{"dualmesh_schur": "lsc", "fieldsplit_0_pc_type": "lu"}`` for
+   an exact momentum solve.  With ``lsc`` and ``pcd``, the approximation is
+   itself the preconditioner of the split ``1``, so the options
+   ``pc_fieldsplit_schur_precondition`` and ``fieldsplit_1_pc_type`` have no
+   effect.
+
+``-dualmesh_split physics``
+   The split by physics.  The displacements of a solid form one block, and
+   every other variable forms a block of its own.  The preconditioner solves
+   the blocks one after the other, in the order in which you added the
+   physics, each with one cycle of GAMG on its diagonal block.  A coupling
+   that one physics drives, such as the thermal expansion of a solid by a
+   temperature, is exact in the preconditioner when you add that physics
+   first.  A flow is refused, because its velocity and pressure need
+   ``-dualmesh_schur``, which takes any other unknown into its first block.
+
+The two options exclude each other.
+
+Use the rigid body modes
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+GAMG builds its coarse problems by smoothed aggregation
+[VanekMandelBrezina1996]_.  On each aggregate of nodes, the coarse basis
+represents the near null space of the operator exactly: the constant for a
+diffusion equation, and the rigid translations and rotations of a body for
+elasticity (three and three in three dimensions, two and one in two).
+dualmesh-multiphysics builds the near null space from the displacement
+variables of the solids and the constant of every other variable.  It gives
+the near null space to PETSc whenever the problem has the displacements of a
+solid, also when your options choose GAMG.
+
+Hand the system to another solver
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+:meth:`~dualmesh.Problem.linear_system` returns the residual and the Jacobian
+of the current Newton step as a NumPy array and a SciPy sparse matrix, for a
+solver outside PETSc.
+
+Read the result
+---------------
+
+A :class:`~dualmesh.SolveResult` holds:
 
 ``converged``
-   Whether the iteration met one of the tolerances.
+   Whether the solve met the convergence test.
 
-``total_iterations``
-   Nonlinear iterations taken, summed over the continuation steps and time steps.
-
-``linear_iterations``
-   Krylov iterations taken, summed the same way.
+``total_iterations`` and ``linear_iterations``
+   The nonlinear iterations and the iterations of the linear solver, summed
+   over the continuation increments and the time steps.
 
 ``history``
-   The residual norm at every nonlinear iteration.  It is the first diagnostic
-   to examine when a solve fails.
+   One record per nonlinear iteration, with ``continuation_step``,
+   ``data_fraction``, ``iteration``, ``residual_norm`` and ``step_norm``.
+   Look at it first when a solve fails.
 
-``time_steps``, ``rejected_steps``, ``step_history``
-   Filled by a transient solve (see below).
+``time_steps``, ``rejected_steps``, ``step_history`` and ``next_time_step``
+   Filled by a transient solve (see `Control the time step`_).
 
-The transient solve
--------------------
+Solve a transient problem
+-------------------------
+
+From the input
+~~~~~~~~~~~~~~
+
+A ``time`` section makes the analysis transient.  This steel slab, at
+:math:`573\ \mathrm{K}`, has both faces held at :math:`293\ \mathrm{K}` from
+the time zero (``examples/transient_slab.py``):
+
+.. code-block:: python
+
+   import dualmesh
+
+   quench = dualmesh.problem(mesh={"segment": {"length": "0.1 m", "cells": 40}})
+   quench.physics("heat_conduction")
+   quench.properties(
+       thermal_conductivity="45 W/(m*K)",
+       density="7850 kg/m^3",
+       specific_heat_capacity="490 J/(kg*K)",
+   )
+   quench.initial_conditions(temperature="573 K")
+   quench.boundary_conditions("left", temperature="293 K")
+   quench.boundary_conditions("right", temperature="293 K")
+   quench.time(end_time="40 s", initial_time_step="0.1 s", step_control={"by": "fixed"})
+   solution = quench.solve()
+
+The ``time`` section takes three keys:
+
+``end_time`` (required)
+   The time at which the run ends, a positive quantity in seconds.
+
+``initial_time_step`` (required)
+   The first time step, a positive quantity in seconds.
+
+``step_control``
+   How the step changes, by ``by`` and the key that goes with it:
+
+   - ``{by: error, relative_tolerance: 1.0e-3}``, the default: the step keeps
+     the estimated error of a step at the tolerance, a number above 0 and at
+     most 1.
+   - ``{by: iterations, target_iterations: 5}``: the step follows the number
+     of nonlinear iterations of a step.  The default target is 5.
+   - ``{by: Courant, Courant_number: 0.5}``: the step keeps the Courant number
+     of a flow advanced by the projection.  The default is 0.5.
+   - ``{by: fixed}``: the step stays at ``initial_time_step``.
+
+   `Control the time step`_ describes each of them.
+
+The input takes the default time scheme of the problem (see
+`Choose the time scheme`_).
+
+From Python
+~~~~~~~~~~~
 
 .. code-block:: python
 
    result = problem.solve_transient(end_time=100.0, time_step=1.0, time_scheme="Crank-Nicolson")
 
-Time is discretised with the :math:`\theta` method.  Writing :math:`M` for the
-storage term and :math:`R_{\text{steady}}` for everything else, one step solves
+:meth:`~dualmesh.Problem.solve_transient` marches the solution from
+``start_time`` (default 0) to ``end_time``, with ``time_step`` the step, or
+the first step for a step control that changes it.  It also takes every
+setting of the steady solve, which applies to the nonlinear solve of each
+step.  A step does not take continuation.
+
+``output``, an :class:`~dualmesh.Output` group, writes the fields at its
+output times, on which the steps land (see :doc:`output`).
+:meth:`~dualmesh.Problem.set_time_step_callback` sets a function
+``callback(time, problem)`` that runs after every accepted step.
+``max_steps`` (default 0, no limit) stops the run after that many accepted
+steps, with ``result.next_time_step`` the step that the step control chose
+next.  ``restart`` continues a run from a checkpoint file of an
+:class:`~dualmesh.Output` group with ``checkpoint_interval``.  A problem with
+inertia does not restart from a checkpoint.
+
+A problem without a time derivative is marched quasi-statically: each step
+solves the steady problem at its time.  This follows loads that change in
+time and the history of a creeping material.
+
+Choose the time scheme
+~~~~~~~~~~~~~~~~~~~~~~
+
+For a problem with first time derivatives, ``time_scheme`` selects a member
+of the :math:`\theta` method, which weights the steady part
+:math:`\mathbf{R}_{\mathrm{steady}}` of the residual between the old state
+:math:`\mathbf{U}^{n}` at the time :math:`t^{n}` and the new state
+:math:`\mathbf{U}^{n+1}` at :math:`t^{n+1} = t^{n} + \Delta t`:
 
 .. math::
 
-   M \frac{U^{n+1} - U^{n}}{\Delta t}
-   + \theta R_{\text{steady}}(U^{n+1}, t^{n+1})
-   + (1 - \theta) R_{\text{steady}}(U^{n}, t^{n}) = 0 .
+   \mathbf{R}_{\mathrm{time}}(\mathbf{U}^{n+1})
+   + \theta\, \mathbf{R}_{\mathrm{steady}}(\mathbf{U}^{n+1}, t^{n+1})
+   + (1 - \theta)\, \mathbf{R}_{\mathrm{steady}}(\mathbf{U}^{n}, t^{n}) = 0 ,
 
-where :math:`\theta` is set by ``time_scheme``, which selects the member of the
-family.
+where :math:`\mathbf{R}_{\mathrm{time}}` holds the time derivatives and
+:math:`\theta` is the weight of the new state.  The name of the scheme may be
+written in lower case.
 
-:math:`\theta = 1`, ``time_scheme="backward_Euler"``
-   Backward Euler, the default.  First-order accurate in time and
-   unconditionally stable, and strongly damping, which makes it robust on a
-   stiff problem and on the first step after a discontinuous start.
+``"backward_Euler"``, :math:`\theta = 1`
+   The default.  First-order accurate, stable for every step, and strongly
+   damping.
 
-:math:`\theta = 1/2`, ``time_scheme="Crank-Nicolson"``
-   Crank-Nicolson [CrankNicolson1947]_.  Second-order accurate and
-   unconditionally stable, but only neutrally damping, so a sharp initial
-   transient can produce oscillations that persist for several steps.
+``"Crank-Nicolson"``, :math:`\theta = 1/2`
+   [CrankNicolson1947]_.  Second-order accurate and stable for every step, but
+   without damping, so a sharp initial transient can leave oscillations that
+   persist for several steps.
 
-:math:`\theta = 0`, ``time_scheme="forward_Euler"``
-   Forward Euler.  The steady terms are evaluated entirely at the old state, so
-   the scheme is explicit and only conditionally stable.  For the slab problem
-   of the test suite the critical step is between :math:`0.2 h^2` and
-   :math:`0.3 h^2`, and above it the solution diverges within a few steps.
+``"forward_Euler"``, :math:`\theta = 0`
+   Explicit in the steady terms, and stable only below a critical step.  It
+   refuses a stabilisation whose residual holds the time derivative.
 
 An equation without a time derivative, such as the mass equation of an
 incompressible flow or the equilibrium of a quasi-static solid, is a
-constraint of the new time, so every :math:`\theta` takes it at
-:math:`t^{n+1}` only, with the weight 1, and so does the pressure gradient of
-a flow.  The pressure is then the pressure of the step.  Weighted between the
-two times, it would be an average of two steps, whose error comes back with the
-opposite sign at every step, and a material with creep would be evaluated at
-the old time without its history.  With :math:`\theta < 1` the pressure of a
-step lies between the two times, so a pressure that the conditions prescribe
-as a function of time is first-order accurate in time.
+constraint of the new time.  Every :math:`\theta` takes it at
+:math:`t^{n+1}` with the weight 1, and so takes the pressure gradient of a
+flow.
 
-**Inertia.**  A problem with a second time derivative, such as a solid with a
-``density``, takes ``time_scheme="generalized_alpha"`` by default, with the
-damping of unresolved modes set by ``spectral_radius`` (0.75, COMSOL's
-default; 1 gives none), or ``"Newmark"``, the average acceleration rule, which
-keeps the energy:
+A problem with inertia, such as a solid with a ``density``, has second time
+derivatives and takes one of two schemes:
+
+``"generalized_alpha"``
+   The default for such a problem: the method of Chung and Hulbert
+   [ChungHulbert1993]_, second-order accurate.  ``spectral_radius``, the
+   spectral radius :math:`\rho_\infty` at infinite frequency, sets the damping
+   of the modes the mesh cannot resolve, from 0 (the highest frequency damped
+   out in one step) to 1 (no damping), with the default 0.75.
+
+``"Newmark"``
+   The average acceleration rule: second-order accurate, without numerical
+   damping, and conserving the energy.
+
+The first-order equations of such a problem take the :math:`\theta` method
+with :math:`\theta = 1 - \alpha_f`, where
+:math:`\alpha_f = \rho_\infty / (\rho_\infty + 1)` for the
+generalized-:math:`\alpha` method and :math:`\alpha_f = 0` for Newmark.  This
+bar, fixed at one end, starts with a velocity that excites its first axial
+mode (from ``tests/python/test_dynamics.py``):
 
 .. code-block:: python
 
+   import dualmesh
+
+   mesh = dualmesh.generate_rectangle_mesh(0, 1.0, 0, 0.1, 80, 1, element_type="Quad9")
+   problem = dualmesh.Problem(mesh)
    solid = problem.add_physics(
-       "solid_mechanics", formulation="plane_stress", youngs_modulus=200e9,
-       poissons_ratio=0.3, density=7850.0,
-       damping={"mass": 0.1, "stiffness": 1e-5},          # Rayleigh, C = a M + b K
+       "solid_mechanics",
+       formulation="plane_stress",
+       youngs_modulus=200.0e9,
+       poissons_ratio=0.0,
+       density=7850.0,
        initial_condition={"velocity": ["sin(pi*x/2)", 0]},
    )
-   problem.solve_transient(end_time=0.1, time_step=1e-4)
-   modes = problem.solve_eigenvalue(num_modes=6)
-   modes.frequencies  # Hz
+   solid.add_boundary_condition("disp_x = 0", boundary="left")
+   solid.add_boundary_condition("disp_y = 0", boundary=["left", "top", "bottom", "right"])
+   problem.solve_transient(end_time=1.0e-4, time_step=1.0e-6)
 
-``start_time`` (default zero) sets the initial time. An
-:class:`~dualmesh.Output` group in the ``output`` parameter writes the fields at
-the output times, and the time steps land on these times. For more
-information, see :doc:`output`. The transient solve also takes all the steady
-options, which apply to the nonlinear solve in each step.
+Control the time step
+~~~~~~~~~~~~~~~~~~~~~
 
-Choosing the time step
-~~~~~~~~~~~~~~~~~~~~~~
+``time_stepper`` selects how the step :math:`\Delta t` changes after the
+first one.  The input names of ``step_control.by`` are in brackets.
 
-``time_stepper`` selects how :math:`\Delta t` is chosen after the first step.
+``"fixed"`` (``fixed``)
+   The default of ``solve_transient``.  The step stays at ``time_step``.  The
+   last step shortens to end exactly at ``end_time``, and a step shortens to
+   land on an output time.  After a rejected step, the run keeps the shorter
+   step.
 
-``"fixed"``
-   The default.  The step stays at ``time_step``, except that the last step is
-   shortened so that the run ends exactly at ``end_time``.
+``"error"`` (``error``)
+   The default of the input.  The step keeps an estimate of the local
+   truncation error of a step at ``error_tolerance`` (default
+   :math:`10^{-3}`).  For the :math:`\theta` method, the estimate compares the
+   step with the polynomial through the last accepted states, extrapolated to
+   the end of the step: linear for an order-one member, quadratic for
+   Crank-Nicolson.  This costs one solve per step.  The first steps, which
+   have no earlier states, a problem with inertia and the projection of a
+   flow take step doubling instead: the step is taken once with
+   :math:`\Delta t` and again as two steps of :math:`\Delta t / 2`, and the
+   difference of the two answers estimates the error [RichardsonGaunt1927]_.
+   This costs three solves per step and keeps the answer of the half steps.
 
-``"error"``
-   The step is chosen so that an estimate of the *local truncation error* stays
-   below ``error_tolerance`` (default :math:`10^{-3}`).  The :math:`\theta`
-   method estimates it from one step: the polynomial through the last accepted
-   states, extrapolated to the end of the step, has an error of the same order
-   as the step, so the difference between the two is in proportion to the error
-   of the step.  The polynomial is linear for backward and forward Euler and
-   quadratic for Crank-Nicolson.  The first steps, which have no earlier states
-   to extrapolate, an equation with a second time derivative and the projection
-   time integration of a flow take step doubling instead: the step is taken
-   once with :math:`\Delta t` and again as two steps of :math:`\Delta t / 2`,
-   and the difference between the two answers, scaled by the order of the
-   method, estimates the error of the coarser one [RichardsonGaunt1927]_.  Step
-   doubling costs three solves per step, and extrapolation one.  The difference
-   of each variable is measured against its range (its largest value less its
-   smallest), and the largest over the variables is the estimate, so it has no
-   unit and a temperature offset does not hide it.  Only the variables with a
-   time derivative count: a variable without one, such as the pressure of an
-   incompressible flow, is algebraic and has no truncation error of its own.  The next step is then set
-   by the standard controller of [HairerNorsettWanner1993]_.  It is the only
-   stepper that measures the accuracy, so it is the stepper to use when the
-   solution must meet a stated tolerance.  Tightening
-   ``error_tolerance`` shortens the steps and reduces the error until the
-   spatial discretisation error dominates, beyond which further tightening only
-   increases the run time.
+   Each variable with a time derivative contributes the largest difference
+   at a node between the two answers, divided by the range of the variable
+   (its largest value less its smallest), and the estimate :math:`e` is the
+   largest contribution, so it has no unit.  A step whose estimate exceeds
+   the tolerance :math:`\epsilon` is rejected.  After an accepted step of
+   order :math:`p`, the next step is
+   :math:`\Delta t \min\bigl(g, \max(1, 0.9\, (\epsilon/e)^{1/(p+1)})\bigr)`,
+   with :math:`g` the ``growth_factor`` [HairerNorsettWanner1993]_.  Use this
+   stepper when the solution must meet a stated accuracy in time.
 
-``"iteration"``
-   The step is chosen from the number of nonlinear iterations that the last
-   step needed.  A step that converged in fewer than
-   ``optimal_iterations - iteration_window`` nonlinear iterations is followed
-   by a longer one, and a step that needed more than
-   ``optimal_iterations + iteration_window`` is followed by a shorter one.  It
-   adds no cost beyond the solve itself.  It controls the computational
-   *effort* and leaves the error uncontrolled, so it suits a nonlinear problem
-   whose difficulty varies through the run and is unsuitable when accuracy is
-   the concern.
+``"iteration"`` (``iterations``)
+   The step follows the number of nonlinear iterations of the last step.  A
+   step that converged in fewer than ``optimal_iterations - iteration_window``
+   iterations grows by ``growth_factor``, and a step that needed more than
+   ``optimal_iterations + iteration_window`` shrinks by ``cutback_factor``.
+   ``optimal_iterations`` (default 4, and the input's ``target_iterations``
+   with the default 5) sets the target, and ``iteration_window`` (default 2)
+   the half-width of the band.  It costs nothing beyond the solve and leaves
+   the error in time uncontrolled, so it suits a problem whose difficulty is
+   the nonlinearity.
 
-``"cfl"``
-   The step is chosen to keep the Courant number
-   :math:`\Delta t \max_e |\mathbf{v}| / h_e` at ``courant_number`` (default
-   0.5), as Nek5000 and nekRS choose their steps.  It applies to a flow advanced
-   by the projection time integration (see `Transient flow`_ below).
+``"cfl"`` (``Courant``)
+   The Courant-Friedrichs-Lewy stepper keeps the Courant number
+   :math:`C = \Delta t \max_e |\mathbf{v}| / h_e` at ``courant_number``
+   (default 0.5), where the maximum runs over the elements :math:`e` and the
+   speeds :math:`|\mathbf{v}|` at their nodes, and :math:`h_e` is the size of
+   element :math:`e`.  Each new step gives that Courant number at the
+   velocity that the last step reached, and grows by at most
+   ``growth_factor``.  It applies to a flow advanced by the projection (see
+   `Advance a flow by projection`_).
 
-``growth_factor`` (default 2.0) limits the growth of the step in one update,
-and ``min_time_step`` and ``max_time_step`` set its lower and upper bounds.
-``max_time_step`` at its default of zero means no upper bound.
+``growth_factor`` (default 2, at least 1) bounds the growth of the step from
+one step to the next.  ``min_time_step`` (default ``time_step`` divided by
+:math:`10^6`) and ``max_time_step`` (default the whole interval) bound the
+step.
 
-Rejecting and retrying a step
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Rejected steps
+~~~~~~~~~~~~~~
 
-A step is rejected when its nonlinear solve fails to converge, or, with the
-error stepper, when its estimated error exceeds the tolerance.  A rejected step
-is discarded entirely (the state is restored to the beginning of the step) and
-retried with the step multiplied by ``cutback_factor`` (default 0.5).
+A step is rejected when its nonlinear solve does not converge, or, with the
+``error`` stepper, when its estimate exceeds the tolerance.  The run restores
+the state at the start of the step and takes the step again, multiplied by
+``cutback_factor`` (default 0.5, strictly between 0 and 1) or, with the
+``error`` stepper, by the larger of that factor and the step that the
+estimate allows.
 
-``max_rejected_steps`` (default 10) limits how many consecutive rejections are
-allowed before the run stops, and ``min_time_step`` sets the other limit: a step that
-has been cut back below it cannot be cut back again.  In either case the run
-ends with an error stating that the transient solve failed, so that the step is
-never reduced indefinitely.  ``result.rejected_steps`` counts the rejections,
-and ``result.step_history`` lists every accepted ``(time, time_step)`` pair, whose plot
-shows the behaviour of the step controller.
+The run fails when a step would fall below ``min_time_step``, or when more
+than ``max_rejected_steps`` (default 10) steps in a row are rejected.  It then
+raises an error, or, with ``error_on_divergence=False``, returns with
+``converged`` false.  ``result.rejected_steps`` counts the rejections, and
+``result.step_history`` lists the time reached and the step taken for each
+accepted step.
 
-A worked example
-~~~~~~~~~~~~~~~~
-
-The example is a steel slab, initially at 300 K, with one face held at 3000 K
-and the other radiating to an ambient of 300 K.  The radiation makes the problem
-nonlinear and the first step difficult to converge, so the iteration stepper is
-deliberately given an initial step that is far too large, and it reduces the
-step itself.
+This steel slab, at :math:`300\ \mathrm{K}`, has one face held at
+:math:`3000\ \mathrm{K}` and the other radiating to an ambient of
+:math:`300\ \mathrm{K}`.  The radiation makes the first step hard to
+converge, and the run starts with a step far too large for two iterations, so
+the ``iteration`` stepper cuts it back (from
+``tests/python/test_time_stepping.py``):
 
 .. code-block:: python
 
@@ -562,7 +628,6 @@ step itself.
    problem = dualmesh.Problem(mesh)
    problem.add_variable("temperature")
    problem.set_values("temperature", numpy.full(mesh.num_nodes, 300.0))
-
    problem.add_kernel("heat_conduction", variable="temperature", thermal_conductivity=20.0)
    problem.add_kernel(
        "heat_conduction_time_derivative", variable="temperature", density=7800.0, specific_heat=460.0
@@ -571,7 +636,6 @@ step itself.
    problem.add_boundary_condition(
        "radiative_heat_flux", "right", variable="temperature", emissivity=0.9, ambient_temperature=300.0
    )
-
    result = problem.solve_transient(
        end_time=400.0,
        time_step=400.0,
@@ -580,27 +644,32 @@ step itself.
        max_iterations=2,
        cutback_factor=0.25,
    )
-
    print(result.converged, result.rejected_steps, len(result.step_history))
 
-Transient flow
---------------
+Advance a flow by projection
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-``fluid_dynamics`` advances a transient flow in one of two ways, chosen by
-``time_integration``.  ``"monolithic"``, the default, solves the velocity and the
-pressure together at every step, with the :math:`\theta` method above.
-``"projection"`` is the splitting of Nek5000 and nekRS: every step solves a
-pressure Poisson equation, by the conjugate gradient method with algebraic
-multigrid, and then one Helmholtz equation per velocity component, by the
-conjugate gradient method with a Jacobi preconditioner, with the backward
-difference and the extrapolation of order ``time_order`` (1, 2 or 3, default 2).
-It needs ``formulation="equal_order"``, works with both methods, runs in
-serial and in parallel, and suits long transients at moderate Courant numbers,
-where each of its steps costs a fraction of a monolithic step.  The theory and
-the verification are in :doc:`../theory/heat_and_fluids`.
+``fluid_dynamics`` advances a transient flow in one of two ways, which its
+parameter ``time_integration`` selects:
 
-The example advances the decaying Taylor-Green vortex in a periodic box, at a
-Courant number of one half:
+``"monolithic"``
+   The default.  Each step solves the velocity and the pressure together, by
+   the nonlinear method of `Choose the nonlinear method`_ and with the time
+   scheme of ``solve_transient``.
+
+``"projection"``
+   Each step solves a pressure Poisson equation, preconditioned with
+   BoomerAMG, and then one Helmholtz equation per velocity component,
+   preconditioned with Jacobi.  The time derivative takes the backward
+   difference formula of order ``time_order`` (1, 2 or 3, default 2), and the
+   advection takes the extrapolation of the same order.  The projection needs
+   ``formulation="equal_order"`` and a positive density.  It runs with the
+   finite element method (FEM), where the iterations are the conjugate
+   gradient method, and with the dual mesh control domain method (DMCDM),
+   where they are GMRES, on one process and on several.
+
+This decaying Taylor-Green vortex in a periodic box keeps the Courant number
+at one half (after ``tests/python/test_projection.py``):
 
 .. code-block:: python
 
@@ -619,73 +688,128 @@ Courant number of one half:
    problem.add_boundary_condition("periodic", primary="left", secondary="right")
    problem.add_boundary_condition("periodic", primary="bottom", secondary="top")
    problem.initialize()
-   x, y = numpy.asarray(mesh.points())[:, 0], numpy.asarray(mesh.points())[:, 1]
+   points = numpy.asarray(mesh.points())
+   x, y = points[:, 0], points[:, 1]
    problem.set_values("velocity_x", -numpy.cos(x) * numpy.sin(y))
    problem.set_values("velocity_y", numpy.sin(x) * numpy.cos(y))
    result = problem.solve_transient(
        end_time=10.0, time_step=0.01, time_stepper="cfl", courant_number=0.5
    )
 
-The pressure of an enclosed flow is determined up to a constant, and the solver
-fixes the constant itself: the pressure it reports has a mean of zero over the
-fluid.
+The pressure of an enclosed flow is fixed up to a constant, and the solver
+reports it with a mean of zero over the fluid.
 
 When a solve fails
 ------------------
 
-Each error message states both the cause of the failure and the action that
-corrects it.  The most common messages are the following.
+Each error message states the cause of the failure and what to change.  The
+common messages are these:
 
-*"Newton did not converge"*
-   The residual stopped falling.  Look at ``result.history``: a residual that
-   falls and then flattens usually indicates an inconsistent Jacobian, which in
-   this library means that a kernel computed a quantity as a plain ``float``
-   and so discarded the derivatives that a :class:`~dualmesh.ADReal` carries.
-   A residual that grows means the iterate has left the basin of attraction,
-   A steady solve has then tried continuation already; the remedies are a
-   better initial condition, a finer mesh, or ``nonlinear_solver="Picard"``
-   with under-relaxation.
+*"nonlinear solve did not converge within ... iterations"*
+   The residual stopped falling.  Look at ``result.history``.  A residual
+   that falls and then flattens points to an inexact Jacobian, which happens
+   when a kernel of your own computes a quantity as a plain ``float`` and so
+   drops the derivatives that a :class:`~dualmesh.ADReal` carries.
+
+*"Newton's method diverged: the residual grew ..."*
+   The iterate left the region where Newton's method converges.  A steady
+   solve has tried continuation already.  Start from a closer state, refine
+   the mesh, or use ``nonlinear_solver="Picard"`` with ``relaxation``.
+
+*"the line search found no step length ..."*
+   No fraction of the Newton step, down to :math:`2^{-k}` with :math:`k` the
+   value of ``max_line_search_steps``, lowers the residual.  A property with a
+   kink, a singular Jacobian or a problem without a solution causes this.
+
+*"the residual or the Jacobian has NaN or infinite entries"*
+   Either Newton's method diverged or a property or its derivative is not
+   finite at the current solution, for example :math:`\log 0`.
 
 *"the linear solve did not converge"*
-   The iteration chosen by ``petsc_options`` did not reach ``linear_tolerance``.
-   The message gives PETSc's reason and the iterations taken.  Leave out
-   ``petsc_options`` for the automatic choice, or give a direct solver,
-   ``petsc_options="-ksp_type preonly -pc_type lu"``.
+   The solver that ``petsc_options`` chose, or the last solver of the
+   automatic choice, did not reach its tolerance.  The
+   message gives PETSc's reason and the iterations taken.  Leave out the
+   options of the linear solver for the automatic choice, or give a direct
+   solver, ``petsc_options="-ksp_type preonly -pc_type lu"``.
 
-*"The system is singular: the variable ... on a part of the mesh ... is not held by any boundary condition"*
-   A group of coupled unknowns has no condition that fixes its level, so
-   that a constant (a temperature, a pressure) or a rigid body motion can be
-   added to it without changing the equations, and the solution is not
-   unique.  Typical causes are a body without supports, a region that has no
-   temperature condition and exchanges no heat with the rest of the problem,
-   and an imported mesh whose parts do not share their nodes.  The message
-   gives the number of nodes and the extent of the part.  Before the first
-   linear solve, the code splits the Jacobian into its groups of coupled
-   unknowns and applies it to the near null space vectors of each group (see
-   the smoothed aggregation above), so that a Robin condition, a reaction term or a time
-   derivative, which make the system nonsingular, never trigger the message.
+*"The system is singular: the variable ... is not held by any boundary condition"*
+   A group of coupled unknowns has no condition that fixes its level, so a
+   constant (a temperature, a pressure) or a rigid body motion can be added
+   to it without changing the equations.  A body without supports, a region
+   with no temperature condition that exchanges no heat with the rest, and an
+   imported mesh whose parts do not share their nodes cause this.  The message
+   gives the number of nodes and the extent of the part.  A Robin condition,
+   a reaction term or a time derivative holds the level, and the check takes
+   them into account.
 
-*"transient solve failed"*
-   The step was cut back to ``min_time_step`` or rejected ``max_rejected_steps`` times
-   in a row and still did not converge.  Some problems have no bounded solution,
-   in which case no step size leads to convergence, so check the physics before
-   lowering ``min_time_step`` any further.
+*"the transient solve failed at t = ..."*
+   The step was rejected ``max_rejected_steps`` times in a row or reached
+   ``min_time_step``.  Some problems have no bounded solution, so check the
+   physics before you lower ``min_time_step``.
+
+*"the solution has NaN or infinite values after the step to t = ..."*
+   Either the step is too large for the explicit terms (lower ``time_step``
+   or ``courant_number``), or a property is not finite at the solution.
 
 *"degenerate element (zero Jacobian determinant)"*
-   An element has zero or inverted volume.  Call ``mesh.fix_orientation()``,
-   which repairs a consistently inverted mesh, and check any
-   ``transform_nodes`` that may have folded the mesh over itself.
+   An element has a zero or inverted volume.  ``mesh.fix_orientation()``
+   repairs a consistently inverted mesh.  Check that a
+   ``mesh.transform_nodes`` map does not fold the mesh over itself.
 
 *"Too many variables for this mesh"*
-   The automatic differentiation budget is exhausted.  The message gives the
-   arithmetic and the CMake setting that raises the limit.
+   The automatic differentiation has a slot for each degree of freedom of an
+   element, up to a limit.  The message gives the count and the CMake setting
+   ``DUALMESH_MAX_AD_DERIVATIVES`` that raises the limit.
 
-Running in parallel
--------------------
+Run in parallel
+---------------
 
-Both solves thread their assembly loops automatically.
-:meth:`~dualmesh.Problem.set_num_threads` sets the count and
-:meth:`~dualmesh.Problem.effective_threads` reports what will actually be used,
-which is one whenever any part of the problem is defined in Python.  A script
-run with ``mpirun`` on several processes splits the problem among them, and
-both forms of parallelism are described in :doc:`/theory/parallel`.
+Threads
+~~~~~~~
+
+The assembly loops run on several threads by OpenMP (Open Multi-Processing).
+:meth:`~dualmesh.Problem.set_num_threads` sets the number of threads, where 0,
+the default, means the OpenMP default: the value of the ``OMP_NUM_THREADS``
+environment variable, or the number of cores.  The assembly runs on one
+thread when the library was built without OpenMP, when the mesh is too small
+for threads to pay for themselves, or when any kernel, boundary condition,
+material or function of the problem is defined in Python.
+:meth:`~dualmesh.Problem.effective_threads` reports the number the assembly
+uses.
+
+Processes
+~~~~~~~~~
+
+Run a script or a case file on several processes of the Message Passing
+Interface (MPI) with ``mpiexec``:
+
+.. code-block:: bash
+
+   mpiexec -n 4 python my_analysis.py
+   mpiexec -n 4 dualmesh run case.yaml
+
+Every process runs the same script and defines the same physics and objects.
+A :class:`~dualmesh.Problem` splits itself among the processes when the run
+has more than one, and each process assembles the elements of its own part of
+the mesh.  The solvers on this page run the same way in a distributed problem.
+The parameters of :class:`~dualmesh.Problem` that set the split are:
+
+``distributed``
+   ``None``, the default, splits the problem when the run has more than one
+   process.  ``True`` takes the distributed path on one process as well, and
+   ``False`` keeps a whole problem on each process.
+
+``partitioner``
+   The partitioner of PETSc that splits the elements: ``"automatic"`` (the
+   default: PT-Scotch, else ParMETIS), ``"ptscotch"``, ``"parmetis"`` or
+   ``"simple"``.
+
+``gather_scatter``
+   The library that exchanges the values at the nodes that several processes
+   hold: ``"petsc"`` (the default, PETSc's star forests) or ``"gslib"`` (the
+   gather-scatter library of Nek5000).  The answer is the same with either.
+
+:meth:`~dualmesh.Problem.gathered_values` returns the values of the whole mesh
+on every process.  :meth:`~dualmesh.Problem.write_vtu` writes a distributed
+problem as one ``.vtu`` file per process and a ``.pvtu`` index, which ParaView
+opens as one data set.

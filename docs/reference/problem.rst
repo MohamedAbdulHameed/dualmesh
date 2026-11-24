@@ -4,9 +4,11 @@ The problem
 .. currentmodule:: dualmesh
 
 A :class:`Problem` holds a mesh, the method that discretizes it, the
-variables, and the equations and conditions that act on them.  It solves
-them, and it gives access to the solution and the quantities derived from
-it.
+variables, and the equations and conditions that act on them.  It solves the
+equations and gives you the solution and the quantities derived from it.
+:class:`Problem` is the object-level application programming interface (API),
+and :class:`problem` of
+:doc:`input` builds a :class:`Problem` from the input sections.
 
 .. autosummary::
    :toctree: generated/
@@ -41,6 +43,7 @@ Solving
    Problem.solve
    Problem.solve_transient
    Problem.solve_eigenvalue
+   Problem.solve_buckling
    Problem.set_time_step_callback
    Problem.apply_initial_conditions
    Problem.linear_system
@@ -57,6 +60,7 @@ The solution
    Problem.set_values
    Problem.solution
    Problem.sample
+   Problem.sample_gradient
    Problem.gradient_at_centroids
    Problem.property_at_centroids
    Problem.kernel_flux_at_centroids
@@ -68,22 +72,39 @@ The solution
 Flows through boundaries and integrals
 --------------------------------------
 
-The physics name the flows through a boundary: ``heat_flow`` of
-:class:`~dualmesh.physics.HeatTransfer`, ``reaction_force`` of
-:class:`~dualmesh.physics.SolidMechanics`, ``force`` and ``flow_rate`` of
-:class:`~dualmesh.physics.FluidDynamics` and ``boundary_flux`` of
-:class:`~dualmesh.physics.GeneralFormPDE`.
+Each physics also gives the flows through a boundary by their physical
+names: ``heat_flow`` of :class:`~dualmesh.physics.HeatTransfer`,
+``reaction_force`` of :class:`~dualmesh.physics.SolidMechanics`, ``force``
+and ``flow_rate`` of :class:`~dualmesh.physics.FluidDynamics`, and
+``boundary_flux`` of :class:`~dualmesh.physics.GeneralFormPDE`.
 
 .. autosummary::
    :toctree: generated/
 
    Problem.boundary_flux
    Problem.kernel_boundary_flux
+   Problem.boundary_integral
    Problem.integrate
    Problem.element_integrals
    Problem.element_volumes
+   Problem.block_volume
    Problem.domain_volume
    Problem.boundary_area
+
+Parameters and sensitivities
+----------------------------
+
+A parameter is a named constant that coefficients, sources and boundary
+values read.  :meth:`Problem.sensitivities` gives the derivative of an
+integral of the solution with respect to the parameters, by one adjoint
+solve.
+
+.. autosummary::
+   :toctree: generated/
+
+   Problem.add_parameter
+   Problem.set_parameter
+   Problem.sensitivities
 
 Accuracy
 --------
@@ -134,6 +155,10 @@ Mesh entities and variables
 Distributed problems
 --------------------
 
+A distributed problem runs on several Message Passing Interface (MPI)
+processes, and each process owns a part of the mesh.  The ``gathered``
+methods work on the whole mesh, on every process.
+
 .. autosummary::
    :toctree: generated/
 
@@ -142,5 +167,10 @@ Distributed problems
    Problem.num_ranks
    Problem.num_owned_dofs
    Problem.num_global_dofs
-   Problem.gathered_values
    Problem.partition_summary
+   Problem.gathered_values
+   Problem.set_gathered_values
+   Problem.gathered_node_coordinates
+   Problem.gathered_error_indicator
+   Problem.gathered_velocities
+   Problem.set_gathered_velocities

@@ -3,8 +3,9 @@ Parallel execution
 
 .. currentmodule:: dualmesh
 
-The capabilities of the build and the processes of a run.  A problem is
-distributed among the MPI processes by :class:`Problem` itself.
+These functions report what the build supports and which Message Passing
+Interface (MPI) processes a run has, and they partition a mesh among the
+processes.  A :class:`Problem` distributes itself among the processes.
 
 .. autosummary::
    :toctree: generated/

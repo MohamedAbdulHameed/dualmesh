@@ -3,9 +3,9 @@ Manufactured solutions
 
 .. currentmodule:: dualmesh.mms
 
-The method of manufactured solutions: an exact solution is chosen, the
-source that makes it exact is derived symbolically, and the order of
-convergence of a method is measured on a sequence of meshes.
+The method of manufactured solutions verifies the order of accuracy of a
+method.  You choose an exact solution, the code derives the source that makes
+it exact, and a solve on a sequence of meshes gives the order of convergence.
 
 .. autosummary::
    :toctree: generated/

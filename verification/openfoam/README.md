@@ -22,4 +22,4 @@ The third case imports the mesh that OpenFOAM generated, so the two codes solve
 the same discrete geometry with the same boundary conditions.
 
 Everything the scripts produce goes into `run/`, which is not tracked by git.
-A summary of the results is in `docs/openfoam.rst`.
+A summary of the results is in `docs/verification.rst`, in the section "Comparison with OpenFOAM".

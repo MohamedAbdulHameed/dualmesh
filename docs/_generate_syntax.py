@@ -1,11 +1,10 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 """Generate the syntax reference from the object registry.
 
-The reference is generated rather than written by hand, so that it can never
-disagree with the library: the parameter names, types, defaults and
-descriptions all come from the same ``validParams`` declarations that validate
-a user's input at run time.  Only the worked examples are written by hand, in
-``_syntax_examples.py``.
+The reference is generated, so that it agrees with the library: the parameter
+names, types, defaults and descriptions come from the same ``validParams``
+declarations that validate a user's input at run time.  Only the worked
+examples are written by hand, in ``_syntax_examples.py``.
 """
 
 from __future__ import annotations
@@ -21,35 +20,61 @@ MODULE_TITLES = {
 }
 
 MODULE_INTROS = {
-    "framework": """
-The framework objects are the ones that carry no physics of their own.  They
-are the building blocks a new application is assembled from, and they are what
-the verification problems of the theory chapters use, because a model equation
-has no physical name.  Every other module is built on the same base classes,
-so everything said here about blocks, quadrature and load scaling applies
-throughout.
+    "framework": r"""
+The framework objects carry no physics of their own.  Each one states a term
+or a condition of the balance law :math:`\partial m/\partial t + \nabla \cdot
+\mathbf{F} = s` of an unknown :math:`u`, in which :math:`m` is the storage,
+:math:`\mathbf{F}` the flux and :math:`s` the source.  The flux is positive
+along the outward unit normal :math:`\mathbf{n}` where it leaves a body.  The
+framework objects build a model equation that has no physical name, such as
+the equations of the verification problems.  The objects of the other modules
+share their base classes, so the parameters ``variable``, ``block`` and
+``quadrature`` mean the same in every module.
 """,
-    "heat_transfer": """
-The heat transfer module states Fourier conduction, internal generation,
-storage, and the three surface conditions of the subject: prescribed flux,
-convection, and radiation.  The conductivity may depend on position, on time,
-on a property, and on the temperature itself, which makes the conduction
-nonlinear.
+    "heat_transfer": r"""
+The heat transfer module states the energy balance :math:`\rho c_p \partial
+T/\partial t + \nabla \cdot \mathbf{q} = s` of a body, with the temperature
+:math:`T` in :math:`\mathrm{K}`, the density :math:`\rho` in
+:math:`\mathrm{kg/m^3}`, the specific heat capacity :math:`c_p` in
+:math:`\mathrm{J/(kg\,K)}` and the heat generated per unit volume :math:`s` in
+:math:`\mathrm{W/m^3}`.  The heat flux :math:`\mathbf{q} = -k \nabla T` in
+:math:`\mathrm{W/m^2}` follows Fourier's law, with the thermal conductivity
+:math:`k` in :math:`\mathrm{W/(m\,K)}`.  The module holds the conduction, the
+heat capacity term, the heat that a flow carries with its streamline
+stabilisation, and the surface conditions of radiation and of heat transfer
+across a gap.  The framework objects ``Neumann`` and ``Robin`` give a
+prescribed heat flux and convection.  The conductivity may depend on the
+position, the time, a property and the temperature, which makes the
+conduction nonlinear.
 """,
-    "solid_mechanics": """
-The solid mechanics module covers the deformation of solids, from the
-three-dimensional continuum down to the reduced theories of structural members.
-Its two groups share the same variables, loads and boundary conditions, and a
-problem may use both.
+    "solid_mechanics": r"""
+The solid mechanics module states the balance of momentum :math:`\rho\,
+\partial^2 \mathbf{u}/\partial t^2 - \nabla \cdot \boldsymbol{\sigma} =
+\mathbf{f}` of a solid, with the displacement :math:`\mathbf{u}` in
+:math:`\mathrm{m}`, the Cauchy stress :math:`\boldsymbol{\sigma}` in
+:math:`\mathrm{Pa}` and the body force per unit volume :math:`\mathbf{f}` in
+:math:`\mathrm{N/m^3}`.  The flux of the equation of the displacement
+component :math:`u_i` is minus row :math:`i` of :math:`\boldsymbol{\sigma}`.
+The first table lists the objects outside the two groups below, such as
+contact, fracture, damping and the members in space.
 """,
-    "fluids": """
-The fluids module solves the steady and unsteady Navier-Stokes equations for an
-incompressible Newtonian fluid in three formulations.  The equal-order
-formulation keeps the pressure as an unknown of the same order as the velocity,
-with residual-based stabilisation, and the Taylor-Hood formulation keeps it with
-a quadratic velocity and a linear pressure.  The penalty formulation eliminates
-the pressure by the constitutive assumption :math:`P = -\\gamma \\nabla \\cdot v`
-and requires the penalty term to be under-integrated.
+    "fluids": r"""
+The fluids module solves the steady and transient Navier-Stokes equations of
+an incompressible Newtonian fluid, :math:`\rho (\partial \mathbf{v}/\partial t +
+(\mathbf{v} \cdot \nabla) \mathbf{v}) - \nabla \cdot \boldsymbol{\sigma} =
+\mathbf{f}` and :math:`\nabla \cdot \mathbf{v} = 0`, with the velocity
+:math:`\mathbf{v}` in :math:`\mathrm{m/s}`, the pressure :math:`p` in
+:math:`\mathrm{Pa}`, the dynamic viscosity :math:`\mu` in :math:`\mathrm{Pa\,s}`
+and the stress :math:`\boldsymbol{\sigma} = -p \mathbf{I} + \mu (\nabla
+\mathbf{v} + \nabla \mathbf{v}^{\mathsf{T}})`, where :math:`\mathbf{I}` is the
+identity.  The equal-order formulation keeps the pressure as an unknown of the
+same order as the velocity, with a residual-based stabilisation.  The
+Taylor-Hood formulation keeps it with a quadratic velocity and a linear
+pressure.  The penalty formulation eliminates the pressure by
+:math:`p = -\gamma \nabla \cdot \mathbf{v}`, with the penalty parameter
+:math:`\gamma` in :math:`\mathrm{Pa\,s}`, and integrates the penalty term with
+a reduced rule.  A temperature drives the flow by the Boussinesq buoyancy
+force.
 """,
 }
 
@@ -66,11 +91,12 @@ MODULE_GROUPS = {
                 "pressure",
             },
             """
-Small-strain linear elasticity in plane stress, plane strain, axisymmetry and
-three dimensions.  The stress is computed by a property object and consumed by one
-equilibrium kernel per displacement component, a separation that makes it
-straightforward to replace the constitutive model without touching the
-equilibrium equations.
+The stress of a continuum at small strain, in plane stress, plane strain,
+axisymmetry and three dimensions, and its equilibrium.  The property object
+``small_strain_stress`` computes the stress, and the kernel
+``stress_divergence`` reads it in the equation of each displacement component,
+so a constitutive model changes without a change to the equilibrium equations.
+The conditions ``traction`` and ``pressure`` load the surface.
 """,
         ),
         (
@@ -84,16 +110,16 @@ equilibrium equations.
                 "plate_first_order",
             },
             """
-The reduced theories: a beam or a plate is an elastic body whose displacement
-is assumed to vary through the thickness in a prescribed way, and whose
-equilibrium equations have been integrated through it.  Beams, axisymmetric
-circular plates and rectangular plates are each available in more than one
-theory.  Every model is written as a system of *second-order* equations,
-because the dual mesh control domain method discretizes equations of that
-order.  A theory whose natural statement is fourth order, such as the classical beam or
-plate, is therefore recast in mixed form with the bending moment as an extra
-unknown.  All of them accept functionally graded section stiffnesses and the
-von Karman moderate-rotation nonlinearity.
+In the reduced theories, a beam or a plate is an elastic body whose
+displacement varies through the thickness in a prescribed way, and whose
+equilibrium equations are integrated through the thickness.  Beams and
+axisymmetric circular plates each have more than one theory, and rectangular
+plates have the first-order theory.  Every model is a system of second-order
+equations, the order that the dual mesh control domain method (DMCDM)
+discretizes.  A theory whose natural statement is fourth order, such as the
+classical beam or circular plate, is recast in mixed form with the bending
+moment as an extra unknown.  Every model accepts a section graded through the
+thickness and the von Karman nonlinearity of moderate rotations.
 """,
         ),
     ]
@@ -107,20 +133,20 @@ def _category_title(category: str) -> str:
 
 CATEGORY_NOTES = {
     "kernel": (
-        "A **kernel** states one term of the governing equation of one variable, as a contribution to the flux :math:`\\mathbf{F}`, to the source :math:`S`, or to both, in the canonical conservation form :math:`-\\nabla\\cdot\\mathbf{F} + S = 0`.  Several kernels on the same variable are added together."
+        r"A **kernel** states one term of the equation of one variable :math:`u`, written as the balance law :math:`\partial m/\partial t + \nabla \cdot \mathbf{F} = s` with the storage :math:`m`, the flux :math:`\mathbf{F}` and the source :math:`s`.  The flux is the physical flux, positive along the outward unit normal :math:`\mathbf{n}` where it leaves the body, so the flux of a diffusion of diffusivity :math:`k` is :math:`\mathbf{F} = -k \nabla u`.  A kernel contributes to the storage, the flux, the source, or more than one of them, and the kernels of one variable add up."
     ),
     "boundary_condition": (
-        "An **integrated boundary condition** prescribes the secondary variable of the duality pair, that is, the normal flux :math:`n\\cdot\\mathbf{F}` on a side set.  It is integrated over the boundary, so it enters the equations of the control domains that touch that boundary."
+        r"An **integrated boundary condition** prescribes the normal flux :math:`\mathbf{n} \cdot \mathbf{F}` on a side set, with :math:`\mathbf{F}` the flux of the equation and :math:`\mathbf{n}` the outward unit normal.  The normal flux is the secondary variable of the equation, the partner of the unknown in their duality pair.  The condition is integrated over the side set, so it enters the equations of the control domains and the elements that touch the side set."
     ),
     "nodal_boundary_condition": (
-        "A **nodal boundary condition** prescribes the primary variable itself at the nodes of a boundary.  The equation of the prescribed degree of freedom is replaced, and its residual, evaluated at the converged solution, is the reaction."
+        "A **nodal boundary condition** prescribes the unknown itself, the primary variable, at the nodes of a boundary.  It replaces the equation of each prescribed degree of freedom, and the residual of that equation at the converged solution is the reaction, the flux that the condition supplies."
     ),
-    "nodal_load": ("A **nodal load** is a concentrated source applied at a single node."),
+    "nodal_load": ("A **nodal load** is a concentrated source applied at single nodes."),
     "property": (
-        "A **property** object computes named properties at every integration point, which kernels and boundary conditions then consume by name.  Properties may depend on position, time, and the solution, and any dependence on the solution is differentiated automatically."
+        "A **property** object computes named properties at every integration point, and the kernels and the boundary conditions read them by name.  A property may depend on the position, the time and the solution, and its derivative with respect to the solution comes from automatic differentiation."
     ),
     "constraint": (
-        "A **constraint** makes degrees of freedom copies of others.  A dependent degree of freedom takes the value of its primary, and its equation is added to the primary's, so that the two act as one unknown whose control domain is the union of theirs; the Jacobian becomes :math:`P^{\\mathsf{T}} J P`."
+        r"A **constraint** makes some degrees of freedom copies of others.  A dependent degree of freedom takes the value of its primary, and its equation is added to the equation of the primary, so the two act as one unknown whose control domain is the union of theirs.  The Jacobian matrix :math:`\mathbf{J}` of the equations becomes :math:`\mathbf{Q}^{\mathsf{T}} \mathbf{J} \mathbf{Q}`, with :math:`\mathbf{Q}` the matrix that maps the independent degrees of freedom to all of them."
     ),
 }
 
@@ -179,7 +205,7 @@ def write_syntax_reference(source_dir: Path, have_library: bool) -> None:
     out_dir.mkdir(exist_ok=True)
     if not have_library:
         (out_dir / "index.rst").write_text(
-            "Syntax reference\n================\n\nThe syntax reference is generated from the compiled library, which was not available when this copy of the documentation was built. Run ``dualmesh list`` and ``dualmesh describe <type>`` locally instead.\n"
+            "Syntax reference\n================\n\nThe syntax reference is generated from the compiled library, which was not available when this copy of the documentation was built. Run ``dualmesh list`` and ``dualmesh describe <type>`` to see the objects and their parameters.\n"
         )
         return
 
@@ -290,26 +316,27 @@ def write_syntax_reference(source_dir: Path, have_library: bool) -> None:
         "",
         _wrap(
             """
-Every piece of physics in dualmesh is a named object with a declared,
-validated, self-documenting set of parameters.  An
-object is created by name and configured by keyword arguments:
+Each term, boundary condition and property of a model is an object with a
+type name and a declared set of parameters.  You create an object by its type
+name and set its parameters by keyword arguments:
 """
         ),
         "",
         ".. code-block:: python",
         "",
-        '   problem.add_kernel("heat_conduction", "conduction", variable="temperature", thermal_conductivity=20.0)',
+        '   problem.add_kernel("heat_conduction", variable="temperature", thermal_conductivity=20.0)',
         "",
         _wrap(
             """
-The pages below are generated from the library itself, so the parameter names,
-types, defaults and descriptions are exactly the ones that validate your input
-at run time.  The same information is available at the command line with
-``dualmesh list`` and ``dualmesh describe <type>``, and from Python with
+The pages below are generated from the library, so the names, types, defaults
+and descriptions of the parameters are the ones that check your input at run
+time.  The command line gives the same information with ``dualmesh list`` and
+``dualmesh describe <type>``, and Python gives it with
 ``dualmesh.describe("heat_conduction")``.
 
-A misspelt parameter is reported as an error, and the error message lists the parameters the object does accept.  Omitting a required
-parameter is likewise an error, and names the object and the parameter.
+A misspelled parameter is an error, and its message names the closest valid
+parameter and lists the parameters that the object accepts.  A missing required parameter is an error that names the
+object and the parameter.
 """
         ),
         "",
@@ -319,8 +346,9 @@ parameter is likewise an error, and names the object and the parameter.
         _wrap(
             """
 A physics adds a set of equations named in physical terms, and a coupling
-joins two physics (see :doc:`/user_guide/problem_setup`).  Their boundary
-conditions and extra terms are the objects listed further below.
+joins two physics, as :doc:`/user_guide/problem_setup` describes.  The
+boundary conditions and the extra terms of a physics are the objects of the
+next section.
 """
         ),
         "",

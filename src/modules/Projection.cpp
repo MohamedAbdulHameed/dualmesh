@@ -69,7 +69,7 @@ struct ProjectionSolver::Layout
   }
 };
 
-/// The geometry of the quadrature points of every integrated element, computed once, as Nek5000 keeps its geometric factors: the weight (with the Jacobian), the position and the inverse transposed Jacobian at each point, and the shape functions and their reference derivatives once per element type.
+/// The geometry of the quadrature points of every integrated element, computed once: the weight (with the Jacobian), the position and the inverse transposed Jacobian at each point, and the shape functions and their reference derivatives once per element type.
 /// There are two sets of points: those of the element interiors (the finite element method) or of the control volumes, which carry the node that owns them, and, for the methods of the dual mesh, those of the interfaces between control volumes, which carry their two nodes and their area vector.
 /// The finite element method takes a Gauss rule of order + 1 points per direction, which integrates the mass matrix and the advection exactly on affine elements.
 /// The methods of the dual mesh take order points per direction of every patch of a control volume and of every interface, the midpoint rule for linear elements, which is second order like the methods themselves: the errors of the Taylor-Green vortex are those of two points per direction, and a step costs 2.4 times less.

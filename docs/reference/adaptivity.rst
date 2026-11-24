@@ -3,8 +3,10 @@ Adaptive mesh refinement
 
 .. currentmodule:: dualmesh
 
-Solving, estimating the error of every element, marking the elements with
-the largest errors and refining them, in cycles.
+An adaptive solve repeats a cycle: it solves the problem, estimates the error
+of every element, marks the elements with the largest errors, and refines
+them.  :func:`solve_with_adaptive_refinement` runs the cycles, and the other
+functions carry out its steps one at a time.
 
 .. autosummary::
    :toctree: generated/

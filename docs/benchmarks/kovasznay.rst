@@ -1,101 +1,91 @@
-F4: Kovasznay flow
-==================
+Kovasznay flow
+==============
+
+This page measures the error of every flow formulation against an exact
+solution of the steady Navier-Stokes equations, the flow of Kovasznay
+[Kovasznay1948]_.  It uses the finite element method (FEM) and the dual mesh
+control domain method (DMCDM).
 
 The problem
 -----------
 
-Kovasznay [Kovasznay1948]_ found the flow behind a row of cylinders in closed
-form.  At the Reynolds number :math:`Re = \rho U L / \mu = 40`, with the density 1
-and the viscosity :math:`1 / Re`, the velocity and the pressure
+Kovasznay found the flow behind a row of cylinders in closed form.  With the
+density :math:`\rho = 1` and the dynamic viscosity :math:`\mu = 1/Re`, at the
+Reynolds number :math:`Re = 40`, the velocity :math:`\mathbf{v} = (v_x, v_y)`
+and the pressure :math:`p`
 
 .. math::
 
-   u = 1 - e^{\lambda x} \cos 2\pi y , \qquad
-   v = \frac{\lambda}{2\pi} e^{\lambda x} \sin 2\pi y , \qquad
-   p = \tfrac{1}{2} \left( 1 - e^{2\lambda x} \right) , \qquad
-   \lambda = \frac{Re}{2} - \sqrt{\frac{Re^2}{4} + 4\pi^2} ,
+   v_x = 1 - e^{\zeta x} \cos 2\pi y , \qquad
+   v_y = \frac{\zeta}{2\pi} e^{\zeta x} \sin 2\pi y , \qquad
+   p = \tfrac{1}{2} \left( 1 - e^{2\zeta x} \right) , \qquad
+   \zeta = \frac{Re}{2} - \sqrt{\frac{Re^2}{4} + 4\pi^2} ,
 
-satisfy the steady Navier-Stokes equations without a body force.  The script
-checks this: the body force that would make the fields a solution, computed
-symbolically, is below :math:`4 \times 10^{-15}` at 200 points of the domain.
-The flow is solved on :math:`[-0.5, 1] \times [-0.5, 1.5]`, which contains one
-period in :math:`y` and the decay of the wake in :math:`x`.  Every method is checked against the exact fields in the
-:math:`L^2` norm, on meshes of :math:`n \times 4n/3` ``Quad4`` elements with
-:math:`n = 16, 32, 64, 128`.
+satisfy the steady Navier-Stokes equations without a body force, with
+:math:`\zeta` the decay rate of the wake.  The script checks this
+symbolically: the body force that would make the fields a solution is below
+:math:`10^{-10}` at 200 points of the domain.  The domain
+:math:`(-0.5, 1) \times (-0.5, 1.5)` holds one period in :math:`y` and the
+decay of the wake in :math:`x`.  The meshes have :math:`n \times 4n/3`
+``Quad4`` elements, rounded, with :math:`n = 16`, 32, 64 and 128.  The error is
+measured in the :math:`L^2` norm.
 
 The setup
 ---------
 
-The monolithic solves prescribe the exact velocity on the left, bottom and top
-sides and the exact traction on the outflow side :math:`x = 1`, through
-:class:`~dualmesh.mms.ManufacturedSolution`, which also starts Newton's method
-from the exact fields:
+The steady solves prescribe the exact velocity on the left, bottom and top
+sides and the exact traction on the outflow side :math:`x = 1`.
+:class:`~dualmesh.mms.ManufacturedSolution` sets these conditions from the
+exact fields and runs the convergence study:
 
 .. code-block:: python
 
    import math
+
    import dualmesh
    from dualmesh import mms
 
    Re = 40.0
-   lam = Re / 2 - math.sqrt(Re**2 / 4 + 4 * math.pi**2)
+   zeta = Re / 2 - math.sqrt(Re**2 / 4 + 4 * math.pi**2)
    fields = {
-       "velocity_x": f"1 - exp({lam}*x)*cos(2*pi*y)",
-       "velocity_y": f"{lam / (2 * math.pi)}*exp({lam}*x)*sin(2*pi*y)",
-       "pressure": f"(1 - exp({2 * lam}*x))/2",
+       "velocity_x": f"1 - exp({zeta!r}*x)*cos(2*pi*y)",
+       "velocity_y": f"{zeta / (2 * math.pi)!r}*exp({zeta!r}*x)*sin(2*pi*y)",
+       "pressure": f"(1 - exp({2 * zeta!r}*x))/2",
    }
    study = mms.ManufacturedSolution(fields, dimension=2, flux_boundaries={"right": (1.0, 0.0)})
    study.add_physics(
        "fluid_dynamics",
        density=1.0,
        dynamic_viscosity=1.0 / Re,
-       formulation="equal_order",  # or "Taylor-Hood" on Quad9 elements
+       formulation="equal_order",  # Or "Taylor-Hood" on Quad9 elements with FEM
    )
    result = study.convergence_study(
        lambda n: dualmesh.generate_rectangle_mesh(-0.5, 1.0, -0.5, 1.5, n, round(4 * n / 3)),
        [16, 32, 64, 128],
-       method="DMCDM",  # or FEM
+       method="DMCDM",  # Or "FEM"
    )
+
+The Taylor-Hood element, with a quadratic velocity and a linear pressure, runs
+on ``Quad9`` elements with :math:`n = 16`, 32 and 64.
 
 The projection time integration marches the flow from the exact fields to its
-steady state, for ten time units at a Courant number of one half.  The
-errors at ten and at twenty time units agree to :math:`10^{-12}`.  The exact
-velocity is prescribed on all four sides, which is the form of the problem that
-the splitting takes: an outflow there would be a prescribed pressure (see
-:doc:`../theory/heat_and_fluids`).
-
-.. code-block:: python
-
-   problem = dualmesh.Problem(mesh, method="DMCDM")  # or FEM
-   flow = problem.add_physics(
-       "fluid_dynamics",
-       density=1.0,
-       dynamic_viscosity=1.0 / Re,
-       formulation="equal_order",
-       time_integration="projection",
-   )
-   flow.add_boundary_condition(
-       ["velocity_x = u_exact", "velocity_y = v_exact"],
-       boundary=["left", "right", "bottom", "top"],
-       u_exact=fields["velocity_x"],
-       v_exact=fields["velocity_y"],
-   )
-   problem.solve_transient(end_time=10.0, time_step=1e-3, time_stepper="cfl", courant_number=0.5)
-
-Its pressure, known up to a constant in an enclosed flow, is compared after both
-fields are shifted to the same mean.
+steady state, for ten time units, with each time step set by the Courant number 0.5 (the distance the flow travels in a step over the element size).  Its problem
+prescribes the exact velocity on all four sides, the form of the problem that
+the projection takes.  Its pressure is known up to a constant, so the script
+compares it with the exact pressure shifted to the same mean.  The function
+``projection_errors`` of the script holds this setup.
 
 Results
 -------
 
-.. list-table:: Errors on the finest mesh and orders between the two finest
+.. list-table:: Errors on the finest mesh, and orders between the two finest
    meshes (the Taylor-Hood element on :math:`64 \times 85` ``Quad9`` elements)
    :header-rows: 1
    :widths: 34 22 22
 
    * - Method
-     - velocity :math:`u`, :math:`L^2` (order)
-     - pressure, :math:`L^2` (order)
+     - :math:`v_x`, :math:`L^2` (order)
+     - :math:`p`, :math:`L^2` (order)
    * - DMCDM
      - :math:`9.48 \times 10^{-4}` (1.98)
      - :math:`1.17 \times 10^{-3}` (1.93)
@@ -112,33 +102,40 @@ Results
      - :math:`6.72 \times 10^{-4}` (2.01)
      - :math:`6.61 \times 10^{-4}` (3.56)
 
-Every method converges to the exact solution at its expected order: second
-order in the velocity for the equal-order elements, third order for the quadratic velocity of the Taylor-Hood element, and
-about 1.9 in the pressure of the monolithic solutions, above the first order
-that the theory of the stabilized equal-order methods guarantees.  The pressure
-of the projection solutions falls faster on the finest meshes (order 3.2 to
-3.6).  The two methods give nearly the same errors.  The errors of the stabilized methods
-fell by about 40 % when the parameter :math:`\tau` took the factor 9 on its
-viscous term (:doc:`../theory/heat_and_fluids`): before, the velocity error of
-DMCDM on the finest mesh was :math:`1.64 \times 10^{-3}` (order 1.85).  The projection time integration reaches a steady state that is closer to
-the exact one than the monolithic solution, because its problem prescribes the
-velocity on all four sides, whereas the monolithic problem has the traction on
-one.
+Every method converges to the exact solution at its expected order in the
+velocity: second order for the equal-order elements and third order for the
+quadratic velocity of the Taylor-Hood element.  The pressure of the steady
+equal-order solutions converges at about 1.9, above the first order that the
+theory of stabilized equal-order methods guarantees [HughesFrancaBalestra1986]_.  The pressure error of
+the projection solutions falls irregularly, by a factor of 1.05 to 1.3 from
+:math:`n = 32` to 64 and of 9 to 12 from 64 to 128, so its order over the four
+meshes, 1.85, describes it better than the order on the two finest.  The two
+methods give nearly the same errors.  The steady and the projection problems
+differ in their outflow condition, so their errors measure different problems.
 
 .. figure:: ../_static/figures/fluids/kovasznay_velocity_error.png
    :width: 85%
 
-   The :math:`L^2` error of the velocity :math:`u` against the element size.
+   :math:`L^2` error of the velocity :math:`v_x` against the element size
+   :math:`h`, with the order between the two finest meshes in the legend.
 
 .. figure:: ../_static/figures/fluids/kovasznay_pressure_error.png
    :width: 85%
 
-   The :math:`L^2` error of the pressure against the element size.
+   :math:`L^2` error of the pressure against the element size :math:`h`, with
+   the order between the two finest meshes in the legend.
 
-Reproducing the results
------------------------
+Reproduce the results
+---------------------
 
-.. code-block:: console
+1. Run the script:
 
-   python verification/benchmarks/fluids/run_Kovasznay.py              # about 3 minutes
-   python verification/benchmarks/fluids/run_Kovasznay.py --plot-only  # the figures only
+   .. code-block:: console
+
+      python verification/benchmarks/fluids/run_Kovasznay.py
+
+2. Redraw the figures from the cache:
+
+   .. code-block:: console
+
+      python verification/benchmarks/fluids/run_Kovasznay.py --plot-only

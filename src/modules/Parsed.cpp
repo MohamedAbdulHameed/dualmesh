@@ -41,7 +41,8 @@ public:
     p.addOptional("constants",
                   ParameterKind::RealMap,
                   RealMap{},
-                  "Named constants that the expression uses: name -> value. Default none.");
+                  "Named constants that the expression uses, as name -> value pairs. Default: "
+                  "none, for an expression that needs no constant of its own.");
   }
 
   explicit ParsedArguments(const InputParameters & p) : _constants(p.getRealMap("constants")) {}
@@ -212,14 +213,18 @@ public:
   {
     InputParameters p = Property::validParams();
     p.setClassDescription(
-        std::string("A scalar property given by an expression of the fields, the registered "
-                    "functions, the element fields, the properties of the property objects "
-                    "added before it and named constants, each used by its name, compiled once "
-                    "and differentiated automatically. It is how a correlation, for instance a "
-                    "thermal conductivity k(T, x), is added without writing C++. ") +
+        std::string("A scalar property given by an expression of the values of the fields, the "
+                    "registered functions, the element fields, the properties of the property "
+                    "objects added before it and named constants, each used by its name. The "
+                    "code compiles the expression once and differentiates it automatically. "
+                    "It adds a correlation, for example a thermal conductivity k(T, x), without "
+                    "C++ code. Picard iteration takes the fields at the previous iterate. ") +
         kExpressionHelp);
     p.addRequired("property_name", ParameterKind::String, "Name of the declared property.");
-    p.addRequired("expression", ParameterKind::String, "The expression of the property.");
+    p.addRequired("expression",
+                  ParameterKind::String,
+                  "The expression of the property, in the units that the objects reading it "
+                  "expect.");
     ParsedArguments::addParams(p);
     return p;
   }
@@ -258,43 +263,44 @@ public:
     InputParameters p = Property::validParams();
     p.setClassDescription(
         std::string(
-            "An eigenstrain (a stress-free strain, such as thermal expansion or swelling) "
-            "given by an expression, stored as a six-component property for the "
-            "'eigenstrain_names' of small_strain_stress. The expression is a linear strain or a "
-            "volumetric strain (strain_type), applied equally in every direction or only along "
-            "the axis or only across it (direction). With 'stress_free_state' the strain "
-            "is shifted to be zero in a given state: for a thermal strain written as a function "
-            "of temperature, give the temperature and the stress-free temperature, and the "
-            "stored strain is f(T) - f(T_stress_free). ") +
+            "An eigenstrain, a strain free of stress such as thermal expansion or swelling, "
+            "given by an expression and stored as a property of six components for the "
+            "'eigenstrain_names' of small_strain_stress. The expression is a linear or a "
+            "volumetric strain ('strain_type'), which acts equally in the three normal "
+            "directions, only along the axis, or only across it ('direction'). With "
+            "'stress_free_state' the code shifts the strain to zero in a given state: for a "
+            "thermal strain f(T) of the temperature T, give the stress-free temperature T_sf, and "
+            "the stored strain is f(T) - f(T_sf). ") +
         kExpressionHelp);
     p.addRequired("expression", ParameterKind::String, "The expression of the strain.");
     p.addRequired("eigenstrain_name", ParameterKind::String, "Name of the declared property.");
     p.addRequired("strain_type",
                   ParameterKind::String,
                   "'linear': the expression is the strain along each direction it acts in. "
-                  "'volumetric': the expression is the relative change of volume dV/V, and "
-                  "one third of it acts along each of the three directions (it must then be "
-                  "isotropic).");
+                  "'volumetric': the expression is the relative change of volume dV/V, and one "
+                  "third of it acts along each of the three normal directions, so the direction "
+                  "must then be isotropic.");
     p.addOptional("direction",
                   ParameterKind::String,
                   std::string("isotropic"),
-                  "isotropic (the three normal directions), axial (along the axis of the "
-                  "formulation only) or transverse (the two directions normal to the axis). "
-                  "Default isotropic.");
+                  "The directions the strain acts in: isotropic (the three normal directions), "
+                  "axial (along the axis of the formulation only) or transverse (the two "
+                  "directions normal to the axis). Default isotropic, as for the thermal "
+                  "expansion of an isotropic material.");
     p.addOptional(
         "formulation",
         ParameterKind::String,
         std::string("three_dimensional"),
-        "Formulation of the stress property object, which fixes which component is axial: "
-        "axisymmetric (the second, z), axisymmetric_1d (the second, z), plane_strain "
-        "(the third) or three_dimensional (the third, z). Default three_dimensional. "
-        "The formulation matters only for an axial or transverse direction.");
+        "Formulation of the stress property object, which fixes the axial component: "
+        "axisymmetric and axisymmetric_1d (the second, z), plane_strain (the third, out of the "
+        "plane) or three_dimensional (the third, z). It matters only for an axial or a "
+        "transverse direction. Default three_dimensional, whose axis is z.");
     p.addOptional("stress_free_state",
                   ParameterKind::RealMap,
                   RealMap{},
-                  "The state in which the strain is zero: name of an argument of the "
-                  "expression -> its value in that state, for example {temperature: 293.15}. "
-                  "Default none: the expression is used as it is.");
+                  "The state in which the strain is zero, as name -> value pairs, with each name "
+                  "an argument of the expression, for example {temperature: 293.15}. Default: "
+                  "none, which stores the expression as it is.");
     ParsedArguments::addParams(p);
     return p;
   }
@@ -386,25 +392,33 @@ public:
   {
     InputParameters p = Kernel::validParams();
     p.setClassDescription(
-        std::string(
-            "A term of the equation of 'variable' in the general form div Gamma = f, whose flux Gamma and source f are expressions. ") +
-        "The expressions may use every field of the problem by its name, the components of its gradient as grad_x(u), grad_y(u) and grad_z(u), the coordinates x, y and z, the time t, the registered functions, the element fields, the properties and named constants, each by its name. " +
-        "They are compiled once and differentiated automatically, so the Jacobian is exact and the assembly runs on every thread and every process. " +
-        "In axisymmetric coordinates x is the radius and y the axial position, and the divergence includes the factor of the radius. " +
+        std::string("A term of the equation of 'variable', with a flux F and a source s given as "
+                    "expressions of the balance law dm/dt + div F = s. Other kernels on the same "
+                    "variable add their terms, such as time_derivative for the storage m. ") +
+        "The expressions may use every field of the problem by its name, the components of its "
+        "gradient as grad_x(u), grad_y(u) and grad_z(u), the coordinates x, y and z, the time t, "
+        "the registered functions, the element fields, the properties and named constants, each "
+        "by its name. " +
+        "The code compiles them once and differentiates them automatically, so the Jacobian is "
+        "exact and the assembly runs on every thread and every process. " +
+        "In axisymmetric coordinates x is the radius and y the axial position, and the "
+        "divergence includes the factor of the radius. " +
         kExpressionHelp);
-    p.addOptional(
-        "flux",
-        ParameterKind::StringList,
-        std::vector<std::string>{},
-        "The flux Gamma of the equation, one expression for each space dimension of the mesh. For diffusion with a coefficient c, Gamma = -c grad u. Default none.");
+    p.addOptional("flux",
+                  ParameterKind::StringList,
+                  std::vector<std::string>{},
+                  "The flux F, one expression for each space dimension of the mesh, positive "
+                  "along the outward normal of a body. For diffusion with a coefficient c, "
+                  "F = -c grad u. Default: none, for a term with a source only.");
     p.addOptional("source",
                   ParameterKind::String,
                   std::string(""),
-                  "The source f of the equation, an expression. Default none.");
+                  "The source s, an expression. Default: none, for a term with a flux only.");
     p.addOptional("constants",
                   ParameterKind::RealMap,
                   RealMap{},
-                  "Named constants that the expressions use: name -> value. Default none.");
+                  "Named constants that the expressions use, as name -> value pairs. Default: "
+                  "none, for expressions that need no constant of their own.");
     return p;
   }
 

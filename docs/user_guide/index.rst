@@ -14,9 +14,10 @@ boundary condition and property object with the full list of its parameters.
 .. toctree::
    :maxdepth: 2
 
+   input
    meshes
+   solving
+   adaptivity
+   output
    problem_setup
    equations
-   solving
-   output
-   case_files

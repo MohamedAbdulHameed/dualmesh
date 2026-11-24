@@ -1,182 +1,107 @@
-dualmesh
-========
+dualmesh-multiphysics
+=====================
 
-**dualmesh** is a multiphysics framework for **heat transfer**, **solid
-mechanics**, **fluid dynamics** and **general partial differential
-equations**.  A problem
-consists of any number of fields (e.g., temperatures, displacements,
-velocities, or quantities defined by the user), each governed by a
-conservation law written as a sum of named terms.  Every term may depend on
-every field.  All the fields are solved together as one monolithic system by
-Newton's method, with an exact Jacobian computed by automatic
-differentiation.  The coupling between the physics is therefore represented
-exactly in the Jacobian.
+dualmesh-multiphysics solves coupled heat transfer, solid mechanics and
+incompressible flow by the finite element method (FEM) and the dual mesh
+control domain method (DMCDM) [Reddy2024]_.  You import it in Python as
+``dualmesh``, and its command-line program is ``dualmesh``.
 
-The same problem description is discretised by two methods: the Galerkin
-**finite element method** (FEM) for solids, and the **dual mesh control
-domain method** (DMCDM) of J. N. Reddy [Reddy2024]_ for fluids, which combines
-the finite element interpolation with the finite volume balance and so
-conserves mass and heat in every control volume.  By default the method
-follows the physics.  Both are held to the same verification standard.  An element type or a
-physics that a method cannot treat correctly is refused with an explanation.
+The input
+---------
 
-The library is written in C++17 and is driven from Python.  A model is
-described in physical terms: *physics* such as ``heat_transfer``,
-``solid_mechanics`` and ``fluid_dynamics``, their boundary conditions,
-and *couplings* such as ``thermal_expansion``.  Each physics generates the
-*kernels*, *property objects* and *boundary conditions* of its equations, which
-are registered objects with validated and self-documenting parameters.  An equation without a physics is
-written with these objects directly.  Meshes are generated
-by the library or read from standard file formats.  The solvers (Newton's
-method with exact derivatives, direct iteration, continuation, adaptive time
-integration, and threaded and distributed linear algebra) are shared by every
-physics.  :doc:`scope` describes the coverage of the framework and compares
-it with the codes whose capabilities it measures itself against: MOOSE, COMSOL
-Multiphysics, OpenFOAM, and Nek5000 and nekRS.
+You describe a problem in physical terms: its mesh, its physics, the
+properties of its materials, its initial and boundary conditions, and the
+quantities to report.  Each quantity carries its unit, such as
+``"45 W/(m*K)"``, and the input converts it to the International System of
+Units (SI).  You give the input in one of two equivalent forms:
 
-A two-dimensional bus bar with internal heat generation, fixed temperatures on
-two sides and convection on the top reads:
+* a YAML or TOML case file, which the command ``dualmesh run case.yaml``
+  solves.
+* Python calls on :class:`dualmesh.problem`, which build the same input and
+  solve it with :meth:`~dualmesh.problem.solve`.
 
-.. code-block:: python
+The input refuses a misspelled key with the nearest valid name, a property
+that no physics reads, and a missing property that a physics needs.
+:doc:`quickstart` solves a first case in both forms, and :doc:`concepts`
+defines each part of the input.
 
-   import dualmesh
+An equation that no built-in physics provides is written at the object level,
+with :class:`dualmesh.Problem` and its kernels, property objects and boundary
+conditions (see :doc:`user_guide/problem_setup`).
 
-   mesh = dualmesh.generate_rectangle_mesh(
-       x_min=0.0, x_max=0.1, y_min=0.0, y_max=0.05, num_x_elements=10, num_y_elements=5
-   )
-
-   problem = dualmesh.Problem(mesh, method="DMCDM")
-   heat = problem.add_physics("heat_transfer", thermal_conductivity=20.0, heat_source=1.0e6)
-   heat.add_boundary_condition("temperature = 40", boundary="left")
-   heat.add_boundary_condition("temperature = 10", boundary="right")
-   heat.add_boundary_condition("heat_flux = 75*temperature", boundary="top")
-   problem.solve()
-
-   print(problem.sample("temperature", [[0.05, 0.0]]))  # 83.142
-
-A boundary condition is written as text: the temperature on the left
-prescribes its value, and ``heat_flux``, the heat leaving through the
-boundary, prescribes the flux.  The complete script, with post-processors and output files, is
-``examples/bus_bar.py``.
-
-The dual mesh control domain method
------------------------------------
-
-The dual mesh control domain method uses two meshes.  The **primal mesh** is a
-mesh of finite elements, which provides the interpolation of the unknowns.
-The **dual mesh** is the set of node-centred *control domains* obtained by
-joining the edge midpoints, the face centroids and the element centroids.  The
-governing equation is satisfied in the integral sense over each control
-domain, without a weight function:
-
-.. math::
-
-   \int_{\Omega_I} \left[ -\nabla \cdot \mathbf{F} + S \right] \,\mathrm{d}V = 0
-   \quad \Longrightarrow \quad
-   -\oint_{\partial \Omega_I} \mathbf{F} \cdot \mathbf{n} \,\mathrm{d}S
-   + \int_{\Omega_I} S \,\mathrm{d}V = 0,
-
-where :math:`\Omega_I` is the control domain of node :math:`I`,
-:math:`\mathbf{F}` is the flux, :math:`S` is the source and :math:`\mathbf{n}`
-is the outward unit normal.  The secondary variables (fluxes, forces and
-moments) appear on the interfaces of the control domains, as in the finite
-volume method.  The gradients on these interfaces are evaluated from the
-finite element interpolation, so that no gradient reconstruction is needed.
-Reddy [Reddy2024]_ develops the method, and :doc:`theory/index` presents it
-in the form that the code implements.
-
-Physics modules
+The two methods
 ---------------
 
-**Heat transfer.**  Steady and transient conduction with constant, spatially
-varying and temperature-dependent conductivity, volumetric sources, the
-convection of heat by a computed flow, and prescribed temperature, prescribed
-flux, convection and radiation boundary conditions, in Cartesian,
-axisymmetric and spherical coordinates.
+FEM weights the governing equation with the shape function of each node.
+DMCDM balances the equation over the control domain of each node, a cell of a
+second mesh, the dual mesh, built around the node inside the elements of the
+primal mesh.  The finite element interpolation gives the flux through each face
+of a control domain, and that flux leaves one control domain and enters its
+neighbour, so DMCDM conserves mass and heat in every control domain.  A flow
+with an equal-order velocity and pressure takes DMCDM by default, and every
+other problem takes FEM.  One keyword, ``method``, chooses the other method and
+leaves the rest of the input unchanged.  :doc:`concepts` gives the two
+statements of the balance, and :doc:`theory/index` derives them.
 
-**Solid mechanics.**  Linear elasticity in plane stress, plane strain,
-axisymmetric and three-dimensional form for isotropic materials, with
-thermal strain, small or finite strain, and creep.  The reduced theories of
-structural members are included: Euler-Bernoulli and Timoshenko beams,
-classical and first-order shear deformation plates, and axisymmetric circular
-plates, with the von Kármán nonlinearity and sections functionally graded
-through the thickness [Reddy2000]_.
 
-**Fluid dynamics.**  Steady and transient viscous incompressible flow, in the
-penalty formulation of the Navier-Stokes equations [HughesLiuBrooks1979]_ or
-in the pressure-velocity formulation with Taylor-Hood elements or stabilised
-equal-order interpolation, with buoyancy in the Boussinesq approximation.
-
-**Coupled problems** are built from the same components.  Natural convection
-in a heated cavity couples the flow and the energy equation in both
-directions and reproduces the benchmark of de Vahl Davis [DeVahlDavis1983]_
-to within 0.2 % in the Nusselt number with every node-based method.  Thermal
-stress couples the temperature to the displacement.  A kernel written by the
-user can couple any field to any other, and its Jacobian is obtained by
-automatic differentiation.
-
-Capabilities
+The solution
 ------------
 
-**Two discretisations of one problem description.**  The Galerkin finite
-element method for solids and the dual mesh control domain method for fluids,
-chosen by the physics or by one keyword, which leaves the rest of the problem
-unchanged.
+By default, the fields of a problem, for example the temperature, the velocity
+and the pressure of a heated flow, are solved together as one system.
+Newton's method solves it with the exact Jacobian, which forward-mode
+automatic differentiation computes from every term, the terms that couple two
+fields included.  The Portable, Extensible Toolkit for Scientific Computation
+(PETSc) solves the linear systems, in one process or in many processes under
+the Message Passing Interface (MPI), and OpenMP threads the assembly in each
+process.
 
-**Arbitrary meshes.**  Fourteen element types (``Edge2``, ``Tri3``,
-``Quad4``, ``Tet4``, ``Hex8``, ``Wedge6``, ``Pyramid5``, and the quadratic
-``Edge3``, ``Tri6``, ``Quad8``, ``Quad9``, ``Tet10``, ``Hex20`` and
-``Hex27``), generated by the library or read from any format supported by
-meshio, and mixed freely in one mesh.  The dual mesh methods require a dual
-mesh, which the serendipity elements and the pyramid do not have, and these
-elements are refused by those methods.  Boundaries of an imported mesh are
-taken from its physical groups or defined geometrically (see
-:doc:`user_guide/meshes`).
+What the code covers
+--------------------
 
-**Exact Jacobians.**  Every kernel is evaluated in forward-mode automatic
-differentiation.  Newton's method therefore converges quadratically, and a
-new nonlinear term requires no hand differentiation.
+**Heat transfer.**  Steady and transient conduction with sources,
+prescribed temperature, heat flux, convection and radiation on the boundary,
+and the heat that a computed flow carries.
 
-**Steady, transient and nonlinear problems.**  The :math:`\theta` family of
-time integrators with fixed, error-controlled and iteration-controlled
-adaptive time steps, Newton's method and direct iteration with relaxation,
-and automatic continuation.
+**Solid mechanics.**  Elasticity in plane stress, plane strain, axisymmetric
+and three-dimensional form, at small or finite strain, with thermal expansion
+at small strain.  The object level adds Euler-Bernoulli and Timoshenko beams,
+plates and creep.
 
-**Adaptive mesh refinement.**  A gradient-recovery error indicator, three
-marking rules, and conforming newest-vertex bisection, which refines and coarsens.
+**Fluid dynamics.**  Steady and transient incompressible flow of a Newtonian
+fluid, with an equal-order velocity and pressure and a pressure
+stabilization, or with Taylor-Hood elements, and the Boussinesq buoyancy of a
+heated fluid.
 
-**Linear algebra.**  A direct solver where a factorisation is inexpensive and a
-preconditioned Krylov solver otherwise, chosen automatically.  Distributed
-problems exchange the values at shared nodes through PETSc's star forests or
-through gslib, the gather-scatter of Nek5000, and are solved by PETSc, by
-default with the algebraic multigrid of hypre, whose iteration count does not
-grow with the number of processes.
+**Meshes.**  Fourteen element types in one, two and three dimensions, linear
+and quadratic, generated by the code or read from any format that meshio reads.
+DMCDM refuses the serendipity elements ``Quad8`` and ``Hex20``, whose dual mesh is
+not defined without an interior node, and the pyramid ``Pyramid5``.
 
-**Parallel execution.**  Threaded assembly within a process and a
-distributed solver across processes.
+**Time and adaptivity.**  The :math:`\theta` family of time schemes, with
+:math:`\theta` the weight of the new time level (backward Euler,
+Crank-Nicolson and forward Euler), with fixed or adaptive time steps.  Adaptive
+mesh refinement, driven by the Zienkiewicz-Zhu error indicator, in steady and
+transient runs.
 
-**Verification.**  Every capability listed above is checked by a test.  The
-tests reproduce published reference solutions, analytical solutions and
-independent calculations with OpenFOAM.  A study by the method of
-manufactured solutions measures the order of convergence of every method on
-every element type it accepts, in one, two and three dimensions.  The
-limitations of each method are stated in the documentation, e.g., the effect
-of quadratic elements on the dual mesh method in :doc:`theory/elements`.
+**Verification.**  The tests compare the computed values with exact
+solutions, manufactured solutions and published results.
+:doc:`verification` lists the cases with their sources.
 
 Contents
 --------
 
 .. toctree::
    :maxdepth: 2
-   :caption: Getting started
+   :caption: Get started
 
    installation
-   getting_started
-   scope
+   quickstart
+   concepts
 
 .. toctree::
    :maxdepth: 2
-   :caption: Using dualmesh
+   :caption: Use the code
 
    user_guide/index
    tutorials/index
@@ -190,18 +115,16 @@ Contents
    theory/index
    verification
    benchmarks/index
-   openfoam
 
 .. toctree::
    :maxdepth: 1
    :caption: Project
 
    developing
-   work_in_progress
    references
 
 Citing
 ------
 
-If this software contributes to your work, please cite the software (see the
-``CITATION.cff`` file in the repository).
+To cite the software, use the metadata in the ``CITATION.cff`` file of the
+repository.

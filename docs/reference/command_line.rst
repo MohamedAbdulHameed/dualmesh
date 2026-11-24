@@ -2,7 +2,7 @@ The command line
 ================
 
 The ``dualmesh`` command runs a case file, lists and describes the registered
-types, and checks the side sets of a mesh file:
+types, and lists the side sets of a mesh file:
 
 .. code-block:: console
 
@@ -22,14 +22,9 @@ types, and checks the side sets of a mesh file:
 Case files
 ----------
 
-A case file is the physics level of a problem written as data
-(:doc:`/user_guide/case_files`).
-
-.. currentmodule:: dualmesh
-
-.. autosummary::
-   :toctree: generated/
-
-   run_case
-   load_case
-   Case
+A case file is a YAML (YAML Ain't Markup Language) or TOML (Tom's Obvious
+Minimal Language) file of the input sections: the mesh, the physics, the
+properties, the conditions, the time span and the settings of the solve.
+:doc:`/user_guide/input` describes every section and key.  ``dualmesh run``
+reads the file with :meth:`dualmesh.problem.from_file` and solves it with
+:meth:`dualmesh.problem.solve`.

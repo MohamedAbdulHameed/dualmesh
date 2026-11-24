@@ -1,188 +1,158 @@
-Linear elasticity
-=================
+Solid mechanics
+===============
 
-This chapter describes the small-strain, linearly elastic solid mechanics of
-the ``solid_mechanics`` module: the equilibrium equations that are solved, the
-kinematics and the constitutive law, the four idealisations supported (plane
-stress, plane strain, axisymmetric and three-dimensional), thermal strain, the boundary conditions belonging to the elasticity
-duality pair, and the out-of-plane thickness.  It assumes undergraduate solid
-mechanics but no acquaintance with this library.  Throughout, a stress
-component is positive in tension, and a displacement, traction or force
-component is positive when it points along the positive direction of its own
-coordinate axis.
+This page states the equations of the ``solid_mechanics`` physics: the balance
+of linear momentum of a solid, its kinematics at small and finite strain, the
+formulations of a body, the material laws, the conditions between bodies, the
+dynamics and the structural models of beams, plates and shells.  A stress
+component is positive in tension.  A displacement, traction or force component
+is positive along its own coordinate axis.
 
-The equilibrium equations
--------------------------
+.. contents::
+   :local:
+   :depth: 1
 
-Consider a body occupying a region :math:`\Omega` and carrying a Cauchy stress
-field :math:`\sigma_{ij}(\mathbf{x})`, in which the first index names the face
-the stress acts on and the second the direction it acts along.  Requiring
-every part of the body to be in static equilibrium, and letting that part
-shrink to a point, gives the local balance of linear momentum
+Balance of linear momentum
+--------------------------
+
+A solid occupies the domain :math:`\Omega`.  Its displacement
+:math:`\mathbf{u}` (m) satisfies the balance of linear momentum
 
 .. math::
-   :label: elasticity-equilibrium
+   :label: solid-momentum
 
-   \frac{\partial \sigma_{ij}}{\partial x_j} + b_i = 0 \qquad\text{in } \Omega ,
+   \rho \frac{\partial^2 \mathbf{u}}{\partial t^2}
+   = \nabla\cdot\boldsymbol{\sigma} + \mathbf{f}
+   \qquad \text{in } \Omega ,
 
-where :math:`b_i` is the body force per unit volume along the :math:`i`
-direction, such as the weight :math:`-\rho g` of the material itself, and
-repeated indices are summed.  In vector form this is
-:math:`-\nabla\cdot\boldsymbol{\sigma} = \mathbf{b}`, the divergence being
-taken row by row.  Balance of angular momentum makes the stress tensor
-symmetric, :math:`\sigma_{ij} = \sigma_{ji}`, which is why the module stores
-only the six independent components of the stress.
+with :math:`\rho` the density (:math:`\mathrm{kg/m^3}`),
+:math:`\boldsymbol{\sigma}` the Cauchy stress (Pa) and :math:`\mathbf{f}` the
+body force per unit volume (:math:`\mathrm{N/m^3}`), such as the weight
+:math:`\rho\mathbf{g}`.  Without inertia the left side is zero and
+:eq:`solid-momentum` is the equilibrium of the body.  The balance of angular
+momentum makes :math:`\boldsymbol{\sigma}` symmetric, so it has six independent
+components.
 
-Equation :eq:`elasticity-equilibrium` comprises one equation per displacement
-component, and the library treats it as such.  Every equation
-in the framework is written in the canonical conservation form
-
-.. math::
-   :label: elasticity-canonical
-
-   -\nabla\cdot\mathbf{F}_i + S_i = 0 ,
-
-with a flux vector :math:`\mathbf{F}_i` and a source :math:`S_i` that may both
-depend on all the unknowns and their gradients.  Elasticity fits this form by
-taking, for the equation of the displacement component :math:`u_i`,
-
-.. math::
-   :label: elasticity-flux
-
-   \mathbf{F}_i = h\,(\sigma_{i1},\, \sigma_{i2},\, \sigma_{i3}) ,
-   \qquad S_i = -h\,b_i ,
-
-so that the flux of the :math:`i` equation is the :math:`i` th row of the
-stress tensor and its source is minus the corresponding body force component.
-The factor :math:`h` is the out-of-plane thickness treated at the end of this
-chapter.  Substituting :eq:`elasticity-flux` into :eq:`elasticity-canonical`
-and dividing by :math:`h` recovers :eq:`elasticity-equilibrium`, which fixes
-the sign convention: a positive body force component drives the corresponding
-displacement in the positive coordinate direction.  The natural, or secondary,
-quantity of a canonical equation is the outward normal component of its flux,
-here :math:`\mathbf{n}\cdot\mathbf{F}_i = h\,n_j\sigma_{ij} = h\,t_i`, the
-:math:`i` th component of the surface traction times the thickness, so the
-traction component is the natural partner of the displacement component with
-no further construction.
-
-The module splits the work between two kinds of object.  The **property object**,
-``small_strain_stress``, is independent of the equilibrium statement: given
-the displacement gradients at an integration point it computes the strain and
-the stress and provides them as the properties ``stress``, ``strain``,
-``elastic_strain`` and ``volumetric_strain``.  The **kernel**, ``stress_divergence``, is independent
-of the constitutive law: it receives the index of the component :math:`i` it
-represents, reads the stress property, and returns the flux
-:eq:`elasticity-flux` together with the axisymmetric source described below.
-One kernel instance is added per displacement variable, with ``component`` set
-to ``0`` for :math:`x` or :math:`r`, ``1`` for :math:`y` or :math:`z`, and
-``2`` for :math:`z` in three dimensions.  That index must agree with the
-component the kernel's ``variable`` actually represents.  The agreement is not
-checked, and a mismatch silently assembles the wrong row of the stress.
-
-The separation has three advantages.  First, one kernel serves all four
-formulations and both the dual mesh control domain method and the finite
-element method, because equilibrium is the same statement in every case and
-only the stress differs.  Second, a new constitutive model needs only a
-property object that declares a ``stress`` property in the same layout, with no change
-to the equilibrium code.  Third, because property objects and kernels are written in
-the forward-mode automatic differentiation type used throughout the framework,
-the
-derivative of the stress with respect to every degree of freedom is carried
-through the constitutive law, so the Newton Jacobian stays exact even when the
-stress depends on another field such as the temperature.
-
-The ``solid_mechanics`` physics assembles the whole set: it creates the
-displacement variables, adds one property object and one kernel per component, and,
-when a ``body_force`` is given, adds a ``body_force`` kernel per component
-whose intensity has already been multiplied by the thickness.
-
-Kinematics and the constitutive law
------------------------------------
-
-Strain measure and Voigt ordering
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-Deformation is measured by the infinitesimal strain tensor, the symmetric part
-of the displacement gradient,
-
-.. math::
-   :label: elasticity-strain
-
-   \varepsilon_{ij} = \tfrac{1}{2}
-   \left( \frac{\partial u_i}{\partial x_j} + \frac{\partial u_j}{\partial x_i} \right) ,
-
-which is the appropriate measure when displacements and rotations are small
-enough that the difference between deformed and undeformed geometry can be
-ignored.  Equilibrium is then written on the undeformed body.  Symmetric
-tensors are stored as six-component arrays in the Voigt ordering
+Each displacement component :math:`u_i` has one equation of the balance-law
+form :math:`\partial m/\partial t + \nabla\cdot\mathbf{F} = s` of
+:doc:`foundations`, with
 
 .. math::
 
-   (\,0,\ 1,\ 2,\ 3,\ 4,\ 5\,) \;\longleftrightarrow\;
-   (\,xx,\ yy,\ zz,\ yz,\ xz,\ xy\,) ,
+   m = \rho \frac{\partial u_i}{\partial t} , \qquad
+   \mathbf{F} = -(\sigma_{i1},\ \sigma_{i2},\ \sigma_{i3}) , \qquad
+   s = f_i .
 
-where slot 2 holds the hoop component :math:`\theta\theta` in the axisymmetric
-case and slot 5 the :math:`rz` shear there.  This is the ordering the
-``stress`` and ``strain`` properties present to post-processing.  The three
-shear slots hold **engineering** shear strains, twice the tensor components,
+The flux :math:`\mathbf{F}` is the flux of momentum, minus row :math:`i` of the
+stress.  On the boundary :math:`\partial\Omega` its outward normal component
+gives the traction component
+:math:`t_i = -\mathbf{F}\cdot\mathbf{n} = \sigma_{ij} n_j` (Pa), with
+:math:`\mathbf{n}` the outward unit normal and repeated indices summed.  The
+traction is therefore the natural boundary quantity of the displacement.
+
+The code splits each equation between two objects.  The property object
+``small_strain_stress`` (or ``finite_strain_stress``) computes the strain and
+the stress at every integration point from the displacement gradients.  The
+kernel ``stress_divergence`` reads the stress and assembles the flux of one
+displacement.  It takes the list ``displacements`` and finds the component
+:math:`i` of its equation from the place of its variable in that list.  One
+kernel serves every formulation and both the finite element method (FEM) and
+the dual mesh control domain method (DMCDM), because only the stress differs
+between them.  The objects use the forward-mode automatic differentiation of
+the code, so the Newton Jacobian holds the exact derivative of the stress with
+respect to every unknown, including another field such as the temperature.
+
+The physics ``solid_mechanics`` creates the variables ``disp_x``, ``disp_y``
+and ``disp_z`` (``disp_r`` and ``disp_z`` in axisymmetric coordinates), one
+stress object, one ``stress_divergence`` kernel per component and, when
+``body_force`` is given, one ``body_force`` kernel per component.
+
+Small strain
+------------
+
+Strain and Voigt order
+~~~~~~~~~~~~~~~~~~~~~~
+
+When the displacements and rotations are small, the strain is the small strain
+:math:`\boldsymbol{\varepsilon}` (dimensionless), the symmetric part of the
+displacement gradient,
+
+.. math::
+   :label: solid-strain
+
+   \boldsymbol{\varepsilon} = \tfrac{1}{2}
+   \left( \nabla\mathbf{u} + \nabla\mathbf{u}^{\mathsf{T}} \right) ,
+
+and the equations hold on the undeformed body.  The code stores a symmetric
+tensor as six values in the Voigt order
 
 .. math::
 
-   \gamma_{xy} = 2\varepsilon_{xy}
-   = \frac{\partial u}{\partial y} + \frac{\partial v}{\partial x} ,
-   \quad
-   \gamma_{yz} = \frac{\partial v}{\partial z} + \frac{\partial w}{\partial y} ,
-   \quad
-   \gamma_{xz} = \frac{\partial u}{\partial z} + \frac{\partial w}{\partial x} ,
+   (0,\ 1,\ 2,\ 3,\ 4,\ 5) \longleftrightarrow
+   (xx,\ yy,\ zz,\ yz,\ xz,\ xy) .
 
-with :math:`(u, v, w)` the variables named in ``displacements``.  The
-distinction matters because the shear stiffness that relates a shear stress to
-an engineering shear strain is the shear modulus :math:`G` itself, whereas the
-stiffness that relates it to a tensor shear strain is :math:`2G`.  The
-property ``volumetric_strain`` holds
-:math:`\varepsilon_{xx} + \varepsilon_{yy} + \varepsilon_{zz}`, the sum of the
-normal slots, which is the relative change of volume.
+Slot 2 holds the hoop component :math:`\theta\theta` in the axisymmetric case.
+The shear slots of a strain hold the engineering shear strains, twice the tensor
+components, such as
+:math:`\gamma_{xy} = 2\varepsilon_{xy} = \partial u_x/\partial y + \partial u_y/\partial x`.
+The shear slots of a stress hold the tensor components.  The stress object
+declares the properties ``stress``, ``strain``, ``elastic_strain``,
+``volumetric_strain`` (the trace of the strain, the change of volume per unit
+volume) and ``von_mises_stress``, which post-processors and output read.
 
-The constitutive law is a matrix product in the same ordering,
+Isotropic elasticity
+~~~~~~~~~~~~~~~~~~~~
 
-.. math::
-   :label: elasticity-constitutive
-
-   \sigma_I = \sum_{J=0}^{5} C_{IJ}\, \varepsilon_J ,
-
-with :math:`C_{IJ}` the isotropic stiffness of the formulation.  The
-stiffness is built from Young's modulus :math:`E`, a stiffness in
-force per unit area, and Poisson's ratio :math:`\nu`, the ratio of transverse
-contraction to axial extension, which must satisfy :math:`-1 < \nu < 1/2`.  It
-is convenient to name the Lamé constants
+The stress of an isotropic linear elastic material is
 
 .. math::
+   :label: solid-hooke
 
-   \lambda = \frac{E\nu}{(1+\nu)(1-2\nu)} , \qquad
-   \mu = G = \frac{E}{2(1+\nu)} ,
+   \boldsymbol{\sigma} = \lambda \operatorname{tr}(\boldsymbol{\varepsilon}_e)\,\mathbf{I}
+   + 2G\,\boldsymbol{\varepsilon}_e ,
+   \qquad
+   \boldsymbol{\varepsilon}_e = \boldsymbol{\varepsilon}
+   - \boldsymbol{\varepsilon}_{\mathrm{eig}}
+   - \boldsymbol{\varepsilon}_c - \boldsymbol{\varepsilon}_p ,
 
-in which :math:`\mu` is the shear modulus.  Both :math:`\lambda` and the
-plane-strain, axisymmetric and three-dimensional stiffnesses below become
-singular as :math:`\nu \to 1/2`, so a nearly incompressible material needs
-care.  Young's modulus and Poisson's ratio have no numerical default.  When
-either is not given, it is the property of the same name that a property
-object declares, and the solve stops with an error when no object declares it.
-Which stiffness is built is chosen by ``formulation``, one of
-``plane_stress``, ``plane_strain``, ``axisymmetric``, ``axisymmetric_1d`` or
-``three_dimensional``.  Any other string is an error.  The number of names
-in ``displacements`` and the dimension of the mesh must match the choice: two
-of each for the plane and axisymmetric formulations, three for the
-three-dimensional one.
+with :math:`\mathbf{I}` the identity and :math:`\boldsymbol{\varepsilon}_e` the
+elastic strain.  The elastic strain is the strain less the eigenstrains
+:math:`\boldsymbol{\varepsilon}_{\mathrm{eig}}` (strains that the material takes
+without stress, such as a thermal strain), the creep strain
+:math:`\boldsymbol{\varepsilon}_c` and the plastic strain
+:math:`\boldsymbol{\varepsilon}_p`.  The shear modulus :math:`G` (Pa) and the
+first Lame parameter :math:`\lambda` (Pa) follow from Young's modulus :math:`E`
+(Pa) and Poisson's ratio :math:`\nu` (dimensionless):
+
+.. math::
+
+   G = \frac{E}{2(1+\nu)} , \qquad
+   \lambda = \frac{E\nu}{(1+\nu)(1-2\nu)} .
+
+Poisson's ratio satisfies :math:`-1 < \nu < 1/2`, and :math:`\lambda` grows
+without bound as :math:`\nu` approaches :math:`1/2`.  Young's modulus and
+Poisson's ratio have no numerical default.  Each is a constant, a function or an
+expression of the fields and the coordinates.  When you leave one out, the
+stress object reads the property of the same name, ``youngs_modulus`` or
+``poissons_ratio``, which a property object declares.  In Voigt form the
+shear rows of :eq:`solid-hooke` carry :math:`G`, because the shear slots of the
+strain hold engineering strains.
+
+Formulations
+------------
+
+The parameter ``formulation`` chooses the idealisation of the body.  A
+three-dimensional mesh defaults to ``three_dimensional`` and a problem in
+axisymmetric coordinates to ``axisymmetric``.  A two-dimensional Cartesian
+problem names its formulation, because no plane formulation is right for every
+body.
 
 Plane stress
-^^^^^^^^^^^^
+~~~~~~~~~~~~
 
-Plane stress models a thin plate loaded in its own plane, thin enough that the
-free faces force :math:`\sigma_{zz} = \sigma_{yz} = \sigma_{xz} = 0` through
-the thickness.  The material contracts freely through the thickness, so
-:math:`\varepsilon_{zz}` is in general non-zero, but it does no work and is
-eliminated,
-leaving
+``plane_stress`` describes a thin plate loaded in its plane, whose free faces
+make :math:`\sigma_{zz} = \sigma_{yz} = \sigma_{xz} = 0`.  The material
+contracts freely through the thickness, and the in-plane law is
 
 .. math::
 
@@ -190,529 +160,793 @@ leaving
    = \frac{E}{1-\nu^{2}}
    \begin{bmatrix} 1 & \nu & 0 \\ \nu & 1 & 0 \\
      0 & 0 & \tfrac{1}{2}(1-\nu) \end{bmatrix}
-   \begin{Bmatrix} \varepsilon_{xx} \\ \varepsilon_{yy} \\ \gamma_{xy} \end{Bmatrix} ,
+   \begin{Bmatrix} \varepsilon_{e,xx} \\ \varepsilon_{e,yy} \\ \gamma_{e,xy} \end{Bmatrix} .
 
-the shear entry being :math:`E/[2(1+\nu)] = G`.  The ``stress`` property
-reports :math:`\sigma_{zz} = 0`, which is what the idealisation asserts, and
-the ``strain`` property reports the out-of-plane strain that keeps it so,
+The ``strain`` property reports the out-of-plane strain, the elastic part
 
 .. math::
 
-   \varepsilon_{zz} = -\frac{\nu}{1-\nu}\,(\varepsilon_{xx} + \varepsilon_{yy}),
+   \varepsilon_{e,zz} = -\frac{\nu}{1-\nu}\left(\varepsilon_{e,xx} + \varepsilon_{e,yy}\right)
 
-of the elastic strains, plus the eigenstrains.  The ``volumetric_strain``
-includes it.  A two-dimensional Cartesian problem names its formulation,
-``plane_stress`` or ``plane_strain``, because neither is right for every body.
+plus the eigenstrains and inelastic strains.  With creep or plasticity the
+code solves for the :math:`zz` strain that keeps :math:`\sigma_{zz} = 0` after
+the inelastic return, by Newton's method at the integration point.
 
 Plane strain
-^^^^^^^^^^^^
+~~~~~~~~~~~~
 
-Plane strain models the opposite extreme, a body so long in :math:`z`, or so
-restrained there, that :math:`\varepsilon_{zz} = \gamma_{yz} = \gamma_{xz} =
-0`: a long dam, a tunnel lining, a thick-walled pipe held between rigid ends.
-With :math:`f = E / [(1+\nu)(1-2\nu)]` the in-plane law is
+``plane_strain`` describes a body so long in :math:`z`, or so restrained there,
+that :math:`\varepsilon_{zz} = \gamma_{yz} = \gamma_{xz} = 0`, such as a dam or
+a tunnel lining.  The law is :eq:`solid-hooke` with these strains zero.  The
+out-of-plane stress :math:`\sigma_{zz} = \lambda(\varepsilon_{e,xx} +
+\varepsilon_{e,yy} + \varepsilon_{e,zz}) + 2G\,\varepsilon_{e,zz}` is reported
+and plays no part in the in-plane equations.
+
+Generalized plane strain
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+``generalized_plane_strain`` describes the section of a long body whose axial
+strain :math:`\varepsilon_{zz}` is uniform and free.  The physics adds the
+variable ``strain_zz``, one unknown for the whole section, held uniform by the
+constraint ``uniform_field``.  Its equation states that the axial stress carries
+the axial force :math:`F_z` (N), the parameter ``axial_force``:
 
 .. math::
 
-   \begin{Bmatrix} \sigma_{xx} \\ \sigma_{yy} \\ \sigma_{xy} \end{Bmatrix}
-   = \begin{bmatrix} f(1-\nu) & f\nu & 0 \\ f\nu & f(1-\nu) & 0 \\
-     0 & 0 & \tfrac{E}{2(1+\nu)} \end{bmatrix}
-   \begin{Bmatrix} \varepsilon_{xx} \\ \varepsilon_{yy} \\ \gamma_{xy} \end{Bmatrix} .
+   \int_\Omega \sigma_{zz}\,\mathrm{d}A = F_z ,
 
-Because the out-of-plane strain vanishes while the out-of-plane stress does
-not, the property object also fills the :math:`zz` row with :math:`C_{20} = C_{21} =
-f\nu` and :math:`C_{22} = f(1-\nu)`.  With :math:`\varepsilon_{zz} = 0` that
-row returns :math:`\sigma_{zz} = f\nu\,(\varepsilon_{xx} + \varepsilon_{yy}) =
-\nu\,(\sigma_{xx} + \sigma_{yy})`, post-computed for reporting.  It plays no
-part in the two in-plane equations, because the :math:`zz` column of the
-in-plane rows is zero.
+with :math:`\Omega` the section and :math:`|\Omega|` its area
+(:math:`\mathrm{m^2}`).  The kernel ``out_of_plane_stress`` assembles the
+integrand, and a ``body_force`` of :math:`F_z/|\Omega|` on ``strain_zz``
+assembles the right side.  The default :math:`F_z = 0` is a long body free along its axis.
 
 Axisymmetric
-^^^^^^^^^^^^
+~~~~~~~~~~~~
 
-The axisymmetric formulation models a body of revolution loaded so that
-nothing depends on the circumferential coordinate :math:`\theta` and there is
-no circumferential displacement.  The mesh is a cut through the body in the
-:math:`(r, z)` half-plane with :math:`r = x_1 \ge 0`, and the two variables
-are the radial displacement :math:`u_r` and the axial displacement
-:math:`u_z`.  The problem must be created with ``coordinates="axisymmetric"``,
-which is what makes every control-domain integral carry the measure
-:math:`2\pi r`.
+``axisymmetric`` describes a body of revolution whose loads do not depend on
+the circumferential coordinate :math:`\theta` and which has no circumferential
+displacement.  The mesh is a section in the :math:`(r, z)` half-plane, with
+:math:`r \ge 0` the first coordinate.  The problem is created with
+``coordinates="axisymmetric"``, which gives every integral the measure
+:math:`2\pi r`.  The variables are the radial displacement :math:`u_r` and the
+axial displacement :math:`u_z`.
 
-Three strains are the familiar ones, :math:`\varepsilon_{rr} = \partial
-u_r/\partial r`, :math:`\varepsilon_{zz} = \partial u_z/\partial z` and
-:math:`\gamma_{rz} = \partial u_r/\partial z + \partial u_z/\partial r`, but
-there is a fourth that arises purely from the geometry.  A material circle of
-radius :math:`r` about the axis has circumference :math:`2\pi r`.  After
-deformation its radius is :math:`r + u_r`, so its relative change of length is
+A material circle of radius :math:`r` moves to the radius :math:`r + u_r`, so
+the hoop strain is
 
 .. math::
-   :label: elasticity-hoop-strain
+   :label: solid-hoop
 
-   \varepsilon_{\theta\theta}
-   = \frac{2\pi (r + u_r) - 2\pi r}{2\pi r} = \frac{u_r}{r} .
+   \varepsilon_{\theta\theta} = \frac{u_r}{r} .
 
-A radial displacement therefore stretches the material in the hoop direction
-even where its radial gradient vanishes, which is why a pressurised cylinder
-carries hoop stress.  The hoop strain occupies slot 2 and the :math:`rz` shear
-slot 5, and the stiffness is that of a three-dimensional isotropic material
-for the three normal components together with one shear term,
+The stiffness is that of :eq:`solid-hooke` on the normal components
+:math:`rr`, :math:`zz` and :math:`\theta\theta` and the shear :math:`rz`.  The
+radial equilibrium
 
 .. math::
-
-   C_{IJ} = \lambda + 2\mu\,\delta_{IJ}
-   \quad (I, J \in \{rr,\, zz,\, \theta\theta\}) , \qquad C_{55} = \mu ,
-
-so that :math:`\sigma_{rr} = (\lambda + 2\mu)\varepsilon_{rr} +
-\lambda\varepsilon_{zz} + \lambda\varepsilon_{\theta\theta}` and
-:math:`\sigma_{rz} = \mu\gamma_{rz}`, for example.  The remaining shear slots
-stay at zero because axisymmetry forbids :math:`r\theta` and :math:`z\theta`
-shear.
-
-The hoop stress enters equilibrium as a source term, for the following
-reason.  Radial equilibrium in cylindrical coordinates,
-:math:`\partial\sigma_{rr}/\partial r + \partial\sigma_{rz}/\partial z +
-(\sigma_{rr} - \sigma_{\theta\theta})/r + b_r = 0`, regroups as
-
-.. math::
-   :label: elasticity-axisymmetric-radial
+   :label: solid-radial
 
    \frac{1}{r}\frac{\partial (r\,\sigma_{rr})}{\partial r}
    + \frac{\partial \sigma_{rz}}{\partial z}
-   - \frac{\sigma_{\theta\theta}}{r} + b_r = 0 .
+   - \frac{\sigma_{\theta\theta}}{r} + f_r = 0
 
-The first two terms are exactly the divergence of the in-plane vector
-:math:`(\sigma_{rr}, \sigma_{rz})` taken with the measure :math:`2\pi r`, so
-they are supplied by the flux :eq:`elasticity-flux` unchanged: the factor
-:math:`r` is already in the integration measure the coordinate system
-provides.  The hoop term is different.  Since nothing varies with
-:math:`\theta`, the hoop stress is differentiated with respect to a direction
-the mesh does not resolve, and its contribution to the radial balance remains
-as an algebraic term that cannot be written as the divergence of a vector on
-the :math:`(r, z)` mesh.  Comparison with :eq:`elasticity-canonical` shows that
-it must be carried as the source :math:`S_r = \sigma_{\theta\theta}/r`, which
-``stress_divergence`` adds to the radial equation and to that equation alone.
-The axial equation has no such term.  Setting
-``axisymmetric_hoop_term=False`` removes it, which isolates its effect but
-leaves a body with no hoop stiffness.  The resulting model does not represent
-a physical axisymmetric body.
+has a divergence term, which the measure :math:`2\pi r` supplies through the
+flux, and the hoop term :math:`-\sigma_{\theta\theta}/r`, which no flux on the
+:math:`(r, z)` mesh represents.  The kernel ``stress_divergence`` adds the hoop
+term as a source of the radial equation.  The axial equation has no such term.
 
-On the axis :math:`r = 0` both :eq:`elasticity-hoop-strain` and the source are
-indeterminate, and each is handled explicitly.  A regular solution has
-:math:`u_r(0) = 0`, so the limit of :math:`u_r/r` as :math:`r \to 0` is
-:math:`\partial u_r/\partial r`, and that derivative is what the property object uses
-whenever an integration point falls exactly on the axis.  There the hoop
-strain and the radial strain coincide.  The kernel returns a zero source at
-:math:`r = 0`, which is consistent because the measure :math:`2\pi r` of the
-surrounding control domain vanishes there as well.  Neither treatment supplies
-the symmetry condition itself: a mesh reaching the axis still needs
-:math:`u_r = 0` prescribed there, as a boundary condition like any other.
+On the axis :math:`r = 0` the ratio :eq:`solid-hoop` is indeterminate.  A
+regular solution has :math:`u_r = 0` there, so the code takes the limit
+:math:`\partial u_r/\partial r` of :math:`u_r/r` at an integration point on the
+axis, and a zero hoop source, where the measure :math:`2\pi r` vanishes as
+well.  The condition :math:`u_r = 0` on the axis is a boundary condition that you
+prescribe.
+
+At the object level, ``small_strain_stress`` also takes ``axisymmetric_1d``: a
+radial line through a long body of revolution in generalized plane strain, with
+the uniform axial strain given by its parameter ``axial_strain``.
 
 Three dimensions
-^^^^^^^^^^^^^^^^
+~~~~~~~~~~~~~~~~
 
-The three-dimensional formulation makes no assumption about the geometry and
-uses the full isotropic stiffness,
-
-.. math::
-
-   C_{IJ} = \lambda + 2\mu\,\delta_{IJ} \quad (I, J \in \{0, 1, 2\}) ,
-   \qquad C_{33} = C_{44} = C_{55} = \mu ,
-
-which is :math:`\sigma_{ij} = \lambda\,\varepsilon_{kk}\,\delta_{ij} +
-2\mu\,\varepsilon_{ij}` in Voigt form.  The shear rows carry :math:`\mu`,
-where the tensor form has :math:`2\mu`, because the shear slots hold
-engineering strains.
-Three displacement variables and a three-dimensional mesh are required, and
-the thickness must be left at one.
-
-Thermal strain
---------------
-
-A temperature change makes an unconstrained body expand without producing
-stress.  Stress arises only from the part of the strain not accounted for by
-that free expansion.  With :math:`\alpha` the coefficient of thermal
-expansion per degree, :math:`T` the temperature field and
-:math:`T_{\mathrm{ref}}` the temperature at which the body is free of stress,
-the thermal strain is :math:`\varepsilon^{\mathrm{th}} = \alpha\,(T -
-T_{\mathrm{ref}})`.  It is an *eigenstrain*, a strain that the material takes
-without stress: ``thermal_expansion_eigenstrain`` declares it, and
-``small_strain_stress`` subtracts the eigenstrains it lists in
-``eigenstrain_names`` from the strain before :eq:`elasticity-constitutive`,
-
-.. math::
-   :label: elasticity-thermal
-
-   \sigma_I = \sum_{J=0}^{5} C_{IJ}
-              \left( \varepsilon_J - \varepsilon^{\mathrm{th}}_J \right) ,
-   \qquad \varepsilon^{\mathrm{th}}_J = \alpha\,(T - T_{\mathrm{ref}})
-   \ (J = 0, 1, 2), \quad \varepsilon^{\mathrm{th}}_J = 0 \ (J = 3, 4, 5).
-
-The thermal part is subtracted from the three normal strain components only,
-because an isotropic expansion changes lengths equally in all directions and
-produces no shear.  Heating a fully restrained body above
-:math:`T_{\mathrm{ref}}` makes :math:`\varepsilon_J - \varepsilon^{\mathrm{th}}_J`
-negative and puts the body into compression.  In plane strain the
-out-of-plane strain is zero, so the thermal strain loads the :math:`zz`
-direction too, and a body restrained in its plane carries
-:math:`\sigma_{xx} = \sigma_{yy} = -E\,\alpha\,(T - T_{\mathrm{ref}})/(1 - 2\nu)`.
-In plane stress the body expands freely through its thickness.  The
-``stress_free_temperature`` :math:`T_{\mathrm{ref}}` has no default, because
-no value is right for every problem.  The ``thermal_expansion`` coupling of
-the physics adds the eigenstrain and lists it.
-
-The ``temperature`` parameter of ``thermal_expansion_eigenstrain`` names an ordinary variable of the problem, and
-this has a useful consequence.  If that variable is itself being solved for,
-by a heat conduction kernel elsewhere in the same problem, the thermal stress
-depends on an unknown of the system.  Because the property object is written in the
-automatic differentiation type, the derivative of the stress with respect to
-the temperature degrees of freedom is carried through :eq:`elasticity-thermal`
-alongside the derivatives with respect to the displacements.  The
-thermo-mechanical coupling is therefore differentiated exactly and Newton's
-method converges at its usual rate on the fully coupled system, with nothing
-lagged or iterated by hand.  A prescribed temperature
-field can be supplied as a variable fixed by a Dirichlet condition, in which
-case the coupling contributes nothing to the Jacobian.
+``three_dimensional`` makes no assumption about the geometry.  It takes three
+displacements on a three-dimensional mesh and uses :eq:`solid-hooke` in full.
 
 Anisotropic elasticity
 ----------------------
 
-An orthotropic material takes :math:`E_1, E_2, E_3`, :math:`\nu_{12}, \nu_{13},
-\nu_{23}` and :math:`G_{12}, G_{13}, G_{23}` in its own axes, through the
-compliance
+An orthotropic material takes three values each of ``youngs_modulus``
+(:math:`E_1, E_2, E_3`), ``poissons_ratio`` (:math:`\nu_{12}, \nu_{13},
+\nu_{23}`) and ``shear_modulus`` (:math:`G_{12}, G_{13}, G_{23}`) in its
+material axes 1, 2 and 3.  They form the compliance, in the Voigt order and with
+engineering shear strains,
 
 .. math::
 
-   S = \begin{bmatrix}
+   \mathbf{C}^{-1} = \begin{bmatrix}
    1/E_1 & -\nu_{12}/E_1 & -\nu_{13}/E_1 \\
    -\nu_{12}/E_1 & 1/E_2 & -\nu_{23}/E_2 \\
    -\nu_{13}/E_1 & -\nu_{23}/E_2 & 1/E_3
-   \end{bmatrix} \oplus \operatorname{diag}(1/G_{23}, 1/G_{13}, 1/G_{12}),
-   \qquad C = S^{-1},
+   \end{bmatrix} \oplus \operatorname{diag}\left(1/G_{23},\ 1/G_{13},\ 1/G_{12}\right) ,
 
-which must be positive definite (a stable material).  A fully anisotropic
-material gives :math:`C` itself.  ``orientation`` gives the axes 1 and 2 in the
-global axes (an angle about :math:`z` in two dimensions), and with :math:`R` the
-rotation whose columns are the material axes the stiffness in the global axes is
-:math:`C_g = M C M^{\mathsf{T}}`, with :math:`M` the Bond matrix of
-:math:`\sigma_g = M \sigma` (Voigt order, tensor shear stresses, engineering
-shear strains).  The test checks it against the rotation of the fourth-order
-tensor, :math:`C_{ijkl} = R_{ip} R_{jq} R_{kr} R_{ls} C_{pqrs}`.  In plane stress
-:math:`\varepsilon_{zz}` follows from :math:`\sigma_{zz} = 0`.
+whose inverse is the stiffness :math:`\mathbf{C}` (Pa), the
+:math:`6 \times 6` matrix of :math:`\boldsymbol{\sigma} = \mathbf{C}\,\boldsymbol{\varepsilon}_e`.
+The code refuses constants whose compliance is not positive definite, because
+they describe no stable material.  A fully anisotropic material gives
+:math:`\mathbf{C}` itself as ``stiffness``, in the material axes.
 
-Plasticity and creep
+The parameter ``orientation`` places the material axes.  In three dimensions it
+gives axes 1 and 2 as two vectors in the global axes, and axis 3 is their cross
+product.  In two dimensions it gives the angle of axis 1 from :math:`x`, in
+degrees, about :math:`z`.  With :math:`\mathbf{R}` the rotation whose columns are
+the material axes, the Bond matrix :math:`\mathbf{T}` maps the material stress to
+the global one, :math:`\boldsymbol{\sigma}_g = \mathbf{T}\boldsymbol{\sigma}`,
+and the stiffness in the global axes is
+
+.. math::
+
+   \mathbf{C}_g = \mathbf{T}\,\mathbf{C}\,\mathbf{T}^{\mathsf{T}} .
+
+In plane stress the code solves for the out-of-plane strains
+:math:`\varepsilon_{zz}`, :math:`\gamma_{yz}` and :math:`\gamma_{xz}` that make
+:math:`\sigma_{zz}`, :math:`\sigma_{yz}` and :math:`\sigma_{xz}` zero.  An
+anisotropic material is available at small strain.
+
+Thermal expansion
+-----------------
+
+A change of temperature :math:`T` (K) makes a free body expand without stress.
+The coupling ``thermal_expansion`` of a ``solid_mechanics`` and a
+``heat_transfer`` physics adds the thermal eigenstrain
+
+.. math::
+   :label: solid-thermal
+
+   \boldsymbol{\varepsilon}_{\mathrm{th}} = \alpha\,(T - T_0)\,\mathbf{I} ,
+
+with :math:`\alpha` the linear expansion coefficient
+(:math:`\mathrm{1/K}`, ``linear_expansion_coefficient``) and :math:`T_0` the
+temperature at which the solid is free of thermal strain (K,
+``stress_free_temperature``).  The property object
+``thermal_expansion_eigenstrain`` computes :eq:`solid-thermal` on the three
+normal components, and the stress object subtracts it in :eq:`solid-hooke`.  An
+isotropic expansion has no shear part.  :math:`T_0` has no default, because no
+value is right for every problem.
+
+A body heated above :math:`T_0` and restrained in its plane is in compression.
+In plane strain, where the out-of-plane strain is zero as well, it carries
+:math:`\sigma_{xx} = \sigma_{yy} = -E\alpha(T - T_0)/(1 - 2\nu)`.  In plane
+stress it expands freely through its thickness and carries
+:math:`\sigma_{xx} = \sigma_{yy} = -E\alpha(T - T_0)/(1 - \nu)`.
+
+The temperature is the field of the ``heat_transfer`` physics.  When that field
+is an unknown of the same problem, the stress depends on it, and the automatic
+differentiation carries :math:`\partial\boldsymbol{\sigma}/\partial T` into the
+Jacobian.  Newton's method then converges at its usual rate on the coupled
+system.  In a beam or a plate, the section integrates a thermal strain that is
+uniform through the thickness into a thermal force and a thermal moment.
+
+Finite strain
+-------------
+
+With ``large_deformation=True``, or with a hyperelastic material, the equations
+account for the change of shape.  They hold on the undeformed mesh (the total
+Lagrangian form).  The deformation gradient :math:`\mathbf{F}_d` (dimensionless)
+is taken with respect to the undeformed position :math:`\mathbf{X}` (m), and the
+equilibrium uses the first Piola-Kirchhoff stress :math:`\mathbf{P}` (Pa):
+
+.. math::
+
+   \mathbf{F}_d = \mathbf{I} + \nabla_{\mathbf{X}}\mathbf{u} , \qquad
+   J = \det\mathbf{F}_d , \qquad
+   \mathbf{P} = J\,\boldsymbol{\sigma}\,\mathbf{F}_d^{-\mathsf{T}} , \qquad
+   \nabla_{\mathbf{X}}\cdot\mathbf{P} + \mathbf{f}_0 = \mathbf{0} ,
+
+with :math:`J` the ratio of deformed to undeformed volume and
+:math:`\mathbf{f}_0` the body force per unit undeformed volume.  The property
+object ``finite_strain_stress`` declares :math:`\mathbf{P}` as
+``first_piola_kirchhoff_stress`` (nine components, row by row), which
+``stress_divergence`` reads.  It also declares ``deformation_gradient`` and
+``green_lagrange_strain``, the strain
+:math:`\tfrac{1}{2}(\mathbf{F}_d^{\mathsf{T}}\mathbf{F}_d - \mathbf{I})`.
+``stress`` holds the Cauchy stress and ``volumetric_strain`` holds
+:math:`J - 1`.  Finite strain is available in plane strain, axisymmetric and
+three-dimensional problems.
+
+The parameter ``elasticity`` chooses the law.
+
+- ``linear`` with ``large_deformation=True`` applies the rotated small strain of
+  Hughes and Winget.  Over a step, with :math:`\Delta\mathbf{F}_d` the change of
+  :math:`\mathbf{F}_d` and :math:`\mathbf{F}_{d,1/2}` its midpoint value, the
+  increment gradient :math:`\mathbf{L} = \Delta\mathbf{F}_d\,\mathbf{F}_{d,1/2}^{-1}`
+  gives the strain increment :math:`\operatorname{sym}\mathbf{L}` and the
+  rotation increment
+  :math:`\mathbf{Q} = (\mathbf{I} - \tfrac{1}{2}\mathbf{W})^{-1}(\mathbf{I} + \tfrac{1}{2}\mathbf{W})`,
+  with :math:`\mathbf{W} = \operatorname{skew}\mathbf{L}`.  The elastic strain
+  of the last step is rotated by :math:`\mathbf{Q}` and the strain increment is
+  added:
+
+  .. math::
+
+     \boldsymbol{\varepsilon}_e^{n+1} = \mathbf{Q}\,\boldsymbol{\varepsilon}_e^{n}\,\mathbf{Q}^{\mathsf{T}}
+     + \operatorname{sym}\mathbf{L} - \Delta\boldsymbol{\varepsilon}_{\mathrm{eig}} .
+
+  A rotation therefore makes no stress.  The stress follows from
+  :eq:`solid-hooke`, with the creep and plastic returns of small strain, and the
+  back stresses of kinematic hardening rotate with :math:`\mathbf{Q}`.  This law
+  suits materials whose elastic strains stay small while their total strains
+  are large, such as metals and ceramics.
+- ``neo-Hookean`` is the compressible neo-Hookean law
+
+  .. math::
+
+     \mathbf{P} = G\left(\mathbf{F}_d - \mathbf{F}_d^{-\mathsf{T}}\right)
+     + \lambda \ln J\,\mathbf{F}_d^{-\mathsf{T}} ,
+
+  exact for any deformation.  An eigenstrain enters as
+  :math:`\mathbf{F}_d = \mathbf{F}_e\mathbf{F}_{\mathrm{eig}}`, with the law
+  applied to the elastic part :math:`\mathbf{F}_e`.  The neo-Hookean law has no
+  creep or plasticity.
+
+A ``pressure`` at finite strain acts on the deformed surface.  Per unit
+undeformed area its traction is
+:math:`-p\,J\,\mathbf{F}_d^{-\mathsf{T}}\mathbf{N}` (Nanson's relation), with
+:math:`p` the pressure (Pa) and :math:`\mathbf{N}` the undeformed outward
+normal.
+
+Creep and plasticity
 --------------------
 
-**J2 plasticity.**  The yield function is :math:`q(\boldsymbol{\xi}) -
-\sigma_y(\bar{\varepsilon}_p, T) \le 0`, with :math:`q` the von Mises stress of
-the relative stress :math:`\boldsymbol{\xi} = \mathbf{s} - \sum_k
-\boldsymbol{\alpha}_k`, the flow is normal to it, and each back stress follows
-Armstrong and Frederick, :math:`\mathrm{d}\boldsymbol{\alpha}_k = \tfrac{2}{3}
-C_k\, \mathrm{d}\boldsymbol{\varepsilon}_p - \gamma_k \boldsymbol{\alpha}_k\,
-\mathrm{d}\bar{\varepsilon}_p` (Chaboche with several, Prager with
-:math:`\gamma_k = 0`).  ``yield_stress`` is any expression of the equivalent
-plastic strain and the temperature (linear, Swift, Voce, Ludwik hardening).
-Backward Euler with :math:`a_k = 1/(1 + \gamma_k \Delta p)` makes the relative
-stress at the end of the step parallel to :math:`\tilde{\boldsymbol{\xi}} =
-\mathbf{s}^{\text{trial}} - \sum_k a_k \boldsymbol{\alpha}_k^n`, so the return
-is one scalar equation,
+Creep and plasticity add a history at every integration point: the creep strain
+:math:`\boldsymbol{\varepsilon}_c`, the plastic strain
+:math:`\boldsymbol{\varepsilon}_p`, their equivalent values
+:math:`\bar\varepsilon_c` and :math:`\bar\varepsilon_p` (dimensionless) and the
+back stresses.  The code integrates them by the backward Euler method.  The
+increments solve their equations at the point, and their derivatives with
+respect to the unknowns follow from the implicit function theorem, so the
+Jacobian stays exact.  Both laws read the temperature: a field, a number, or the
+temperature of a ``thermal_expansion`` coupling.
+
+Creep
+~~~~~
+
+The parameter ``creep`` gives the equivalent creep strain rate
+:math:`\dot{\bar\varepsilon}_c` (:math:`\mathrm{1/s}`) as an expression of
+``von_mises_stress`` (Pa), ``temperature`` (K), ``grain_size`` (m), the time
+``t`` (s) and ``equivalent_creep_strain``, with named constants.  The creep
+strain flows along the deviatoric stress
+:math:`\operatorname{dev}\boldsymbol{\sigma}`, the stress less its mean.  With
+:math:`\sigma_{\mathrm{eq}} = \sqrt{\tfrac{3}{2}\operatorname{dev}\boldsymbol{\sigma} :
+\operatorname{dev}\boldsymbol{\sigma}}` the von Mises stress (Pa) of the trial
+stress, the stress of the elastic strain before the return, the radial return
+solves
 
 .. math::
 
-   q(\tilde{\boldsymbol{\xi}}) - \bigl(3G + \textstyle\sum_k a_k C_k\bigr)\Delta p
-   - \sigma_y(\bar{\varepsilon}_p^n + \Delta p) = 0 ,
+   \Delta\bar\varepsilon_c = \Delta t\,\dot{\bar\varepsilon}_c\left(
+   \sigma_{\mathrm{eq}} - 3G\,\Delta\bar\varepsilon_c,\ T,\
+   \bar\varepsilon_c^{\,n} + \Delta\bar\varepsilon_c \right) ,
+   \qquad
+   \Delta\boldsymbol{\varepsilon}_c = \tfrac{3}{2}\,\Delta\bar\varepsilon_c\,
+   \frac{\operatorname{dev}\boldsymbol{\sigma}}{\sigma_{\mathrm{eq}}} ,
 
-solved by Newton's method in a bracket.  The derivatives of :math:`\Delta p`
-with respect to the unknowns follow from the implicit function theorem, so the
-tangent is exact.  With creep, both flow along the deviator of the trial stress,
-and the creep and plastic increments solve the two equations :math:`\Delta c =
-\Delta t\, \dot{\varepsilon}_c(q_e)` and :math:`q_e = \sigma_y` together, with
-:math:`q_e = q^{\text{trial}} - 3G(\Delta c + \Delta p)`.  The tests compare a
-strain cycle of Armstrong-Frederick and Chaboche hardening with the uniaxial law
-integrated by hand (to :math:`5 \times 10^{-14}`, with the Bauschinger effect),
-and monotonic hardening with its closed form at first order in the step.
+with :math:`\Delta t` the time step (s).  The root lies in
+:math:`[0,\ \sigma_{\mathrm{eq}}/(3G)]`, so the stress cannot reverse.  Creep
+acts in a time step only.
 
-**Anisotropic plasticity and creep.**  With an anisotropic stiffness or Hill's
-equivalent stress :math:`q = \sqrt{\boldsymbol{\sigma} \cdot P
-\boldsymbol{\sigma}}` (F, G, H, L, M, N in the material axes), the return is the
-closest-point projection: Newton's method on the stress, :math:`\Delta c` and
-:math:`\Delta p` at the point, with :math:`S\boldsymbol{\sigma} -
-\boldsymbol{\varepsilon}^{\text{trial}} + (\Delta c + \Delta p)\,
-\partial q/\partial \boldsymbol{\sigma} = 0`, and the derivatives again by the
-implicit function theorem.  For the isotropic stiffness and
-:math:`F = G = H = 1/2`, :math:`L = M = N = 3/2` it gives the radial return to
-round-off.
+J2 plasticity
+~~~~~~~~~~~~~
 
-**Finite strain.**  The rotated small strain of Hughes and Winget rotates the
-elastic strain and the back stresses with the rotation increment, so the history
-is objective; the return is that of small strain.  A neo-Hookean material has no
-creep or plasticity.
-
-Viscoelasticity, contact and fracture
--------------------------------------
-
-**Viscoelasticity.**  A generalized Maxwell material adds branches to the
-long-term moduli.  Each shear branch :math:`(G_i, \tau_i)` carries the deviatoric
-stress :math:`\mathbf{s}_i`, which relaxes as :math:`\dot{\mathbf{s}}_i = 2 G_i
-\dot{\mathbf{e}} - \mathbf{s}_i / \tau_i`.  With the strain rate constant over
-a step, the update is exact:
+J2 plasticity yields on the second invariant of the deviatoric stress, through
+the von Mises stress.  The parameter ``plasticity`` gives the yield stress
+:math:`\sigma_y` (Pa) as an
+expression of ``equivalent_plastic_strain`` and ``temperature``, which sets the
+isotropic hardening.  A number is perfect plasticity, and any hardening law that
+is an expression of these two, such as a Voce law, is accepted.  The yield
+function is
 
 .. math::
 
-   \mathbf{s}_i^{n+1} = e^{-x} \mathbf{s}_i^n + 2 G_i \frac{1 - e^{-x}}{x}
-   \Delta \mathbf{e} , \qquad x = \Delta t / \tau_i ,
+   \sigma_{\mathrm{eq}}(\boldsymbol{\xi}) - \sigma_y(\bar\varepsilon_p, T) \le 0 ,
+   \qquad
+   \boldsymbol{\xi} = \operatorname{dev}\boldsymbol{\sigma} - \sum_k \mathbf{X}_k ,
 
-and the bulk branches act on the volumetric strain in the same way.  A steady
-solve is the relaxed state, with the long-term moduli only, and a step of zero
-length is the instantaneous response.
-
-**Contact.**  The mortar contact of two surfaces holds the weighted gap
-:math:`g_j = \int N_j (\mathbf{x}_p - \mathbf{x}_s) \cdot \mathbf{n}` of each
-secondary node and the contact pressure :math:`\lambda_j`, a Lagrange multiplier,
-to :math:`g_j \ge 0`, :math:`\lambda_j \ge 0`, :math:`\lambda_j g_j = 0`.
-Newton's method solves the complementarity function :math:`\lambda_j - \max(0,
-\lambda_j - c\, g_j / D_j)` with the active set; the scale :math:`c` changes the
-convergence only.  Coulomb friction is the complementarity function of Hüeber,
-Stadler and Wohlmuth on the weighted slip.
-
-**Cohesive zones.**  A cohesive zone bonds two surfaces that coincide at the
-start.  The points of the two surfaces are paired once, on the undeformed
-surfaces, as a bonded interface pairs its material points.  The separation of a
-pair, :math:`\boldsymbol{\delta} = \mathbf{x}_p - \mathbf{x}_s`, has the normal
-part :math:`g_n` and the tangential part :math:`g_t`, and the traction on the
-secondary surface is
+with :math:`\boldsymbol{\xi}` the relative stress and :math:`\mathbf{X}_k` the
+back stresses (Pa) of kinematic hardening.  The flow is normal to the yield
+surface.  Each back stress follows the law of Armstrong and Frederick,
 
 .. math::
 
-   \mathbf{t} = K (1 - D) \boldsymbol{\delta} ,
+   \mathrm{d}\mathbf{X}_k = \tfrac{2}{3} C_k\,\mathrm{d}\boldsymbol{\varepsilon}_p
+   - \gamma_k\,\mathbf{X}_k\,\mathrm{d}\bar\varepsilon_p ,
 
-except that a closing normal part, :math:`g_n < 0`, keeps the full stiffness
-:math:`K`.  The damage grows with the largest effective opening reached,
-:math:`\kappa = \max \sqrt{\langle g_n \rangle^2 + g_t^2}`:
-
-.. math::
-
-   D = \frac{\delta_f (\kappa - \delta_0)}{\kappa (\delta_f - \delta_0)} ,
-   \qquad \delta_0 = \sigma_c / K , \qquad \delta_f = 2 G_c / \sigma_c ,
-
-with :math:`D = 0` below :math:`\delta_0` and :math:`D = 1` above
-:math:`\delta_f`.  The traction peaks at the strength :math:`\sigma_c`.  The
-dissipation is :math:`\tfrac{1}{2} K \kappa^2\, \mathrm{d}D = \tfrac{1}{2} K
-\delta_0 \delta_f\, \mathrm{d}\kappa`, so the work of separation is
-:math:`\tfrac{1}{2} \sigma_c \delta_f = G_c` along any path, in tension, in
-shear or mixed.  The physics sets :math:`K = 50 E / h`, with :math:`h` the mean
-side of the secondary surface, so that the zone opens by a small fraction of an
-element before it softens.  The bodies must be stiffer than the softening slope
-:math:`\sigma_c^2 / 2 G_c` for the separation to be stable; otherwise the zone
-fails abruptly and the energy it releases is lost from a static solve.
-
-**Fracture mechanics.**  The J-integral of a crack is computed as the domain
-integral over a ring around the tip, with a weight that falls from 1 to 0
-across the ring, and the stress intensity factors as the interaction integral
-with the Williams fields of modes I and II, :math:`K = E' I / 2`.
-
-**Phase-field fracture.**  The AT2 model degrades the tensile part of the strain
-energy by :math:`(1 - d)^2`, with the split of Miehe by the sign of the principal
-strains (a zero strain is compressive), and solves
+with :math:`C_k` its modulus (Pa) and :math:`\gamma_k` its dynamic recovery
+(dimensionless), given as ``kinematic_hardening`` ``{"C": [...], "gamma": [...]}``.
+Several back stresses make the Chaboche model, and :math:`\gamma_k = 0` makes
+Prager's linear hardening.  The backward Euler step with
+:math:`a_k = 1/(1 + \gamma_k\Delta\bar\varepsilon_p)` makes the relative stress
+at the end of the step parallel to
+:math:`\tilde{\boldsymbol{\xi}} = \operatorname{dev}\boldsymbol{\sigma}^{\mathrm{trial}}
+- \sum_k a_k \mathbf{X}_k^n`, so the return is one scalar equation,
 
 .. math::
 
-   -G_c l \nabla^2 d + \left(\frac{G_c}{l} + 2H\right) d = 2H ,
-   \qquad H = \max_{\tau \le t} \psi^+ ,
+   \sigma_{\mathrm{eq}}(\tilde{\boldsymbol{\xi}})
+   - \Bigl(3G + \sum_k a_k C_k\Bigr)\Delta\bar\varepsilon_p
+   - \sigma_y\left(\bar\varepsilon_p^{\,n} + \Delta\bar\varepsilon_p\right) = 0 ,
 
-so that the crack costs the energy :math:`G_c` per area and does not heal.
+which Newton's method solves inside a bracket of the root.  Plasticity acts in
+a steady solve and in a time step.
 
-Trusses and shells
-------------------
+With creep and isotropic hardening together, both strains flow along the
+deviator of the trial stress, whose von Mises value falls to
+:math:`\sigma_{\mathrm{eq}} - 3G(\Delta\bar\varepsilon_c + \Delta\bar\varepsilon_p)`.
+The two increments solve the creep equation and, where the point yields, the
+yield condition at that stress, together.  Creep with kinematic hardening is
+not available.
 
-**Trusses.**  A bar of a line mesh, of direction :math:`\mathbf{t}`, carries the
-axial force :math:`N = EA\, \varepsilon` with the stretch :math:`\varepsilon =
-\mathbf{t} \cdot \partial \mathbf{u} / \partial s`, and nothing across it.  The
-equation of the displacement :math:`u_i` takes the flux :math:`N t_i \mathbf{t}`.
-A bar has no stiffness across it, so a bar meshed with more than one element has
-free interior nodes: a truss takes one element per bar.
+Anisotropic creep and plasticity
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-**Shells.**  Each quadrilateral of a surface mesh is a flat shell with its own
-axes :math:`\mathbf{e}_1, \mathbf{e}_2` in its plane and :math:`\mathbf{e}_3`
-normal to it.  The unknowns are the displacements and the rotations
-:math:`\boldsymbol{\theta}` about the global axes; in the axes of the facet they
-are :math:`\mathbf{u}_l = R \mathbf{u}` and :math:`\boldsymbol{\theta}_l = R
-\boldsymbol{\theta}`, and the rotations of the normal are :math:`\beta =
-(\theta_{l2}, -\theta_{l1})`.  The strains are those of the Mindlin plate,
-
-.. math::
-
-   \varepsilon_{ab} = \operatorname{sym} \partial_a u_{lb}, \qquad
-   \kappa_{ab} = \operatorname{sym} \partial_a \beta_b, \qquad
-   \gamma_a = \partial_a w_l + \beta_a ,
-
-with the resultants :math:`N = A[(1-\nu)\varepsilon + \nu \operatorname{tr}
-\varepsilon\, I]`, :math:`M = D[(1-\nu)\kappa + \nu \operatorname{tr}\kappa\,
-I]` and :math:`Q = k G h \gamma`, :math:`A = Eh/(1-\nu^2)`, :math:`D = A h^2/12`.
-The rotation about the normal has no stiffness of its own in a plate, but where
-facets meet at an angle it carries bending.  It is tied to the rotation of the
-membrane, which it is in the continuum [HughesBrezzi1989]_:
-:math:`\omega = \theta_{l3} - \tfrac{1}{2}(\partial_1 u_{l2} - \partial_2
-u_{l1})`, with the moment :math:`m = G h\, \omega`.  The virtual work gives the
-flux and the source of each global equation.  The shear is integrated at the
-centre of the element, as for the plate, so that thin shells do not lock.  On a
-flat mesh the shell is the plate formulation, and the tests check it to
-:math:`10^{-9}`, also with the plate turned in space.  The Scordelis-Lo roof and
-the pinched cylinder [MacNealHarder1985]_ converge from below to their
-references: 0.927, 0.969 and 0.990 of 0.3024 on 4, 8 and 16 elements a side, and
-0.73, 0.93 and 0.997 of 1.8248e-5 on 8, 16 and 32.
-
-
-Every canonical equation has a duality pair: the primary variable, the unknown
-itself, and the secondary variable, the outward normal component of the flux.
-For the equation of the displacement component :math:`u_i` the pair is
-:math:`u_i` and the traction component :math:`t_i = n_j\sigma_{ij}`, as shown
-above.  At every boundary point exactly one member of the pair is specified,
-and the choice is made independently for each component: an edge may have its
-normal displacement prescribed and its tangential traction prescribed, which
-is how a frictionless symmetry plane is modelled.  A boundary carrying no
-condition at all for a component has the natural condition with a zero value,
-:math:`t_i = 0`, so a traction-free surface needs no input.
-
-Prescribed displacement
-^^^^^^^^^^^^^^^^^^^^^^^
-
-``Dirichlet`` prescribes the primary variable,
-:math:`u_i = g(\mathbf{x}, t)` at every node of the named boundary, replacing
-that node's equilibrium equation.  A zero value is a rigid support in that
-direction and a non-zero value a prescribed settlement or stretch.  Prescribing
-one component and leaving the other free is a roller support, and prescribing
-all of them is a clamp.  When a solve ramps its data to converge, a
-prescribed displacement moves from its starting value to its own with the
-loads, as a displacement-controlled test does.
-
-Prescribed traction
-^^^^^^^^^^^^^^^^^^^
-
-``traction`` prescribes the secondary variable directly:
-the component of the surface traction, in force per unit area, conjugate to
-the variable the object is attached to.  Because that variable determines the
-component, the object has no ``component`` parameter and is added once per
-displacement variable on the loaded boundary.  The value may be a constant or
-a function of position and time.  The sign convention is tied to the
-coordinate axes, independently of the orientation of the surface, so a
-positive value acts along the positive direction of that variable's axis
-whichever way the outward normal points, and one positive value pulls on a
-right-hand edge while pushing on a left-hand edge.  The value
-is multiplied by the thickness before it enters the residual.
-
-Pressure
-^^^^^^^^
-
-``pressure`` applies a load that follows the orientation of
-the surface.  A fluid pressure :math:`p` acts normal to the surface and
-towards the body, so the traction it exerts is
-
-.. math::
-   :label: elasticity-pressure
-
-   t_i = -p\, n_i ,
-
-with :math:`\mathbf{n}` the outward unit normal.  The convention is contained
-entirely in the minus sign: a positive pressure presses inward, against the outward
-normal, and a negative value is a suction.  Because each component of the
-normal multiplies the pressure separately, one instance acts on each
-displacement variable.  The object takes the list ``displacements`` and finds
-the component of each instance from the place of its variable in that list, so
-the component cannot disagree with the variable.  The pressure is multiplied by
-the thickness in plane problems.
-
-Concentrated force
-^^^^^^^^^^^^^^^^^^
-
-``point_source`` applies a concentrated force at one or more nodes, either by
-naming a boundary whose nodes all receive the load or by giving coordinates
-that are assigned to the nearest node.  The magnitude is a force, in the units
-conjugate to the displacement, and a positive value acts along the positive
-direction of that variable's axis.  A concentrated force is an idealisation
-that produces an unbounded stress at the loaded point in the continuum
-solution, so the stress reported in the neighbouring elements depends on the
-mesh and should not be read as a converged value, although displacements away
-from the load converge normally.
-
-Reactions at a prescribed-displacement boundary
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-When a node's equation is replaced by a prescribed displacement, the equation
-that was replaced is not discarded.  Evaluated at the converged solution it
-returns the secondary variable of that equation integrated over the part of
-the node's control domain lying on the boundary,
+The key ``hill`` of ``creep`` or ``plasticity`` gives Hill's six coefficients
+:math:`\mathcal{F}, \mathcal{G}, \mathcal{H}, \mathcal{L}, \mathcal{M},
+\mathcal{N}` (dimensionless) in the material axes.  They define the equivalent
+stress :math:`\sigma_{\mathrm{eq}} = \sqrt{\boldsymbol{\sigma}\cdot\mathbf{Y}\boldsymbol{\sigma}}`,
+with, in the Voigt order with tensor shear stresses,
 
 .. math::
 
-   Q_I = \int_{\partial \Omega_I \cap \partial\Omega} h\, t_i \,\mathrm{d}S ,
+   \mathbf{Y} = \begin{bmatrix}
+   \mathcal{G}+\mathcal{H} & -\mathcal{H} & -\mathcal{G} \\
+   -\mathcal{H} & \mathcal{F}+\mathcal{H} & -\mathcal{F} \\
+   -\mathcal{G} & -\mathcal{F} & \mathcal{F}+\mathcal{G}
+   \end{bmatrix} \oplus \operatorname{diag}\left(2\mathcal{L},\ 2\mathcal{M},\ 2\mathcal{N}\right) ,
 
-which is the force the support transmits to the body at that node, positive
-along the positive direction of the variable's axis.  This is the quantity to
-compare against a hand-calculated support reaction.  Summed over a boundary it
-is the resultant support force there,
-:meth:`~dualmesh.physics.SolidMechanics.reaction_force`, which for a body in
-equilibrium balances the applied loading.
+turned to the global axes by the Bond matrix.  The values
+:math:`\mathcal{F} = \mathcal{G} = \mathcal{H} = 1/2` and
+:math:`\mathcal{L} = \mathcal{M} = \mathcal{N} = 3/2` give the von Mises stress.
+With Hill's stress or an anisotropic stiffness, the return is the closest-point
+projection: Newton's method on the stress and the two increments at the point,
+with
 
-The following error is easy to make, and its result appears plausible.  The
-reaction stored at a node is the whole of the support force at
-that node, gathered from every part of the boundary touching its control
-domain.  A node at the corner where two constrained boundaries meet therefore
-belongs to both and appears in the list returned for each, so adding the
-totals of two boundaries that share such a node counts that node's reaction
-twice and overstates the resultant.  When a resultant over several boundaries
-is wanted, the node lists should be merged and each node counted once, or a
-single boundary holding all the constrained nodes should be defined in the
-mesh.
+.. math::
 
-The thickness parameter
------------------------
+   \mathbf{C}^{-1}\boldsymbol{\sigma} - \boldsymbol{\varepsilon}_e^{\mathrm{trial}}
+   + \left(\Delta\bar\varepsilon_c + \Delta\bar\varepsilon_p\right)
+   \frac{\partial\sigma_{\mathrm{eq}}}{\partial\boldsymbol{\sigma}} = \mathbf{0} .
 
-The ``thickness`` parameter :math:`h` is the out-of-plane dimension of a plane
-problem: the thickness of the sheet in plane stress, or the length of the
-slice being modelled in plane strain.  It multiplies the entire equilibrium
-equation, i.e., the flux :eq:`elasticity-flux` assembled by
-``stress_divergence``, the traction assembled by
-``traction`` and the pressure assembled by
-``pressure``, converting stresses per unit area into forces
-per unit length of the cross-section so that every residual has the
-dimensions of a force.  It applies to ``plane_stress`` and ``plane_strain``
-only: in three dimensions there is no out-of-plane dimension to account for,
-and in the axisymmetric case the measure :math:`2\pi r` already supplies the
-circumferential extent of the material surrounding each control domain, so in
-both cases the value stays at its default of one, and another value is
-refused.
+Hill plasticity and an anisotropic stiffness are not available with kinematic
+hardening.
 
-The thickness is given once, to the ``stress_divergence`` kernels.  The
-``traction``, ``pressure`` and ``mortar_contact`` conditions of a displacement
-read it from the kernel of that displacement, so the loads and the stiffness
-are always scaled by the same :math:`h`, which cancels out of the displacement
-solution of a linear problem.  A condition reads one thickness: when the
-kernels of one displacement have different thicknesses (blocks of different
-thickness), the condition is refused.  The ``solid_mechanics`` physics passes
-its ``thickness`` to its kernels and its body force.
+Viscoelasticity
+---------------
 
-One load is deliberately excluded from this rule.  A ``point_source`` is
-applied **without** the thickness factor, because a concentrated load is a
-total force, whereas the traction and the pressure are forces per unit area.
-The value supplied must therefore already be the total force acting through
-the whole thickness: a line load of :math:`q` per unit length along the
-out-of-plane direction becomes a point force of :math:`q h`.
+The parameter ``viscoelasticity`` makes a generalized Maxwell material:
+branches that add to the long-term moduli :math:`E` and :math:`\nu`.  A shear
+branch of modulus :math:`G_i` (Pa) and relaxation time :math:`\tau_i` (s)
+carries the deviatoric stress :math:`\boldsymbol{\sigma}_i` (Pa), which relaxes
+as
 
-Verification
-------------
+.. math::
 
-The module is verified in ``tests/python/test_solid_mechanics.py``.  A
-quadrant of a plate under uniform edge stress has the exact solution
-:math:`u(a) = t_0 a / E`, which the computed edge displacement matches to
-machine precision with an exactly uniform stress field.  A cantilevered plate
-under a uniform edge load reproduces the published dual mesh values
-[Reddy2024]_ on meshes of one, two, four and eight elements a side, both for
-the corner displacements and for the stress at the centre of the element
-nearest the support.  A thick-walled cylinder under internal pressure, solved
-as a plane-strain quadrant of an annulus with symmetry conditions on the
-straight edges and ``pressure`` on the bore, reproduces the
-published quadrilateral values to about 0.5 %, which is the accuracy the
-published description of the mesh permits, converges monotonically to the
-Lamé solution on quadrilateral and triangular meshes alike, and agrees to
-within 0.2 % with the same cylinder solved as an axisymmetric problem.
+   \dot{\boldsymbol{\sigma}}_i = 2G_i\,\dot{\mathbf{e}} - \frac{\boldsymbol{\sigma}_i}{\tau_i} ,
+
+with :math:`\mathbf{e}` the deviatoric strain.  For a strain that varies
+linearly over the step, the update of Herrmann and Taylor is exact:
+
+.. math::
+
+   \boldsymbol{\sigma}_i^{n+1} = e^{-\xi_i}\,\boldsymbol{\sigma}_i^{n}
+   + 2G_i\,\frac{1 - e^{-\xi_i}}{\xi_i}\left(\mathbf{e}^{n+1} - \mathbf{e}^{n}\right) ,
+   \qquad \xi_i = \frac{\Delta t}{\tau_i} .
+
+A bulk branch of modulus :math:`K_i` (Pa) updates its mean stress from the
+volumetric strain in the same way.  A steady solve gives the relaxed state, in
+which the branches carry no stress.  A step of zero length gives the
+instantaneous response.  Viscoelasticity is available at small strain, outside
+plane stress, and without creep or plasticity.
+
+Fracture
+--------
+
+Crack-tip integrals
+~~~~~~~~~~~~~~~~~~~
+
+For a crack along :math:`x` in plane strain or plane stress, with an isotropic
+material of constant moduli,
+:meth:`~dualmesh.physics.SolidMechanics.j_integral` and
+:meth:`~dualmesh.physics.SolidMechanics.stress_intensity` compute the domain
+integrals over the ring between an inner and an outer radius about the tip.  The
+weight :math:`\zeta` (dimensionless) is 1 inside the inner radius, 0 outside the outer one and
+linear between, and in the crack axes
+
+.. math::
+
+   \mathcal{J} = \int_{\mathrm{ring}} \left( \sigma_{ij}\,\frac{\partial u_j}{\partial x_1}
+   - \psi\,\delta_{1i} \right) \frac{\partial \zeta}{\partial x_i}\,\mathrm{d}A ,
+
+with :math:`\mathcal{J}` the J-integral (:math:`\mathrm{J/m^2}`), :math:`\psi` the
+strain energy density (:math:`\mathrm{J/m^3}`) and :math:`\delta_{1i}` the
+Kronecker delta.  The stress intensity factors :math:`K_I` and :math:`K_{II}`
+(:math:`\mathrm{Pa\,m^{1/2}}`) follow from the interaction integral
+:math:`\mathcal{I}` with the Williams fields of mode I or II at unit intensity,
+:math:`K = E'\mathcal{I}/2`, with :math:`E' = E` in plane stress and
+:math:`E' = E/(1-\nu^2)` in plane strain.  The integrals take the faces of the
+crack free of traction.
+
+Phase-field fracture
+~~~~~~~~~~~~~~~~~~~~
+
+The parameter ``phase_field_fracture`` adds the damage field
+:math:`d` (dimensionless, 0 intact and 1 broken) of the second
+Ambrosio-Tortorelli model (AT2), with the toughness :math:`G_c`
+(:math:`\mathrm{J/m^2}`, ``toughness``) and the width of the diffuse crack
+:math:`\ell` (m, ``length``).  The split of Miehe divides the elastic energy by
+the signs of the principal strains :math:`\varepsilon_k` and of the trace,
+
+.. math::
+
+   \psi^+ = \tfrac{1}{2}\lambda\,\langle\operatorname{tr}\boldsymbol{\varepsilon}_e\rangle_+^2
+   + G \sum_k \langle\varepsilon_k\rangle_+^2 ,
+
+with :math:`\langle x\rangle_+ = \max(x, 0)`.  A zero strain belongs to the
+compressive part, so the undeformed state has the stiffness of the intact
+material.  The tensile stress is degraded by :math:`(1-d)^2` and the compressive
+stress is kept.  The damage solves
+
+.. math::
+
+   -G_c\,\ell\,\nabla^2 d + \left(\frac{G_c}{\ell} + 2\psi^+_{\max}\right) d
+   = 2\psi^+_{\max} ,
+   \qquad \psi^+_{\max}(t) = \max_{t' \le t} \psi^+(t') ,
+
+so a crack costs the energy :math:`G_c` per unit area and does not heal.
+Phase-field fracture is available for an isotropic elastic material at small
+strain in plane strain, generalized plane strain and axisymmetric problems.
+
+Conditions between bodies
+-------------------------
+
+Contact and cohesive zones act between two surfaces of a two-dimensional problem
+meshed with linear elements.
+
+Contact
+~~~~~~~
+
+The condition ``contact`` with ``primary`` and ``secondary`` surfaces holds the
+bodies apart by the mortar method.  The contact pressure :math:`p_{c,j}` (Pa) at
+node :math:`j` of the secondary surface is a Lagrange multiplier, the variable
+``contact_pressure``.  The weighted gap of the node is
+
+.. math::
+
+   g_j = \int N_j\,(\mathbf{x}_p - \mathbf{x}_s)\cdot\mathbf{n}\,\mathrm{d}S ,
+
+with :math:`N_j` the shape function of the node, :math:`\mathbf{x}_s` a point of
+the secondary surface, :math:`\mathbf{x}_p` the primary point it projects to
+along the secondary normal :math:`\mathbf{n}`, and the integral over the
+secondary surface.  The gap and the pressure satisfy
+:math:`g_j \ge 0`, :math:`p_{c,j} \ge 0` and :math:`p_{c,j}\,g_j = 0`, which the
+code writes as the complementarity function
+
+.. math::
+
+   p_{c,j} - \max\left(0,\ p_{c,j} - c\,\frac{g_j}{\bar N_j}\right) = 0 ,
+   \qquad \bar N_j = \int N_j\,\mathrm{d}S ,
+
+and solves by Newton's method with the active set.  The scale :math:`c`
+(:math:`\mathrm{Pa/m}`), Young's modulus over the mean side length of the
+secondary surface, changes the convergence and leaves the solution unchanged.
+The pressure acts as :math:`-p_{c,j}\mathbf{n}` on the secondary surface and
+:math:`+p_{c,j}\mathbf{n}` on the primary one, so the forces balance.  With a
+``friction_coefficient``, Coulomb friction adds the tangential traction as a
+second multiplier, with the complementarity function of Hüeber, Stadler and
+Wohlmuth on the weighted slip.
+
+Cohesive zones
+~~~~~~~~~~~~~~
+
+The condition ``cohesive`` bonds two surfaces that coincide at the start, with
+the ``strength`` :math:`\sigma_c` (Pa) and the ``toughness`` :math:`G_c`
+(:math:`\mathrm{J/m^2}`).  The code pairs the points of the two surfaces once,
+on the undeformed surfaces.  The separation of a pair,
+:math:`\boldsymbol{\delta} = \mathbf{x}_p - \mathbf{x}_s` (m), has the normal
+part :math:`\delta_n` and the tangential part :math:`\delta_t`, and the traction
+on the secondary surface is
+
+.. math::
+
+   \mathbf{t} = K_c\,(1 - D_c)\,\boldsymbol{\delta} ,
+
+with :math:`K_c` the stiffness of the bond (:math:`\mathrm{Pa/m}`) and
+:math:`D_c` its damage.  A closing normal part, :math:`\delta_n < 0`, keeps the
+full stiffness, so the surfaces do not pass through each other.  The damage
+grows with the largest effective opening reached,
+:math:`\delta_{\max} = \max \sqrt{\langle\delta_n\rangle_+^2 + \delta_t^2}`:
+
+.. math::
+
+   D_c = \frac{\delta_f\,(\delta_{\max} - \delta_0)}{\delta_{\max}\,(\delta_f - \delta_0)} ,
+   \qquad \delta_0 = \frac{\sigma_c}{K_c} , \qquad \delta_f = \frac{2G_c}{\sigma_c} ,
+
+with :math:`D_c = 0` below :math:`\delta_0` and :math:`D_c = 1` above
+:math:`\delta_f`.  The traction peaks at :math:`\sigma_c`.  The dissipation
+:math:`\tfrac{1}{2}K_c\,\delta_{\max}^2\,\mathrm{d}D_c` integrates from
+:math:`\delta_0` to :math:`\delta_f` to
+:math:`\tfrac{1}{2}\sigma_c\,\delta_f = G_c` for any mix of opening and
+sliding.  The physics sets :math:`K_c = 50\,E/h`, with :math:`h` the mean side
+length of the secondary surface.
+
+Dynamics
+--------
+
+A ``density`` adds the inertia :math:`\rho\,\partial^2\mathbf{u}/\partial t^2`
+of :eq:`solid-momentum`.  A transient solve integrates it by the generalized-alpha
+method of Chung and Hulbert [ChungHulbert1993]_, or by the average acceleration
+rule of Newmark, the ``time_scheme`` ``"Newmark"`` of
+:meth:`~dualmesh.Problem.solve_transient`.  The parameter ``spectral_radius``
+:math:`\rho_\infty` of the generalized-alpha method sets the damping of the
+modes that the mesh cannot resolve, from 0 to 1, with the default 0.75.
+:doc:`nonlinear_and_time` states both schemes.  An eigenvalue study takes the
+density for the natural frequencies.  The parameter ``initial_condition`` gives
+the initial ``displacement`` and ``velocity``, and the default is a body
+undeformed and at rest.
+
+The parameter ``damping`` adds Rayleigh damping
+:math:`a\,\mathbf{M} + b\,\mathbf{K}`, with :math:`\mathbf{M}` the mass matrix,
+:math:`\mathbf{K}` the elastic stiffness at small strain, :math:`a`
+(:math:`\mathrm{1/s}`, ``mass``) and :math:`b` (s, ``stiffness``).  The mass
+part is a first time derivative with the coefficient :math:`a\rho`.  The
+stiffness part is the kernel ``stiffness_damping``, the flux of the stress rate
+:math:`b\,\mathbf{C}\,\dot{\boldsymbol{\varepsilon}}` of the velocity of the
+step.
+
+Boundary conditions
+-------------------
+
+At every boundary point each displacement component has either its value or its
+traction component prescribed, independently of the other components.  A
+boundary with no condition for a component has zero traction, so a free surface
+needs no input.
+
+- ``Dirichlet`` prescribes :math:`u_i` at the nodes of a boundary.  Zero is a
+  support in that direction, and all components zero is a clamp.
+- ``symmetry`` holds the displacement normal to a plane of symmetry at zero and
+  leaves the tangential ones free.  The side set lies in a plane normal to a
+  coordinate axis.
+- ``normal_displacement`` prescribes :math:`\mathbf{u}\cdot\mathbf{n}` on an
+  inclined or curved face and leaves the tangential displacements free.  The
+  normal force at each node is a Lagrange multiplier, and the normal of a node
+  is the mean of the normals of its sides, weighted by their areas.
+- ``rotation`` turns a boundary by an ``angle`` (rad) about an axis through a
+  ``center``.  At small strain it prescribes
+  :math:`\mathbf{u} = \vartheta\,\mathbf{k}\times(\mathbf{x} - \mathbf{c})`, with
+  :math:`\vartheta` the angle, :math:`\mathbf{k}` the unit axis and
+  :math:`\mathbf{c}` the center.  At finite strain it prescribes the rotation of
+  Rodrigues.
+- ``traction`` prescribes the traction component of its variable, in force per
+  unit area.  A positive value acts along the positive axis of that variable
+  whichever way the outward normal points.  ``total_force`` gives the total
+  force instead, spread uniformly over the area of the boundary.
+- ``pressure`` gives the traction :math:`t_i = -p\,n_i`.  A positive pressure
+  presses inward, and a negative one is a suction.
+- ``torque`` applies a torque :math:`M_t` (N m) as the traction
+  :math:`M_t\,\mathbf{k}\times\mathbf{r}/J_p` of the torsion of a circular shaft,
+  with :math:`\mathbf{r} = \mathbf{x} - \mathbf{c}` and
+  :math:`J_p = \int |\mathbf{k}\times\mathbf{r}|^2\,\mathrm{d}A` the polar moment
+  of the boundary (:math:`\mathrm{m^4}`).
+- ``point_source`` applies a concentrated force at the nodes of a boundary or at
+  the node nearest to a point.  The continuum stress under a point force is
+  unbounded, so the stress next to it depends on the mesh, while the
+  displacements away from it converge.
+
+``rotation`` and ``torque`` act in plane strain, plane stress and
+three-dimensional problems.
+
+Reactions
+~~~~~~~~~
+
+At a node with a prescribed displacement the code replaces the equation of that
+component and keeps its residual.  At the converged solution the residual is
+the force that the support transmits to the body at the node.
+:meth:`~dualmesh.physics.SolidMechanics.reaction_force` sums it over a
+boundary.  The reaction of a node is that of its whole equation, so a corner
+node of two constrained boundaries counts in each of them.  To sum the reaction
+over several boundaries, merge their nodes into one boundary of the mesh.
+
+The thickness of a plane problem
+--------------------------------
+
+The parameter ``thickness`` :math:`H` (m) is the out-of-plane size of a plane
+problem: the thickness of the sheet in plane stress, or the length of the slice
+in plane strain.  It multiplies the flux of ``stress_divergence``, the body
+force, the ``traction``, the ``pressure`` and the contact conditions, so every
+residual is a force.  ``traction`` and ``pressure`` read :math:`H` from the
+``stress_divergence`` kernel of their displacement, and the physics passes the
+same :math:`H` to the contact conditions, so the loads and the stiffness scale
+together.  A condition takes one thickness, so it refuses blocks of different
+thickness.  The default is 1 m.  A three-dimensional,
+axisymmetric or generalized plane strain problem takes no thickness, because the
+measure :math:`2\pi r` or the section already gives its extent.
+
+A ``point_source`` is a total force and has no thickness factor.  A line load
+:math:`w_z` (:math:`\mathrm{N/m}`) along the out-of-plane direction is therefore
+the point force :math:`w_z H`.
+
+Structural models
+-----------------
+
+A beam, a plate or a shell is a three-dimensional elastic body whose
+displacement through the thickness is restricted, and whose equations are
+integrated through it.  The code writes every model as a system of
+second-order equations in the balance-law form, which DMCDM requires.  The
+models are linear elastic at small strain, with the option ``von_karman`` of
+moderately large deflections for beams and plates.  The theories of beams and
+plates are those of [ReddyBeams2022]_ and [ReddyPlates2007]_, and their dual
+mesh forms those of [Reddy2024]_.
+
+Sections
+~~~~~~~~
+
+A section is given by its material, ``youngs_modulus`` and ``poissons_ratio``
+with the ``thickness`` :math:`H` of a plate or the ``cross_section`` of a beam,
+or by its section stiffnesses for a laminated or graded section:
+
+- :math:`A`, ``extensional_stiffness`` (N), the integral of :math:`E` over the
+  section,
+- :math:`B`, ``coupling_stiffness`` (N m), the integral of :math:`E\,z`, zero for
+  a section symmetric about its mid-surface,
+- :math:`D`, ``bending_stiffness`` (:math:`\mathrm{N\,m^2}`), the integral of
+  :math:`E\,z^2`,
+- :math:`S`, ``shear_stiffness`` (N), the transverse shear stiffness
+  :math:`K_s G A`.
+
+Here :math:`z` (m) is the position through the thickness from the mid-surface,
+and :math:`K_s` (dimensionless) is the shear correction factor, 5/6 by default.
+Plate stiffnesses are per unit width and carry the factor
+:math:`1/(1-\nu^2)`.  A section given by its material integrates the law at
+Gauss points through the thickness, so :math:`E(z)` gives a functionally graded
+section.  A beam section is ``{"width": ..., "height": ...}``, a rectangle, or
+``{"area": ..., "second_moment": ...}``, and a Timoshenko beam of the second
+form needs its ``shear_correction``.
+
+The shear terms of the models with shear deformation are integrated at the
+centre of each element, which keeps thin beams and plates from locking.  The
+loads are the ``transverse_load`` :math:`q` (per unit length of a beam or unit
+area of a plate), the ``axial_load`` :math:`\bar f` of a beam (the radial load of a
+circular plate), the ``in_plane_load`` :math:`(\bar f_x, \bar f_y)` of a plate, and the
+Winkler ``foundation_modulus`` :math:`c_f`.
+
+Beams
+~~~~~
+
+``formulation="beam"`` takes a one-dimensional mesh of ``Edge2`` elements along
+:math:`x`, the axial displacement :math:`u` and the deflection :math:`w`.  With
+the axial strain :math:`\varepsilon_0 = u' + \tfrac{1}{2}w'^2`, where the prime
+is :math:`\mathrm{d}/\mathrm{d}x` and the square term belongs to the von Kármán
+option, the theories are:
+
+- Euler-Bernoulli (the default) and Timoshenko in the mixed form, with the
+  bending moment :math:`M` (N m) as the third variable, ``bending_moment``:
+
+  .. math::
+
+     -\left(\bar A\,\varepsilon_0 + \bar B M\right)' = \bar f , \qquad
+     -\left(M' + N_x w'\right)' + c_f w = q , \qquad
+     -\left(w' - \frac{M'}{S}\right)' + \bar B\,\varepsilon_0 - \frac{M}{D} = 0 ,
+
+  with :math:`\bar A = (DA - B^2)/D`, :math:`\bar B = B/D` and
+  :math:`N_x = \bar A\,\varepsilon_0 + \bar B M` the axial force (N).  The
+  Euler-Bernoulli beam has no shear flexibility, :math:`1/S = 0`.  The natural
+  condition of the third equation is a zero slope, so the physics holds the
+  moment at zero on every end that is not clamped, not a plane of symmetry and
+  has no moment of its own.
+- Timoshenko in the displacement form, ``beam_formulation="displacement"``,
+  with the rotation :math:`\phi` (rad) as the third variable, ``phi``:
+
+  .. math::
+
+     -\left(A\varepsilon_0 + B\phi'\right)' = \bar f , \qquad
+     -\left(S(\phi + w') + N_x w'\right)' + c_f w = q , \qquad
+     -\left(B\varepsilon_0 + D\phi'\right)' + S(\phi + w') = 0 ,
+
+  with :math:`N_x = A\varepsilon_0 + B\phi'`.
+
+Plates
+~~~~~~
+
+``formulation="plate"`` is the first-order shear deformation (Mindlin) theory on
+a mesh of ``Quad4`` elements of the mid-plane, with the variables ``disp_x``,
+``disp_y``, ``disp_z`` (:math:`u, v, w`) and the rotations ``phi_x``, ``phi_y``
+(:math:`\phi_x, \phi_y`).  The membrane strains are
+:math:`\varepsilon_{xx} = \partial u/\partial x + \tfrac{1}{2}(\partial w/\partial x)^2`,
+:math:`\varepsilon_{yy}` likewise and
+:math:`\gamma_{xy} = \partial u/\partial y + \partial v/\partial x + (\partial w/\partial x)(\partial w/\partial y)`,
+whose terms in :math:`w` belong to the von Kármán option, and the curvatures are :math:`\chi_{xx} = \partial\phi_x/\partial x`,
+:math:`\chi_{yy} = \partial\phi_y/\partial y` and
+:math:`\chi_{xy} = \partial\phi_x/\partial y + \partial\phi_y/\partial x`.  The
+resultants are
+
+.. math::
+
+   N_{xx} = A(\varepsilon_{xx} + \nu\varepsilon_{yy}) + B(\chi_{xx} + \nu\chi_{yy}) , \qquad
+   N_{xy} = \tfrac{1}{2}(1-\nu)(A\gamma_{xy} + B\chi_{xy}) ,
+
+.. math::
+
+   M_{xx} = B(\varepsilon_{xx} + \nu\varepsilon_{yy}) + D(\chi_{xx} + \nu\chi_{yy}) , \qquad
+   M_{xy} = \tfrac{1}{2}(1-\nu)(B\gamma_{xy} + D\chi_{xy}) , \qquad
+   Q_x = S\left(\phi_x + \frac{\partial w}{\partial x}\right) ,
+
+with the :math:`y` components alike.  With a thermal strain, the thermal force
+and moment are subtracted from the normal resultants.  The equations are
+
+.. math::
+
+   \frac{\partial N_{xa}}{\partial x_a} + \bar f_x = 0 , \qquad
+   \frac{\partial}{\partial x_a}\left(Q_a + N_{ab}\frac{\partial w}{\partial x_b}\right)
+   - c_f w + q = 0 , \qquad
+   \frac{\partial M_{xa}}{\partial x_a} - Q_x = 0 ,
+
+with the indices :math:`a, b` summed over :math:`x` and :math:`y`, the term in
+:math:`N_{ab}` that of the von Kármán option, and the :math:`y` equations
+alike.
+
+``formulation="circular_plate"`` is an axisymmetric plate on a radial mesh in
+axisymmetric coordinates, with the variables ``disp_r``, ``disp_z`` and the
+rotation ``phi`` (first-order theory, the default) or the radial moment
+``bending_moment`` (classical theory, in the mixed form of [Reddy2024]_, which
+turns the fourth-order equation of the deflection into three second-order
+equations).
+
+Trusses
+~~~~~~~
+
+``formulation="truss"`` takes a line mesh of ``Edge2`` bars in a space of one,
+two or three dimensions, with the area :math:`A_b` (:math:`\mathrm{m^2}`) as
+``cross_section={"area": ...}``.  A bar of unit direction :math:`\mathbf{e}`
+carries the axial force :math:`E A_b\varepsilon`, with
+the stretch :math:`\varepsilon = \mathbf{e}\cdot\partial\mathbf{u}/\partial s`
+and :math:`s` (m) the length along the bar, and nothing across it.  The equation
+of :math:`u_i` has the flux :math:`-E A_b\varepsilon\,e_i\,\mathbf{e}`.  A bar has
+no stiffness across it, so a bar meshed with more than one element has free
+interior nodes, and each bar takes one element.
+
+Shells
+~~~~~~
+
+``formulation="shell"`` takes a surface mesh of ``Quad4`` elements in three
+dimensions, with the ``thickness`` :math:`H`.  Each element is a flat shell with
+its own axes :math:`\mathbf{e}_1, \mathbf{e}_2` in its plane and
+:math:`\mathbf{e}_3` normal to it.  The unknowns are the displacements
+``disp_x``, ``disp_y``, ``disp_z`` and the rotations ``rotation_x``,
+``rotation_y``, ``rotation_z`` about the global axes, :math:`\boldsymbol{\vartheta}`
+(rad).  In the axes of the element they are
+:math:`\mathbf{u}_l = \mathbf{R}_e\mathbf{u}` and
+:math:`\boldsymbol{\vartheta}_l = \mathbf{R}_e\boldsymbol{\vartheta}`, with
+:math:`\mathbf{R}_e` the matrix of rows :math:`\mathbf{e}_1, \mathbf{e}_2,
+\mathbf{e}_3`, and the rotations of the normal are
+:math:`\boldsymbol{\phi} = (\vartheta_{l2},\ -\vartheta_{l1})`.  With the
+indices :math:`a, b` over the two in-plane axes:
+
+.. math::
+
+   \varepsilon_{ab} = \operatorname{sym}\partial_a u_{l,b} , \qquad
+   \chi_{ab} = \operatorname{sym}\partial_a \phi_b , \qquad
+   \gamma_a = \partial_a w_l + \phi_a , \qquad
+   \omega = \vartheta_{l3} - \tfrac{1}{2}\left(\partial_1 u_{l,2} - \partial_2 u_{l,1}\right) ,
+
+with :math:`w_l` the displacement along :math:`\mathbf{e}_3`.  The resultants are
+:math:`\mathbf{N} = A_m[(1-\nu)\boldsymbol{\varepsilon} + \nu\operatorname{tr}\boldsymbol{\varepsilon}\,\mathbf{I}]`,
+:math:`\mathbf{M} = D[(1-\nu)\boldsymbol{\chi} + \nu\operatorname{tr}\boldsymbol{\chi}\,\mathbf{I}]`
+and :math:`\mathbf{Q} = K_s G H\boldsymbol{\gamma}`, with
+:math:`A_m = EH/(1-\nu^2)` and :math:`D = EH^3/[12(1-\nu^2)]`.  The drilling
+strain :math:`\omega` ties the rotation about the normal to the rotation of the
+membrane, as in the continuum [HughesBrezzi1989]_, with the moment
+:math:`G H\omega`.  Where elements meet at an angle, this gives the six unknowns
+of a node a stiffness.  The virtual work of the four resultants gives the flux
+and the source of each global equation.  Trusses and shells are linear elastic
+and static.
+
+The verification cases of solid mechanics, with their sources, computed values
+and errors, are on the :doc:`/verification` page.

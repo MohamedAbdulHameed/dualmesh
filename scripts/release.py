@@ -59,7 +59,7 @@ from pathlib import Path
 # decision, not something a release should do on the way.
 # -----------------------------------------------------------------------------
 OWNER = "MohamedAbdulHameed"
-REPO = "dualmesh"
+REPO = "dualmesh-multiphysics"
 SLUG = f"{OWNER}/{REPO}"
 EXPECTED_REMOTE = f"git@github-personal:{SLUG}.git"
 BRANCH = "main"
@@ -67,9 +67,9 @@ DISTRIBUTION = "dualmesh-multiphysics"
 IMPORT_NAME = "dualmesh"
 CLI_NAME = "dualmesh"
 CLI_TARGET = "dualmesh.cli:main"
-DOCS_URL = "https://dualmesh.readthedocs.io"
+DOCS_URL = "https://dualmesh-multiphysics.readthedocs.io"
 CLANG_FORMAT_MAJOR = 18  # The version on the ubuntu-latest runner of the Lint job
-WHEEL_OSES = ["ubuntu-latest", "macos-15-intel", "macos-14", "windows-latest"]
+WHEEL_OSES = ["ubuntu-latest", "macos-15-intel", "macos-14"]
 RETIRED_RUNNERS = ["macos-13", "macos-12", "macos-11"]
 MIN_CIBUILDWHEEL = (4, 2, 1)
 FURO_CONTENTS_CLASS = "this-will-duplicate-information-and-it-is-still-useful-here"

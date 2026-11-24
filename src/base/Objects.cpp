@@ -22,8 +22,9 @@ InputParameters
 Object::validParams()
 {
   InputParameters p;
-  p.addOptional("_name", ParameterKind::String, std::string(""), "object name");
-  p.addOptional("_type", ParameterKind::String, std::string(""), "registered type");
+  p.addOptional("_name", ParameterKind::String, std::string(""), "The name of the object.");
+  p.addOptional(
+      "_type", ParameterKind::String, std::string(""), "The registered type of the object.");
   return p;
 }
 
@@ -79,32 +80,33 @@ ResidualObject::addIntegrationParams(InputParameters & p)
   p.addOptional("block",
                 ParameterKind::StringList,
                 std::vector<std::string>{},
-                "Blocks (subdomains) this object acts on. An empty list selects every block.");
+                "Blocks (subdomains) this object acts on. Default: an empty list, which selects "
+                "every block.");
   p.addOptional("quadrature",
                 ParameterKind::String,
                 std::string("automatic"),
-                "Quadrature rule for the integration of this term. The default, automatic, uses "
-                "Gauss-Legendre with as many points per direction as the polynomial order of the "
-                "mesh plus one, which is two points on a linear mesh and three on a quadratic "
-                "one. The choices are gauss1 to gauss20 (Gauss-Legendre with that many points per "
-                "direction), midpoint, trapezoid, simpson, nodal (a single point at the owning "
-                "node, which lumps the term), interface (a single point at the control domain "
-                "interface), and control_domain_trapezoid (the trapezoidal rule over the whole "
-                "control domain, which is the source rule of the classical finite volume method). "
-                "The aliases trapezoidal, lumped, centroid and cd_trapezoid are accepted, a bare "
-                "gauss means gauss2, and the name is matched without regard to case. The "
-                "automatic default is adequate for a smooth coefficient on a mildly distorted "
-                "element. Raise it for strongly curved elements or a rapidly varying coefficient, "
-                "and use nodal to lump a capacity or mass term.");
+                "Quadrature rule for the integration of this term. The choices are automatic, "
+                "gauss1 to gauss20 (Gauss-Legendre with that many points per direction), "
+                "midpoint, trapezoid, simpson, nodal (a single point at the owning node, which "
+                "lumps the term), interface (a single point at the control domain interface), and "
+                "control_domain_trapezoid (the trapezoidal rule over the whole control domain, "
+                "which is the source rule of the classical finite volume method). The code also "
+                "accepts the aliases auto, trapezoidal, lumped, centroid and cd_trapezoid, reads "
+                "a bare gauss as gauss2, and matches the name without regard to case. Raise the "
+                "rule for strongly curved elements or a rapidly varying coefficient, and use "
+                "nodal to lump a capacity or mass term. Default automatic: Gauss-Legendre with "
+                "one point per direction more than the polynomial order of the mesh, two on a "
+                "linear mesh and three on a quadratic one, which integrates the product of two "
+                "shape functions exactly on an undistorted element.");
   p.addOptional("reduced_integration",
                 ParameterKind::Boolean,
                 false,
-                "Evaluate the solution and its gradients at the centroid of the element while "
-                "still integrating with the rule named by 'quadrature'. The geometry is "
-                "unaffected. This is selective reduced integration. Turn it on only for the "
-                "transverse shear terms of a thin beam or plate and for the penalty term of an "
-                "incompressible flow, where it removes locking. Using it on a bending or "
-                "diffusion term degrades the accuracy.");
+                "Selective reduced integration: evaluate the solution and its gradients at the "
+                "centroid of the element, while the rule named by 'quadrature' integrates the "
+                "term and the geometry. Turn it on only for the transverse shear terms of a thin "
+                "beam or plate and for the penalty term of an incompressible flow, where it "
+                "removes locking. On a bending or diffusion term it lowers the accuracy. Default "
+                "false, full integration, which keeps the accuracy of every other term.");
 }
 
 bool
@@ -214,8 +216,8 @@ InterfaceBC::validParams()
   p.addOptional("secondary_variable",
                 ParameterKind::String,
                 std::string(),
-                "The equation on the secondary side that receives the opposite flux. An empty "
-                "value selects 'variable'.");
+                "The equation on the secondary side that receives the opposite flux. Default: "
+                "empty, which selects 'variable', the same equation on both sides of the gap.");
   return p;
 }
 
@@ -278,28 +280,29 @@ NodalLoad::validParams()
 {
   InputParameters p = ResidualObject::validParams();
   p.setClassDescription(
-      "Concentrated source at nodes (point force or point heat source). The residual of the "
-      "node's equation receives -value.");
+      "Concentrated source at nodes, such as a point force or a point heat source. Every node "
+      "it acts on receives the full 'value' as a source of its equation.");
   p.addRequired("value",
                 ParameterKind::Function,
-                "Magnitude of the concentrated source, in the units conjugate to the "
-                "variable: a force for a displacement, a heat rate in watts for a "
-                "temperature. The residual of the node's equation receives minus this value, "
-                "so a positive number acts along the positive direction of the variable or "
-                "adds heat to the body.");
+                "Magnitude of the concentrated source, in the units conjugate to the variable: "
+                "a force in N for a displacement, a heat rate in W for a temperature. It is a "
+                "constant, a registered function, or an expression of x, y, z and t. A positive "
+                "value acts along the positive direction of the variable, or adds heat to the "
+                "body.");
   p.addOptional("boundary",
                 ParameterKind::StringList,
                 std::vector<std::string>{},
-                "Node sets or side sets whose nodes receive the load.");
+                "Node sets or side sets whose nodes receive the load. Default: none, for a load "
+                "given by 'points' only.");
   p.addOptional("points",
                 ParameterKind::RealList,
                 std::vector<double>{},
                 "Coordinates of the loaded points: one number per dimension of the space of the "
-                "mesh for each point (two in two dimensions). Each point is snapped to the "
-                "nearest node, however far away that node is, without a warning, so check that "
-                "the mesh has a node where the load belongs. Points that snap to the same node "
-                "are merged and the load is applied once. Give 'points', 'boundary', or both. "
-                "Giving neither is an error.");
+                "mesh for each point (two in two dimensions). Each point moves to the nearest "
+                "node, however far away that node is, without a warning, so check that the mesh "
+                "has a node where the load belongs. Points that move to the same node merge, and "
+                "that node receives the load once. Give 'points', 'boundary', or both. Giving "
+                "neither is an error. Default: none, for a load given by 'boundary' only.");
   return p;
 }
 
@@ -423,14 +426,15 @@ Property::validParams()
       "block",
       ParameterKind::StringList,
       std::vector<std::string>{},
-      "Blocks (subdomains) where this property object applies. An empty list selects every "
-      "block.");
+      "Blocks (subdomains) where this property object applies. Default: an empty list, which "
+      "selects every block.");
   p.addOptional("property_factors",
                 ParameterKind::RealMap,
                 RealMap{},
-                "Factors on properties that this property object computes: name -> factor, for "
-                "sensitivity and uncertainty studies (for example {thermal_conductivity: 1.1}). "
-                "Default none.");
+                "Factors on properties that this property object computes, as name -> factor "
+                "pairs, for sensitivity and uncertainty studies (for example "
+                "{thermal_conductivity: 1.1}). Default: none, which leaves every property "
+                "unscaled.");
   return p;
 }
 
@@ -586,12 +590,14 @@ addAdvectionSchemeParam(InputParameters & params)
       "advection_scheme",
       ParameterKind::String,
       std::string("central"),
-      "How the advective term is discretised: 'central' (the value at the point, for both "
-      "methods), or a face flux of DMCDM: 'upwind' (the upstream value, first order), "
-      "'linear_upwind' (the upstream value corrected by the upstream gradient, second order) or "
-      "'limited' (the upstream value blended towards the central one by the van Albada limiter, "
-      "second order and bounded). The streamline stabilisation is the kernel "
-      "heat_streamline_stabilization. Default central.");
+      "How the advective term is discretized. 'central' takes the value at the point, with "
+      "either method. The other three are face fluxes of the dual mesh control domain method "
+      "(DMCDM): 'upwind' takes the upstream value (first order), 'linear_upwind' corrects it by "
+      "the upstream gradient (second order), and 'limited' blends it towards the central value "
+      "by the van Albada limiter (second order and bounded). The finite element method (FEM) "
+      "takes central only. For a streamline stabilization with FEM, add the kernel "
+      "heat_streamline_stabilization for a temperature or momentum_stabilization for a flow. "
+      "Default central, the one scheme that both methods take.");
 }
 
 const Kernel *

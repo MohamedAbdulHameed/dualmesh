@@ -3,8 +3,9 @@ The object registry
 
 .. currentmodule:: dualmesh
 
-The names, categories and parameters of the registered types: the physics,
-the couplings and the objects of the :doc:`/objects`.
+The registry holds the names, the categories and the parameters of the
+registered types: the physics, the couplings and the objects of
+:doc:`/objects`.
 
 .. autosummary::
    :toctree: generated/
@@ -19,8 +20,9 @@ the couplings and the objects of the :doc:`/objects`.
 Parameter declarations
 ----------------------
 
-The declarations from which the physics and the applications build their
-inputs.
+The physics and the couplings declare their parameters as dataclass fields
+made by :func:`parameter`, each with a unit and a description.  The same
+declaration checks the keywords and prints the reference of a type.
 
 .. currentmodule:: dualmesh.parameters
 

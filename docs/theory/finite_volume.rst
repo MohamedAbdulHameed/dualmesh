@@ -1,221 +1,293 @@
 Control volumes and face fluxes
 ===============================
 
-The dual mesh control domain method (DMCDM) of [Reddy2024]_ enforces each
-equation as a balance over the control volume of every node, with the
-unknowns interpolated by the finite element shape functions.  This chapter
-states the balance, how it differs from the Galerkin finite element method,
-and the face fluxes with which DMCDM writes an advective term.  It assumes the
-canonical form of a problem and the construction of the dual mesh, both given
-in :doc:`foundations`.
+The dual mesh control domain method (DMCDM) of [Reddy2024]_ imposes each
+equation as a balance over the control volume of every node, with the unknowns
+interpolated by the shape functions of the finite elements.  This page gives
+the discrete equation, its boundary conditions, how it differs from the
+Galerkin finite element method (FEM), and the face fluxes of an advective term.
+It builds on the balance law and the dual mesh of :doc:`foundations`.
 
 .. contents::
    :local:
-   :depth: 2
-   :class: this-will-duplicate-information-and-it-is-still-useful-here
+   :depth: 1
 
 The balance over a control volume
 ---------------------------------
 
-Every equation this library solves is written as a balance law: for the
-unknown field :math:`u` there is a flux :math:`\mathbf{F}` and a source
-:math:`S`, both of which may depend on :math:`u`, on :math:`\nabla u`, on the
-position :math:`\mathbf{x}` and on the time :math:`t`, such that
+An equation for the field :math:`u` is the balance law
 
 .. math::
-   :label: fv_canonical
 
-   -\nabla \cdot \mathbf{F} + S = 0 \quad \text{in } \Omega .
+   \frac{\partial m}{\partial t} + \nabla \cdot \mathbf{F} = s
+   \quad \text{in } \Omega ,
 
-A **finite volume method** partitions :math:`\Omega` into non-overlapping
-*control volumes* :math:`\omega_I`, integrates :eq:`fv_canonical` over each one
-and converts the divergence into a surface integral with the divergence
-theorem.  The discrete equation of control volume :math:`I` is therefore
+with :math:`m` the storage per unit volume, :math:`\mathbf{F}` the physical
+flux and :math:`s` the source per unit volume, in the units of the balanced
+quantity.  The rate of the storage is :math:`c \, \partial u / \partial t`,
+with :math:`c = \partial m / \partial u` the capacity.
+
+The dual mesh gives every node :math:`I` a control volume :math:`V_I`, and
+these control volumes partition the domain :math:`\Omega`.  DMCDM integrates the
+balance law over :math:`V_I` and turns the divergence into a surface integral.
+The discrete equation of node :math:`I` is
 
 .. math::
-   :label: fv_balance
+   :label: dmcdm-residual
 
-   R_I = -\oint_{\partial \omega_I} \mathbf{F} \cdot \mathbf{n} \, \mathrm{d}S
-         + \int_{\omega_I} S \, \mathrm{d}V = 0 ,
+   R_I = \int_{V_I} \Bigl( c \, \frac{\partial u}{\partial t} - s \Bigr)
+         \mathrm{d}V
+       + \oint_{\partial V_I} \mathbf{F} \cdot \mathbf{n} \, \mathrm{d}S = 0 ,
 
-with :math:`\mathbf{n}` the outward unit normal of :math:`\partial\omega_I`.
-No weight function appears.  Because each interior face of the partition is
-shared by exactly two control volumes, and the flux through it is computed once
-and added to one balance with each sign, the sum of all the discrete equations
-retains only the fluxes through :math:`\partial\Omega`.  This is *local
-conservation*, and it holds for every union of control volumes as well as for
-the whole domain.  It is the property that makes the family attractive for
-transport problems [Patankar1980]_.
+with :math:`\mathbf{n}` the outward unit normal of :math:`\partial V_I`.  The
+field and its gradient in these integrals are those of the finite element
+interpolant, :math:`u = \sum_a U_a N_a` with :math:`U_a` the value at node
+:math:`a` and :math:`N_a` its shape function.  The flux through an interface
+therefore uses the gradient of the interpolant there, and no gradient
+reconstruction or finite difference enters a diffusive flux.
 
-Equation :eq:`fv_balance` is the equation of DMCDM.  Its control volumes are the
-median dual control domains of :doc:`foundations`, one per mesh node, and the
-flux :math:`\mathbf{F}` on their faces is evaluated from the element
-interpolation: the gradient on a face is the gradient of the interpolant there,
-so no reconstruction is needed.  A textbook finite volume method takes the face
-flux from finite differences between neighbouring values instead.  In
-weighted-residual terms DMCDM is a Petrov-Galerkin method, with finite element
-trial functions and the indicator function of each control volume as the test
-function.  The same construction is the control volume finite element method
-of [BaligaPatankar1980]_.
+In weighted-residual terms, DMCDM is a Petrov-Galerkin method: its trial
+functions are the shape functions, and the test function of node :math:`I` is
+one in :math:`V_I` and zero outside.  The same construction is the control
+volume finite element method of [BaligaPatankar1980]_.  A classical finite
+volume method [Patankar1980]_ takes the face flux from differences between
+neighbouring values instead.
 
-The Galerkin finite element method (FEM) never forms a face flux.  It multiplies
-:eq:`fv_canonical` by a shape function and integrates by parts, which
-distributes :math:`\mathbf{F}` over the element interior.  It is conservative
-over the whole domain but not over each control volume.
+Each interior interface bounds two control volumes, and its flux enters their
+two equations with opposite signs.  The sum of the equations over any union of
+control volumes leaves only the flux through the boundary of the union, so the
+discrete balance holds over every control volume.
 
-The matrix of DMCDM is in general **not symmetric**, even for a self-adjoint
-operator such as :math:`-\nabla\cdot(k\nabla u)`.  The equation of a control
-volume is an unweighted balance over that volume, so no property of the
-discretisation makes the coefficient coupling :math:`I` to :math:`J` equal the
-one coupling :math:`J` to :math:`I`.  The Galerkin method, whose bilinear form
-is symmetric, gives a symmetric matrix.  The conjugate gradient method
-(``-ksp_type cg``) therefore does not apply to DMCDM.  The automatic choice of
-the linear solver takes GMRES, which works for a general matrix.
+Assembly
+--------
+
+The code assembles :eq:`dmcdm-residual` element by element.  For each element,
+it
+
+1. maps the integration points of the sub-cells (the parts of the control
+   volumes inside the element) and of the interfaces between them from the
+   reference element,
+2. evaluates the field, its gradient and the properties at those points from
+   the nodal values of the element,
+3. adds the volume integral of each sub-cell to the equation of the node that
+   owns it, and
+4. adds :math:`\mathbf{F} \cdot \mathbf{A}` to the equation of one node of each
+   interface and :math:`-\mathbf{F} \cdot \mathbf{A}` to the equation of the
+   other, with :math:`\mathbf{A}` the area vector of the interface (its area
+   times its unit normal, :math:`\mathrm{m^2}`) pointing from the first node to
+   the second.
+
+The element loop only visits the sub-cells.  The method forms no element
+stiffness matrix and no bilinear form.
+
+Boundary conditions
+-------------------
+
+Part of the boundary :math:`\partial V_I` of a boundary node lies on the domain
+boundary :math:`\partial\Omega`.
+
+* On a boundary with a natural condition, the condition gives the outward normal
+  flux :math:`\mathbf{F} \cdot \mathbf{n}`, and its integral over that part
+  enters :eq:`dmcdm-residual`.  When the flux depends on :math:`u`, as in a
+  Robin condition, the integral enters the Jacobian as well.
+* On a boundary with an essential condition, the equation of the node becomes
+  :math:`U_I = \hat{U}_I`, with :math:`\hat{U}_I` the prescribed value.
+
+The equation that an essential condition replaces still holds the balance of
+:math:`V_I`.  Assembled at the solution without the boundary part, it gives the
+reaction, the flow out of the body through the part of :math:`\partial V_I` on
+:math:`\partial\Omega`,
+
+.. math::
+
+   Q_I = \int_{\partial V_I \cap \partial\Omega} \mathbf{F} \cdot \mathbf{n}
+         \, \mathrm{d}S = -R_I .
+
+:meth:`dualmesh.Problem.boundary_flux` adds :math:`Q_I` over the nodes of a
+boundary.  The physics name this flow:
+:meth:`~dualmesh.physics.HeatTransfer.heat_flow` gives the heat that leaves
+through a boundary, and :meth:`~dualmesh.physics.SolidMechanics.reaction_force`
+the force of the body on its support.
+
+Comparison with the finite element method
+-----------------------------------------
+
+With ``method="FEM"``, the same kernels, properties, boundary conditions and
+solvers give the Galerkin form of the same balance law.  The equation of node
+:math:`i` multiplies the balance law by :math:`N_i` and integrates the flux term
+by parts,
+
+.. math::
+
+   R_i = \int_\Omega N_i \Bigl( c \, \frac{\partial u}{\partial t} - s \Bigr)
+         \mathrm{d}V
+       - \int_\Omega \nabla N_i \cdot \mathbf{F} \, \mathrm{d}V
+       + \oint_{\partial\Omega} N_i \, \mathbf{F} \cdot \mathbf{n} \, \mathrm{d}S
+       = 0 .
+
+FEM forms no face flux.  The shape functions sum to one, so the sum of all its
+equations is the balance of the whole domain, but a single equation is no
+balance of a region.
+
+On linear triangles and tetrahedra, with a diffusivity and a source that are
+constant in each element, the steady equations of the two methods are the same.
+On other elements they differ.
+
+DMCDM gives a matrix that is in general not symmetric, even for a symmetric
+operator such as :math:`-\nabla \cdot (k \nabla u)`, with :math:`k` the
+diffusivity.  The equation of a control volume is an unweighted balance, and
+nothing makes the coefficient that couples node :math:`I` to node :math:`J`
+equal the one that couples :math:`J` to :math:`I`.  The conjugate gradient
+method needs a symmetric matrix, so it does not apply to DMCDM, and the
+automatic iterative solvers use the generalized minimal residual method
+(GMRES).
 
 Advection schemes
 -----------------
 
-An advective term (``advection``, the heat that a flow carries and the inertia
-of a flow) has two statements in DMCDM.  With ``advection_scheme="central"``,
-the default of ``advection``, it is the source :math:`\mathbf{v} \cdot \nabla
-\phi` integrated over the control volume, with the interpolated field, as the
-finite element method does.  The streamline stabilisation (SUPG), the default
-of a flow and of the heat it carries, adds to this source (see
-:doc:`heat_and_fluids`).  Every other scheme writes the term with the faces of
-the control volume and a face value :math:`\phi_f` that the scheme chooses.
-With :math:`m = \mathbf{v} \cdot \mathbf{A}` the normal velocity times the
-face area, outward from the control volume :math:`V`, the term is
+An advective term :math:`\mathbf{v} \cdot \nabla u`, with :math:`\mathbf{v}`
+the velocity (m/s), enters DMCDM in one of two ways.
+
+* As a volume term,
+  :math:`\int_{V_I} \mathbf{v} \cdot \nabla u \, \mathrm{d}V`, with the
+  interpolated field.  The kernel ``advection`` takes this form with the scheme
+  ``central`` and its default ``advection_form``.
+* As a sum over the faces :math:`f` of the control volume, with a face value
+  :math:`u_f` that the scheme chooses.  The schemes ``upwind``,
+  ``linear_upwind`` and ``limited`` always take this form.  The kernels
+  ``heat_convection`` and ``convective_inertia`` take it with ``central`` as
+  well when the problem solves a mass equation of the order of the field.
+
+FEM takes ``central`` only.  Its streamline upwind Petrov-Galerkin (SUPG)
+stabilization is a kernel of its own, which :doc:`heat_transfer` and
+:doc:`fluids` describe.
+
+The face forms
+~~~~~~~~~~~~~~
+
+Let :math:`\dot{V}_f = \mathbf{v} \cdot \mathbf{A}_f` be the volume flow
+(:math:`\mathrm{m^3/s}`) through face :math:`f`, with :math:`\mathbf{A}_f` its
+area vector pointing out of :math:`V_I`.  Since
+:math:`\mathbf{v} \cdot \nabla u = \nabla \cdot (\mathbf{v} u) - u \, \nabla
+\cdot \mathbf{v}`, the advective term over :math:`V_I` is
 
 .. math::
 
-   \int_V \mathbf{v} \cdot \nabla \phi \, dV \approx \sum_f m\, (\phi_f - \phi_V)
+   \int_{V_I} \mathbf{v} \cdot \nabla u \, \mathrm{d}V
+   \approx \sum_f \dot{V}_f \, (u_f - U_I)
 
-in the non-conservative form, and :math:`\sum_f m\, \phi_f` in the conservative
-form :math:`\nabla \cdot (\mathbf{v} \phi)`.  The two differ by
-:math:`\phi_V \sum_f m`, the discrete divergence of the velocity times the
-value.  The interpolated velocity of a discrete flow is not exactly divergence
-free, so its conservative form would add the source
-:math:`T \nabla \cdot \mathbf{v}`, which depends on the temperature scale: on a
-channel at :math:`\mathrm{Re} = 100` that develops from a uniform inflow
-(16 by 16 elements), it moved the temperature by 13 K when every temperature
-was raised by 300 K, and it took the temperature to 1.67 on a problem bounded
-by :math:`[0, 1]`.
+in the non-conservative form, and
+:math:`\sum_f \dot{V}_f \, u_f` in the conservative form
+:math:`\nabla \cdot (\mathbf{v} u)`.  The two differ by
+:math:`U_I \sum_f \dot{V}_f`, the discrete divergence of the velocity times the
+nodal value.  The interpolated velocity of a discrete flow is not exactly
+divergence free, so the conservative form adds a source
+:math:`u \, \nabla \cdot \mathbf{v}` that grows with the level of :math:`u`.
+The computed temperature then changes when a constant is added to every
+temperature, as in a change from degrees Celsius to kelvin.
 
+When the problem solves a mass equation of the order of the field, the kernels
 ``heat_convection`` and ``convective_inertia`` therefore take the
-non-conservative form, with every scheme, central included, and carry the
-velocity whose flux the mass equation conserves, :math:`\mathbf{w} =
-\mathbf{v} - \tau \mathbf{r}_m` through the faces between control volumes and
-:math:`\mathbf{v}` through the boundary, as the mass equation takes them, with
-:math:`m = \mathbf{w} \cdot \mathbf{A}` (:ref:`the conserved velocity
-<conserved-advection>`).  Its flux sums to zero over every control volume whose
-mass equation is solved, so the two forms coincide there: the heat and the
-momentum are conserved exactly, the solution does not depend on the
-temperature scale at any iterate, and upwind is bounded.  This is the
-``bounded`` form of OpenFOAM's convection schemes.  Without a mass equation
-(the penalty formulation, or a velocity that conditions prescribe), they take
-the non-conservative form with the interpolated velocity.  ``advection`` takes the form of ``advection_form``, the
-non-conservative one by default.
+non-conservative face form with every scheme.  Through the interfaces they
+carry the velocity :math:`\mathbf{w}` whose flux the mass equation conserves
+(:ref:`the conserved velocity <conserved-advection>`), and through
+:math:`\partial\Omega` the velocity :math:`\mathbf{v}`, as the mass equation
+takes them, with :math:`\dot{V}_f = \mathbf{w} \cdot \mathbf{A}_f`.  The volume
+flows then sum to zero over every control volume whose mass equation is solved,
+and the two forms coincide there.  The heat and the momentum are conserved
+exactly, the solution does not depend on the level of the temperature at any
+iterate, and the upwind scheme is bounded.
 
-Let :math:`C` be the upstream node of the face, the owner when
-:math:`\mathbf{v} \cdot \mathbf{n} \ge 0` and the neighbour otherwise, and
-:math:`D` the downstream node.  The schemes are
+Without such a mass equation, in the penalty and Taylor-Hood formulations or
+with a velocity that conditions prescribe, the two kernels carry the
+interpolated velocity: as a volume term with ``central``, and as a
+non-conservative face sum with the other schemes.  The kernel ``advection``
+takes the form that its ``advection_form`` names, ``non_conservative`` by
+default.
 
-* ``"upwind"``: :math:`\phi_f = \phi_C`.  It is bounded and first order.
-* ``"linear_upwind"``: :math:`\phi_f = \phi_C + (\mathbf{x}_f - \mathbf{x}_C)
-  \cdot \nabla \phi_C`, with the gradient :math:`\nabla \phi_C` at the upstream
-  node [Jasak1996]_.  It is second order but not bounded.
-* ``"limited"``: :math:`\phi_f = \phi_C + \psi(r)\,(\phi_f^{CD} - \phi_C)`, the
-  upwind value blended towards the central value :math:`\phi_f^{CD} = w\,
-  \phi_O + (1 - w)\,\phi_N` by a limiter, in the form of Eq. (3.66) of
-  [Jasak1996]_.  The ratio of consecutive differences is
-  :math:`r = 2\, \mathbf{d} \cdot \nabla \phi_C / (\phi_D - \phi_C) - 1`, with
-  :math:`\mathbf{d}` the vector from the upstream to the downstream node, as
-  the TVD schemes of OpenFOAM [OpenFOAM1998]_ compute it, and the limiter is
-  that of van Albada, :math:`\psi(r) = r (r + 1) / (r^2 + 1)` for :math:`r > 0`
-  and zero otherwise.  dualmesh evaluates it as :math:`\psi = 2a (2a - b) /
-  ((2a - b)^2 + b^2)` with :math:`a = \mathbf{d} \cdot \nabla \phi_C` and
-  :math:`b = \phi_D - \phi_C`, which has no division by :math:`b`.  It tends to
-  1 when :math:`b` tends to zero with the sign of :math:`a`, and the face value
-  is continuous where the limiter switches to upwind, because there
-  :math:`\phi_f^{CD} - \phi_C` tends to zero as well.  It is second order where
-  the solution is smooth and nearly bounded at a jump.
+The face values
+~~~~~~~~~~~~~~~
 
-A node has no gradient of its own, so DMCDM reconstructs it by least squares
-over the nodes of the elements around the node, :math:`\nabla \phi_a = \sum_b
-\mathbf{w}_{ab} (\phi_b - \phi_a)` with :math:`\mathbf{w}_{ab} =
-\mathbf{G}_a^{-1} (\mathbf{x}_b - \mathbf{x}_a)` and :math:`\mathbf{G}_a =
-\sum_b (\mathbf{x}_b - \mathbf{x}_a)(\mathbf{x}_b - \mathbf{x}_a)^T`, which is
-exact for a linear field.  The flux of a face then depends on the nodes around
-its two nodes, and the Jacobian holds those derivatives exactly: linear
-upwind, which is linear in :math:`\phi`, converges in one Newton step.  A part
-of a distributed mesh does not hold the nodes around its interface nodes, so
-linear upwind and limited are refused there for now.
+Each interface joins two nodes.  The upstream node is the one that
+:math:`\mathbf{v} \cdot \mathbf{A}_f` points away from, with the value
+:math:`u_\mathrm{up}` and the position :math:`\mathbf{x}_\mathrm{up}`, and the
+other is the downstream node, with :math:`u_\mathrm{dn}` and
+:math:`\mathbf{x}_\mathrm{dn}`.  Let :math:`\mathbf{x}_f` be the integration
+point on the face.  The schemes take these face values [Jasak1996]_.
 
-The limiter is a differentiable function of the nodal values away from
-:math:`r = 0`, and the automatic differentiation of the residual includes it,
-so Newton's method keeps its fast convergence: four iterations on the boundary
-layer below.  It is not differentiable at :math:`r = 0`, where it switches to
-upwind, and Newton's method can cycle between the two sides of the kink.  The
-default ``line_search="automatic"`` therefore turns the backtracking line
-search on when a kernel uses the limited scheme, and ``line_search="none"``
-turns it off.
+``central``
+   The interpolated field at :math:`\mathbf{x}_f`.
 
-**At the boundary.**  Both sides of a face on the boundary of the domain are
-the node whose control volume the face bounds: at an outflow it is upstream,
-and at an inflow without a condition it holds the only value there is.  In the
-non-conservative form the face takes :math:`m (\phi_f - \phi_V)`, which is
-zero for upwind and for central is the difference between the value at the
-face and at the node, which keeps an outlet consistent (Poiseuille flow is
-exact on quadratic elements).  The conservative flux through the boundary
+``upwind``
+   :math:`u_f = u_\mathrm{up}`.  It is bounded and first order.
+
+``linear_upwind``
+   :math:`u_f = u_\mathrm{up} + (\mathbf{x}_f - \mathbf{x}_\mathrm{up}) \cdot
+   \nabla u_\mathrm{up}`, with :math:`\nabla u_\mathrm{up}` the gradient at the
+   upstream node.  It is second order and unbounded.
+
+``limited``
+   :math:`u_f = u_\mathrm{up} + \psi \, (\bar{u}_f - u_\mathrm{up})`, the upwind
+   value blended towards the mean :math:`\bar{u}_f = (u_\mathrm{up} +
+   u_\mathrm{dn}) / 2` by the van Albada limiter :math:`\psi`.  With
+   :math:`a = (\mathbf{x}_\mathrm{dn} - \mathbf{x}_\mathrm{up}) \cdot \nabla
+   u_\mathrm{up}` and :math:`b = u_\mathrm{dn} - u_\mathrm{up}`, the ratio of
+   consecutive differences is :math:`\chi = 2a/b - 1` [Jasak1996]_, and
+
+   .. math::
+
+      \psi = \frac{\chi (\chi + 1)}{\chi^2 + 1}
+           = \frac{2a \, (2a - b)}{(2a - b)^2 + b^2}
+      \quad \text{for } \chi > 0 , \qquad \psi = 0 \text{ otherwise} .
+
+   The code evaluates the second expression, which has no division by
+   :math:`b`.  The face value is continuous where the limiter switches to
+   upwind: :math:`\psi` tends to zero as :math:`\chi` tends to zero, and the
+   blend :math:`\bar{u}_f - u_\mathrm{up} = b/2` vanishes with :math:`b`.  The
+   scheme is second order where the solution is smooth and close to bounded at
+   a jump.
+
+A node has no gradient of its own, so the code reconstructs it by least squares
+over the set :math:`\mathcal{N}_a` of the nodes that share an element with node
+:math:`a`:
+
+.. math::
+
+   \nabla u_a = \sum_{b \in \mathcal{N}_a} \mathbf{W}_a^{-1}
+      (\mathbf{x}_b - \mathbf{x}_a) \, (U_b - U_a) ,
+   \qquad
+   \mathbf{W}_a = \sum_{b \in \mathcal{N}_a}
+      (\mathbf{x}_b - \mathbf{x}_a) (\mathbf{x}_b - \mathbf{x}_a)^T .
+
+The reconstruction is exact for a linear field.  The face flux then depends on
+the nodes around the two nodes of the face, and the Jacobian holds these
+derivatives exactly.  On a linear problem with a prescribed velocity, Newton's
+method therefore converges in one step with ``linear_upwind``, whose face value
+is linear in the nodal values.  The limiter
+is differentiable away from :math:`\chi = 0`, where it switches to upwind and
+Newton's method can cycle.  The default ``line_search="automatic"`` therefore
+turns on the backtracking line search of :doc:`nonlinear_and_time` when a
+kernel uses ``limited``.
+
+The schemes ``linear_upwind`` and ``limited`` have these limits:
+
+* they need a mesh of the dimension of its space, so a surface or a line in
+  space takes ``upwind``,
+* they run on one process, because a part of a distributed mesh does not hold
+  the nodes around its interface nodes.
+
+At the boundary
+~~~~~~~~~~~~~~~
+
+On a face that lies on :math:`\partial\Omega`, both sides are the node whose
+control volume the face bounds: at an outflow it is upstream, and at an inflow
+without a condition it holds the only value there is.  In the non-conservative
+form, the face term :math:`\dot{V}_f (u_f - U_I)` is zero with ``upwind``.  With
+``central`` it is the difference between the interpolated value on the face
+and the nodal value, which keeps an outlet consistent.  The conservative flux
 carries the face value out of the domain.  A boundary without a condition
-therefore has a zero conductive flux in both forms and passes the advected
-field out of the domain.
+therefore has zero diffusive flux in both forms and lets the advected field
+leave the domain.
 
-**Measurements.**  On :math:`\phi' = \phi'' / \mathrm{Pe}` over
-:math:`(0, 1)` with :math:`\phi(0) = 0` and :math:`\phi(1) = 1`, with
-:math:`\mathrm{Pe} = 100` and 20 elements (a cell Péclet number of 5), and on
-the skew jump of [BrooksHughes1982]_ (a jump of the inflow value carried
-across the unit square at 30 degrees to a :math:`24 \times 24` mesh, with
-:math:`k = 10^{-6}`):
-
-.. list-table::
-   :header-rows: 1
-
-   * - Scheme
-     - Range of :math:`\phi`, boundary layer
-     - Largest error
-     - Order at :math:`\mathrm{Pe} = 5`
-     - Range of :math:`\phi`, skew jump
-   * - central
-     - :math:`[-0.43, 1]`
-     - 0.44
-     - 2.0
-     - :math:`[-0.29, 1.02]`
-   * - upwind
-     - :math:`[0, 1]`
-     - 0.16
-     - 0.92
-     - :math:`[0, 1]`
-   * - linear_upwind
-     - :math:`[-0.041, 1]`
-     - 0.048
-     - 1.86
-     - :math:`[-0.034, 1.05]`
-   * - limited
-     - :math:`[0, 1]`
-     - 0.11
-     - 2.05
-     - :math:`[-0.018, 1.004]`
-
-``tests/python/test_advection_schemes.py`` checks these properties.
-
-Verification
-------------
-
-``tests/python/test_conduction_methods.py`` checks both methods against
-closed-form solutions: a nonlinear conduction problem against its Kirchhoff
-solution with Newton and Picard iteration, a transient slab against its
-analytical decay, a convecting fin, which verifies the sign of the Robin
-condition, and a jump of the conductivity between two blocks.  The
-convergence orders of both methods on every element type are in
-:doc:`/verification`.
+:doc:`/verification` gives the cases that check the methods and the advection
+schemes.

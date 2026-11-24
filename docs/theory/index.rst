@@ -1,23 +1,34 @@
 Theory manual
 =============
 
-This part of the manual states what the code computes.  Each chapter gives the
-background, the governing equations and their discretisation, and the
-limitations of each method.
+The theory pages state what the code computes: the governing equations, their
+discretization by the finite element method (FEM) and the dual mesh control
+domain method (DMCDM), the properties of each method and its limits.  The
+source of DMCDM is [Reddy2024]_, and each page cites the sources of its
+equations.
 
-The notation follows J. N. Reddy, *Computational Methods in Engineering*
-[Reddy2024]_.
-
-The first chapter introduces the canonical conservation form on which the rest
-of the library is built, and it should be read before the others.
+Every equation is a balance law, :math:`\partial m / \partial t + \nabla \cdot
+\mathbf{F} = s`, with :math:`m` the storage, :math:`\mathbf{F}` the physical
+flux and :math:`s` the source of the balanced quantity.  Read
+:doc:`foundations` first: it states this form and the dual mesh on which the
+other pages build.  :doc:`/verification` gives the cases that check the
+methods.
 
 .. toctree::
    :maxdepth: 2
-   :caption: The discretisations
+   :caption: The discretizations
 
    foundations
    elements
    finite_volume
+
+.. toctree::
+   :maxdepth: 2
+   :caption: The physics
+
+   heat_transfer
+   fluids
+   solid_mechanics
 
 .. toctree::
    :maxdepth: 2
@@ -26,16 +37,4 @@ of the library is built, and it should be read before the others.
    nonlinear_and_time
    adaptivity
    parallel
-
-.. toctree::
-   :maxdepth: 2
-   :caption: The physics modules
-
-   heat_and_fluids
-   solid_mechanics
-
-.. toctree::
-   :maxdepth: 2
-   :caption: Studies
-
    eigenvalues

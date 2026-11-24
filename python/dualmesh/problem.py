@@ -89,6 +89,8 @@ class problem:
         self._set(time=dict(values))
 
     def mesh_adaptivity(self, **values) -> None:
+        """Adapts the mesh to the error indicator of a field: indicator, field, refine_fraction,
+        coarsen_fraction, interval and maximum_refinement_level."""
         self._set(mesh_adaptivity=dict(values))
 
     def postprocessor(self, name: str, **definition) -> None:
@@ -126,9 +128,11 @@ class problem:
         }
 
     def to_YAML(self, path: str) -> None:
+        """Writes the input to a YAML file, with relative paths that resolve against its folder."""
         write_YAML(self._tree_for_file(path), path)
 
     def to_TOML(self, path: str) -> None:
+        """Writes the input to a TOML file, with relative paths that resolve against its folder."""
         write_TOML(self._tree_for_file(path), path)
 
     def _tree_for_file(self, path: str) -> dict:

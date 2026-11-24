@@ -3,8 +3,8 @@ Functionally graded sections
 
 .. currentmodule:: dualmesh.fgm
 
-The stiffnesses of beam and plate sections whose modulus varies through the
-thickness by a power law.
+These functions give the stiffnesses of beam and plate sections whose
+Young's modulus varies through the thickness by a power law.
 
 .. autosummary::
    :toctree: generated/

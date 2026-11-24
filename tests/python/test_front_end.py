@@ -421,3 +421,18 @@ def test_a_thermal_expansion_takes_its_two_properties_together():
     slab.boundary_conditions("bottom", displacement_y="0 m")
     with pytest.raises(dualmesh.input_error, match="gives only linear_expansion_coefficient"):
         slab.solve(report="none")
+
+
+def test_the_heat_of_the_example_case_leaves_through_its_held_and_cooled_sides():
+    """examples/heated_plate.yaml: 1 MW/m^3 in 0.1 m by 0.02 m, per unit depth 2000 W/m, leaves
+    through the left side, held at 300 K, and the top side, cooled by air.  The peak temperature
+    lies below that of a slab insulated except at one end, 300 K + q L^2 / (2 k)."""
+    pytest.importorskip("yaml")
+    from pathlib import Path
+
+    example = Path(__file__).resolve().parents[2] / "examples" / "heated_plate.yaml"
+    solution = dualmesh.problem.from_file(str(example)).solve(report="none")
+    left = solution.postprocessor("heat_through_left")[-1]
+    top = solution.postprocessor("heat_through_top")[-1]
+    assert left + top == pytest.approx(1.0e6 * 0.1 * 0.02, rel=1e-8)
+    assert 300.0 < solution.postprocessor("peak_temperature")[-1] < 300.0 + 1.0e6 * 0.1**2 / 40.0

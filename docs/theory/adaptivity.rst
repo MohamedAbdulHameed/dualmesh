@@ -1,573 +1,355 @@
 Adaptive mesh refinement
 ========================
 
+This page states how the code adapts a mesh to the error of a solution: the
+error indicator, the marking rules, the refinement and coarsening of each
+element type, the treatment of curved boundaries, the transfer of the fields to
+the new mesh and the adaptivity of a distributed problem.  To run an adaptive
+calculation from the input or from Python, see :doc:`/user_guide/adaptivity`.
+
 .. contents::
    :local:
-   :depth: 2
-   :class: this-will-duplicate-information-and-it-is-still-useful-here
+   :depth: 1
 
-Purpose of adaptive refinement
-------------------------------
+The adaptive loop
+-----------------
 
 A discrete method replaces the unknown field :math:`u` by an approximation
-:math:`u_h` drawn from a finite-dimensional space built on a mesh
-:math:`\mathcal{T}_h` of elements :math:`K`.  The error :math:`u - u_h` is
-distributed unevenly over the domain.  It is large where the solution varies on
-a length scale comparable with the element size (near a re-entrant corner, a
-crack tip, a boundary layer, a point load or an abrupt change of material), and
-small wherever the solution is nearly linear over an element.  Halving the
-element size everywhere multiplies the number of unknowns by four in two
-dimensions and by eight in three, and most of those new unknowns are placed in
-parts of the domain where the solution is already resolved.  Concentrating the
-new elements where the error is large reaches the same accuracy at a much lower
-cost.  The benchmark at the end of this chapter quantifies the difference: a
-uniform sequence of meshes reaches a maximum
-nodal error of :math:`8.30 \times 10^{-3}` using 3201 unknowns, while an
-adaptive sequence reaches :math:`5.16 \times 10^{-3}` using 122.
+:math:`u_h` on a mesh :math:`\mathcal{T}_h` of elements :math:`K`.  The error
+:math:`u - u_h` is uneven over the domain.  It is large where the solution
+varies on the scale of the element size :math:`h`, near a re-entrant corner, a
+crack tip, a boundary layer, a point load or a change of material, and small
+where the solution is nearly linear over an element.  Near a re-entrant corner
+of interior angle :math:`\Phi > \pi` (rad), the solution of Laplace's equation
+holds a term :math:`r^{\pi/\Phi}`, with :math:`r` (m) the distance to the
+corner, whose gradient is unbounded.  Under uniform refinement the error of
+linear elements in the energy norm then falls as :math:`h^{\pi/\Phi}` instead of
+:math:`h`.  A mesh graded towards the corner recovers the rate of a smooth
+solution in terms of the number of unknowns [BinevDahmenDeVore2004]_
+[Stevenson2007]_.
 
-An adaptive calculation is a loop over three steps.  First, it **solves** on
-the current mesh.  Second, it **estimates** the error, producing one number
-:math:`\eta_K \ge 0` per element, the *error indicator*, which is intended to be
-large on the elements carrying most of the error.  Third, it **marks** a subset
-of elements and **refines** them, after which the loop repeats on the new mesh.
-The three steps are separate functions in ``dualmesh``, so a calculation can
-replace any one of them:
+An adaptive calculation repeats four steps:
+
+1. Solve on the current mesh.
+2. Estimate the error, with one indicator :math:`\eta_K \ge 0` per element.
+3. Mark the elements to refine and, optionally, the elements to coarsen.
+4. Refine and coarsen them, and carry the fields to the new mesh.
+
+Each step is a separate function, so you can replace any one of them:
 :meth:`~dualmesh.Problem.error_indicator` estimates,
-:func:`~dualmesh.mark_by_fraction` and its relatives mark,
-:func:`~dualmesh.refine_marked` refines, and
-:func:`~dualmesh.solve_with_adaptive_refinement` runs the whole loop.
+:func:`~dualmesh.mark_by_fraction`, :func:`~dualmesh.mark_by_error_fraction`
+and :func:`~dualmesh.mark_by_threshold` mark, :func:`~dualmesh.refine_marked`
+refines, and :func:`~dualmesh.solve_with_adaptive_refinement` runs the loop.
 
 The error indicator
 -------------------
 
-The indicator implemented here is the gradient-recovery estimator of Zienkiewicz
-and Zhu [ZienkiewiczZhu1987]_.  Its starting point is a property of the computed
-solution that is at first sight a defect.  With linear elements :math:`u_h` is
-continuous across element faces but its gradient is not: on each element
-:math:`\nabla u_h` is a constant (for a triangle) or a low-order polynomial, and
-it jumps from one element to the next.  The exact gradient of a smooth solution
-has no such jumps, so the discontinuity is a direct indication of the
-discretisation error.
+The indicator is the gradient-recovery estimator of Zienkiewicz and Zhu
+[ZienkiewiczZhu1987]_.  The computed solution :math:`u_h` is continuous across
+the faces of the elements, but its gradient jumps from one element to the next.
+The gradient of a smooth exact solution has no jumps, so the jumps measure the
+error.
 
-The estimator converts this discontinuity into a number in two steps.  First a
-*recovered* gradient :math:`\mathbf{G}_h` is built: a continuous field obtained
-by averaging the element gradients onto the nodes and interpolating back.  For a smooth
-solution the averaging cancels the leading error term of the element gradients,
-so :math:`\mathbf{G}_h` approximates :math:`\nabla u` better than
-:math:`\nabla u_h` does.  Second, the difference between the two is measured
-element by element.  Because :math:`\mathbf{G}_h` is the more accurate of the
-two,
-:math:`\| \mathbf{G}_h - \nabla u_h \|_{L^2(K)} \approx
-\| \nabla u - \nabla u_h \|_{L^2(K)}`, so the computable left-hand side
-estimates the uncomputable right-hand side.
-
-What distinguishes one recovery from another is the weight with which each
-element contributes to the nodal average.  ``dualmesh`` weights by control
-domain measure, the natural choice here because the control domains are already
-part of the discretisation.  Let :math:`\Omega_a` be the control domain of node
-:math:`a`, the region of the dual mesh over which the balance law for node
-:math:`a` is enforced.  The dual mesh subdivides every element :math:`K` among
-the nodes of :math:`K`, so write :math:`K_a = K \cap \Omega_a` for the part of
-:math:`K` belonging to node :math:`a` and :math:`|K_a| = \int_{K_a}\mathrm{d}V`
-for its measure.  These pieces partition the element,
-:math:`\sum_{a \in K} |K_a| = |K|`.  The recovered nodal gradient is
+The estimator first recovers a continuous gradient by averaging the element
+gradients at the nodes.  Each element :math:`K` that holds node :math:`i`
+contributes with the weight of its part :math:`K \cap V_i` in the control domain
+:math:`V_i` of the node.  The recovered gradient of node :math:`i` is
 
 .. math::
-   :label: recovery
+   :label: adaptivity-recovery
 
-   \mathbf{G}_a \;=\;
-   \frac{\displaystyle \sum_{K \ni a} \int_{K_a} \nabla u_h \, \mathrm{d}V}
-        {\displaystyle \sum_{K \ni a} |K_a|} ,
+   \mathbf{g}^*_i =
+   \frac{\displaystyle \sum_{K \ni i} \int_{K \cap V_i} \nabla u_h \,\mathrm{d}V}
+        {\displaystyle \sum_{K \ni i} |K \cap V_i|} ,
 
-the sums running over the elements that have :math:`a` as a node.  Writing
-:math:`\mathbf{g}_{K,a} = |K_a|^{-1} \int_{K_a} \nabla u_h \,\mathrm{d}V` for
-the mean gradient of :math:`K` over that node's share of it, :eq:`recovery`
-reads :math:`\mathbf{G}_a = \sum_K |K_a| \mathbf{g}_{K,a} / \sum_K |K_a|`: the
-nodal gradient is the average of the element gradients at that node, weighted by
-the measure of the part of each element belonging to that node's control domain.
-In the code the integrals use a three-point rule on the dual point set of each
-element.  Every integration point carries the index of the node that owns it, and
-:math:`|K_a|` is accumulated as the sum of the weights of the points owned by
-:math:`a`.
+with :math:`|K \cap V_i|` the measure of that part and the sums over the
+elements that hold node :math:`i`.  These parts partition each element, so the
+weight is the volume for which the node is responsible.  An element type without
+control domains shares each integration point equally among its nodes, which
+keeps the weights positive.
 
-The recovered field is interpolated with the same shape functions :math:`N_a` as
-the solution, :math:`\mathbf{G}_h(\mathbf{x}) = \sum_a N_a(\mathbf{x})
-\mathbf{G}_a`, and the indicator of an element is the :math:`L^2` norm over that
-element of the difference between the recovered and the computed gradient:
+The recovered field interpolates the nodal values with the shape functions
+:math:`N_i` of the solution,
+:math:`\mathbf{g}^*_h = \sum_i N_i\,\mathbf{g}^*_i`.  The indicator of an element
+is the :math:`L^2` norm over the element of the difference between the
+recovered and the computed gradients,
 
 .. math::
-   :label: indicator
+   :label: adaptivity-indicator
 
-   \eta_K \;=\;
-   \left( \int_K \bigl| \mathbf{G}_h - \nabla u_h \bigr|^2 \, \mathrm{d}V
-   \right)^{1/2} .
+   \eta_K = \left( \int_K \left| \mathbf{g}^*_h - \nabla u_h \right|^2 \mathrm{d}V
+   \right)^{1/2} ,
 
-This integral again uses a three-point rule, on the ordinary element point set,
-and carries the coordinate factor of the coordinate system, so in an
-axisymmetric problem the volume element is
-:math:`2\pi r \,\mathrm{d}r\,\mathrm{d}z`.  The global quantity
-:math:`\eta = ( \sum_K \eta_K^2 )^{1/2}` is the norm of the same difference over
-the whole domain.  For a solution that the element space represents exactly
-(e.g., a linear field on linear elements), the computed gradient is already
-constant and exact, the recovery :eq:`recovery` reproduces it, and
-:math:`\eta_K` vanishes.  The test suite measures an indicator below
-:math:`10^{-12}` in that case.  An estimator must have this property so that it
-does not refine a mesh on which the solution is already exact.
+with the volume element of the coordinate system, :math:`2\pi r\,\mathrm{d}r\,\mathrm{d}z`
+in axisymmetric coordinates.  The estimated error of the mesh is
+:math:`\eta = (\sum_K \eta_K^2)^{1/2}`.  For a field with several components,
+such as a velocity, the indicators of the components add as squares.  A field
+that the elements represent exactly, such as a linear field on linear elements,
+has a constant exact gradient that :eq:`adaptivity-recovery` reproduces, so its
+indicators vanish and the mesh is left alone.
 
-Limitations of the indicator
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-*It provides no guaranteed error bound.*  Expression :eq:`indicator` comes with
-no proof that :math:`c_1 \eta \le \| \nabla u - \nabla u_h \| \le c_2 \eta` for
-known constants, and the library makes no such claim.  Its purpose is
-*ranking*: it identifies which elements carry more error than others, which is
-the only information a marking rule requires.  It must not be employed to
-certify that a solution is within a prescribed tolerance.  The argument behind it also
-assumes that the solution is smooth enough for the averaging to cancel the
-leading error term.  This assumption fails precisely at the singular points
-that an adaptive run is intended to resolve.  In practice the indicator still
-ranks those elements highest, which is the property that marking requires.
-
-*It uses simple averaging recovery.*
-Zienkiewicz and Zhu later replaced the nodal average by a least-squares
-polynomial fitted over a patch of elements around each node, sampled at the
-superconvergent points of those elements [ZienkiewiczZhu1992a]_
-[ZienkiewiczZhu1992b]_.  That construction recovers a gradient of higher order
-and gives a sharper estimator.  ``dualmesh`` implements only the earlier,
-simpler averaging recovery of [ZienkiewiczZhu1987]_.  One consequence is that
-the recovery is one-sided at boundary nodes, where fewer elements contribute to
-the average, so the indicator is less reliable on the layer of elements touching
-the boundary.
-
-Both methods carry nodal unknowns and support the indicator.
+The indicator gives no guaranteed bound on the error.  Its purpose is to rank
+the elements by their share of the error, which is what a marking rule needs.
+The argument for it assumes a solution smooth enough for the averaging to cancel
+the leading error term, which fails at the singular points that adaptivity
+resolves, and the indicator still ranks those elements highest.  The code uses
+the averaging recovery of [ZienkiewiczZhu1987]_ and leaves out the superconvergent
+patch recovery of [ZienkiewiczZhu1992a]_ and [ZienkiewiczZhu1992b]_.  At a
+boundary node fewer elements enter the average, so the recovery is one-sided
+there and the indicator is less sharp on the layer of elements at the boundary.
 
 Marking
 -------
 
-A marking rule turns the indicators :math:`\{\eta_K\}` into a set
-:math:`\mathcal{M}` of elements to refine.  The three rules differ in how the
-size of :math:`\mathcal{M}` responds to the shape of the error distribution.
+A marking rule turns the indicators into the set :math:`\mathcal{M}` of elements
+to refine.  :math:`N_e` is the number of elements.
 
-**Fixed fraction.**  :func:`~dualmesh.mark_by_fraction` with
-parameter :math:`\theta \in (0,1]` marks the :math:`\lceil \theta N \rceil`
-elements with the largest indicators, :math:`N` being the element count.  The
-size of :math:`\mathcal{M}` depends only on :math:`\theta` and is independent of
-the indicators, so the mesh grows geometrically at a rate the user fixes in
-advance.  This rule is appropriate when the computational budget matters more
-than optimality, e.g., when a calculation must fit in a known amount of memory,
-or a fixed number of cycles must reach approximately a target size.  Its
-weakness is that it refines :math:`\theta N` elements whether or not they hold
-a meaningful share of the error.  On a problem whose error is concentrated in
-three elements it refines far more than three, and on one whose error is spread
-evenly it refines far fewer than it should.
+- **Fixed fraction.** :func:`~dualmesh.mark_by_fraction` with the fraction
+  :math:`f_r \in (0, 1]` (default 0.3) marks the :math:`\lceil f_r N_e \rceil`
+  elements of largest indicator.  The mesh grows at a rate that you fix in
+  advance, whatever the shape of the error, so the rule suits a fixed budget of
+  memory or time.
+- **Bulk (Dörfler) marking.** :func:`~dualmesh.mark_by_error_fraction` with
+  :math:`f_r \in (0, 1]` (default 0.5) marks the smallest set for which
 
-**Bulk, or Dörfler, marking.**
-:func:`~dualmesh.mark_by_error_fraction` with parameter
-:math:`\theta \in (0,1]` marks the smallest set :math:`\mathcal{M}` for which
+  .. math::
+     :label: adaptivity-dorfler
 
-.. math::
-   :label: dorfler
+     \sum_{K \in \mathcal{M}} \eta_K^2 \ge f_r \sum_{K \in \mathcal{T}_h} \eta_K^2 .
 
-   \sum_{K \in \mathcal{M}} \eta_K^2 \;\ge\; \theta \sum_{K \in \mathcal{T}_h} \eta_K^2 .
+  The code sorts the elements by :math:`\eta_K^2` in decreasing order and adds
+  them until the fraction is reached.  A concentrated error marks few elements
+  and a spread error marks many.  The elements left unmarked carry at most the
+  fraction :math:`1 - f_r` of the squared error, which is the property that
+  Dörfler's proof of a fixed error reduction per cycle uses [Dorfler1996]_.
+  Bulk marking is the default of :func:`~dualmesh.solve_with_adaptive_refinement`
+  and the rule of the ``refine_fraction`` of the input.
+- **Threshold.** :func:`~dualmesh.mark_by_threshold` marks every element with
+  :math:`\eta_K > \eta_{\max}`, for a threshold :math:`\eta_{\max}` in the units
+  of the indicator.  Once every indicator is below it, nothing is marked and the
+  loop stops.
 
-The code sorts the elements by :math:`\eta_K^2` in decreasing order, accumulates
-the sum, and stops as soon as the fraction :math:`\theta` is reached.  Here the
-size of :math:`\mathcal{M}` is set by the error distribution.  Where the error
-is concentrated, a small number of elements satisfies :eq:`dorfler` and the mesh
-grows slowly.  Where the error is spread out, most elements are marked and the
-cycle behaves almost like uniform refinement.  Because of this adaptive
-response, :eq:`dorfler` is the marking rule used in convergence proofs.
-Dörfler [Dorfler1996]_ showed for Poisson's equation that marking this way
-guarantees a fixed reduction of the error at every cycle, so the loop converges
-at a definite rate.  The proof requires this rule because :eq:`dorfler` bounds
-*the error left unmarked*: the elements outside :math:`\mathcal{M}` carry at
-most a fraction :math:`1 - \theta` of the total, so refining :math:`\mathcal{M}`
-necessarily acts on the elements that carry the bulk of the error, whereas the
-:math:`\theta N` largest indicators
-of a fixed-fraction rule may together account for an arbitrarily small share.
-Bulk marking is the default of
-:func:`~dualmesh.solve_with_adaptive_refinement`, with
-:math:`\theta = 0.5`.
+The fixed-fraction and bulk rules mark at least one element whenever an
+indicator is positive, and none when every indicator is zero.
 
-**Absolute threshold.**  :func:`~dualmesh.mark_by_threshold` marks
-every element with :math:`\eta_K > \tau` for a fixed :math:`\tau`.  Unlike the
-other two it has a fixed point: once every element is below the threshold
-nothing is marked, the driver loop stops, and the mesh stops growing.  This rule
-is appropriate when a tolerable local error is known in the units of the
-problem, and inappropriate otherwise, because a threshold set too low refines
-everything and one set too high refines nothing.  A common use is to
-run a few cycles of bulk marking first and set :math:`\tau` from the indicators
-that result.
+The input also coarsens.  Its ``coarsen_fraction`` :math:`f_c` marks for
+coarsening the largest set of refined elements outside :math:`\mathcal{M}` whose
+squared indicators sum to at most :math:`f_c` of the total, the smallest
+indicators first.  Its ``maximum_refinement_level`` bounds the refinement.  A
+level halves the size of an element: :math:`d` bisections of a triangle or a
+tetrahedron, with :math:`d` the space dimension, or one subdivision of a
+quadrilateral or a hexahedron.  An element marked for both is refined.
 
-Both :func:`~dualmesh.mark_by_fraction` and
-:func:`~dualmesh.mark_by_error_fraction` mark at least one element
-whenever the indicators are not all zero, so a loop driven by either continues
-to refine as long as any indicator is nonzero.
+Conforming meshes and the dual mesh
+-----------------------------------
 
-Why the refinement must be conforming
--------------------------------------
+A node that is a corner of the elements on one side of a face and lies inside
+that face for the element on the other side is a hanging node.  The two methods
+need different things from a mesh with hanging nodes.
 
-Suppose one element of a quadrilateral mesh is split into four and its
-neighbours are left unchanged.  The midpoint of the shared face is then a node
-of the four children, while for the neighbour it lies in the *interior* of one
-of its faces.  Such a node is a *hanging node*, and a mesh that has one is
-*non-conforming*.  Refinement schemes that subdivide only the marked elements
-produce hanging nodes routinely, and hanging nodes are standard in adaptive
-finite element codes.
+The finite element method (FEM) needs the discrete functions to be continuous
+across element faces.  A hanging node :math:`m` on the edge from node :math:`a`
+to node :math:`b` breaks continuity, because the small elements interpolate its
+own value while the large element interpolates between :math:`u_a` and
+:math:`u_b`.  The constraint :math:`u_m = \tfrac{1}{2}(u_a + u_b)` restores
+continuity along the whole edge.
 
-A conforming finite element method needs one thing from its mesh: that the
-functions in the discrete space be continuous across element faces, so the space
-is a subspace of :math:`H^1(\Omega)` and the weak form is meaningful.  A hanging
-node :math:`h` in the interior of the face joining nodes :math:`p` and :math:`q`
-breaks continuity, because the children interpolate towards the independent
-value :math:`u_h` while the neighbour interpolates linearly between :math:`u_p`
-and :math:`u_q`.  Continuity is restored by *constraining* the hanging value,
-:math:`u_h = \frac{1}{2}(u_p + u_q)`, and eliminating the constrained degree of
-freedom from the system.  With this constraint the two sides agree along the
-whole face, the interpolant is continuous, and the method proceeds unchanged.
-This is why finite element frameworks such as MOOSE [MOOSE2025]_ and libMesh
-[libMesh2006]_ can refine purely locally.
-
-The dual mesh control domain method does not derive its equations from a weak
-form and does not rest on the continuity of an interpolant.  It integrates the
-balance law over the control domain of each node.  Starting from the canonical
-form :math:`-\nabla \cdot \mathbf{F} + S = 0`, integrating over
-:math:`\Omega_a` and applying the divergence theorem gives one equation per
-node,
+The dual mesh control domain method (DMCDM) integrates the balance law over the
+control domain :math:`V_i` of each node.  With the flux :math:`\mathbf{F}` and
+the source :math:`s` of a steady balance law :math:`\nabla\cdot\mathbf{F} = s`,
+the equation of node :math:`i` is
 
 .. math::
-   :label: balance
+   :label: adaptivity-balance
 
-   \oint_{\partial \Omega_a} \mathbf{F} \cdot \mathbf{n} \, \mathrm{d}S
-   \;=\; \int_{\Omega_a} S \, \mathrm{d}V ,
+   \oint_{\partial V_i} \mathbf{F}\cdot\mathbf{n}\,\mathrm{d}S
+   = \int_{V_i} s\,\mathrm{d}V ,
 
-with :math:`\mathbf{n}` the outward unit normal of :math:`\partial \Omega_a`.
-The principal property of the method follows from summing :eq:`balance` over
-all nodes.  Every interior face of the dual mesh is shared by exactly two
-control domains and appears in the two corresponding equations with opposite
-normals, so those two contributions cancel identically.  Only the terms on the
-outer boundary remain, leaving
+with :math:`\mathbf{n}` the outward unit normal of :math:`\partial V_i`.  Every
+interior face of the dual mesh bounds two control domains, with opposite
+normals, so the sum of :eq:`adaptivity-balance` over the nodes leaves the global
+balance
 
 .. math::
 
-   \oint_{\partial \Omega} \mathbf{F} \cdot \mathbf{n} \, \mathrm{d}S
-   \;=\; \int_{\Omega} S \, \mathrm{d}V ,
+   \oint_{\partial\Omega} \mathbf{F}\cdot\mathbf{n}\,\mathrm{d}S
+   = \int_{\Omega} s\,\mathrm{d}V ,
 
-the global balance, satisfied exactly by the discrete solution on any mesh,
-however coarse.  The purpose of the method is to guarantee this property.
+which the discrete solution satisfies on any mesh.  The cancellation needs the
+control domains to cover the domain :math:`\Omega` without overlap.  A naive
+treatment of a hanging node breaks this partition: the node gets a control
+domain from the small elements but none from the large one, and a strip along
+the face belongs to no single pair of neighbouring control domains.  The flux
+through that strip then cancels in no pair, and the global balance fails.  A
+constraint on values says nothing about which control domain the material next
+to the face belongs to, so DMCDM needs a geometric treatment.
 
-The cancellation imposes two conditions on the dual mesh, and both are
-geometric conditions, independent of any interpolating function.  The control
-domains must **cover** the domain, :math:`\bigcup_a \Omega_a = \Omega`, and
-they must **not overlap**, so every point of :math:`\Omega` belongs to exactly
-one of them.  The dual mesh is therefore a partition of space.
+Triangles and tetrahedra are refined by bisection, which leaves no hanging node.
+Quadrilaterals and hexahedra are refined by subdivision, which leaves hanging
+nodes that FEM constrains and DMCDM gives control domains of their own.
 
-A hanging node destroys the partition.  Let :math:`h` hang in the interior of a
-face :math:`f` shared between the refined side and the unrefined element
-:math:`K^-`.  On the refined side :math:`h` is a vertex, so it is assigned a
-control domain :math:`\Omega_h` assembled from pieces of the children meeting
-there.  On the :math:`K^-` side :math:`h` lies in the interior of a face, so it
-receives no share of :math:`K^-`.  The material of :math:`K^-` next to
-:math:`f` is divided between the control domains of the *end nodes* of
-:math:`f`.  The result is a strip along :math:`f` where
-:math:`\partial \Omega_h` is not matched by the
-boundary of any single neighbouring control domain.  Flux computed as leaving
-:math:`\Omega_h` through that strip is not counted as entering any control
-domain, and on the other side the control domains of the end nodes of :math:`f`
-receive flux through a piece of boundary that is not part of
-:math:`\partial \Omega_h`.  The contributions then fail to cancel in pairs, the
-telescoping sum leaves a spurious interior residual, and the discrete global
-balance fails.  The method loses precisely the property that motivates it, and
-it does so without warning: the solve still returns a solution, and that
-solution violates the discrete global balance.
+Newest-vertex bisection of triangles
+------------------------------------
 
-Constraining :math:`u_h = \frac{1}{2}(u_p + u_q)` does not repair this.  The
-constraint is a statement about *values*, whereas the defect concerns
-*regions*.  Making the hanging value a combination of its neighbours' values
-says nothing about which control domain the material next to the face belongs
-to.  The dual mesh method has no analogue of the finite element constraint, so
-``dualmesh`` refines conformingly and leaves no hanging node anywhere.  The test
-suite checks this through a consequence.  After four rounds of refinement
-concentrated in one corner of a square (the pattern that would produce hanging
-nodes if the propagation were incomplete), a linear field is reproduced to
-:math:`10^{-11}` by all three nodal discretisations.  A mesh with a hanging node
-would fail this patch test, because its control domains would not partition the
-domain.
-
-Newest-vertex bisection
------------------------
-
-Conformity is maintained by newest-vertex bisection.  To bisect a triangle is
-to insert a node at the midpoint of one of its edges and split the triangle
-into two along the segment from that midpoint to the opposite vertex.  Each
-triangle :math:`[a, b, c]` lists its *refinement edge* :math:`a`-:math:`b`
-first, and its bisection inserts the midpoint :math:`m` of that edge and gives
-the children :math:`[c, a, m]` and :math:`[b, c, m]`.  The new node :math:`m`
-is the *newest vertex* of both children, and each child's refinement edge is
-the edge opposite it.  A triangle of the initial mesh takes its longest edge
-as its refinement edge.
+To bisect a triangle is to insert a node at the midpoint of one of its edges
+and split the triangle along the segment from that midpoint to the opposite
+vertex.  Each triangle :math:`[a, b, c]` lists its refinement edge
+:math:`a`-:math:`b` first.  Its bisection inserts the midpoint :math:`m` of that
+edge and gives the children :math:`[c, a, m]` and :math:`[b, c, m]`.  The new
+node :math:`m` is the newest vertex of both children, and each child's
+refinement edge is the edge opposite it.  A triangle of the initial mesh takes
+its longest edge as its refinement edge, with ties to the larger node numbers.
 
 A refinement follows the edge marking of [FunkenPraetoriusWissgott2011]_:
 
 1. Each marked triangle marks its refinement edge.
-2. Every triangle with a marked edge also marks its refinement edge, and this
-   step repeats until no new edge is marked.
-3. Each triangle splits by the pattern of its marked edges.  It always bisects
-   its refinement edge, and each child bisects its own refinement edge again
-   when that edge is marked.
+2. Every triangle with a marked edge marks its refinement edge, and this step
+   repeats until no new edge is marked.
+3. Each triangle splits by the pattern of its marked edges.  It bisects its
+   refinement edge, and each child bisects its own refinement edge again when
+   that edge is marked.
 
 Every marked edge then has one midpoint, shared by the triangles on both of its
 sides, so no node hangs.  Step 2 marks a finite set of edges, so the refinement
-always ends.  The children of a triangle keep its orientation and its block.
-
+ends.  The children of a triangle keep its orientation and its block.
 Newest-vertex bisection is the refinement for which adaptive finite element
-methods are proved to converge at the optimal rate
-[BinevDahmenDeVore2004]_ [Stevenson2007]_.  However often it is repeated, the
-triangles it makes fall into finitely many classes of similar triangles, so
-their smallest angle stays bounded below and the mesh cannot degenerate.  The
-test suite exercises this over twelve rounds of random marking and confirms
-that every triangle stays positively oriented and that the ratio of smallest to
-largest element area remains bounded away from zero.
+methods converge at the optimal rate [BinevDahmenDeVore2004]_ [Stevenson2007]_.
+However often it repeats, the triangles it makes fall into finitely many classes
+of similar triangles, so their smallest angle stays bounded below.
 
-The hierarchy of bisections is kept, so a refinement can be undone.  A node
-made by bisection is removed when it is the newest vertex of every triangle
-around it, there are two of them (on the boundary) or four (inside), and all
-of them are marked for coarsening.  Each pair :math:`[c, a, m]`,
-:math:`[b, c, m]` then merges back into :math:`[a, b, c]`.
-
-Side sets and node sets are carried across.  The two halves of a bisected edge
-belong to the side sets of the edge, and the edge gets them back when its
-halves merge.  A midpoint whose two end nodes both belong to a node set joins
-that set.  Every element records the element of the initial mesh it came from,
-which is how a field stored per element is transferred.  A nodal field keeps
-its values at the nodes that stay, and a new node takes the value of the
-interpolant of the old element it lies in, so a field that the elements
-represent, linear or quadratic, transfers exactly.
+The hierarchy of bisections is kept, so a refinement can be undone.  A node made
+by bisection is removed when it is the newest vertex of every triangle around
+it, there are two of them (on the boundary) or four (inside), and all of them are
+marked for coarsening.  Each pair :math:`[c, a, m]`, :math:`[b, c, m]` then
+merges back into :math:`[a, b, c]`.
 
 Quadratic triangles and tetrahedra (``Tri6``, ``Tet10``) are bisected by their
-corners.  The middle node of an edge is the node that the bisection of that
-edge makes, so it becomes a corner of the children.  Every new node is placed
-by the quadratic map of the element of the initial mesh it lies in, so the new
-nodes of a curved side lie on its curve, to the accuracy of the quadratic map.
+corners.  The middle node of an edge is the node that the bisection of that edge
+makes, so it becomes a corner of the children.
 
 Longest-edge bisection of tetrahedra
 ------------------------------------
 
-A tetrahedral mesh is refined by longest-edge bisection [RivaraLevin1992]_.
-A marked tetrahedron bisects its longest edge, and every tetrahedron around
-that edge is bisected through the same midpoint, so no node hangs.  Each
-tetrahedron of that ring splits into two: one with the second end of the edge
-replaced by the midpoint, and one with the first end replaced, which keeps its
-orientation.  A tetrahedron of the ring whose longest edge is another is
-bisected first, across its own longest edge.  Each such detour bisects a
-strictly longer edge, so the recursion ends for any initial mesh.  Ties of
-length go to the larger node numbers, so that every tetrahedron agrees on
-which edge is the longest.
+A tetrahedral mesh is refined by longest-edge bisection [RivaraLevin1992]_.  A
+marked tetrahedron bisects its longest edge, and every tetrahedron around that
+edge is bisected through the same midpoint, so no node hangs.  Each tetrahedron
+of that ring splits into two: one with the second end of the edge replaced by
+the midpoint, and one with the first end replaced, which keeps its orientation.
+A tetrahedron of the ring whose longest edge is another is bisected first,
+across its own longest edge.  Each such detour bisects a strictly longer edge,
+so the recursion ends for any initial mesh.  Ties of length go to the larger
+node numbers, so that every tetrahedron agrees on which edge is the longest.
 
-The coarsening undoes one bisection, as in two dimensions.  A node made by
-bisection is removed when every tetrahedron around it was made by that
-bisection and all of them are marked.  The two children of each parent share
-the face through the node, and they merge back into the parent.  Faces of side
-sets split and merge with their tetrahedra.
+Coarsening undoes one bisection.  A node made by bisection is removed when every
+tetrahedron around it was made by that bisection and all of them are marked.
+The two children of each parent share the face through the node and merge back
+into the parent.
 
 Subdivision of quadrilaterals and hexahedra
 -------------------------------------------
 
 A quadrilateral or a hexahedron splits into :math:`2^d` children of half its
-size through the middles of its edges, the centres of its faces and its
-centre, where :math:`d` is the space dimension.  A neighbour that is not split
-keeps its side whole, and the node in the middle of that side *hangs*: it is a
-corner of the small cells and lies inside the side of the large one.  The mesh
-is kept 2:1 balanced across edges and faces, as deal.II, MFEM and p4est keep
-theirs: a cell is split when a neighbour across one of its edges or faces is
-more than one level finer, so a node hangs on one level only.  Coarsening
-merges a family of :math:`2^d` children back into their parent when all of
-them are marked and the parent keeps the balance.
-
-A new node is placed by the bilinear (trilinear) map of the corners of its
-parent as they are.  On a curved side, the ``boundaries`` argument of
-:func:`~dualmesh.solve_with_adaptive_refinement` moves the nodes of the side
-onto the curve after each refinement, and the later splits start from the
-moved nodes.  A hanging node on such a side stays on the straight side of its
-large neighbour, where its constraint puts it, and moves onto the curve once
-that side is split.
+size, through the middles of its edges, the centres of its faces and its
+centre.  A neighbour that is not split keeps its side whole, and the node in the
+middle of that side hangs.  The mesh is kept 2:1 balanced across edges and
+faces: a cell is split when a neighbour across one of its edges or faces is more
+than one level finer, so a node hangs on one level only.  Coarsening merges the
+:math:`2^d` children of a parent back into it when all of them are marked and
+the parent keeps the balance.  A new node is placed by the bilinear (trilinear)
+map of the corners of its parent as they are.
 
 The two methods treat a hanging node differently.
 
-- FEM constrains it.  The value at a hanging node is that of the large side:
-  the mean of the two ends of a hanging edge, or of the four corners of a
-  hanging face.  Each hanging unknown is that weighted sum of independent
-  ones, its equation is added to theirs with the same weights, and the
-  Jacobian :math:`\mathbf{J}` becomes :math:`\mathbf{C}^T \mathbf{J}
-  \mathbf{C}`, where :math:`\mathbf{C}` maps the independent unknowns to all
-  of them.
-- DMCDM keeps it as an unknown of its own, since a constraint on values
-  cannot repair the control domains.  The interfaces of the large cell would
-  end at the middle of its side, and those of the small cells at the middles
-  of their halves, so the segment between them would carry no flux.  The large
-  cell is therefore split as a polygon whose sides are the leaf edges.  Each
-  flag (the centre of the cell, the middle of a leaf edge, an end of that
-  edge) is a triangle of the control domain of that end, and the segment from
-  the centre to the middle of a leaf edge is the interface between its ends.
-  These interfaces meet those of the small cells at the same middles, so the
-  control domains tile the domain and the balance stays conservative.  A
-  hexahedron is split the same way over its leaf faces: four for a side whose
-  centre hangs, one for another, with the hanging middles of its edges among
-  its corners.  Each flag (the centre of the cell, the centre of a leaf face,
-  the middle of an edge of that face, an end of the edge) is a tetrahedron,
-  and the triangle of the first three is the interface between the ends.  The
-  fields inside the large cell are its own, so a linear field stays exact.
+FEM constrains it.  The value at a hanging node is the mean of the two ends of
+its edge, or of the four corners of its face.  Each hanging unknown is therefore
+a weighted sum of independent ones, and its equation is added to theirs with the
+same weights.  The Jacobian :math:`\mathbf{J}` becomes
+:math:`\mathbf{C}_h^{\mathsf{T}}\mathbf{J}\,\mathbf{C}_h`, with :math:`\mathbf{C}_h`
+the matrix that maps the independent unknowns to all of them.
 
-What is refined, and what is not
---------------------------------
+DMCDM keeps the hanging node as an unknown of its own, with a control domain of
+its own.  The interfaces of the large cell would end at the middle of its side,
+and those of the small cells at the middles of their halves, so the segment
+between them would carry no flux.  The code therefore splits the large cell as a
+polygon whose sides are the leaf edges: the two halves of a side on which a node
+hangs, and every other side whole.  Each flag, the triangle of the centre of the cell, the middle of a
+leaf edge and an end of that edge, belongs to the control domain of that end,
+and the segment from the centre to the middle of a leaf edge is the interface
+between its ends.  These interfaces meet those of the small cells at the same
+middles, so the control domains tile the domain and the balance stays
+conservative.  A hexahedron splits the same way over its leaf faces: four for a
+side whose centre hangs and one for another, with the hanging middles of its
+edges among its corners.  Each flag, the tetrahedron of the centre of the cell,
+the centre of a leaf face, the middle of an edge of that face and an end of the
+edge, belongs to the control domain of that end, and the triangle of its first
+three points is the interface between the ends.  The fields inside the large
+cell come from its own corners, so a linear field stays exact.
 
-**Local refinement and coarsening are available for meshes of one element type:
-``Tri3``, ``Tri6``, ``Tet4`` and ``Tet10`` by bisection, and ``Quad4`` and ``Hex8``
-by subdivision.**  :func:`~dualmesh.refine_marked` and the adaptive loops raise an
-error, naming the reason, for any other mesh.  In a distributed problem, every
-process that holds a hanging node also holds the nodes it depends on, and every
-process that holds a large cell holds the nodes that hang on its sides.
+Curved boundaries
+-----------------
 
-Uniform refinement is available for more element types.
-:meth:`~dualmesh.Mesh.refined` splits every element at once: an ``Edge2`` into
-two, a ``Tri3`` into four, a ``Quad4`` into four, a ``Tet4`` into eight, a
-``Hex8`` into eight, a ``Wedge6`` into eight prisms and a ``Pyramid5`` into six
-pyramids and four tetrahedra.  Because every element is subdivided, no hanging
-node can arise and the result is conforming.  Quadratic meshes are refused.  To
-obtain a refined quadratic mesh, refine the linear mesh first and promote the
-result with :meth:`~dualmesh.Mesh.second_order`.
+A node that a refinement adds on a boundary lies on the straight edge between
+its neighbours.  To follow a curved boundary, the ``boundaries`` argument of
+:func:`~dualmesh.solve_with_adaptive_refinement` maps a side set to a projection
+of its curve.  After each refinement, the nodes of the side set move onto the
+curve, and the later splits start from the moved nodes.  A hanging node on such
+a side stays on the straight side of its large neighbour, where its constraint
+puts it, and moves onto the curve once that side is split.  On a quadratic mesh
+of triangles or tetrahedra, every new node is placed by the quadratic map of the
+element of the initial mesh it lies in, so the new nodes of a curved side lie on
+its quadratic curve.
 
-A mesh of prisms or pyramids is therefore refined uniformly.  Each round
-multiplies the number of unknowns by eight, so only a few rounds are affordable.
-The error indicator still shows where the error is concentrated, as a
-diagnostic.
+Transfer of the fields
+----------------------
 
-A measured benchmark: the L-shaped domain
------------------------------------------
+Every element records the element of the initial mesh it comes from, which
+carries a field stored per element to the new mesh.  A nodal field keeps its
+values at the nodes that stay.  A new node takes the value of the interpolant of
+the old element it lies in, found in the reference coordinates of its initial
+element.  A field that the elements represent, linear or quadratic, therefore
+transfers exactly under refinement.  Side sets and node sets follow the
+refinement: the halves of a bisected edge belong to the side sets of the edge
+and give them back when they merge, and a midpoint whose two ends belong to a
+node set joins that set.  After subdivision, a new node joins a node set on the
+boundary only where it lies on the boundary too.
 
-The standard test of an adaptive scheme is Laplace's equation on a domain with a
-re-entrant corner.  Take :math:`\Omega` to be the square
-:math:`[-1,1] \times [-1,1]` with the quadrant :math:`x > 0,\; y < 0` removed,
-an L-shaped region whose interior angle at the origin is :math:`3\pi/2`.  Solve
-:math:`-\nabla^2 u = 0` in :math:`\Omega` with Dirichlet data on the whole
-boundary taken from the exact solution
+A steady adaptive loop starts each solve from the solution of the last mesh,
+carried to the new one.  A transient run of the input adapts the mesh every
+``interval`` accepted time steps and goes on from the time it reached, with the
+time step that the step control chose before the change.  At each change, the
+fields are carried to the new mesh, and so is the velocity of a second-order
+equation, such as the balance of momentum of a solid with a density.  Under
+refinement alone both stay the same functions, so the momentum
+:math:`\int_\Omega \rho\,\mathbf{v}\,\mathrm{d}V` is unchanged, with :math:`\rho`
+the density and :math:`\mathbf{v}` the velocity.
 
-.. math::
-   :label: corner
+Element types
+-------------
 
-   u(r, \theta) = r^{2/3} \sin\!\left( \tfrac{2}{3}\theta \right) ,
+Local refinement and coarsening take a mesh of one element type: ``Tri3``,
+``Tri6``, ``Tet4`` and ``Tet10`` by bisection, and ``Quad4`` and ``Hex8`` by
+subdivision.  :func:`~dualmesh.refine_marked` and the adaptive loops refuse any
+other mesh, with the reason.
 
-in polar coordinates centred on the corner, with :math:`\theta` measured from
-the positive :math:`x` axis in :math:`[0, 3\pi/2]`.  A direct calculation
-confirms that :eq:`corner` is harmonic and vanishes on the two faces of the
-corner, :math:`\theta = 0` and :math:`\theta = 3\pi/2`.
+:meth:`~dualmesh.Mesh.refined` refines a mesh uniformly.  It splits an ``Edge2``
+into two, a ``Tri3`` or a ``Quad4`` into four, a ``Tet4`` or a ``Hex8`` into
+eight, a ``Wedge6`` into eight prisms and a ``Pyramid5`` into six pyramids and
+four tetrahedra.  Every element is split, so no node hangs.  Quadratic meshes
+are refused: refine the linear mesh and promote the result with
+:meth:`~dualmesh.Mesh.second_order`.  A mesh of prisms or pyramids is therefore
+refined uniformly, and each round multiplies the number of elements by eight.
 
-The solution is smooth everywhere except at the origin, where its gradient
-behaves like :math:`r^{-1/3}` and is unbounded: :math:`u` lies in
-:math:`H^1(\Omega)`, so the problem is well posed, but not in
-:math:`H^2(\Omega)`.  The singularity arises from the geometry, independently
-of the boundary data.  Any solution of Laplace's equation on a domain with a
-re-entrant corner of interior angle :math:`\omega > \pi` contains a term
-:math:`r^{\pi/\omega}` with :math:`\pi/\omega < 1`, and :eq:`corner` is that
-term for :math:`\omega = 3\pi/2`.  Corner singularities of this kind are a
-property of the geometry and are therefore unavoidable in practice.
+Adaptivity of a distributed problem
+-----------------------------------
 
-For a smooth solution, linear elements give an error falling like :math:`h^2`,
-and in two dimensions the number of unknowns :math:`N` grows like
-:math:`h^{-2}`, so the error falls like :math:`N^{-1}`, which is the best rate
-a sequence of linear-element meshes can achieve.  At a re-entrant corner the
-argument fails, because the :math:`h^2` estimate needs a bounded second derivative and
-:eq:`corner` has none at the origin.  The few elements nearest the corner then
-dominate the total error, and uniform refinement improves them at the same slow
-rate as everything else while placing three quarters of the new elements of
-each cycle far from the corner, where the solution is already well resolved.
-Adaptive refinement avoids this limitation by grading the mesh towards the
-corner: the elements
-there shrink much faster than :math:`h`, the corner contribution falls at the
-same rate as the rest, and the :math:`N^{-1}` rate is recovered even though the
-solution is not smooth.
+In a distributed problem every process holds the same hierarchy of the whole
+mesh.  The recovery :eq:`adaptivity-recovery` sums the contributions of every
+process at the nodes they share, so the indicators are those of the whole mesh.
+Every process gathers them, marks the same elements and adapts its copy of the
+hierarchy the same way.  The problem on the new mesh is built and partitioned
+again (see :doc:`parallel`).  The distribution keeps the hanging nodes whole:
+the process that holds a hanging node also holds the nodes it depends on, and the
+process that holds a large cell also holds the nodes that hang on its sides.
 
-Both sequences below start from the same coarse mesh of 24 triangles and 21
-nodes, and the adaptive one uses the gradient-recovery indicator with bulk
-marking at :math:`\theta = 0.4`.  The quantity reported is the maximum nodal
-error :math:`\max_a |u_h(\mathbf{x}_a) - u(\mathbf{x}_a)|` against the number of
-unknowns :math:`N`, which here is the number of nodes.  The comparison must be
-made at equal :math:`N`, because adaptive and uniform meshes have quite
-different sizes at the same cycle.
-
-.. table:: Uniform refinement (5 cycles) and adaptive refinement (12 cycles)
-
-   =========  ============================  ==========  ============================
-   Uniform N  Uniform error                 Adaptive N  Adaptive error
-   =========  ============================  ==========  ============================
-   21         :math:`3.62 \times 10^{-2}`   21          :math:`3.62 \times 10^{-2}`
-   65         :math:`2.96 \times 10^{-2}`   30          :math:`2.91 \times 10^{-2}`
-   225        :math:`2.01 \times 10^{-2}`   37          :math:`1.95 \times 10^{-2}`
-   833        :math:`1.30 \times 10^{-2}`   57          :math:`1.11 \times 10^{-2}`
-   3201       :math:`8.30 \times 10^{-3}`   93          :math:`7.30 \times 10^{-3}`
-   \-         \-                            122         :math:`5.16 \times 10^{-3}`
-   =========  ============================  ==========  ============================
-
-Fitting a straight line to :math:`\log(\text{error})` against :math:`\log N`
-gives the observed rates :math:`\text{error} \sim N^{-0.30}` for the uniform
-sequence and :math:`\text{error} \sim N^{-1.10}` for the adaptive one.  The
-uniform rate is close to the :math:`-1/3` predicted for this interior angle and
-far short of the :math:`-1` a smooth problem would give.  The adaptive rate,
-fitted over the last seven cycles once the mesh is graded towards the corner,
-recovers the optimal rate for linear elements.  The test suite asserts these
-rates as bands (the uniform slope between :math:`-0.45` and :math:`-0.2`, the
-adaptive slope below :math:`-0.8`), so that the test checks the qualitative
-behaviour and is insensitive to small changes in the computed values.  The end
-points of the two sequences show the same result without any fitting: twelve
-adaptive cycles give 122 unknowns at a maximum error of
-:math:`5.16 \times 10^{-3}`, while five uniform cycles give 3201 unknowns at
-:math:`8.30 \times 10^{-3}`.  The adaptive mesh has 26 times fewer unknowns and
-its maximum error is smaller by a factor of 1.6.
-
-A second run exercises
-:func:`~dualmesh.solve_with_adaptive_refinement` on the same problem
-with bulk marking at :math:`\theta = 0.6`.  Over eight cycles the element count
-rises through 24, 30, 35, 42, 60, 80, 116 to 176, and the maximum nodal error
-falls from :math:`3.62 \times 10^{-2}` to :math:`1.17 \times 10^{-2}`.  For
-comparison, the uniform mesh of 1536 elements reaches
-:math:`1.30 \times 10^{-2}`, and only the 6144-element mesh achieves a smaller
-error, :math:`8.30 \times 10^{-3}`.  A uniform mesh therefore needs a few
-thousand elements to match the accuracy of the 176-element adaptive mesh.
-
-Running the loop
-----------------
-
-:func:`~dualmesh.solve_with_adaptive_refinement` performs the whole
-cycle.  It takes a callable that builds a problem on a given mesh, and calls it
-on every new mesh to build a new problem there:
-
-.. code-block:: python
-
-   def build(mesh):
-       problem = dualmesh.Problem(mesh)
-       problem.add_variable("u")
-       problem.add_kernel("diffusion", variable="u")
-       problem.add_kernel("body_force", variable="u", value=1.0)
-       problem.add_boundary_condition("Dirichlet", mesh.sideset_names(), variable="u", value=0.0)
-       return problem
-
-
-   problem, mesh = dualmesh.solve_with_adaptive_refinement(
-       build, initial_mesh, variable="u", num_cycles=4
-   )
-
-Rebuilding the problem on each mesh keeps the boundary conditions and the
-property objects exactly as the user wrote them.  The solve on each new mesh
-starts from the solution of the last mesh, carried to the new one, which saves
-Newton iterations in a nonlinear problem.  The loop stops early if the marker selects nothing, or if ``max_elements`` is given
-and the mesh has grown past it.  A ``callback(cycle, problem, indicators)`` is
-invoked after every solve, and a calculation can use it to write output files
-or to record a convergence history like the table above.
-
-A transient run of the input adapts the mesh every ``interval`` accepted time
-steps and goes on from the state it reached.  At each change of the mesh, the
-fields are carried to the new mesh as the interpolant of the old one, and so is
-the velocity of a second-order equation, such as the balance of momentum of a
-solid with a density.  Refinement alone carries both as the same functions, so
-the momentum of a solid is kept exactly.  The run goes on with the time step
-that the step control chose before the change.
+The verification cases of adaptive refinement, with their sources, computed
+values and errors, are on the :doc:`/verification` page.

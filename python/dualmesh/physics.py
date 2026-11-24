@@ -255,7 +255,7 @@ def _list_items(text: str, size: int, where: str) -> list[str]:
 
 class Physics:
     """Base of the physics.  A subclass is a dataclass whose fields are its
-    parameters, and it provides :meth:`variables` and :meth:`_build`."""
+    parameters, and it provides :meth:`variable_names` and :meth:`_build`."""
 
     category: ClassVar[str] = "physics"
     module: ClassVar[str] = "framework"
@@ -587,11 +587,27 @@ class Coupling:
 @register
 @dataclass
 class HeatTransfer(Physics):
-    """Heat conduction in a solid or a fluid at rest, with an optional heat
-    source and heat capacity: ρ c_p ∂T/∂t − ∇·(k ∇T) = q. The
+    r"""Heat conduction in a solid or in a fluid at rest, with an optional heat
+    source and heat capacity.
+
+    The temperature :math:`T` in :math:`\mathrm{K}` satisfies the energy balance
+
+    .. math::
+
+        \rho c_p \frac{\partial T}{\partial t} + \nabla \cdot \mathbf{q} = s,
+        \qquad \mathbf{q} = -k \nabla T,
+
+    with the density :math:`\rho` in :math:`\mathrm{kg/m^3}`, the specific
+    heat capacity :math:`c_p` in :math:`\mathrm{J/(kg\,K)}`, the heat flux
+    :math:`\mathbf{q}` in :math:`\mathrm{W/m^2}`, the thermal conductivity
+    :math:`k` in :math:`\mathrm{W/(m\,K)}` and the heat generated per unit
+    volume :math:`s` in :math:`\mathrm{W/m^3}`.  The heat capacity term is
+    present when ``density`` and ``specific_heat`` are both given.  The
     conductivity is a constant, the name of a function, or, when it is not
-    given, the property thermal_conductivity of the property objects of
-    the problem."""
+    given, the property ``thermal_conductivity`` of the property objects of
+    the problem.  The boundary condition ``heat_flux`` prescribes
+    :math:`\mathbf{n} \cdot \mathbf{q}`, the heat flux that leaves the body
+    along the outward unit normal :math:`\mathbf{n}`."""
 
     type_name: ClassVar[str] = "heat_transfer"
     module: ClassVar[str] = "heat_transfer"
@@ -605,34 +621,35 @@ class HeatTransfer(Physics):
     thermal_conductivity: float | str | None = parameter(
         None,
         unit="W/(m K)",
-        description="Thermal conductivity k, a constant or the name of a function of (x, y, z, t). Default: the property thermal_conductivity, which a property object such as constant_property or parsed_property declares.",
+        description="Thermal conductivity k, a constant or the name of a function of x, y, z and t. Default: the property thermal_conductivity of the property objects of the problem, such as constant or parsed, so that the conductivity can differ between blocks and depend on the temperature.",
     )
     heat_source: float | str | None = parameter(
         None,
         unit="W/m^3",
-        description="Volumetric heat generation q, a constant or the name of a function. Default none.",
+        description="Heat generated per unit volume s, a constant or the name of a function. Default none: the body generates no heat.",
     )
     density: float | str | None = parameter(
         None,
         unit="kg/m^3",
-        description="Mass density rho of the heat capacity term. Default none: the heat capacity term is included only when both density and specific_heat are given, which a transient solve needs.",
+        description="Density rho of the heat capacity term rho c_p dT/dt, a constant or the name of a function. Default none: the equation has a heat capacity term only when density and specific_heat are both given, and a transient solve needs it.",
     )
     specific_heat: float | str | None = parameter(
         None,
         unit="J/(kg K)",
-        description="Specific heat c_p of the heat capacity term and, with a nonisothermal_flow coupling, of the heat that the flow carries. Default none (see density), and 1 with the coupling, the value of the non-dimensional equations.",
+        description="Specific heat capacity c_p of the heat capacity term and, with a nonisothermal_flow coupling, of the heat that the flow carries. Default none: no heat capacity term, as for density. The coupling then takes 1, the value of the non-dimensional equations.",
     )
     advection_scheme: str | None = parameter(
         None,
-        description="How the heat that a flow carries (with a nonisothermal_flow coupling) is discretised: 'SUPG' (streamline upwind Petrov-Galerkin), the face fluxes of DMCDM 'limited' (the upstream face value blended towards the central one by the van Albada limiter, bounded and second order), 'linear_upwind' (second order, not bounded) and 'upwind' (bounded, first order), or 'central' (no stabilisation, which oscillates where convection dominates). Default SUPG, which measured the closest on boundary layers and jumps. Where conduction matters as much as convection (resolved natural convection), central can be closer.",
+        description="How the heat that a flow carries is discretised, with a nonisothermal_flow coupling: SUPG (streamline upwind Petrov-Galerkin, with either method), central (no stabilisation, which oscillates where convection dominates on a coarse mesh), or a face flux of the dual mesh control domain method (DMCDM): upwind (bounded, first order), linear_upwind (second order, not bounded) or limited (the upstream face value blended towards the central one by the van Albada limiter, bounded and second order). Default SUPG: it removes the oscillations of central where convection dominates, and it adds diffusion along the streamlines only. On a mesh that resolves the boundary layers, central has no stabilisation error.",
     )
     initial_condition: float | str = parameter(
         293.15,
         unit="K",
-        description="Initial temperature, a constant or the name of a function, and the start of Newton's method in a steady solve. Default 293.15 K, room temperature (COMSOL's default), since a start at 0 K has no physical meaning.",
+        description="Initial temperature, a constant or the name of a function, and the starting point of Newton's method in a steady solve. Default 293.15 K, room temperature, which is close to the state of most problems.",
     )
     block: Sequence[str] = parameter(
-        (), description="Blocks where the equation holds. Default: every block."
+        (),
+        description="Blocks where the equation holds. Default: every block, so that a body of one material needs no block names.",
     )
 
     def __post_init__(self):
@@ -648,8 +665,8 @@ class HeatTransfer(Physics):
         return [self.temperature]
 
     def heat_flow(self, boundary: str) -> float:
-        """The heat leaving the body through ``boundary`` (W; W/m in a plane
-        problem): the integral of the heat flux along the outward normal, the
+        """The heat leaving the body through ``boundary``, in W, or in W/m in a
+        plane problem: the integral of the heat flux along the outward normal, the
         quantity ``heat_flux`` of the boundary conditions.  Where the boundary
         prescribes the temperature it is the reaction there, conserved
         exactly (:meth:`~dualmesh.Problem.boundary_flux`)."""
@@ -757,22 +774,29 @@ def _symbols_of_mms():
 @register
 @dataclass
 class GeneralFormPDE(Physics):
-    """Partial differential equations written as they are printed, or by
+    r"""Partial differential equations written as they are printed, or by
     their coefficients.
 
     ``equations`` holds the equations as text, for example
-    ``"rho*cp*dT/dt = div(k*grad(T)) + q"``; the page *From paper to code*
-    of the user guide defines the language.  The coefficients ``m``, ``d``,
-    ``c``, ``alpha``, ``gamma``, ``beta``, ``a`` and ``f`` give instead, for
-    a scalar field u, the equation
+    ``"rho*cp*dT/dt = div(k*grad(T)) + q"``, in the language that
+    :doc:`/user_guide/equations` defines.  The coefficients ``m``, ``d``,
+    ``c``, ``alpha``, ``gamma``, ``beta``, ``a`` and ``f`` give instead the
+    equation of a scalar field :math:`u`
 
-        m d2u/dt2 + d du/dt + div(-c grad u - alpha u + gamma) + beta . grad u + a u = f.
+    .. math::
 
-    Any other keyword is a definition that the equations use by its name: a
-    number is a named constant and a text a named expression, which may use
-    the definitions before it.  The equations are reduced symbolically to
-    their fluxes and sources, compiled once and differentiated
-    automatically, so Newton's method has the exact Jacobian."""
+        m \frac{\partial^2 u}{\partial t^2} + d \frac{\partial u}{\partial t}
+        + \nabla \cdot \mathbf{F} + \boldsymbol{\beta} \cdot \nabla u + a u = f,
+        \qquad \mathbf{F} = -c \nabla u - \boldsymbol{\alpha} u + \boldsymbol{\gamma},
+
+    with the flux :math:`\mathbf{F}`, which the boundary condition
+    ``normal_flux`` prescribes as :math:`\mathbf{n} \cdot \mathbf{F}` along
+    the outward unit normal :math:`\mathbf{n}`.  Any other keyword is a
+    definition that the equations use by its name.  A number is a named
+    constant, and a text is a named expression, which may use the
+    definitions before it.  The equations are reduced symbolically to their
+    fluxes and sources, compiled once and differentiated automatically, so
+    Newton's method has the exact Jacobian."""
 
     type_name: ClassVar[str] = "general_form_PDE"
     module: ClassVar[str] = "framework"
@@ -780,44 +804,51 @@ class GeneralFormPDE(Physics):
     takes_definitions: ClassVar[bool] = True
 
     variables: str | Sequence[str | Mapping[str, str]] = parameter(
-        description="The fields, one equation each: a name, or a list whose items are names or {name: kind}, with the kind 'scalar' (the default) or 'vector', e.g. [{'U': 'vector'}, 'p']. A vector field U has the components U_x, U_y, U_z (U_r, U_z in axisymmetric coordinates).",
+        description="The fields, one equation each: a name, or a list whose items are names or {name: kind}, with the kind 'scalar' (the default, one component) or 'vector', for example [{'U': 'vector'}, 'p']. A vector field U has the components U_x, U_y, U_z, or U_r, U_z in axisymmetric coordinates.",
     )
     equations: str | Sequence[str] | Mapping[str, str] = parameter(
         (),
-        description="The equations as text, one per field: one text, a list, which is matched to the fields automatically (by the time derivative, then by the second derivative, then the field left over), or a dict field -> equation. Default: the equations of the coefficients.",
+        description="The equations as text, one per field: one text, a list that is matched to the fields by the time derivative, then by the second derivative, then by the field left over, or a dict field -> equation. Default none: the equations come from the coefficients m, d, c, alpha, gamma, beta, a and f.",
     )
-    m: object = parameter(None, description="Mass coefficient m of d2u/dt2. Default none.")
+    m: object = parameter(
+        None,
+        description="Mass coefficient m of d2u/dt2. Default none: no second time derivative.",
+    )
     d: object = parameter(
-        None, description="Damping (or mass) coefficient d of du/dt. Default none."
+        None,
+        description="Damping or mass coefficient d of du/dt. Default none: no first time derivative.",
     )
     c: object = parameter(
         None,
-        description="Diffusion coefficient c in div(-c grad u): an expression, a list of one per dimension (orthotropic) or of the dimension squared, row by row (a tensor), or with several fields a dict field -> value, whose value may itself be a dict field -> value that couples the equation to the gradients of other fields. Default none.",
+        description="Diffusion coefficient c in div(-c grad u): an expression, a list of one value per dimension (orthotropic), or a list of dimension squared values, row by row (a tensor). With several fields it is a dict field -> value, and a value that is itself a dict field -> value couples the equation to the gradients of other fields. Default none: no diffusion.",
     )
     alpha: object = parameter(
         None,
-        description="Conservative flux convection coefficient alpha in div(-alpha u), one value per dimension. Default none.",
+        description="Conservative flux convection coefficient alpha in div(-alpha u), one value per dimension. Default none: no such term.",
     )
     gamma: object = parameter(
         None,
-        description="Conservative flux source gamma in div(gamma), one value per dimension. Default none.",
+        description="Conservative flux source gamma in div(gamma), one value per dimension. Default none: no such term.",
     )
     beta: object = parameter(
         None,
-        description="Convection coefficient beta of beta . grad u, one value per dimension. Default none.",
+        description="Convection coefficient beta of beta . grad u, one value per dimension. Default none: no convection.",
     )
-    a: object = parameter(None, description="Absorption coefficient a of a u. Default none.")
-    f: object = parameter(None, description="Source term f. Default none.")
+    a: object = parameter(
+        None, description="Absorption coefficient a of the term a u. Default none: no absorption."
+    )
+    f: object = parameter(None, description="Source term f. Default none: no source.")
     units: str | Mapping[str, str] = parameter(
         default_factory=dict,
-        description="The SI unit of each field, which the output files write with its values: one unit, or a dict field -> unit. Default: dimensionless fields.",
+        description="The SI unit of each field, which the output files write with its values: one unit, or a dict field -> unit. Default: no unit, since the field of a general equation may be dimensionless.",
     )
     initial_condition: object = parameter(
         default_factory=dict,
-        description="The initial value of each field: a constant, the name of a function or an expression of x, y and z, or a dict field -> such a value. Default 0.",
+        description="The initial value of each field: a constant, the name of a function or an expression of x, y and z, or a dict field -> such a value. Default 0, a start that needs no knowledge of the solution.",
     )
     block: Sequence[str] = parameter(
-        (), description="Blocks where the equations hold. Default: every block."
+        (),
+        description="Blocks where the equations hold. Default: every block, so that a single domain needs no block names.",
     )
     _definitions: Mapping[str, object] = parameter(default_factory=dict)
 
@@ -1206,28 +1237,56 @@ THEORIES = {
 @register
 @dataclass
 class SolidMechanics(Physics):
-    """Linear elasticity of an isotropic solid at small strain: ∇·σ + f
-    = 0. The formulation is three_dimensional on a three-dimensional mesh and
-    axisymmetric in axisymmetric coordinates, and is given on a
-    two-dimensional Cartesian mesh (plane_stress or plane_strain).
+    r"""The deformation of a solid, as a continuum or as a plate, a beam, a
+    truss or a shell.
+
+    The displacement :math:`\mathbf{u}` in :math:`\mathrm{m}` satisfies the
+    balance of momentum
+
+    .. math::
+
+        \rho \frac{\partial^2 \mathbf{u}}{\partial t^2}
+        - \nabla \cdot \boldsymbol{\sigma} = \mathbf{f},
+
+    with the density :math:`\rho` in :math:`\mathrm{kg/m^3}`, the Cauchy
+    stress :math:`\boldsymbol{\sigma}` in :math:`\mathrm{Pa}` and the body
+    force per unit volume :math:`\mathbf{f}` in :math:`\mathrm{N/m^3}`.  The
+    flux of the equation of the component :math:`u_i` is minus row
+    :math:`i` of :math:`\boldsymbol{\sigma}`, so the boundary condition
+    ``traction`` prescribes :math:`\boldsymbol{\sigma} \mathbf{n}` on a
+    boundary of outward unit normal :math:`\mathbf{n}`.  The inertia term is
+    present when ``density`` is given.  The material is linear elastic and
+    isotropic at small strain unless the parameters say otherwise.  The
+    variables are ``disp_x``, ``disp_y`` and ``disp_z``, or ``disp_r`` and
+    ``disp_z`` in axisymmetric coordinates.
+
+    The continuum formulations are three_dimensional, the default on a
+    three-dimensional mesh, axisymmetric, the default in axisymmetric
+    coordinates, and plane_stress, plane_strain and generalized_plane_strain
+    on a two-dimensional Cartesian mesh, where the formulation must be given.
 
     The structural formulations reduce a thin body to its mid-surface or its
-    axis: plate (the first-order, Mindlin, theory on a two-dimensional mesh of
-    the mid-plane; variables disp_x, disp_y, disp_z and phi_x, phi_y), beam
-    (Euler-Bernoulli or Timoshenko on a one-dimensional mesh along x;
-    disp_x, disp_z and bending_moment, or phi in the displacement form) and
-    circular_plate (first_order or classical, on a radial mesh in
-    axisymmetric coordinates; disp_r, disp_z and phi or bending_moment).  A
-    section is given by its material, youngs_modulus, poissons_ratio and the
-    thickness (plates) or the cross_section (beams), or by its section
-    stiffnesses, as for a laminated or functionally graded section.
+    axis.  A plate follows the first-order (Mindlin) theory on a
+    two-dimensional mesh of the mid-plane, with the variables ``disp_x``,
+    ``disp_y``, ``disp_z``, ``phi_x`` and ``phi_y``.  A beam follows the
+    Euler-Bernoulli or the Timoshenko theory on a one-dimensional mesh along
+    :math:`x`, with the variables ``disp_x``, ``disp_z`` and
+    ``bending_moment``, or ``phi`` in the displacement form.  A circular plate
+    follows the first-order or the classical theory on a radial mesh in
+    axisymmetric coordinates, with the variables ``disp_r``, ``disp_z`` and
+    ``phi`` or ``bending_moment``.  A section is given by its material
+    (``youngs_modulus``, ``poissons_ratio`` and the ``thickness`` of a plate
+    or the ``cross_section`` of a beam) or by its section stiffnesses, as for
+    a laminated section.
 
-    The members in space take a mesh of fewer dimensions than its space: truss
-    (bars of a line mesh in 1, 2 or 3 dimensions, which carry the axial force
-    only; cross_section={'area': A}) and shell (flat facets of a quadrilateral
-    surface mesh in 3 dimensions, with membrane, bending and shear; variables
-    disp_x, disp_y, disp_z and rotation_x, rotation_y, rotation_z, the
-    rotations about the global axes; the thickness)."""
+    The members in space take a mesh of fewer dimensions than its space.  A
+    truss is a set of bars on a line mesh in one, two or three dimensions,
+    which carry the axial force only, with ``cross_section={"area": A}`` and
+    :math:`A` the area of a bar in :math:`\mathrm{m^2}`.  A shell is a set of
+    flat facets on a quadrilateral surface mesh in three dimensions, with
+    membrane, bending and shear, its ``thickness``, and the variables
+    ``disp_x``, ``disp_y``, ``disp_z``, ``rotation_x``, ``rotation_y`` and
+    ``rotation_z``, the rotations about the global axes."""
 
     type_name: ClassVar[str] = "solid_mechanics"
     flux_name: ClassVar[str] = "traction"
@@ -1237,145 +1296,148 @@ class SolidMechanics(Physics):
     youngs_modulus: float | str | Sequence[float] | None = parameter(
         None,
         unit="Pa",
-        description="Young's modulus E: a constant, a function or an expression of the fields and the coordinates (in a structural formulation z is the position through the thickness, so E(z) gives a graded section), or three numbers E1, E2, E3 along the material axes for an orthotropic continuum. Default: the property youngs_modulus, which a property object such as constant or parsed declares.",
+        description="Young's modulus E: a constant, a function, or an expression of the fields and the coordinates, or three moduli E1, E2, E3 along the material axes of an orthotropic continuum. In a structural formulation z is the height above the mid-surface, so E(z) gives a graded section. Default: for a continuum, the property youngs_modulus of the property objects of the problem, such as constant or parsed, so that the modulus can differ between blocks.",
     )
     poissons_ratio: float | Sequence[float] | None = parameter(
         None,
-        description="Poisson's ratio nu, with -1 < nu < 0.5, or nu12, nu13, nu23 of an orthotropic continuum. It has no numerical default: give it, or declare the property poissons_ratio with a property object.",
+        description="Poisson's ratio nu, with -1 < nu < 0.5, or nu12, nu13, nu23 of an orthotropic continuum. Default: the property poissons_ratio of the property objects of the problem, since no one value suits every material.",
     )
     shear_modulus: Sequence[float] | None = parameter(
         None,
         unit="Pa",
-        description="The shear moduli G12, G13, G23 of an orthotropic continuum. Default none (an isotropic material has none of its own).",
+        description="The shear moduli G12, G13, G23 of an orthotropic continuum. Default none: an isotropic material takes its shear modulus from E and nu.",
     )
     orientation: object = parameter(
         None,
-        description="The orientation of the axes 1, 2, 3 of an orthotropic or anisotropic continuum: in 3D axis 1 and axis 2 as vectors in the global axes ([[a1], [a2]], axis 3 their cross product), in 2D the angle of axis 1 from x in degrees, about z (axis 3 is z, or the hoop direction of an axisymmetric problem). Default: the global axes.",
+        description="The material axes 1, 2, 3 of an orthotropic or anisotropic continuum. In three dimensions give axis 1 and axis 2 as two vectors of three components in the global axes, [a1, a2], and axis 3 is their cross product. In two dimensions give the angle of axis 1 from x about z, in degrees, and axis 3 is z, or the hoop direction of an axisymmetric problem. Default: the global axes, the axes of the mesh.",
     )
     stiffness: Sequence[Sequence[float]] | None = parameter(
         None,
         unit="Pa",
-        description="The 6 x 6 stiffness of a fully anisotropic continuum in the material axes, Voigt order 11, 22, 33, 23, 13, 12 with engineering shear strains, in place of the moduli. Default none.",
+        description="The 6 x 6 stiffness matrix of a fully anisotropic continuum in the material axes, in the Voigt order 11, 22, 33, 23, 13, 12 with engineering shear strains, in place of the moduli. Default none: the stiffness follows from the moduli.",
     )
     #: The displacement field: the variables disp_x, disp_y, disp_z (disp_r, disp_z in axisymmetric coordinates).
     displacement: ClassVar[str] = "disp"
     formulation: str | None = parameter(
         None,
-        description="plane_stress, plane_strain, generalized_plane_strain, axisymmetric or three_dimensional, the structural plate, beam and circular_plate, or the members in space, truss and shell. Default: three_dimensional on a three-dimensional mesh and axisymmetric in axisymmetric coordinates. A two-dimensional Cartesian problem must give plane_stress or plane_strain, because neither is right for every body.",
+        description="The kinematics of the body: plane_stress, plane_strain, generalized_plane_strain, axisymmetric or three_dimensional for a continuum, plate, beam or circular_plate for a structural member, or truss or shell for a member in space. Default: three_dimensional on a three-dimensional mesh and axisymmetric in axisymmetric coordinates. A two-dimensional Cartesian problem must give plane_stress or plane_strain, because neither is right for every body.",
     )
     thickness: float | None = parameter(
         None,
         unit="m",
-        description="The thickness of a plate or a circular plate given by its material, where it is required, or the out-of-plane thickness of a plane problem, which multiplies its equations and its traction and pressure conditions. A three-dimensional, axisymmetric or beam problem refuses it. Default: none for a plate, and 1 m (the equations per unit thickness) for a plane problem.",
+        description="The thickness of a plate, a circular plate or a shell given by its material, where it is required, or the out-of-plane thickness of a plane problem, which multiplies its equations and its traction and pressure conditions. A three-dimensional, axisymmetric or beam problem refuses it. Default: none for a plate, and 1 m for a plane problem, so that its equations are per unit thickness.",
     )
     body_force: Sequence[float | str] | None = parameter(
         None,
         unit="N/m^3",
-        description="Body force per unit volume, one value per component, each a constant or an expression of (x, y, z, t) (e.g., the weight [0, 0, -rho g]). Default none.",
+        description="Body force per unit volume, one value per component, each a constant or an expression of x, y, z and t, for example the weight [0, 0, -rho*g]. A truss or a shell takes numbers, one per direction of space. Default none: no body force.",
     )
     theory: str | None = parameter(
         None,
-        description="The theory of a structural formulation: Euler-Bernoulli (default) or Timoshenko for a beam, first_order (default) or classical for a circular plate, first_order for a plate.",
+        description="The theory of a structural formulation: Euler-Bernoulli or Timoshenko for a beam, first_order or classical for a circular plate, and first_order for a plate. Default: Euler-Bernoulli for a beam, the theory of a slender beam, and first_order for a plate or a circular plate, which holds for thick and thin plates.",
     )
     beam_formulation: str | None = parameter(
         None,
-        description="The formulation of the Timoshenko beam: mixed (the default, with the bending moment as a variable, free of shear locking) or displacement (the rotation phi as a variable, with the shear term integrated at the element centre). The Euler-Bernoulli beam and the classical circular plate are mixed, the first-order plates displacement.",
+        description="The formulation of the Timoshenko beam: mixed, with the bending moment as a variable, or displacement, with the rotation phi as a variable and the shear term integrated at the element centre. Default mixed: it is free of shear locking with full integration. The Euler-Bernoulli beam and the classical circular plate are always mixed, and the first-order plates always take the displacement form.",
     )
     cross_section: Mapping[str, float] | None = parameter(
         None,
-        description="The cross-section of a beam given by its material: {'width': b, 'height': h}, a rectangle, through whose height the material law is integrated, or {'area': A, 'second_moment': I}, a homogeneous section, and 'shear_correction' (default 5/6, a rectangle). Default none.",
+        description="The cross-section of a beam given by its material: {'width': b, 'height': h}, a rectangle through whose height the material law is integrated, or {'area': A, 'second_moment': I}, a homogeneous section. 'shear_correction' gives the shear correction factor, 5/6 for a rectangle, and a Timoshenko beam of a section given by its area needs it. A truss takes {'area': A}. Default none: a continuum and a plate have no cross-section.",
     )
     extensional_stiffness: float | None = parameter(
         None,
         unit="N",
-        description="Section stiffness A of a structural formulation (per unit width for plates, with the factor 1/(1 - nu^2)), for a section that the material and geometry do not describe, e.g. laminated or functionally graded. Default: from the material.",
+        description="Section stiffness A of a structural formulation, per unit width for a plate and with the factor 1/(1 - nu^2), for a section that the material and the geometry do not describe, such as a laminated section. Default: computed from the material and the geometry.",
     )
     coupling_stiffness: float | None = parameter(
         None,
         unit="N m",
-        description="Section stiffness B, the coupling of extension and bending, zero for a section symmetric about its mid-surface. Default: 0, or from the material.",
+        description="Section stiffness B, the coupling of extension and bending, zero for a section symmetric about its mid-surface. Default: 0 when the section is given by its stiffnesses, and computed from the material otherwise.",
     )
     bending_stiffness: float | None = parameter(
-        None, unit="N m^2", description="Section stiffness D. Default: from the material."
+        None,
+        unit="N m^2",
+        description="Section stiffness D, the bending stiffness. Default: computed from the material and the geometry.",
     )
     shear_stiffness: float | None = parameter(
         None,
         unit="N",
-        description="Section stiffness S of the transverse shear (K G A). Default: from the material.",
+        description="Section stiffness S of the transverse shear, K G A with K the shear correction factor, G the shear modulus and A the area. Default: computed from the material and the geometry.",
     )
     transverse_load: float | str = parameter(
         0.0,
         unit="N/m^2 (plate) or N/m (beam)",
-        description="Distributed load along the deflection disp_z of a structural formulation: per unit area of a plate (N/m^2) and per unit length of a beam (N/m), a constant or an expression. Default 0.",
+        description="Distributed load along the deflection disp_z of a structural formulation, per unit area of a plate (N/m^2) or per unit length of a beam (N/m), a constant or an expression. Default 0: no load.",
     )
     axial_load: float | str = parameter(
         0.0,
         unit="N/m",
-        description="Distributed axial (beam) or radial (circular plate) load. Default 0.",
+        description="Distributed axial load of a beam, or radial load of a circular plate, per unit length. Default 0: no load.",
     )
     in_plane_load: Sequence[float | str] | None = parameter(
         None,
         unit="N/m^2",
-        description="Distributed in-plane load [f_x, f_y] of a plate. Default none.",
+        description="Distributed in-plane load [f_x, f_y] of a plate. Default none: no load.",
     )
     foundation_modulus: float = parameter(
         0.0,
         unit="N/m^3 (plate) or N/m^2 (beam)",
-        description="Modulus of an elastic (Winkler) foundation under a structural formulation: the pressure per unit deflection under a plate (N/m^3) and the force per unit length and unit deflection under a beam (N/m^2). Default 0.",
+        description="Modulus of an elastic (Winkler) foundation under a structural formulation: the pressure per unit deflection under a plate (N/m^3), or the force per unit length and unit deflection under a beam (N/m^2). Default 0: no foundation.",
     )
     von_karman: bool = parameter(
         False,
-        description="The von Karman nonlinearity of moderately large deflections, for a structural formulation. Default false.",
+        description="The von Karman nonlinearity of moderately large deflections, for a structural formulation. Default false: the linear theory, which holds while the deflection stays small against the thickness.",
     )
     large_deformation: bool = parameter(
         False,
-        description="Finite strain and rotation (the rotated small strain of Hughes and Winget for linear elasticity, with its creep and plasticity), with a pressure that follows the deformed surface. Plane strain, axisymmetric and three-dimensional continua. Default false: small strain. A neo-Hookean elasticity is always finite strain.",
+        description="Finite strain and rotation, with a pressure that follows the deformed surface. Linear elasticity, creep and plasticity then take the rotated small strain of Hughes and Winget. Available for plane strain, axisymmetric and three-dimensional continua. Default false: small strain, which holds while the strains and the rotations stay small. The neo-Hookean elasticity is always at finite strain.",
     )
     elasticity: str = parameter(
         "linear",
-        description="The elastic law: linear (Hooke) or neo-Hookean (the compressible neo-Hookean hyperelastic law, at finite strain). Default linear.",
+        description="The elastic law: linear (Hooke's law) or neo-Hookean (the compressible neo-Hookean hyperelastic law, at finite strain). Default linear, the law of an elastic solid at small strain.",
     )
     creep: Mapping[str, object] | None = parameter(
         None,
-        description="Creep: {'rate': the equivalent creep strain rate (1/s) as an expression of von_mises_stress, temperature, t, equivalent_creep_strain and grain_size, 'constants': {name: value}, 'grain_size': m}. Default none.",
+        description="Creep: {'rate': the equivalent creep strain rate (1/s) as an expression of von_mises_stress, temperature, t, equivalent_creep_strain and grain_size, 'constants': {name: value}, 'grain_size': the grain size (m)}. Default none: no creep.",
     )
     plasticity: Mapping[str, object] | None = parameter(
         None,
-        description="J2 plasticity: {'yield_stress': an expression of equivalent_plastic_strain and temperature (the isotropic hardening), 'kinematic_hardening': {'C': [C_k], 'gamma': [gamma_k]} (Armstrong-Frederick or Chaboche back stresses, gamma 0 for Prager), 'constants': {name: value}}. Default none.",
+        description="J2 plasticity: {'yield_stress': an expression of equivalent_plastic_strain and temperature (the isotropic hardening), 'kinematic_hardening': {'C': [C_k], 'gamma': [gamma_k]} (the back stresses of Armstrong-Frederick or Chaboche, with gamma 0 for Prager), 'constants': {name: value}}. Default none: an elastic material.",
     )
     phase_field_fracture: Mapping[str, float] | None = parameter(
         None,
-        description="Phase-field fracture (AT2): {'toughness': Gc (J/m^2), 'length': l (m)}. It adds the field damage (0 intact, 1 broken), which degrades the tensile part of the elastic energy by (1 - d)^2 and does not heal. Plane strain, generalized plane strain and axisymmetric continua. Default none.",
+        description="Phase-field fracture (AT2): {'toughness': the fracture toughness Gc (J/m^2), 'length': the length scale l (m)}. It adds the field damage d, 0 intact and 1 broken, which degrades the tensile part of the elastic energy by (1 - d)^2 and does not heal. Available for plane strain, generalized plane strain and axisymmetric continua. Default none: no fracture.",
     )
     viscoelasticity: Mapping[str, object] | None = parameter(
         None,
-        description="Viscoelasticity (generalized Maxwell): {'shear': [[G_i, tau_i], ...], 'bulk': [[K_i, tau_i], ...]}, branches of modulus G_i or K_i (Pa) relaxing as exp(-t/tau_i) (s) beside the long-term youngs_modulus and poissons_ratio, which a steady solve takes alone. Default none.",
+        description="Viscoelasticity (generalized Maxwell): {'shear': [[G_i, tau_i], ...], 'bulk': [[K_i, tau_i], ...]}, branches of modulus G_i or K_i (Pa) that relax as exp(-t/tau_i), with tau_i in s, beside the long-term youngs_modulus and poissons_ratio, which a steady solve takes alone. Default none: an elastic material.",
     )
     temperature: float | str | None = parameter(
         None,
         unit="K",
-        description="The temperature that creep and a temperature-dependent yield stress read: the name of a field (of heat_transfer) or a number. Default: the temperature of a thermal_expansion coupling.",
+        description="The temperature that creep and a temperature-dependent yield stress read: the name of a field, such as that of heat_transfer, or a number. Default: the temperature of a thermal_expansion coupling, so that one temperature field drives the expansion and the material law.",
     )
     axial_force: float | str = parameter(
         0.0,
         unit="N",
-        description="generalized_plane_strain: the axial force F that the section carries along z, which sets its uniform axial strain strain_zz (an unknown of the whole section). Default 0: a long body free along its axis.",
+        description="The axial force F along z that the section of a generalized_plane_strain problem carries, which sets its uniform axial strain strain_zz, one unknown of the whole section. Default 0: a long body free along its axis.",
     )
     density: float | str | None = parameter(
         None,
         unit="kg/m^3",
-        description="Mass density rho of the inertia rho d2u/dt2, a constant or an expression of x, y, z, which a transient run integrates by the generalized-alpha method and an eigenvalue study takes for the natural frequencies. A beam takes rho A and, in the displacement form of Timoshenko, the rotary inertia rho I, and a plate rho h and rho h^3/12. Default none: no inertia (statics, and quasi-static creep in time).",
+        description="Density rho of the inertia rho d2u/dt2, a constant or an expression of x, y and z. A transient run integrates the inertia by the generalized-alpha method, and an eigenvalue study takes it for the natural frequencies. A beam takes rho A and, in the displacement form of Timoshenko, the rotary inertia rho I, and a plate takes rho h and rho h^3/12, with A the area, I the second moment of area and h the thickness. Default none: no inertia, for statics and for quasi-static creep in time.",
     )
     damping: Mapping[str, float] | None = parameter(
         None,
-        description="Rayleigh damping C = a M + b K of a solid with a density: {'mass': a (1/s), 'stiffness': b (s)}, either or both. K is the elastic stiffness at small strain. Default none.",
+        description="Rayleigh damping C = a M + b K of a solid with a density, with M the mass matrix and K the elastic stiffness at small strain: {'mass': a (1/s), 'stiffness': b (s)}, either or both. Default none: no damping.",
     )
     initial_condition: Mapping[str, object] = parameter(
         default_factory=dict,
-        description="The initial state of a transient run with inertia: {'displacement': [...], 'velocity': [...]}, one value per displacement, each a constant or an expression of x, y, z. Default: undeformed and at rest.",
+        description="The initial state of a transient run with inertia: {'displacement': [...], 'velocity': [...]}, one value per displacement, each a constant or an expression of x, y and z. Default: undeformed and at rest, the state before any load.",
     )
     block: Sequence[str] = parameter(
-        (), description="Blocks where the equations hold. Default: every block."
+        (),
+        description="Blocks where the equations hold. Default: every block, so that a body of one material needs no block names.",
     )
 
     @property
@@ -2465,10 +2527,10 @@ class SolidMechanics(Physics):
         return self.variable_names()
 
     def reaction_force(self, boundary: str) -> dict:
-        """The force on the body through ``boundary`` (N; N/m in a plane
-        problem), by direction: ``{"x": Fx, "y": Fy}``.  At a support it is
-        the reaction, the force of the support on the body, conserved exactly;
-        on a loaded boundary it is the load.  A plate or a beam gives the
+        """The force on the body through ``boundary``, in N, or in N/m in a
+        plane problem, by direction: ``{"x": Fx, "y": Fy}``.  At a support it
+        is the reaction, the force of the support on the body, conserved
+        exactly.  On a loaded boundary it is the load.  A plate or a beam gives the
         force along each of its displacements."""
         return {
             v[len("disp_") :]: -self._problem.boundary_flux(v, boundary)
@@ -2613,7 +2675,7 @@ class SolidMechanics(Physics):
         ----------
         z : float or {"top", "mid", "bottom"}, optional
             For a structural formulation, the height above the mid-surface
-            (m) at which the stress is evaluated; the words are the faces and
+            (m) at which the stress is evaluated.  The words are the faces and
             the mid-surface of a plate or a rectangular beam section.  A
             continuum takes no height.
 
@@ -2868,11 +2930,36 @@ def _is_quadratic_mesh(mesh) -> bool:
 @register
 @dataclass
 class FluidDynamics(Physics):
-    r"""The steady or transient flow of an incompressible Newtonian fluid:
-    ρ (v·∇)v = −∇p + μ Δv + f, ∇·v = 0. The penalty
-    formulation eliminates the pressure, the pressure formulation keeps it
-    with equal-order interpolation and stabilisation, and the Taylor-Hood
-    formulation keeps it with a quadratic velocity and a linear pressure."""
+    r"""The steady or transient flow of an incompressible Newtonian fluid.
+
+    The velocity :math:`\mathbf{v}` in :math:`\mathrm{m/s}` and the pressure
+    :math:`p` in :math:`\mathrm{Pa}` satisfy the balances of momentum and mass
+
+    .. math::
+
+        \rho \left( \frac{\partial \mathbf{v}}{\partial t}
+        + (\mathbf{v} \cdot \nabla) \mathbf{v} \right)
+        - \nabla \cdot \boldsymbol{\sigma} = \mathbf{f},
+        \qquad \nabla \cdot \mathbf{v} = 0,
+        \qquad \boldsymbol{\sigma} = -p \mathbf{I}
+        + \mu \left( \nabla \mathbf{v} + \nabla \mathbf{v}^{\mathsf{T}} \right),
+
+    with the density :math:`\rho` in :math:`\mathrm{kg/m^3}`, the dynamic
+    viscosity :math:`\mu` in :math:`\mathrm{Pa\,s}`, the Cauchy stress
+    :math:`\boldsymbol{\sigma}` in :math:`\mathrm{Pa}`, the identity
+    :math:`\mathbf{I}` and the body force per unit volume :math:`\mathbf{f}`
+    in :math:`\mathrm{N/m^3}`.  The inertia terms are present when
+    ``density`` is not zero, and without them the flow is a Stokes flow.  The
+    variables are ``velocity_x``, ``velocity_y`` and ``velocity_z``, or
+    ``velocity_r`` and ``velocity_z`` in axisymmetric coordinates, and
+    ``pressure``.
+
+    The equal_order formulation keeps the pressure as a variable of the same
+    order as the velocity, with a residual-based stabilisation.  The
+    Taylor-Hood formulation keeps it with a quadratic velocity and a linear
+    pressure.  The penalty formulation eliminates the pressure by
+    :math:`p = -\gamma \nabla \cdot \mathbf{v}`, with the penalty parameter
+    :math:`\gamma` in :math:`\mathrm{Pa\,s}`."""
 
     type_name: ClassVar[str] = "fluid_dynamics"
     module: ClassVar[str] = "fluids"
@@ -2888,39 +2975,42 @@ class FluidDynamics(Physics):
     density: float = parameter(
         0.0,
         unit="kg/m^3",
-        description="Density rho of the convective term. Default 0, i.e., Stokes flow.",
+        description="Density rho of the inertia terms rho dv/dt and rho (v . grad) v. Default 0: a Stokes flow, the limit of a slow or very viscous flow, whose inertia is negligible.",
     )
     formulation: str | None = parameter(
         None,
-        description="equal_order (the velocity and the pressure of the same order, with pressure stabilisation), Taylor-Hood (a quadratic velocity and a linear pressure, stable without stabilisation, with method='FEM' on a quadratic mesh) or penalty (the pressure eliminated by p = -gamma div v, which makes the flow slightly compressible). Default: Taylor-Hood when method='FEM' is given on a quadratic mesh, equal_order otherwise.",
+        description="equal_order (the velocity and the pressure of the same order, with pressure stabilisation), Taylor-Hood (a quadratic velocity and a linear pressure, stable without stabilisation, which needs method='FEM' and a quadratic mesh) or penalty (the pressure eliminated by p = -gamma div v, which makes the flow slightly compressible). Default: Taylor-Hood when method='FEM' is given on a quadratic mesh with the monolithic time integration, since it needs no stabilisation, and equal_order otherwise.",
     )
     penalty_parameter: float | None = parameter(
         None,
-        description="Penalty parameter gamma of the penalty formulation, p = −γ ∇·v. Default 1e8, large enough for the velocity to be divergence-free to about 1e-8 of its gradient in non-dimensional problems. Only the penalty formulation takes it.",
+        description="Penalty parameter gamma (Pa s) of the penalty formulation, p = -gamma div v. Default 1e8: the divergence of the velocity is -p/gamma, so it stays about 1e-8 of the velocity gradient in a non-dimensional problem. Only the penalty formulation takes it.",
     )
     #: The pressure variable of the pressure and Taylor-Hood formulations.
     pressure: ClassVar[str] = "pressure"
     body_force: Sequence[float | str] | None = parameter(
         None,
         unit="N/m^3",
-        description="Body force per unit volume, one value per component, each a constant or an expression of (x, y, z, t). It enters the momentum equations and their streamline stabilisation. Default none.",
+        description="Body force per unit volume, one value per component, each a constant or an expression of x, y, z and t. It enters the momentum equations and their streamline stabilisation. Default none: no body force.",
     )
-    block: Sequence[str] = parameter((), description="Blocks of the fluid. Default: every block.")
+    block: Sequence[str] = parameter(
+        (),
+        description="Blocks of the fluid. Default: every block, a mesh of the fluid alone.",
+    )
     initial_condition: Mapping[str, object] = parameter(
         default_factory=dict,
-        description="The initial values of the fields of a transient flow: field name -> value, the velocity as one value per component, e.g. {'velocity': ['1 - y^2', 0], 'pressure': 0}. Each value is a constant, the name of a function or an expression of x, y, z. Default: at rest.",
+        description="The initial values of the fields of a transient flow: field name -> value, the velocity as one value per component, for example {'velocity': ['1 - y^2', 0], 'pressure': 0}. Each value is a constant, the name of a function or an expression of x, y and z. Default: at rest, the state before the flow starts.",
     )
     viscous_form: str = parameter(
         "stress",
-        description="The form of the viscous term: stress (the default: mu (grad v + grad v^T), whose natural boundary condition is a zero traction) or laplacian (mu grad v, the same equations for a constant viscosity, whose natural boundary condition is the do-nothing outflow mu dv/dn - p n = 0 of the DFG benchmarks and of Nek5000). The projection time integration always takes the laplacian form.",
+        description="The form of the viscous term: stress, mu (grad v + grad v^T), whose natural boundary condition is a zero traction, or laplacian, mu grad v, which gives the same equations for a constant viscosity and whose natural boundary condition is the do-nothing outflow mu dv/dn - p n = 0. Default stress: it holds for a viscosity that varies, and its natural boundary quantity is the traction, the force of the fluid on the boundary. The projection time integration always takes the laplacian form.",
     )
     time_integration: str = parameter(
         "monolithic",
-        description="How a transient solve advances the flow: monolithic (the default: Newton's method on the velocity and the pressure together, with the theta method of solve_transient) or projection (the splitting of Nek5000 and nekRS: a pressure Poisson equation, then one Helmholtz equation per velocity component, with BDFk and EXTk of order time_order). The projection takes the equal_order formulation and method 'FEM' or 'DMCDM'.",
+        description="How a transient solve advances the flow: monolithic, Newton's method on the velocity and the pressure together with the time scheme of solve_transient, or projection, a splitting into a pressure Poisson equation and then one Helmholtz equation per velocity component, with the backward differentiation formula (BDF) and the extrapolation of the advection (EXT) of order time_order. The projection takes the equal_order formulation, method 'FEM' or 'DMCDM', and a positive density. Default monolithic: it couples the velocity and the pressure in every step, with no splitting error.",
     )
     time_order: int = parameter(
         2,
-        description="The order k of the backward difference (BDFk) and of the extrapolation of the advection (EXTk) of the projection time integration: 1, 2 or 3. Default 2. The first steps take the orders below it.",
+        description="The order k of the backward differentiation formula BDFk and of the extrapolation EXTk of the advection in the projection time integration: 1, 2 or 3. Default 2: second-order accuracy in time from the history of two steps. The first steps take the orders below it.",
     )
 
     def __post_init__(self):
@@ -2965,8 +3055,8 @@ class FluidDynamics(Physics):
         return self.velocities + ([self.pressure] if self._pressure_formulation else [])
 
     def force(self, boundary: str) -> dict:
-        """The force of the fluid on ``boundary`` (N; N/m in a plane flow), by
-        direction: ``{"x": Fx, "y": Fy}``, the drag and the lift of a body in
+        """The force of the fluid on ``boundary``, in N, or in N/m in a plane
+        flow, by direction: ``{"x": Fx, "y": Fy}``, the drag and the lift of a body in
         the flow.  On a wall of prescribed velocity it is the reaction there,
         conserved exactly (:meth:`~dualmesh.Problem.boundary_flux`)."""
         return {
@@ -2976,7 +3066,7 @@ class FluidDynamics(Physics):
 
     def flow_rate(self, boundary: str) -> float:
         """The volume of fluid leaving through ``boundary`` per unit time
-        (m^3/s; m^2/s in a plane flow).  With a pressure it is the flow of the
+        in m^3/s, or in m^2/s in a plane flow.  With a pressure it is the flow of the
         mass equation, which the flow conserves exactly."""
         if self._pressure_formulation:
             return self._problem.boundary_flux(self.pressure, boundary)
@@ -3194,25 +3284,37 @@ class FluidDynamics(Physics):
 @register
 @dataclass
 class ThermalExpansion(Coupling):
-    """The thermal strain alpha (T - T_0) of a solid_mechanics physics, from the
-    temperature of a heat_transfer physics."""
+    r"""The thermal strain of a solid_mechanics physics, from the temperature of
+    a heat_transfer physics.
+
+    The thermal strain is
+
+    .. math::
+
+        \boldsymbol{\varepsilon}_{\mathrm{th}} = \alpha (T - T_0) \mathbf{I},
+
+    with the linear expansion coefficient :math:`\alpha` in
+    :math:`\mathrm{1/K}`, the temperature :math:`T` in :math:`\mathrm{K}`, the
+    stress-free temperature :math:`T_0` in :math:`\mathrm{K}` and the identity
+    :math:`\mathbf{I}`.  The solid takes it as an eigenstrain, a strain that
+    produces no stress."""
 
     type_name: ClassVar[str] = "thermal_expansion"
     module: ClassVar[str] = "solid_mechanics"
 
     linear_expansion_coefficient: float = parameter(
-        unit="1/K", description="Isotropic linear thermal expansion coefficient alpha."
+        unit="1/K", description="Linear thermal expansion coefficient alpha of an isotropic solid."
     )
     stress_free_temperature: float = parameter(
         unit="K", description="Temperature T_0 at which the solid is free of thermal strain."
     )
     heat_transfer: Physics | None = parameter(
         None,
-        description="The heat_transfer physics that gives the temperature, the object that add_physics returned. Default: the only heat_transfer physics of the problem.",
+        description="The heat_transfer physics that gives the temperature, the object that add_physics returned. Default: the only heat_transfer physics of the problem, which needs no name.",
     )
     solid_mechanics: Physics | None = parameter(
         None,
-        description="The solid_mechanics physics that expands, the object that add_physics returned. Default: the only solid_mechanics physics of the problem.",
+        description="The solid_mechanics physics that expands, the object that add_physics returned. Default: the only solid_mechanics physics of the problem, which needs no name.",
     )
 
     def _apply(self, problem) -> None:
@@ -3228,37 +3330,55 @@ class ThermalExpansion(Coupling):
 @register
 @dataclass
 class NonisothermalFlow(Coupling):
-    """The coupling of an fluid_dynamics and a heat_transfer physics: the
-    flow carries the heat, rho c_p v . grad T in the energy equation, and,
-    when gravity and volumetric_expansion_coefficient are given, the temperature
-    drives the flow by the Boussinesq buoyancy force
-    f = -rho beta (T - T_0) g, which makes a natural convection problem."""
+    r"""The coupling of a fluid_dynamics and a heat_transfer physics, in which
+    the flow carries the heat and the temperature can drive the flow by
+    buoyancy.
+
+    The energy equation of the heat_transfer physics gains the advection term
+    :math:`\rho c_p \mathbf{v} \cdot \nabla T`, with the density
+    :math:`\rho` in :math:`\mathrm{kg/m^3}` of the flow, the specific heat
+    capacity :math:`c_p` in :math:`\mathrm{J/(kg\,K)}` of the heat transfer,
+    the velocity :math:`\mathbf{v}` in :math:`\mathrm{m/s}` and the
+    temperature :math:`T` in :math:`\mathrm{K}`.  A flow without a density and
+    a heat transfer without a specific heat take 1, the value of the
+    non-dimensional equations.  When ``gravity`` and
+    ``volumetric_expansion_coefficient`` are given, the momentum equations
+    gain the Boussinesq buoyancy force per unit volume
+
+    .. math::
+
+        \mathbf{f} = -\rho \beta (T - T_0) \mathbf{g},
+
+    with the volumetric expansion coefficient :math:`\beta` in
+    :math:`\mathrm{1/K}`, the reference temperature :math:`T_0` in
+    :math:`\mathrm{K}` and the gravitational acceleration :math:`\mathbf{g}`
+    in :math:`\mathrm{m/s^2}`, which makes a natural convection problem."""
 
     type_name: ClassVar[str] = "nonisothermal_flow"
     module: ClassVar[str] = "fluids"
 
     heat_transfer: Physics | None = parameter(
         None,
-        description="The heat_transfer physics, the object that add_physics returned. Default: the only heat_transfer physics of the problem.",
+        description="The heat_transfer physics, the object that add_physics returned. Default: the only heat_transfer physics of the problem, which needs no name.",
     )
     fluid_dynamics: Physics | None = parameter(
         None,
-        description="The fluid_dynamics physics, the object that add_physics returned. Default: the only fluid_dynamics physics of the problem.",
+        description="The fluid_dynamics physics, the object that add_physics returned. Default: the only fluid_dynamics physics of the problem, which needs no name.",
     )
     gravity: Sequence[float] | None = parameter(
         None,
         unit="m/s^2",
-        description="The gravitational acceleration vector g of the buoyancy force. Default none: no buoyancy.",
+        description="The gravitational acceleration g of the buoyancy force, one value per dimension. Default none: no buoyancy, a forced convection.",
     )
     volumetric_expansion_coefficient: float | None = parameter(
         None,
         unit="1/K",
-        description="Volumetric thermal expansion coefficient beta of the fluid in the buoyancy force. Default none: no buoyancy.",
+        description="Volumetric thermal expansion coefficient beta of the fluid in the buoyancy force. Default none: no buoyancy, a forced convection.",
     )
     reference_temperature: float = parameter(
         0.0,
         unit="K",
-        description="Temperature T_0 at which the buoyancy force is zero. Default 0, the reference of non-dimensional problems.",
+        description="Temperature T_0 at which the buoyancy force is zero. Default 0, the reference of the non-dimensional equations, which measure the temperature from T_0.",
     )
 
     def __post_init__(self):
@@ -3287,8 +3407,7 @@ class NonisothermalFlow(Coupling):
         heat, flow = self.heat_transfer, self.fluid_dynamics
         restrict = flow._restriction()
         # The heat that the flow carries: by default the streamline stabilisation (SUPG), which
-        # measured the closest on the boundary layer, the skew jump and natural convection
-        # (24 October 2026).
+        # removes the oscillations of the central scheme where convection dominates.
         scheme = heat.advection_scheme or "SUPG"
         problem.add_kernel(
             "heat_convection",

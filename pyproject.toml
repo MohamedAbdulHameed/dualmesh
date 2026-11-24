@@ -5,7 +5,7 @@ build-backend = "scikit_build_core.build"
 [project]
 name = "dualmesh-multiphysics"
 version = "0.2.0"
-description = "A multiphysics framework for heat transfer, solid mechanics and fluid dynamics, by finite elements, finite volumes and the dual mesh control domain method"
+description = "Coupled heat transfer, solid mechanics and incompressible flow by the finite element method and the dual mesh control domain method"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "LGPL-2.1-or-later" }
@@ -41,10 +41,10 @@ test = ["pytest>=7.0", "meshio>=5.0", "sympy>=1.9", "scipy>=1.7", "pyyaml>=6.0"]
 all = ["meshio>=5.0", "matplotlib>=3.5", "sympy>=1.9", "scipy>=1.7", "pyyaml>=6.0"]
 
 [project.urls]
-Homepage = "https://github.com/MohamedAbdulHameed/dualmesh"
-Documentation = "https://dualmesh.readthedocs.io"
-Repository = "https://github.com/MohamedAbdulHameed/dualmesh"
-Issues = "https://github.com/MohamedAbdulHameed/dualmesh/issues"
+Homepage = "https://github.com/MohamedAbdulHameed/dualmesh-multiphysics"
+Documentation = "https://github.com/MohamedAbdulHameed/dualmesh-multiphysics/tree/main/docs"
+Repository = "https://github.com/MohamedAbdulHameed/dualmesh-multiphysics"
+Issues = "https://github.com/MohamedAbdulHameed/dualmesh-multiphysics/issues"
 
 [project.scripts]
 dualmesh = "dualmesh.cli:main"

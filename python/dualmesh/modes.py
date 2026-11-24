@@ -143,7 +143,7 @@ def _mode_values(problem, index, size, x, names) -> dict:
 def solve_modes(
     problem, num_modes: int = 1, near: float = 0.0, tolerance: float = 1.0e-10
 ) -> EigenmodesResult:
-    """See :meth:`dualmesh.Problem.solve_modes`."""
+    """See :meth:`dualmesh.Problem.solve_eigenvalue`."""
     import scipy.sparse as sparse
     import scipy.sparse.linalg as linalg
 

@@ -3,8 +3,8 @@ Post-processing
 
 .. currentmodule:: dualmesh.postprocess
 
-Sampling a solution along a line and comparing computed values with
-reference values.
+These functions sample a solution along a line and compare computed values
+with reference values.
 
 .. autosummary::
    :toctree: generated/

@@ -59,7 +59,6 @@ from .adaptivity import (
     refine_marked,
     solve_with_adaptive_refinement,
 )
-from .case import Case, load_case, run_case
 from .engine import Problem, SensitivityResult, SolveResult
 from .expressions import Expression, ParsedFunction, parsed_function
 from .input.units import input_error
@@ -107,9 +106,6 @@ __all__ = [
     "results",
     "table",
     "SettableFunction",
-    "Case",
-    "load_case",
-    "run_case",
     "ADReal",
     "InputParameters",
     "IntegratedBC",

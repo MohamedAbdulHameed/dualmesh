@@ -42,6 +42,7 @@ class results:
         return self._coordinates[self._known(name, self._fields, "field")]
 
     def field_names(self) -> list[str]:
+        """The names of the fields of the result, such as temperature."""
         return list(self._fields)
 
     def postprocessor(self, name: str):
@@ -53,6 +54,7 @@ class results:
         return self._units[self._known(name, self._postprocessors, "postprocessor")]
 
     def postprocessor_names(self) -> list[str]:
+        """The names of the post-processors of the result."""
         return list(self._postprocessors)
 
     def table(self) -> dict:

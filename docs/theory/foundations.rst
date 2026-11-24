@@ -1,240 +1,202 @@
-Foundations: the conservation form and the dual mesh
-====================================================
+The conservation form and the dual mesh
+=======================================
 
-This chapter introduces the form in which every equation in the library is
-written, the two meshes the method keeps, and the discretisation itself.  It
-also states, for comparison on identical input, what the Galerkin finite
-element method does with the same problem.  The quadrature rules that evaluate
-the integrals, and the elements that generate the dual mesh, are the subject of
-:doc:`elements`.
+Every equation that the code solves is a balance law, and the dual mesh control
+domain method (DMCDM) of [Reddy2024]_ imposes that balance on the control
+domains of a dual mesh.  This page states the balance law, the two meshes, the
+local conservation that follows from them and the coordinate systems.
+:doc:`finite_volume` gives the discrete equations, and :doc:`elements` the
+elements and the construction of the dual mesh inside them.
 
 .. contents::
    :local:
-   :depth: 2
-   :class: this-will-duplicate-information-and-it-is-still-useful-here
+   :depth: 1
 
-The canonical form of a problem
--------------------------------
+The balance law
+---------------
 
-Every equation solved by this library is written as a balance law: for each
-unknown field :math:`u_i` there is a flux :math:`\mathbf{F}_i` and a source
-:math:`S_i` such that
+Let :math:`u` be the unknown field of an equation, a function of the position
+:math:`\mathbf{x}` (m) and the time :math:`t` (s) in the domain :math:`\Omega`.
+The equation is the balance law
 
 .. math::
-   :label: canonical
+   :label: balance-law
 
-   \mathcal{R}_i(u) \equiv -\nabla \cdot \mathbf{F}_i(u, \nabla u, \mathbf{x}, t)
-   + S_i(u, \nabla u, \mathbf{x}, t) = 0 \quad \text{in } \Omega .
+   \frac{\partial m}{\partial t} + \nabla \cdot \mathbf{F} = s
+   \quad \text{in } \Omega ,
 
-Both :math:`\mathbf{F}_i` and :math:`S_i` may depend on every unknown of the
-problem and on its gradient, which is what makes coupled and nonlinear systems
-expressible.  Examples, all of which appear in the modules:
+with :math:`m` the storage, the amount of the balanced quantity per unit volume,
+:math:`\mathbf{F}` its flux, the amount that crosses a unit area per unit time,
+and :math:`s` its source, the amount produced per unit volume and unit time.
+For heat, :math:`m` is in :math:`\mathrm{J/m^3}`, :math:`\mathbf{F}` in
+:math:`\mathrm{W/m^2}` and :math:`s` in :math:`\mathrm{W/m^3}`.
+
+The flux is the physical flux.  On a surface with the unit normal
+:math:`\mathbf{n}`, the product :math:`\mathbf{F} \cdot \mathbf{n}` is the rate
+per unit area at which the quantity crosses the surface in the direction of
+:math:`\mathbf{n}`.  On the boundary :math:`\partial\Omega`, with
+:math:`\mathbf{n}` the outward unit normal, it is the rate at which the quantity
+leaves the body.
+
+The storage, the flux and the source may depend on :math:`u`, on
+:math:`\nabla u`, on :math:`\mathbf{x}`, on :math:`t` and on the other unknowns
+of the problem, so one form covers nonlinear and coupled systems.  The code
+writes the rate of the storage as
+
+.. math::
+
+   \frac{\partial m}{\partial t} = c \, \frac{\partial u}{\partial t} ,
+   \qquad c = \frac{\partial m}{\partial u} ,
+
+with :math:`c` the capacity of the equation.  For heat conduction with the
+density :math:`\rho` (:math:`\mathrm{kg/m^3}`) and the specific heat capacity
+:math:`c_p` (:math:`\mathrm{J/(kg\,K)}`), the capacity is :math:`\rho c_p`.
+
+The table gives the balance law of three equations.  In it, :math:`T` is the
+temperature (K), :math:`k` the thermal conductivity
+(:math:`\mathrm{W/(m\,K)}`) or, for a general field, its diffusivity,
+:math:`\mathbf{v}` a velocity (m/s), :math:`\mathbf{u}` the displacement (m)
+with the components :math:`u_i`, :math:`\boldsymbol{\sigma}` the Cauchy stress
+(Pa) and :math:`\mathbf{f}` a body force per unit volume
+(:math:`\mathrm{N/m^3}`) with the components :math:`f_i`.
 
 .. list-table::
    :header-rows: 1
-   :widths: 30 35 35
+   :widths: 28 22 28 22
 
    * - Equation
+     - Storage :math:`m`
      - Flux :math:`\mathbf{F}`
-     - Source :math:`S`
-   * - Steady conduction :math:`-\nabla\cdot(k\nabla T) = q'''`
-     - :math:`k \nabla T`
-     - :math:`-q'''`
-   * - Advection-diffusion
-     - :math:`k \nabla u` (and :math:`-\mathbf{v}u` in conservative form)
-     - :math:`\mathbf{v}\cdot\nabla u`
-   * - Elasticity, component :math:`i`
-     - :math:`h\,(\sigma_{i1}, \sigma_{i2}, \sigma_{i3})`
-     - :math:`-h f_i`
-   * - Penalty Stokes, component :math:`i`
-     - :math:`\mu(\nabla v_i + (\nabla \mathbf{v})_i) + \gamma (\nabla\cdot\mathbf{v})\,\mathbf{e}_i`
-     - :math:`-f_i`
-   * - Mixed Euler-Bernoulli beam, :math:`w` equation
-     - :math:`\mathrm{d}M/\mathrm{d}x + N\,\mathrm{d}w/\mathrm{d}x`
-     - :math:`c_f w - q`
+     - Source :math:`s`
+   * - Heat conduction, for :math:`T`
+     - :math:`\rho c_p T`
+     - :math:`-k \nabla T`
+     - the heat source
+   * - Advection and diffusion of :math:`u`, conservative form
+     - :math:`u`
+     - :math:`\mathbf{v} u - k \nabla u`
+     - the source
+   * - Linear momentum of a solid, component :math:`i`
+     - :math:`\rho \, \partial u_i / \partial t`
+     - :math:`-(\sigma_{i1}, \sigma_{i2}, \sigma_{i3})`
+     - :math:`f_i`
 
-The *secondary variable* of an equation is the normal component of its flux,
+Primary and secondary variables
+-------------------------------
+
+The normal flux :math:`\mathbf{F} \cdot \mathbf{n}` is the secondary variable of
+the equation, and :math:`u` is its primary variable.  At every point of
+:math:`\partial\Omega` a boundary condition gives one of the two.
+
+* An essential (Dirichlet) condition gives the value of :math:`u`.
+* A natural (Neumann) condition gives the normal flux: the heat flow out of the
+  body, or the traction with the opposite sign.
+* A Robin condition gives the normal flux as a function of :math:`u`, as a
+  convective heat loss does.
+
+The integral form
+-----------------
+
+Integrating :eq:`balance-law` over a region :math:`V` with the boundary
+:math:`\partial V` and the outward unit normal :math:`\mathbf{n}`, and turning
+the divergence into a surface integral with the divergence theorem, gives
 
 .. math::
+   :label: balance-integral
 
-   q_n \equiv \mathbf{n}\cdot\mathbf{F} ,
+   \int_V \frac{\partial m}{\partial t} \, \mathrm{d}V
+   + \oint_{\partial V} \mathbf{F} \cdot \mathbf{n} \, \mathrm{d}S
+   = \int_V s \, \mathrm{d}V .
 
-which is the quantity that appears in the natural boundary condition: the
-heat flow into the body, the traction component, the axial force of a bar, the
-shear force of a beam.  The primary variable :math:`u` and its secondary
-variable :math:`q_n` form the duality pair of the equation, and exactly one of
-the two is specified at every boundary point.
+The rate of change of the amount in :math:`V`, plus what leaves through its
+boundary, equals what its source produces.  DMCDM imposes :eq:`balance-integral`
+on every control domain of the dual mesh, which the next section defines.
 
 The primal mesh and the dual mesh
 ---------------------------------
 
-The **primal mesh** is a mesh of finite elements.  Supported element types are
-``Edge2``, ``Tri3``, ``Quad4``, ``Tet4``, and ``Hex8``.  All field variables use
-the corresponding (multi-)linear Lagrange interpolation,
+The **primal mesh** is a mesh of Lagrange finite elements.  On it, the field is
+interpolated from its values :math:`U_a` at the nodes :math:`a`,
 
 .. math::
 
-   u(\mathbf{x}) \approx \sum_{a=1}^{n_e} U_a \, \psi_a(\mathbf{x}) ,
+   u(\mathbf{x}) \approx \sum_a U_a \, N_a(\mathbf{x}) ,
 
-with the isoparametric map :math:`\mathbf{x}(\boldsymbol{\xi}) = \sum_a
-\mathbf{x}_a \psi_a(\boldsymbol{\xi})`.
+with :math:`N_a` the shape function of node :math:`a`.  Each element is the
+image of a reference element under its isoparametric map
+:math:`\mathbf{x}(\boldsymbol{\xi}) = \sum_a \mathbf{x}_a N_a(\boldsymbol{\xi})`,
+with :math:`\boldsymbol{\xi}` the reference coordinates and
+:math:`\mathbf{x}_a` the position of node :math:`a`.
 
-The **dual mesh** is the set of node-centred *control domains* (CDs).  It is
-the median dual (also called the box or Donald dual): inside each element, the
-part of the control domain belonging to node :math:`a` is the sub-cell bounded
-by
+The **dual mesh** holds one control domain :math:`V_I` around every node
+:math:`I`.  It is the median dual.  Inside one element, the part of
+:math:`V_I` is the region bounded by
 
-* the node itself,
-* the midpoints of the element edges that meet at the node,
-* the centroids of the element faces that meet at the node (in three
-  dimensions),
-* the element centroid.
+* the node :math:`I`,
+* the midpoints of the element edges that meet at :math:`I`,
+* the centroids of the element faces that meet at :math:`I`, in three
+  dimensions,
+* the centroid of the element.
 
-Consequently:
+This construction gives the following control domains.
 
-* in one dimension the control domain of an interior node is the union of the
-  two half-elements on either side of it,
-* for a rectangle the control domains are the bisecting rectangles,
-* for a general quadrilateral or a triangle they join the element centroids
-  to the midpoints of the sides, and
-* at a boundary node the control domain is truncated by the domain boundary
-  (a half control domain in one dimension, a quarter of one at a corner).
+* In one dimension, the control domain of an interior node joins the halves of
+  the two elements beside it.
+* On a mesh of rectangles, the control domains are the rectangles that the
+  bisectors of the element sides bound.
+* On triangles and general quadrilaterals, the control domain boundaries join
+  the midpoints of the element sides to the element centroids.
+* At a node on :math:`\partial\Omega`, the domain boundary truncates the control
+  domain: in one dimension to a half, and on a rectangular mesh to a half on a
+  side and to a quarter at a corner.
 
-The interface between the control domains of the two end nodes :math:`(a, b)`
-of an element edge passes through the edge midpoint, the centroids of the two
-adjacent faces, and the element centroid.  Because every interface is shared by
-exactly two control domains with opposite normals, the discrete equations are
-*locally conservative*: summing the equations of all control domains leaves
-only the boundary fluxes.
+The interface between the control domains of the two end nodes of an element
+edge passes through the midpoint of the edge, the centroids of the faces that
+share the edge and the centroid of the element.  :doc:`elements` gives the
+construction for every element type, including the quadratic ones.
 
-In this implementation the sub-cells and the interfaces are never meshed
-explicitly.  They are described once per reference element as tensor-product
-patches in reference coordinates and are mapped with the element's own
-isoparametric map, so the same code handles straight and distorted elements in
-one, two, and three dimensions (see :class:`Patch` in
-``include/dualmesh/fe/ReferenceElement.h``).
+Local conservation
+------------------
 
-The dual mesh control domain method
------------------------------------
-
-Integrating :eq:`canonical` over the control domain of node :math:`I` and
-applying the divergence theorem gives the discrete equation of that node:
-
-.. math::
-   :label: DMCDM
-
-   R_I = -\oint_{\partial \Omega_I} \mathbf{F}\cdot\mathbf{n} \, \mathrm{d}S
-         + \int_{\Omega_I} S \, \mathrm{d}V = 0 .
-
-There is no weight function: the balance law is enforced exactly as it is
-written, which is the finite volume idea.  The fluxes and the sources are
-evaluated from the primal interpolation, which is the finite element idea.  In
-particular, the gradient needed on an interface is the gradient of the
-interpolant, so no gradient reconstruction and no ad-hoc differencing appear
-anywhere.
-
-Assembly is element by element.  For an element :math:`e` the code
-
-1. builds the integration points of the sub-cells (volume terms) and of the
-   interfaces (surface terms) from the reference description of the dual mesh,
-2. evaluates :math:`u`, :math:`\nabla u`, and the properties at those
-   points from the element's nodal values, and
-3. adds :math:`\int S \,\mathrm{d}V` to the owning node's equation and
-   :math:`\mp \mathbf{F}\cdot\mathbf{n}\,\Delta S` to the two nodes that share
-   each interface.
-
-There are no element stiffness matrices and no element-by-element assembly of
-a bilinear form.  The element loop serves only to visit the sub-cells.
-
-Boundary control domains and secondary variables
-------------------------------------------------
-
-Part of the boundary :math:`\partial \Omega_I` of a boundary node's control domain
-lies on :math:`\partial\Omega`.  Two cases arise.
-
-*Natural (Neumann, Robin) boundary:* the secondary variable is known, so
-:math:`-\int q_n \,\mathrm{d}S` is added to the residual, with :math:`q_n`
-given by the boundary condition.  For a Robin condition,
-:math:`q_n = q_0 - h\,(u - u_\infty)`, the unknown :math:`u` enters that
-integral, which contributes to the Jacobian as well.
-
-*Essential (Dirichlet) boundary:* the primary variable is known, and the
-node's equation is replaced by :math:`u_I = \hat{u}_I`.  The replaced equation
-is retained: evaluated at the converged solution it returns the secondary
-variable, i.e., the *reaction*
-
-.. math::
-
-   Q_I = \int_{\partial \Omega_I \cap \partial\Omega} q_n \, \mathrm{d}S
-       = -\oint_{\partial \Omega_I \setminus \partial\Omega} \mathbf{F}\cdot\mathbf{n}\,\mathrm{d}S
-         + \int_{\Omega_I} S\,\mathrm{d}V ,
-
-the flux the condition supplies to the body.  Its sum over a boundary, with the
-opposite sign, is what :meth:`dualmesh.Problem.boundary_flux` returns: the flow
-out of the body, exactly conserved.  This is how the heat flow through the base
-of a fin (:meth:`~dualmesh.physics.HeatTransfer.heat_flow`), the force of a
-fluid on a wall and support reactions are obtained.
-
-The finite element method for comparison
-----------------------------------------
-
-Setting ``method="FEM"`` on the same problem replaces :eq:`DMCDM` by the
-Galerkin weak form of the same canonical equation,
-
-.. math::
-
-   R_I = \int_{\Omega} \nabla \psi_I \cdot \mathbf{F} \, \mathrm{d}V
-       + \int_{\Omega} \psi_I \, S \, \mathrm{d}V
-       - \oint_{\partial\Omega} \psi_I \, q_n \, \mathrm{d}S = 0 ,
-
-so the two methods are driven by the same kernels, the same property objects, the same
-boundary conditions, and the same solvers.  Two consequences follow, and both
-are checked in the test suite:
-
-* for linear triangles and tetrahedra with constant coefficients the two
-  methods produce **identical** algebraic equations (the test
-  ``test_triangles_make_the_dual_mesh_method_equal_the_finite_element_method``),
-  and
-* for quadrilaterals the two differ slightly.
+Two control domains meet at each interior interface, and their outward normals
+there are opposite.  The flux through the interface therefore leaves one
+control domain and enters the other with the same value.  When you add
+:eq:`balance-integral` over any union of control domains, the interior
+interfaces cancel and only the flux through the boundary of the union remains.
+The discrete balance therefore holds over every control domain, over every
+union of control domains and over the whole domain.
 
 Coordinate systems
 ------------------
 
-The integrals in :eq:`DMCDM` carry a factor that depends on the coordinate
-system:
+The integrals of :eq:`balance-integral` carry a factor that depends on the
+coordinate system.  In axisymmetric and spherical coordinates, the radius
+:math:`r` (m) is the first coordinate :math:`x_1`, and the mesh lies in
+:math:`x_1 \ge 0`.
 
 .. list-table::
    :header-rows: 1
+   :widths: 22 18 60
 
-   * - ``coordinates``
+   * - Coordinate system
      - Factor
-     - Meaning
-   * - ``"cartesian"``
+     - Mesh
+   * - ``cartesian``
      - :math:`1`
-     - plane or three-dimensional problems
-   * - ``"axisymmetric"``
-     - :math:`2\pi r`, :math:`r = x_1`
-     - a one-dimensional radial mesh, or an :math:`(r, z)` mesh
-   * - ``"spherical"``
+     - a mesh in one, two or three dimensions
+   * - ``axisymmetric``
+     - :math:`2\pi r`
+     - a radial mesh in one dimension, or an :math:`(r, z)` mesh in two
+   * - ``spherical``
      - :math:`4\pi r^2`
-     - a one-dimensional radial mesh
+     - a radial mesh in one dimension
 
-With ``"axisymmetric"`` the reaction returned at a boundary node is therefore a
-heat flow per unit length (or a force).  For a cylinder of radius :math:`R_0`
-with the heat generation :math:`g_0`, the heat flow through the surface,
-:math:`Q(R_0) = \pi R_0^2 g_0 = 2\pi\times 10^4\ \mathrm{W/m}`, is reproduced to
-machine precision.
+You choose the system with the ``coordinates`` argument of
+:class:`dualmesh.Problem` or the ``coordinate_system`` key of the mesh section
+of the input.  With the factor, an integral over an :math:`(r, z)` mesh is the
+integral over the body of revolution, and an integral over a radial mesh in
+axisymmetric coordinates is the integral per unit length of the cylinder.  The
+heat that leaves a cylinder through its surface is then in W on an
+:math:`(r, z)` mesh and in W/m on a radial mesh.
 
-Properties of the method
-------------------------
-
-* **Local conservation.** The discrete balance holds over every control domain
-  and, by telescoping, over every union of control domains.
-* **Patch test.** A linear field is reproduced exactly on arbitrary distorted
-  meshes of all supported element types (``test_patch_test_linear_field``).
-* **Exact nodal values in special cases.** For radial conduction in a cylinder
-  with uniform heat generation the method reproduces the exact solution at the
-  nodes.  For the mixed beam models the bending moment at the load centre is
-  exact on any mesh.
-* **Equivalence with the finite element method** on simplicial meshes with
-  constant coefficients, as described above.
+:doc:`/verification` gives the cases that check these properties.

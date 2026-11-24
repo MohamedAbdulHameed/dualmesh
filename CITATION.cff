@@ -1,31 +1,27 @@
 cff-version: 1.2.0
-title: "dualmesh: a multiphysics framework for heat transfer, solid mechanics, fluid dynamics and general partial differential equations"
+title: "dualmesh-multiphysics: coupled heat transfer, solid mechanics and incompressible flow by the finite element method and the dual mesh control domain method"
 message: "If you use this software, please cite it as below."
 type: software
 version: 0.2.0
 license: LGPL-2.1-or-later
-repository-code: "https://github.com/MohamedAbdulHameed/dualmesh"
-url: "https://dualmesh.readthedocs.io"
+repository-code: "https://github.com/MohamedAbdulHameed/dualmesh-multiphysics"
+url: "https://github.com/MohamedAbdulHameed/dualmesh-multiphysics"
 abstract: >-
-  dualmesh is a multiphysics framework for heat transfer, solid mechanics,
-  fluid dynamics and general partial differential equations. Coupled
-  problems are solved monolithically by Newton's method with exact Jacobians
-  from automatic differentiation. One keyword selects the discretization of a
-  problem: the Galerkin finite element method, the vertex-centered or
-  cell-centered finite volume method, or the dual mesh control domain method
-  (DMCDM). The library is written in C++17 with Python bindings. It is a
-  modular framework of physics, kernels, boundary conditions and property
-  objects, with uncertainty quantification. It is verified against analytical
-  solutions, published benchmarks and other codes.
+  dualmesh-multiphysics solves coupled problems of heat transfer, solid
+  mechanics and incompressible flow, and partial differential equations
+  written as text. It discretizes a problem by the finite element method
+  (FEM), and a problem with a flow by the dual mesh control domain method
+  (DMCDM), which conserves the transported quantity in every control domain. Coupled
+  problems are solved together by Newton's method, with exact Jacobians from
+  automatic differentiation. The core is written in C++17 with PETSc and MPI,
+  and it is driven from Python or from YAML case files.
 keywords:
   - dual mesh control domain method
   - finite element method
-  - finite volume method
   - fluid dynamics
   - solid mechanics
   - heat transfer
   - partial differential equations
-  - uncertainty quantification
   - multiphysics
 authors:
   - family-names: AbdulHameed

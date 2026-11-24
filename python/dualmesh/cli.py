@@ -3,10 +3,10 @@
 of the side sets of a mesh file.
 
 A problem is described in a Python script, which runs with ``python
-script.py``, or in a case file (YAML) of the same physics-level input, which
-runs with ``dualmesh run case.yaml``.  ``mpirun -n 4`` before either runs it on
-four processes.  The command ``dualmesh`` also provides the tools that help to
-write them::
+script.py``, or in a case file (YAML or TOML) of the input sections, which runs
+with ``dualmesh run case.yaml``.  ``mpirun -n 4`` before either runs it on four
+processes.  The command ``dualmesh`` also provides the tools that help to write
+them::
 
     dualmesh run case.yaml                        # solve a case file
     dualmesh list --category physics              # the registered types
@@ -43,9 +43,9 @@ def main(argv: list[str] | None = None) -> int:
         "--module", help="framework, heat_transfer, solid_mechanics, fluids, ..."
     )
 
-    run_parser = subparsers.add_parser("run", help="build and solve a case file (YAML)")
+    run_parser = subparsers.add_parser("run", help="solve a case file (YAML or TOML)")
     run_parser.add_argument(
-        "case_file", help="a case file: mesh, physics, couplings, solve, output"
+        "case_file", help="a case file of the input sections: mesh, physics, properties, ..."
     )
 
     describe_parser = subparsers.add_parser(
@@ -67,10 +67,10 @@ def main(argv: list[str] | None = None) -> int:
 
     arguments = parser.parse_args(argv)
     if arguments.command == "run":
-        from .case import run_case
+        from .problem import problem
 
         try:
-            run_case(arguments.case_file)
+            problem.from_file(arguments.case_file).solve()
         except ValueError as error:
             print(error)
             return 1

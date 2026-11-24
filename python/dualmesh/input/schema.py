@@ -48,7 +48,7 @@ section_order = (
     "output",
     "solver",
 )
-# Without a method, each physics takes its own: FEM for solids, DMCDM for heat and flow.
+# Without a method, a problem with a flow of the equal-order formulation takes DMCDM, any other FEM.
 methods = ("DMCDM", "FEM")
 mesh_forms = ("segment", "rectangle", "box", "file")
 generated_dimensions = {"segment": 1, "rectangle": 2, "box": 3}

@@ -3,12 +3,11 @@ Physics and couplings
 
 .. currentmodule:: dualmesh.physics
 
-A physics is a set of equations named in physical terms, added with
-:meth:`dualmesh.Problem.add_physics`, which returns the object below.  Its
-methods add boundary conditions and extra terms to its equations.  A
-coupling joins two physics and is added with
-:meth:`dualmesh.Problem.add_coupling`.  The parameters of each physics and
-coupling type are listed in the :doc:`/syntax/index`.
+A physics is a set of equations named in physical terms.
+:meth:`dualmesh.Problem.add_physics` adds one and returns its object, whose
+methods add boundary conditions and extra terms to its equations.  A coupling
+joins two physics, and :meth:`dualmesh.Problem.add_coupling` adds it.
+:doc:`/syntax/index` lists the parameters of each physics and coupling type.
 
 The physics object
 ------------------

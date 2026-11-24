@@ -3,8 +3,9 @@ Automatic differentiation
 
 .. currentmodule:: dualmesh
 
-The number type of the objects written in Python, which carries its
-derivatives with respect to the unknowns, and the functions that act on it.
+An object written in Python computes with :class:`ADReal` numbers, which
+carry their derivatives with respect to the unknowns.  The functions below
+act on these numbers and carry the derivatives through.
 
 .. autosummary::
    :toctree: generated/

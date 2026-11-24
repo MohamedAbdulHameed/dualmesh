@@ -266,15 +266,18 @@ addDisplacementsParam(InputParameters & p, const std::string & what)
 {
   p.addRequired("displacements",
                 ParameterKind::StringList,
-                "The displacement variables in the order of the coordinate axes, e.g., [u, v, w] "
-                "in three dimensions. " +
+                "The displacement variables (m) in the order of the coordinate axes, for example "
+                "[u, v, w] in three dimensions. " +
                     what);
   p.setModelVariables({"displacements"});
   p.addOptional("variable",
                 ParameterKind::Names,
                 std::vector<std::string>{},
-                "The displacement this object acts on. Default: every one of 'displacements', "
-                "each with an object of its own.");
+                "The variable whose equation this object assembles. Default: every one of "
+                "'displacements', each with an object of its own, so that one call covers every "
+                "component. Give it for an object whose variable is a Lagrange multiplier "
+                "(mortar_contact, normal_displacement) and for cohesive_zone, which acts on "
+                "every displacement from one object.");
 }
 
 /// The thickness of a plane problem for the condition @p owner on @p variable: that of the
@@ -309,37 +312,42 @@ public:
   {
     InputParameters p = Kernel::validParams();
     p.setClassDescription(
-        "Divergence of the stress for one displacement component: "
-        "F = h (sigma_i0, sigma_i1, sigma_i2), where h is the thickness. The source is zero "
-        "except in the axisymmetric case, where the radial equation (component 0) carries "
-        "S = sigma_tt / r, taken as zero on the axis. The natural boundary quantity is the "
-        "traction component times the thickness.");
+        "The stress term of the equilibrium div(sigma) + b = 0 of one displacement component "
+        "u_i, with sigma the stress (Pa) and b the body force per unit volume (N/m^3), which "
+        "body_force adds. In the balance law dm/dt + div F = s of u_i, the flux is F = -H "
+        "sigma_i, with sigma_i the row i of the stress and H the thickness (m), so F . n is minus "
+        "the traction component sigma_ij n_j times H. The source is zero, except in axisymmetric "
+        "coordinates, where the radial equation (component 0) has the source s = -sigma_tt/r, "
+        "with sigma_tt the hoop component of 'stress_property' and r the radius (m), taken as "
+        "zero on the axis.");
     addDisplacementsParam(p,
-                          "The equilibrium equation of 'variable' is the one of its place in "
-                          "this list.");
+                          "The position of 'variable' in this list is the component i of its "
+                          "equation.");
     p.addOptional("thickness",
                   ParameterKind::Real,
                   1.0,
-                  "Out-of-plane thickness h multiplying the whole equilibrium equation, for plane "
-                  "stress and plane strain only. A three-dimensional or axisymmetric problem, "
-                  "whose integration measure already carries the factor 2 pi r, refuses any "
-                  "other value than 1. The traction and pressure conditions of the same "
-                  "displacement read it from here, and mortar_contact takes it as its own "
-                  "parameter (the physics passes the same). A point_source is not "
-                  "scaled by it, so a concentrated load must already be the total force through "
-                  "the thickness.");
+                  "Out-of-plane thickness H (m) that multiplies the whole equilibrium equation, "
+                  "for plane stress and plane strain only. A three-dimensional or axisymmetric "
+                  "problem refuses any value other than 1, and the integrals of an axisymmetric "
+                  "problem carry the factor 2 pi r. The traction and pressure conditions of the "
+                  "same displacement read it from here, and mortar_contact and cohesive_zone take "
+                  "it as a parameter of their own. It does not scale a point_source, so a "
+                  "concentrated load is the total force through the thickness. Default 1: the "
+                  "equation per unit thickness.");
     p.setRange("thickness", ParameterRange::Positive);
     p.addOptional("stress_property",
                   ParameterKind::String,
                   std::string("stress"),
-                  "Property holding the stress: six components in Voigt order "
-                  "(the Cauchy stress of small_strain_stress), or nine components row by row "
-                  "(the first Piola-Kirchhoff stress of finite_strain_stress, for equations "
-                  "on the undeformed mesh). Default stress.");
+                  "Property holding the stress: six components in Voigt order (the Cauchy stress "
+                  "sigma of small_strain_stress), or nine components row by row (the first "
+                  "Piola-Kirchhoff stress P of finite_strain_stress, for equations on the "
+                  "undeformed mesh). Default stress, the small-strain stress.");
     p.addOptional("axisymmetric_hoop_term",
                   ParameterKind::Boolean,
                   true,
-                  "Include the sigma_tt / r source in the radial equation (axisymmetric only).");
+                  "Include the hoop source -sigma_tt/r in the radial equation of an axisymmetric "
+                  "problem. Default true, because the radial equilibrium of a body of revolution "
+                  "has this term.");
     return p;
   }
 
@@ -414,12 +422,16 @@ public:
   {
     InputParameters p = Kernel::validParams();
     p.setClassDescription(
-        "The damage equation of phase-field fracture (AT2): the flux Gc l grad d and the "
-        "source (Gc / l + 2 H) d - 2 H, with H the property fracture_driving_energy of the "
-        "stress object, so that a crack costs the energy Gc per unit area.");
-    p.addRequired("toughness", ParameterKind::Real, "The critical energy release rate Gc, J/m^2.");
+        "The damage equation of phase-field fracture with the AT2 functional of Ambrosio and "
+        "Tortorelli, -div(G_c l grad d) + (G_c/l) d = 2 (1 - d) psi_max, for the damage d "
+        "(dimensionless, 0 intact and 1 broken). Here G_c is the toughness, l the length of the "
+        "diffuse crack and psi_max (J/m^3) the property fracture_driving_energy of the stress "
+        "object, the largest tensile elastic energy per unit volume the point has had. In the balance law dm/dt + div F = s of d, the flux is F = -G_c l grad d and the source "
+        "is s = 2 (1 - d) psi_max - (G_c/l) d. A crack costs the energy G_c per unit area.");
+    p.addRequired(
+        "toughness", ParameterKind::Real, "The critical energy release rate G_c (J/m^2).");
     p.setRange("toughness", ParameterRange::Positive);
-    p.addRequired("length", ParameterKind::Real, "The length l of the diffuse crack, m.");
+    p.addRequired("length", ParameterKind::Real, "The length l (m) of the diffuse crack.");
     p.setRange("length", ParameterRange::Positive);
     return p;
   }
@@ -464,9 +476,11 @@ public:
   {
     InputParameters p = Kernel::validParams();
     p.setClassDescription(
-        "The axial equation of generalized plane strain on the uniform strain eps_zz: the "
-        "source sigma_zz, integrated over the section, against the axial force (a body_force "
-        "of F/A on the same variable; none: a free axial strain, zero force).");
+        "The axial equation of generalized plane strain for the uniform axial strain epsilon_zz: "
+        "the integral of the axial stress sigma_zz over the section balances the axial force F "
+        "(N). A body_force of F/A on the same variable, with A the area of the section (m^2), "
+        "applies that force. Without a body_force the axial force is zero, and the body is free "
+        "to stretch along its axis.");
     return p;
   }
   explicit OutOfPlaneStress(const InputParameters & p) : Kernel(p) {}
@@ -491,9 +505,10 @@ public:
   static InputParameters validParams()
   {
     InputParameters p = Constraint::validParams();
-    p.setClassDescription("One unknown of 'variable' on the whole mesh: every node a copy of the "
-                          "first, with one equation that collects the equations of all.");
-    p.addRequired("variable", ParameterKind::String, "The variable.");
+    p.setClassDescription("One unknown of 'variable' for the whole mesh: every node is a copy of "
+                          "the first, and one equation collects the equations of all the nodes. "
+                          "It makes the uniform axial strain of generalized plane strain.");
+    p.addRequired("variable", ParameterKind::String, "The variable that has one value.");
     return p;
   }
   explicit UniformField(const InputParameters & p) : Constraint(p) {}
@@ -517,38 +532,47 @@ public:
   {
     InputParameters p = Kernel::validParams();
     p.setClassDescription(
-        "The stiffness-proportional Rayleigh damping b K v of one displacement component: the "
-        "flux F = b h (C : d(eps)/dt)_i, with C the isotropic elastic stiffness and the strain "
-        "rate of the velocity of the time step. With the second_time_derivative of the "
-        "density and a time_derivative of a rho (mass-proportional damping), it makes the "
-        "damping C = a M + b K.");
-    addDisplacementsParam(p, "The equation of 'variable' is the one of its place in this list.");
+        "The stiffness-proportional part b K v of Rayleigh damping, for one displacement "
+        "component u_i, with K the stiffness matrix and v the velocity. In the balance law dm/dt "
+        "+ div F = s of u_i, the flux is F = -b H (C : d(epsilon)/dt)_i, the row i of the stress "
+        "rate times the coefficient b and the thickness H. C is the elastic stiffness of small "
+        "strain, isotropic or given by 'stiffness', and d(epsilon)/dt the strain rate of the "
+        "velocity that the time scheme gives. In axisymmetric problems the radial equation also "
+        "has the hoop source, as in stress_divergence. With second_time_derivative (the inertia "
+        "rho d2u/dt2, rho the density) and time_derivative with the coefficient a rho, it gives "
+        "the Rayleigh damping a M + b K, with M the mass matrix and a (1/s) the mass coefficient.");
+    addDisplacementsParam(p,
+                          "The position of 'variable' in this list is the component i of its "
+                          "equation.");
     p.addRequired("formulation",
                   ParameterKind::String,
-                  "plane_stress, plane_strain, axisymmetric or three_dimensional.");
-    p.addRequired("coefficient", ParameterKind::Real, "The damping coefficient b, s.");
+                  "The formulation of the solid, as small_strain_stress takes it: plane_stress, "
+                  "plane_strain, axisymmetric or three_dimensional.");
+    p.addRequired("coefficient", ParameterKind::Real, "The damping coefficient b (s).");
     p.setRange("coefficient", ParameterRange::NonNegative);
     p.addOptional("youngs_modulus",
                   ParameterKind::Function,
                   std::string("youngs_modulus"),
-                  "Young's modulus, Pa, as small_strain_stress takes it. Default: the property "
-                  "youngs_modulus.");
+                  "Young's modulus E (Pa), in any form that small_strain_stress takes. Default: "
+                  "the property youngs_modulus, the one small_strain_stress reads by default.");
     p.addOptional("poissons_ratio",
                   ParameterKind::Function,
                   std::string("poissons_ratio"),
-                  "Poisson's ratio, as small_strain_stress takes it. Default: the property "
-                  "poissons_ratio.");
+                  "Poisson's ratio nu (dimensionless), in any form that small_strain_stress takes. "
+                  "Default: the property poissons_ratio, the one small_strain_stress reads by "
+                  "default.");
     p.addOptional("thickness",
                   ParameterKind::Real,
                   1.0,
-                  "The out-of-plane thickness of a plane problem, as stress_divergence takes it. "
-                  "Default 1.");
+                  "The out-of-plane thickness H (m) of a plane problem, as stress_divergence "
+                  "takes it. Default 1, the default of stress_divergence.");
     p.setRange("thickness", ParameterRange::Positive);
     p.addOptional("stiffness",
                   ParameterKind::RealList,
                   std::vector<double>{},
-                  "An anisotropic stiffness, as small_strain_stress takes it (36 values), in place "
-                  "of the moduli. Default none: isotropic.");
+                  "An anisotropic stiffness C (Pa), 36 values as small_strain_stress takes them, "
+                  "in place of youngs_modulus and poissons_ratio. Default none: the isotropic "
+                  "stiffness of youngs_modulus and poissons_ratio.");
     return p;
   }
 
@@ -661,156 +685,180 @@ public:
   {
     InputParameters p = Property::validParams();
     p.setClassDescription(
-        "Small-strain stress of an isotropic material: sigma = lambda tr(eps_e) I + 2 mu eps_e of "
-        "the elastic strain eps_e = eps - sum of the eigenstrains - creep strain, with Young's "
-        "modulus and Poisson's ratio given as constants, functions, properties or expressions, "
-        "and optional creep. Formulations: plane_stress (a thin body free to contract through "
-        "its thickness, sigma_zz = 0), plane_strain (a long body restrained along its axis), "
-        "axisymmetric (a body of revolution on an (r, z) mesh), axisymmetric_1d (a radial slice "
-        "of a long body in generalized plane strain, whose uniform axial strain is given by "
-        "'axial_strain') and three_dimensional. A thermal strain is an eigenstrain, for example "
-        "of thermal_expansion_eigenstrain. Declares 'stress', 'strain', 'elastic_strain' (in "
-        "the Voigt order xx, yy, zz, yz, xz, xy with engineering shears, or r, z, theta in the "
-        "axisymmetric case), 'volumetric_strain' and 'von_mises_stress', and with creep "
-        "'creep_strain' and 'equivalent_creep_strain'.");
+        "Small-strain stress of an elastic solid, isotropic or anisotropic, with optional "
+        "creep, plasticity, viscoelasticity and phase-field fracture. For an isotropic material "
+        "sigma = lambda tr(epsilon_e) I + 2 G epsilon_e, with lambda the first Lame parameter, G "
+        "the shear modulus and epsilon_e the elastic strain: the strain of the displacements "
+        "less the eigenstrains and the creep and plastic strains. Young's modulus and Poisson's "
+        "ratio are constants, functions, properties or expressions. The formulations are "
+        "plane_stress (a thin body free to contract through its thickness, sigma_zz = 0), "
+        "plane_strain (a long body restrained along its axis), generalized_plane_strain (a long "
+        "body whose uniform axial strain is an unknown, 'out_of_plane_strain'), axisymmetric (a "
+        "body of revolution on an (r, z) mesh), axisymmetric_1d (a radial slice of a long body "
+        "of revolution, whose uniform axial strain is 'axial_strain') and three_dimensional. A "
+        "thermal strain is an eigenstrain, for example of thermal_expansion_eigenstrain. "
+        "Declares 'stress', 'strain' and 'elastic_strain' in the Voigt order xx, yy, zz, yz, xz, "
+        "xy, with engineering shear strains and tensor shear stresses. In an axisymmetric "
+        "formulation, x, y and z stand for r, z and the hoop direction theta. Also declares "
+        "'volumetric_strain', 'von_mises_stress' and 'deformation_gradient', with creep "
+        "'creep_strain' and 'equivalent_creep_strain', with plasticity 'plastic_strain', "
+        "'equivalent_plastic_strain' and 'back_stress', and with damage "
+        "'fracture_driving_energy'.");
     p.addRequired("displacements",
                   ParameterKind::StringList,
-                  "The displacement variables: two in a plane or axisymmetric problem (the "
+                  "The displacement variables (m): two in a plane or axisymmetric problem (the "
                   "radial and the axial one in the axisymmetric case), three in three "
                   "dimensions and the radial one in axisymmetric_1d.");
     p.addRequired("formulation",
                   ParameterKind::String,
-                  "plane_stress, plane_strain, axisymmetric, axisymmetric_1d or "
+                  "The idealization of the body: plane_stress, plane_strain, "
+                  "generalized_plane_strain, axisymmetric, axisymmetric_1d or "
                   "three_dimensional.");
     p.addOptional("youngs_modulus",
                   ParameterKind::Function,
                   std::string("youngs_modulus"),
-                  "Young's modulus, Pa: a constant, a registered function, the name of a property, "
-                  "or an expression of the fields, x, y, z, t, the functions and the properties. "
-                  "It has no numerical default. Default: the property youngs_modulus, which a "
-                  "property object such as constant or parsed declares.");
-    p.addOptional(
-        "poissons_ratio",
-        ParameterKind::Function,
-        std::string("poissons_ratio"),
-        "Poisson's ratio, with -1 < nu < 1/2: a constant, a registered function, the name "
-        "of a property, or an expression. It has no numerical default. Default: the property "
-        "poissons_ratio, which a property object such as constant or parsed declares.");
+                  "Young's modulus E (Pa): a constant, a registered function, the name of a "
+                  "property, or an expression of the fields, x, y, z, t, the functions and the "
+                  "properties. Default: the property youngs_modulus, which a property object such "
+                  "as constant or parsed declares, because no number suits every material.");
+    p.addOptional("poissons_ratio",
+                  ParameterKind::Function,
+                  std::string("poissons_ratio"),
+                  "Poisson's ratio nu (dimensionless), with -1 < nu < 1/2: a constant, a "
+                  "registered function, the name of a property, or an expression. Default: the "
+                  "property poissons_ratio, which a property object such as constant or parsed "
+                  "declares, because no number suits every material.");
     p.addOptional("eigenstrain_names",
                   ParameterKind::StringList,
                   std::vector<std::string>{},
-                  "Names of the six-component eigenstrain properties to subtract. "
-                  "Default none.");
+                  "Names of the six-component eigenstrain properties to subtract from the strain. "
+                  "Default none: no eigenstrain.");
     p.addOptional("axial_strain",
                   ParameterKind::Function,
                   0.0,
-                  "The uniform axial strain of the axisymmetric_1d formulation. Default 0.");
+                  "The uniform axial strain epsilon_zz (dimensionless) of the axisymmetric_1d "
+                  "formulation, a constant or a function. Default 0: the body is held at its "
+                  "length.");
     p.addOptional("creep_model",
                   ParameterKind::String,
                   std::string("none"),
-                  "Creep of the material: none or parsed (the rate given by 'creep_rate'). "
-                  "The creep strain is integrated by the backward Euler method with a radial "
-                  "return on the von Mises stress, and kept as a history at every integration "
-                  "point. Default none.");
+                  "Creep of the material: none, or parsed for the rate given by 'creep_rate'. The "
+                  "creep strain is integrated by the backward Euler method with a radial return "
+                  "on the von Mises stress, and kept as a history at every integration point. "
+                  "Default none: no creep.");
     p.addOptional("creep_rate",
                   ParameterKind::String,
                   std::string(""),
-                  "With creep_model = parsed: the equivalent creep strain rate, 1/s, as an "
-                  "expression of von_mises_stress (Pa), temperature (K), grain_size (m), the "
-                  "time t (s, for primary creep by time hardening), equivalent_creep_strain "
-                  "(for strain hardening, taken at the end of the step) and the constants of "
-                  "'creep_constants'. It is "
-                  "differentiated automatically, so the return mapping and the Jacobian are "
-                  "exact. It must not be negative. Default empty.");
+                  "With creep_model = parsed, the equivalent creep strain rate (1/s), as an "
+                  "expression of von_mises_stress (Pa), temperature (K), grain_size (m), the time "
+                  "t (s), for primary creep by time hardening, equivalent_creep_strain, for strain "
+                  "hardening, taken at the end of the step, and the constants of "
+                  "'creep_constants'. It is differentiated automatically, so the Jacobian of the "
+                  "return mapping is exact. It must not be negative. Default empty, because "
+                  "creep_model = none needs no rate.");
     p.addOptional("creep_constants",
                   ParameterKind::RealMap,
                   RealMap{},
-                  "Named constants that 'creep_rate' uses: name -> value. Default none.");
+                  "Named constants that 'creep_rate' uses, as name -> value. Default none.");
     p.addOptional("temperature",
                   ParameterKind::String,
                   std::string(""),
-                  "The temperature variable (kelvin), required with creep.");
+                  "The temperature variable (K). Required when the creep rate or the yield "
+                  "stress uses temperature. Default none, for a material law that does not read "
+                  "the temperature.");
     p.addOptional("grain_size",
                   ParameterKind::Real,
                   std::monostate{},
-                  "Grain size (the grain diameter) of the material, m. A mean linear intercept L "
+                  "Grain size (m) of the material, the grain diameter. A mean linear intercept L "
                   "corresponds to the grain size 1.56 L. Required when the parsed creep rate "
                   "uses grain_size.");
     p.addOptional("creep_rate_factor",
                   ParameterKind::Real,
                   1.0,
-                  "Factor on the creep rate, for sensitivity and uncertainty studies. Default 1.");
+                  "Factor (dimensionless, not negative) on the creep rate, for sensitivity and "
+                  "uncertainty studies. Default 1: the creep rate as given.");
     p.addOptional("out_of_plane_strain",
                   ParameterKind::String,
                   std::string(""),
-                  "generalized_plane_strain: the variable of the uniform strain eps_zz along the "
-                  "axis, one unknown of the whole body (a uniform_field), whose equation "
-                  "(out_of_plane_stress) is the axial force it carries. Required there.");
+                  "With formulation = generalized_plane_strain, the variable of the uniform axial "
+                  "strain epsilon_zz, one unknown for the whole body (a uniform_field), whose "
+                  "equation (out_of_plane_stress) sets the axial force the section carries. "
+                  "Required with generalized_plane_strain, and unused by the other formulations.");
     p.addOptional("viscous_shear_moduli",
                   ParameterKind::RealList,
                   std::vector<double>{},
-                  "Viscoelasticity (generalized Maxwell): the shear moduli G_i, Pa, of the "
+                  "Viscoelasticity (generalized Maxwell model): the shear moduli G_i (Pa) of the "
                   "deviatoric branches, each relaxing as exp(-t/tau_i), beside the long-term "
-                  "moduli. Default none.");
+                  "moduli E and nu. Viscoelasticity is not available with creep, plasticity or "
+                  "plane_stress. Default none: no viscous branch.");
     p.addOptional("viscous_shear_times",
                   ParameterKind::RealList,
                   std::vector<double>{},
-                  "The relaxation times tau_i, s, of the shear branches.");
+                  "The relaxation times tau_i (s) of the shear branches, one per shear modulus. "
+                  "Default none: no viscous branch.");
     p.addOptional("viscous_bulk_moduli",
                   ParameterKind::RealList,
                   std::vector<double>{},
-                  "The bulk moduli K_i, Pa, of the volumetric branches. Default none.");
+                  "The bulk moduli K_i (Pa) of the volumetric branches of the generalized Maxwell "
+                  "model. Default none: no viscous branch.");
     p.addOptional("viscous_bulk_times",
                   ParameterKind::RealList,
                   std::vector<double>{},
-                  "The relaxation times, s, of the bulk branches.");
+                  "The relaxation times (s) of the bulk branches, one per bulk modulus. Default "
+                  "none: no viscous branch.");
     p.addOptional("damage",
                   ParameterKind::String,
                   std::string(""),
-                  "Phase-field fracture (AT2): the damage variable d, which degrades the "
-                  "tensile part of the elastic energy by (1 - d)^2 (the split of Miehe by the "
-                  "principal strains). Declares fracture_driving_energy, the largest tensile "
-                  "energy the point has had (the history of the crack, which does not heal). "
-                  "Plane strain, generalized plane strain and axisymmetric. Default none.");
+                  "Phase-field fracture with the AT2 functional: the damage variable d, which "
+                  "degrades the tensile part of the elastic energy by (1 - d)^2, with the split of "
+                  "Miehe by the principal strains. Declares fracture_driving_energy (J/m^3), the "
+                  "largest tensile energy the point has had, so the crack does not heal. "
+                  "Available for an isotropic elastic material in plane_strain, "
+                  "generalized_plane_strain and axisymmetric. Default none: no fracture.");
     p.addOptional("yield_stress",
                   ParameterKind::String,
                   std::string(""),
-                  "J2 plasticity: the yield stress, Pa, as an expression of "
+                  "Von Mises (J2) plasticity: the yield stress (Pa), as an expression of "
                   "equivalent_plastic_strain, temperature (K) and the constants of "
-                  "'plasticity_constants', which gives the isotropic hardening (a number is "
-                  "perfect plasticity). The plastic strain is integrated by the backward Euler "
-                  "method with a radial return, with creep in the same return. Default empty: "
-                  "no plasticity.");
+                  "'plasticity_constants', which gives the isotropic hardening. A number gives "
+                  "perfect plasticity. The plastic strain is integrated by the backward Euler "
+                  "method with a radial return, with creep in the same return. Default empty: no "
+                  "plasticity.");
     p.addOptional("plasticity_constants",
                   ParameterKind::RealMap,
                   RealMap{},
-                  "Named constants that 'yield_stress' uses: name -> value. Default none.");
+                  "Named constants that 'yield_stress' uses, as name -> value. Default none.");
     p.addOptional("kinematic_hardening_moduli",
                   ParameterKind::RealList,
                   std::vector<double>{},
-                  "The moduli C_k, Pa, of the back stresses of kinematic hardening "
-                  "(Armstrong-Frederick, or Chaboche with several): d(alpha_k) = (2/3) C_k "
-                  "d(eps_p) - gamma_k alpha_k dp. Default none.");
+                  "The moduli C_k (Pa) of the back stresses X_k of kinematic hardening, by the "
+                  "law of Armstrong and Frederick, or of Chaboche with several: dX_k = (2/3) C_k "
+                  "d(epsilon_p) - gamma_k X_k dp, with epsilon_p the plastic strain and p the "
+                  "equivalent plastic strain. Not available with creep, an anisotropic stiffness "
+                  "or hill_coefficients. Default none: isotropic hardening only.");
     p.addOptional("dynamic_recovery",
                   ParameterKind::RealList,
                   std::vector<double>{},
-                  "The dynamic recovery gamma_k of each back stress (0: Prager's linear "
-                  "kinematic hardening). Default 0 for each.");
+                  "The dynamic recovery gamma_k (dimensionless) of each back stress. Default 0 "
+                  "for each: the linear kinematic hardening of Prager.");
     p.addOptional("stiffness",
                   ParameterKind::RealList,
                   std::vector<double>{},
-                  "An anisotropic material: the 6 x 6 stiffness C, Pa, in the global axes and "
-                  "the Voigt order xx, yy, zz, yz, xz, xy (engineering shear strains), row by "
-                  "row (36 values), in place of youngs_modulus and poissons_ratio. It must be "
-                  "symmetric and positive definite. Default none: isotropic.");
-    p.addOptional("hill_coefficients",
-                  ParameterKind::RealList,
-                  std::vector<double>{},
-                  "Hill's anisotropic equivalent stress sqrt(sigma . P sigma) for creep and "
-                  "plasticity: the 6 x 6 matrix P in the global axes and the Voigt order "
-                  "(tensor shear stresses), row by row (36 values). With it the creep rate and "
-                  "the yield stress read this equivalent stress as von_mises_stress, and the "
-                  "flow is normal to it. Default none: von Mises.");
+                  "An anisotropic material: the 6 x 6 stiffness C (Pa) in the global axes and the "
+                  "Voigt order xx, yy, zz, yz, xz, xy, with engineering shear strains, row by row "
+                  "(36 values), in place of youngs_modulus and poissons_ratio. It must be "
+                  "symmetric and positive definite. Default none: the isotropic stiffness of "
+                  "youngs_modulus and poissons_ratio.");
+    p.addOptional(
+        "hill_coefficients",
+        ParameterKind::RealList,
+        std::vector<double>{},
+        "Hill's anisotropic equivalent stress sqrt(sigma . L_H sigma) for creep and "
+        "plasticity, with L_H the 6 x 6 Hill matrix (dimensionless) in the global axes and the "
+        "Voigt order, with tensor shear stresses, row by row (36 values). With it the "
+        "creep rate and the yield stress read this equivalent stress as "
+        "von_mises_stress, and the inelastic flow is normal to it. It needs creep or "
+        "plasticity. Default none: the von Mises stress.");
     return p;
   }
   /// The history of a point: the creep strain and its equivalent, the plastic strain and its
@@ -2212,28 +2260,32 @@ public:
   {
     InputParameters p = SmallStrainStress::validParams();
     p.setClassDescription(
-        "Stress of an isotropic material at finite (large) strain, for equations written on the "
-        "undeformed mesh (the total Lagrangian form). The deformation gradient F = I + grad u is "
-        "taken with respect to the undeformed coordinates, and the stress that the equilibrium "
-        "equation needs is the first Piola-Kirchhoff stress P = J sigma F^-T, declared as "
-        "'first_piola_kirchhoff_stress' (nine components, row by row) for stress_divergence. "
-        "'stress' is the Cauchy (true) stress. stress_update = rotated_small_strain (the default) "
-        "applies the small-strain law of small_strain_stress, with the same eigenstrains and "
-        "creep, to strain increments measured in a frame that rotates with the material (the "
-        "Hughes-Winget midpoint rule), so that rotations produce no stress. This update suits "
-        "metals and ceramics, whose elastic strains stay small while their total strains may be "
-        "large. stress_update = neo-Hookean is the compressible neo-Hookean hyperelastic law P = "
-        "mu (F - F^-T) + lambda ln(J) F^-T, exact for any deformation and without creep, applied "
-        "to the part of F left after the eigenstrains (F = F_e F_eig). 'volumetric_strain' is J - 1, "
-        "the change of volume per unit volume. Also declares "
-        "'deformation_gradient' (nine components) and 'green_lagrange_strain' (Voigt, engineering "
-        "shears).");
+        "Stress of an isotropic material at finite strain, for equations written on the "
+        "undeformed mesh (the total Lagrangian form). The deformation gradient F_d = I + grad u "
+        "is taken with respect to the undeformed coordinates. The equilibrium equation needs the "
+        "first Piola-Kirchhoff stress P = J sigma F_d^-T, with J = det(F_d) and sigma the Cauchy "
+        "stress, declared as 'first_piola_kirchhoff_stress' (nine components, row by row), which "
+        "stress_divergence reads with stress_property = first_piola_kirchhoff_stress. 'stress' "
+        "is sigma. stress_update = rotated_small_strain applies the small-strain law of "
+        "small_strain_stress, with its eigenstrains, creep and plasticity, to strain increments "
+        "measured in a frame that rotates with the material (the midpoint rule of Hughes and "
+        "Winget), so that rigid rotations produce no stress. This update suits materials whose "
+        "elastic strains stay small while their total strains are large, such as metals and "
+        "ceramics. stress_update = neo-Hookean is the compressible neo-Hookean hyperelastic law P "
+        "= G (F_d - F_d^-T) + lambda ln(J) F_d^-T, with G the shear modulus and lambda the first "
+        "Lame parameter, applied to the elastic part F_e of F_d = F_e F_eig left after the "
+        "eigenstrains. 'volumetric_strain' is J - 1, the change of volume per unit volume, and "
+        "'strain' is the Green-Lagrange strain. Also declares 'deformation_gradient' (nine "
+        "components) and 'green_lagrange_strain' (Voigt order, engineering shears). Available in "
+        "plane_strain, axisymmetric, axisymmetric_1d and three_dimensional, without "
+        "viscoelasticity or phase-field fracture.");
     p.addOptional("stress_update",
                   ParameterKind::String,
                   std::string("rotated_small_strain"),
-                  "rotated_small_strain or neo-Hookean. Default rotated_small_strain: the "
-                  "material laws of the library, including creep, carried to finite "
-                  "rotation and strain.");
+                  "The finite-strain law: rotated_small_strain or neo-Hookean. neo-Hookean takes "
+                  "no creep or plasticity. Default rotated_small_strain, because it carries every "
+                  "law of small_strain_stress, creep and plasticity included, to finite rotation "
+                  "and strain.");
     return p;
   }
   explicit FiniteStrainStress(const InputParameters & p) : SmallStrainStress(p)
@@ -2254,6 +2306,10 @@ public:
       throw InputError("'" + name() + "': viscoelasticity at finite strain is not available yet.");
     if (_cracking)
       throw InputError("'" + name() + "': phase-field fracture is available at small strain only.");
+    // The stress laws at finite strain read the isotropic moduli.
+    if (_anisotropic)
+      throw InputError("'" + name() +
+                       "': an anisotropic stiffness is available at small strain only.");
     if (_neo_hookean && _plastic)
       throw InputError("'" + name() +
                        "': plasticity is available with stress_update = rotated_small_strain "
@@ -2554,17 +2610,23 @@ public:
   {
     InputParameters p = Property::validParams();
     p.setClassDescription(
-        "Isotropic thermal strain alpha (T - T_ref) on the three normal components, as a "
-        "six-component eigenstrain property for small_strain_stress.");
-    p.addRequired("temperature", ParameterKind::String, "The temperature variable.");
+        "Isotropic thermal strain alpha (T - T_0) on the three normal components, with alpha "
+        "the linear expansion coefficient, T the temperature and T_0 the stress-free "
+        "temperature, as a six-component eigenstrain property for small_strain_stress and "
+        "finite_strain_stress. The coefficient is a constant.");
+    p.addRequired("temperature", ParameterKind::String, "The temperature variable T (K).");
     p.addRequired("linear_expansion_coefficient",
                   ParameterKind::Real,
-                  "Linear thermal expansion coefficient alpha, 1/K: the strain per kelvin along "
-                  "each direction, a third of the volumetric coefficient of an isotropic solid.");
+                  "Linear expansion coefficient alpha (1/K): the strain per kelvin along each "
+                  "direction, a third of the volumetric expansion coefficient beta of an "
+                  "isotropic solid.");
     p.addRequired("stress_free_temperature",
                   ParameterKind::Real,
-                  "Temperature T_ref at which the thermal strain is zero.");
-    p.addRequired("eigenstrain_name", ParameterKind::String, "Name of the property.");
+                  "Temperature T_0 (K) at which the thermal strain is zero.");
+    p.addRequired("eigenstrain_name",
+                  ParameterKind::String,
+                  "Name of the eigenstrain property this object declares. List it in the "
+                  "eigenstrain_names of the stress object.");
     return p;
   }
   explicit ThermalExpansionEigenstrain(const InputParameters & p)
@@ -2640,34 +2702,39 @@ public:
   {
     InputParameters p = IntegratedBC::validParams();
     p.setClassDescription(
-        "Mortar contact of two surfaces in two dimensions: 'variable' is the contact pressure "
-        "(Pa) on the nodes of the secondary surface 'boundary', a Lagrange multiplier, and "
-        "'primary_boundary' the other surface. The contact is exact (no penetration, no "
-        "penalty), by the complementarity of the weighted gap and the pressure, and with a "
-        "friction_coefficient it has Coulomb friction through 'tangential_traction'.");
+        "Mortar contact between two surfaces of a two-dimensional problem, plane or "
+        "axisymmetric, with linear elements on both surfaces. 'variable' is the contact pressure "
+        "p_c (Pa), a Lagrange multiplier on the nodes of the secondary surface 'boundary', and "
+        "'primary_boundary' is the other surface. At each secondary node the weighted gap g (m) "
+        "and the pressure satisfy g >= 0, p_c >= 0 and p_c g = 0, which Newton's method solves "
+        "with an active set. So the surfaces do not penetrate in the weighted sense of the "
+        "mortar method, and no penalty is needed. With a friction_coefficient, 'tangential_traction' "
+        "adds Coulomb friction. The pressure acts on both surfaces with opposite signs, so the "
+        "contact forces balance.");
     p.addRequired("primary_boundary", ParameterKind::String, "The primary surface.");
     addDisplacementsParam(p, "The displacements of both bodies.");
     p.addOptional("tangential_traction",
                   ParameterKind::String,
                   std::string(""),
                   "The variable of the tangential traction (Pa) of friction, a second Lagrange "
-                  "multiplier on the secondary nodes. Required with a friction_coefficient.");
+                  "multiplier on the secondary nodes. Required with a friction_coefficient. "
+                  "Default none: frictionless contact.");
     p.addOptional("friction_coefficient",
                   ParameterKind::Real,
                   0.0,
-                  "The Coulomb friction coefficient mu. Default 0: frictionless.");
+                  "The Coulomb friction coefficient (dimensionless). Default 0: frictionless.");
     p.setRange("friction_coefficient", ParameterRange::NonNegative);
     p.addRequired("stiffness_scale",
                   ParameterKind::Real,
-                  "The scale c (Pa/m) of the complementarity functions, of the size of the "
-                  "Young's modulus over the element size. It changes the convergence of Newton's "
-                  "method, not the solution.");
+                  "The scale c (Pa/m) of the complementarity functions, of the size of Young's "
+                  "modulus over the element size. It sets the convergence of Newton's method and "
+                  "leaves the solution unchanged.");
     p.setRange("stiffness_scale", ParameterRange::Positive);
     p.addOptional("thickness",
                   ParameterKind::Real,
                   1.0,
-                  "The out-of-plane thickness of a plane problem, as stress_divergence takes it. "
-                  "Default 1.");
+                  "The out-of-plane thickness (m) of a plane problem, as stress_divergence takes "
+                  "it. Default 1, the default of stress_divergence.");
     p.setRange("thickness", ParameterRange::Positive);
     p.addOptional("large_deformation",
                   ParameterKind::Boolean,
@@ -3029,27 +3096,35 @@ public:
     InputParameters p = IntegratedBC::validParams();
     p.setClassDescription(
         "A cohesive zone between the surface 'boundary' (secondary) and 'primary_boundary' of a "
-        "two-dimensional problem, which coincide at the start: a bilinear traction-separation "
-        "law, normal and tangential, with damage that does not heal. The traction peaks at the "
-        "'strength' and the work of separation per area is the 'toughness'. 'variable' is one "
-        "of the displacements.");
+        "two-dimensional problem, plane or axisymmetric, which coincide at the start. The "
+        "traction on the secondary surface is K (1 - D) delta, with K the 'stiffness', delta "
+        "the separation of the two surfaces and D the damage, and the primary surface takes the "
+        "opposite. A closing normal separation keeps the full stiffness K, so that the surfaces "
+        "do not pass through each other. The bilinear traction-separation law, normal and "
+        "tangential, makes the traction peak at the 'strength', and the work of separation per "
+        "unit area is the 'toughness'. The damage grows with the largest opening reached and "
+        "does not heal. 'variable' is one of the displacements, and one object acts on all of "
+        "them.");
     p.addRequired("primary_boundary", ParameterKind::String, "The primary surface.");
     addDisplacementsParam(p, "The displacements of both bodies.");
     p.addRequired("strength", ParameterKind::Real, "The largest traction (Pa).");
     p.setRange("strength", ParameterRange::Positive);
-    p.addRequired("toughness", ParameterKind::Real, "The work of separation per area (J/m^2).");
+    p.addRequired(
+        "toughness", ParameterKind::Real, "The work of separation per unit area (J/m^2).");
     p.setRange("toughness", ParameterRange::Positive);
     p.addRequired("stiffness",
                   ParameterKind::Real,
-                  "The stiffness K (Pa/m) of the undamaged zone, large against the bodies' (of "
-                  "the size of 50 times the Young's modulus over the element size), so that the "
-                  "zone opens by strength / K, a small fraction of an element, before it softens.");
+                  "The stiffness K (Pa/m) of the undamaged zone, large against the stiffness of "
+                  "the bodies, of the size of 50 times Young's modulus over the element size. The "
+                  "zone then opens by strength/K, a small fraction of an element, before it "
+                  "softens. The opening at failure, 2 toughness/strength, must exceed "
+                  "strength/K.");
     p.setRange("stiffness", ParameterRange::Positive);
     p.addOptional("thickness",
                   ParameterKind::Real,
                   1.0,
-                  "The out-of-plane thickness of a plane problem, as stress_divergence takes it. "
-                  "Default 1.");
+                  "The out-of-plane thickness (m) of a plane problem, as stress_divergence takes "
+                  "it. Default 1, the default of stress_divergence.");
     p.setRange("thickness", ParameterRange::Positive);
     p.addOptional("large_deformation",
                   ParameterKind::Boolean,
@@ -3252,19 +3327,23 @@ public:
   {
     InputParameters p = IntegratedBC::validParams();
     p.setClassDescription(
-        "A prescribed normal displacement n . u = 'value' on the boundary, with the tangential "
-        "displacements free: a roller on an inclined or curved face, exact by a Lagrange "
-        "multiplier, 'variable', the normal force (N) at each node of the boundary.");
-    addDisplacementsParam(p, "The displacements of the body.");
+        "A prescribed normal displacement n . u = g on the boundary, with n the outward normal, "
+        "u the displacement and g the 'value', and the tangential displacements free: a roller "
+        "on an inclined or curved face. The condition holds exactly at each node of the "
+        "boundary through a Lagrange multiplier, 'variable', the normal force (N) on the body "
+        "there. The normal of a node is the area-weighted mean of the normals of its sides. At a "
+        "node that other conditions hold along n, the normal force is zero.");
+    addDisplacementsParam(p, "The displacements of the body, one per dimension of space.");
     p.addOptional("value",
                   ParameterKind::Function,
                   0.0,
-                  "The normal displacement g (m), along the outward normal: a constant or an "
-                  "expression of x, y, z and t. Default 0.");
+                  "The normal displacement g (m) along the outward normal, a constant or an "
+                  "expression of x, y, z and t. Default 0: a roller that holds the boundary in "
+                  "place along its normal.");
     p.addRequired("stiffness_scale",
                   ParameterKind::Real,
-                  "The scale c (N/m) of the equation of a node, of the size of the stiffness of "
-                  "a node. It changes the conditioning, not the solution.");
+                  "The scale c (N/m) of the equation of a node, of the size of the stiffness of a "
+                  "node. It sets the conditioning and leaves the solution unchanged.");
     p.setRange("stiffness_scale", ParameterRange::Positive);
     return p;
   }
@@ -3390,29 +3469,28 @@ public:
   {
     InputParameters p = IntegratedBC::validParams();
     p.setClassDescription(
-        "Prescribed component of the surface traction, in force per unit area. The component is "
-        "the one belonging to the equation named by 'variable' (a list of variables adds one "
-        "object per variable). The load is given either as the traction itself or as the total "
-        "force on the boundary, which is then spread uniformly over its area. In a plane "
-        "problem the traction is multiplied by the thickness of the stress_divergence kernel of "
-        "the same variable.");
-    p.addOptional(
-        "traction",
-        ParameterKind::Function,
-        0.0,
-        "The traction component conjugate to 'variable': a constant, a registered "
-        "function, or an expression of the fields, x, y, z and t. A positive value acts along the positive direction "
-        "of that variable's coordinate axis, whichever way the outward normal "
-        "points. In a plane problem it is multiplied by the thickness.");
+        "Prescribed component of the surface traction (Pa) on a boundary. The component is that "
+        "of the displacement named by 'variable', and a list of variables adds one object per "
+        "variable. Give the load either as the traction itself or as the total force on the "
+        "boundary, which is then spread uniformly over its area. In a plane problem the traction "
+        "is multiplied by the thickness of the stress_divergence kernel of the same variable.");
+    p.addOptional("traction",
+                  ParameterKind::Function,
+                  0.0,
+                  "The traction component t_i (Pa) along the axis of 'variable': a constant, a "
+                  "registered function, or an expression of the fields, x, y, z and t. A positive "
+                  "value acts along the positive direction of that axis, whichever way the "
+                  "outward normal points. In a plane problem it is multiplied by the thickness. "
+                  "Default 0: no load.");
     p.addOptional("total_force",
                   ParameterKind::Function,
                   0.0,
-                  "The total force component conjugate to 'variable' on the whole boundary, "
-                  "in N, as a constant or the name of a function of time. It is applied as the "
-                  "uniform traction t = F / A, where A is the area of the boundary (with the "
-                  "factor 2 pi r in axisymmetric problems). In a plane problem A is the length "
-                  "of the boundary times the thickness, so that F is the force on the whole "
-                  "thickness. Give either 'traction' or 'total_force'.");
+                  "The total force component F (N) along the axis of 'variable' on the whole "
+                  "boundary, as a constant or the name of a function of time. It is applied as "
+                  "the uniform traction F/A, with A (m^2) the area of the boundary, which carries "
+                  "the factor 2 pi r in an axisymmetric problem. In a plane problem A is the "
+                  "length of the boundary times the thickness, so that F is the force on the whole "
+                  "thickness. Give either 'traction' or 'total_force'. Default 0: no load.");
     return p;
   }
   explicit TractionBC(const InputParameters & p) : IntegratedBC(p) {}
@@ -3465,7 +3543,7 @@ public:
         "plane is modelled. The side set must lie in a plane normal to a coordinate axis, "
         "which is found from the coordinates of its nodes, and the condition holds the "
         "displacement along that axis at zero. 'variable' lists the displacement variables in "
-        "the order of the coordinate axes, e.g., [u, v, w] in three dimensions.");
+        "the order of the coordinate axes, for example [u, v, w] in three dimensions.");
     return p;
   }
   explicit SymmetryBC(const InputParameters & p) : NodalBC(p) {}
@@ -3481,24 +3559,24 @@ public:
   {
     InputParameters p = IntegratedBC::validParams();
     p.setClassDescription(
-        "A pressure acting normal to a surface, giving the traction t_i = -p n_i with n "
-        "the outward normal, so a positive pressure pushes inward. Added without 'variable', it "
-        "acts on every displacement. In a plane problem the pressure is multiplied by the "
-        "thickness of the stress_divergence kernel of the same variable.");
+        "A pressure p (Pa) acting normal to a surface, which gives the traction t_i = -p n_i "
+        "with n the outward normal, so a positive pressure pushes inward. Added without "
+        "'variable', it acts on every displacement. In a plane problem the pressure is "
+        "multiplied by the thickness of the stress_divergence kernel of the same variable.");
     addDisplacementsParam(p, "The pressure acts on the component of 'variable'.");
     p.addOptional("pressure",
                   ParameterKind::Function,
                   0.0,
-                  "Pressure in force per unit area: a constant, a registered function, or an "
-                  "expression of the fields, x, y, z and t. A positive value presses inward, "
-                  "against the outward normal.");
+                  "The pressure p (Pa): a constant, a registered function, or an expression of the "
+                  "fields, x, y, z and t. A positive value presses inward, against the outward "
+                  "normal. Default 0: no load.");
     deformation::addParameter(
         p,
-        "the pressure acts on the deformed surface (a follower load), for equations on the "
-        "undeformed mesh with finite_strain_stress: the traction per unit undeformed area is "
-        "-p J F^-T N (Nanson's relation), with N the undeformed outward normal. Without it "
-        "the pressure acts along the undeformed normal on the undeformed area, which is "
-        "exact at small strain.");
+        "the pressure acts on the deformed surface as a follower load, for equations on the "
+        "undeformed mesh: the traction per unit undeformed area is -p J F_d^-T N (Nanson's "
+        "relation), with F_d the deformation gradient, J = det(F_d) and N the undeformed "
+        "outward normal. Without it the pressure acts along the undeformed normal on the "
+        "undeformed area, which is accurate at small strain.");
     return p;
   }
   explicit PressureBC(const InputParameters & p)
