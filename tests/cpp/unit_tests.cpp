@@ -795,8 +795,8 @@ TEST(newest_vertex_bisection_refines_and_coarsens_conformingly)
     for (Index e = 0; e < mesh.numElements(); ++e)
     {
       Point centre{0, 0, 0};
-      for (Index n : mesh.element(e).nodes)
-        centre = centre + (1.0 / 3.0) * mesh.node(n);
+      for (int k = 0; k < mesh.element(e).numNodes(); ++k)
+        centre = centre + (1.0 / 3.0) * mesh.node(mesh.element(e).nodes[k]);
       marked[static_cast<std::size_t>(e)] = norm(centre) < 0.5;
     }
     CHECK(hierarchy.refine(marked, 100));
@@ -907,8 +907,8 @@ TEST(longest_edge_bisection_refines_and_coarsens_tetrahedra_conformingly)
     for (Index e = 0; e < mesh.numElements(); ++e)
     {
       Point centre{0, 0, 0};
-      for (Index n : mesh.element(e).nodes)
-        centre = centre + 0.25 * mesh.node(n);
+      for (int k = 0; k < mesh.element(e).numNodes(); ++k)
+        centre = centre + 0.25 * mesh.node(mesh.element(e).nodes[k]);
       marked[static_cast<std::size_t>(e)] = norm(centre) < 0.6;
     }
     CHECK(hierarchy.refine(marked, 100));
@@ -953,8 +953,9 @@ TEST(quadratic_simplices_refine_on_their_curved_geometry_and_carry_quadratic_fie
   const auto quadratic = [](const Point & x)
   { return x[0] * x[0] + x[0] * x[1] - 2.0 * x[1] * x[1] + 0.5 * x[2] * x[0] + 3.0 * x[0] + 1.0; };
   for (const Mesh & initial :
-       {generateRectangleMesh(linspace(0, 2, 3), linspace(0, 1, 2), "Tri6"),
-        generateBoxMesh(linspace(0, 2, 2), linspace(0, 1, 2), linspace(0, 1, 2), "Tet10")})
+       {generateRectangleMesh(linspace(0, 2, 3), linspace(0, 1, 2), "Tri3").secondOrder(),
+        generateBoxMesh(linspace(0, 2, 2), linspace(0, 1, 2), linspace(0, 1, 2), "Tet4")
+            .secondOrder()})
   {
     Bisection hierarchy(initial);
     const auto check = [&](const Eigen::VectorXd & values)

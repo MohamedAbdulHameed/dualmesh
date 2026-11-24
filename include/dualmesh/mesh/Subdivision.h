@@ -113,6 +113,8 @@ private:
   const std::vector<std::array<int, 2>> & edges() const { return _edges; }
   const std::vector<std::vector<int>> & faces() const { return _faces; }
   void build();
+  /// The end of a call that changed nothing: transfer() then gives the values back.
+  bool unchanged();
   /// Add the node sets to @p out, whose elements and constraints are set.
   void addNodeSets(Mesh & out) const;
   bool refineCells(const std::vector<char> & marked_cells, int max_level);

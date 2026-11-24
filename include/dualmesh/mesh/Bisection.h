@@ -150,6 +150,8 @@ private:
   std::vector<Index> elementNodes(const Index * corners, Index origin);
   /// Rebuild the mesh from the triangles, keeping the numbers of its nodes for transfer().
   void build();
+  /// The end of a call that changed nothing: transfer() then gives the values back.
+  bool unchanged();
   /// Add the node sets to @p out, whose elements and constraints are set.
   void addNodeSets(Mesh & out) const;
 

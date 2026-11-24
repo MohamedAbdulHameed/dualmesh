@@ -447,6 +447,15 @@ Subdivision::coarsenCells(const std::vector<char> & marked_cells)
 }
 
 bool
+Subdivision::unchanged()
+{
+  // The mesh before the call is the current one, so transfer() carries values unchanged.
+  _numbers_before = _numbers;
+  _leaves_before = _leaves;
+  return false;
+}
+
+bool
 Subdivision::refine(const std::vector<char> & marked, int max_level)
 {
   if (marked.size() != _leaves.size())
@@ -455,7 +464,7 @@ Subdivision::refine(const std::vector<char> & marked, int max_level)
   for (std::size_t e = 0; e < _leaves.size(); ++e)
     cells[static_cast<std::size_t>(_leaves[e])] = marked[e];
   if (!refineCells(cells, max_level))
-    return false;
+    return unchanged();
   build();
   return true;
 }
@@ -469,7 +478,7 @@ Subdivision::coarsen(const std::vector<char> & marked)
   for (std::size_t e = 0; e < _leaves.size(); ++e)
     cells[static_cast<std::size_t>(_leaves[e])] = marked[e];
   if (!coarsenCells(cells))
-    return false;
+    return unchanged();
   build();
   return true;
 }
@@ -492,7 +501,7 @@ Subdivision::adapt(const std::vector<char> & refine,
   to_refine.resize(_cells.size(), 0);
   const bool refined = refineCells(to_refine, max_level);
   if (!coarsened && !refined)
-    return false;
+    return unchanged();
   build();
   return true;
 }

@@ -160,13 +160,22 @@ Bisection::middle(const Edge & edge, Index origin)
 }
 
 bool
+Bisection::unchanged()
+{
+  // The mesh before the call is the current one, so transfer() carries values unchanged.
+  _numbers_before = _numbers;
+  _placed_before = _placed;
+  return false;
+}
+
+bool
 Bisection::refine(const std::vector<char> & marked, int max_generation)
 {
   if (marked.size() != numElements())
     throw InputError("The refinement marker must have one entry per element.");
   if (!(_dimension == 3 ? refineTetrahedra(marked, max_generation)
                         : refineTriangles(marked, max_generation)))
-    return false;
+    return unchanged();
   build();
   return true;
 }
@@ -177,7 +186,7 @@ Bisection::coarsen(const std::vector<char> & marked)
   if (marked.size() != numElements())
     throw InputError("The coarsening marker must have one entry per element.");
   if (!(_dimension == 3 ? coarsenTetrahedra(marked) : coarsenTriangles(marked)))
-    return false;
+    return unchanged();
   build();
   return true;
 }
@@ -199,7 +208,7 @@ Bisection::adapt(const std::vector<char> & refine,
   const bool refined = _dimension == 3 ? refineTetrahedra(carried, max_generation)
                                        : refineTriangles(carried, max_generation);
   if (!coarsened && !refined)
-    return false;
+    return unchanged();
   build();
   return true;
 }
