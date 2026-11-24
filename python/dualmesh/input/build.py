@@ -53,10 +53,12 @@ Stefan_Boltzmann_constant = 5.670374419e-8
 
 
 class region_view:
-    """Whether a problem is transient, as the physics functions of `physics_options` ask."""
+    """Whether a problem is transient and has gravity, as the physics functions of
+    `physics_options` ask."""
 
-    def __init__(self, transient: bool):
+    def __init__(self, transient: bool, gravity: bool = False):
         self.transient = transient
+        self.gravity = gravity
 
 
 def fail(path: str, message: str):
@@ -173,7 +175,8 @@ def build_problem(validated: dict, engine_mesh=None):
     problem = dualmesh.Problem(engine_mesh, **options)
 
     properties = validated.get("properties", {})
-    _check_properties(physics, properties, transient)
+    gravity = _gravity(validated, physics, engine_mesh, coordinate_system)
+    _check_properties(physics, properties, transient, gravity is not None)
     finite = physics.get("solid_mechanics", {}).get("kinematics") == "finite"
     for name in properties:
         if finite and name in ("Young_modulus", "Poisson_ratio"):
@@ -187,7 +190,15 @@ def build_problem(validated: dict, engine_mesh=None):
     initial = validated.get("initial_conditions", {})
     for name, entry in physics.items():
         engine_physics[name] = _add_physics(
-            problem, name, entry, properties, initial, transient, engine_mesh, coordinate_system
+            problem,
+            name,
+            entry,
+            properties,
+            initial,
+            transient,
+            engine_mesh,
+            coordinate_system,
+            gravity,
         )
     if "volumetric_heat_source" in properties:
         _add_heat_source(
@@ -232,12 +243,42 @@ def build_problem(validated: dict, engine_mesh=None):
     return problem, engine_physics, variables
 
 
-def _check_properties(physics: dict, properties: dict, transient: bool) -> None:
+def _gravity(validated: dict, physics: dict, engine_mesh, coordinate_system: str):
+    """The gravitational acceleration of the input in m/s^2, one value per direction of space, or
+    None.  The solid and the flow take its force rho g.  A body force along the radius would
+    break the symmetry of an axisymmetric problem, so there it acts along the axis alone."""
+    if "gravity" not in validated:
+        return None
+    g = list(validated["gravity"])
+    if len(g) != engine_mesh.dimension:
+        fail(
+            "gravity",
+            f"gravity takes one acceleration per direction of the mesh, which has "
+            f"{engine_mesh.dimension}, and the input gives {len(g)}.",
+        )
+    if not {"solid_mechanics", "fluid_dynamics"} & set(physics):
+        fail("gravity", "no physics of the problem reads gravity: it acts on solids and flows.")
+    if coordinate_system == "axisymmetric" and g[0] != 0.0:
+        fail(
+            "gravity",
+            "in axisymmetric coordinates gravity acts along the axis z, so its radial component "
+            "is 0.",
+        )
+    if {"heat_conduction", "fluid_dynamics"} <= set(physics):
+        fail(
+            "gravity",
+            "a heated flow under gravity needs the volumetric expansion coefficient of the "
+            "fluid for its buoyancy, which the input does not take yet in this version.",
+        )
+    return g
+
+
+def _check_properties(physics: dict, properties: dict, transient: bool, gravity: bool) -> None:
     """A property that no physics reads, or one that a physics needs and the input leaves out,
     stops the run."""
     needed, readable = {}, set()
     for name in physics:
-        reads = physics_functions[name](region_view(transient))
+        reads = physics_functions[name](region_view(transient, gravity))
         for property_name in reads["needed"]:
             needed.setdefault(property_name, name)
         readable.update(reads["needed"], reads["optional"])
@@ -291,7 +332,7 @@ def _add_heat_source(problem, mesh, engine_mesh, entry: dict, coordinate_system:
 
 
 def _add_physics(
-    problem, name, entry, properties, initial, transient, engine_mesh, coordinate_system
+    problem, name, entry, properties, initial, transient, engine_mesh, coordinate_system, gravity
 ):
     path = join("physics", name)
     if name == "heat_conduction":
@@ -303,6 +344,11 @@ def _add_physics(
         elif transient:
             fail("initial_conditions", "a transient heat_conduction needs the initial temperature.")
         return problem.add_physics("heat_transfer", **options)
+    # The weight rho g per volume of the solid or the fluid.
+    weight = None
+    if gravity is not None:
+        density = constant_everywhere(properties["density"], "density", "properties.density")
+        weight = [density * g for g in gravity]
     if name == "solid_mechanics":
         formulation = _solid_formulation(entry, engine_mesh, coordinate_system, path)
         if entry.get("kinematics", "small") == "finite":
@@ -325,6 +371,7 @@ def _add_physics(
                     properties["Poisson_ratio"], "Poisson_ratio", "properties.Poisson_ratio"
                 ),
                 join(path, "strain_energy"),
+                weight,
             )
         if "strain_energy" in entry:
             fail(
@@ -337,6 +384,8 @@ def _add_physics(
             options["density"] = constant_everywhere(
                 properties["density"], "density", "properties.density"
             )
+        if weight is not None:
+            options["body_force"] = weight
         return problem.add_physics("solid_mechanics", **options)
     options = {
         "density": constant_everywhere(properties["density"], "density", "properties.density"),
@@ -345,6 +394,8 @@ def _add_physics(
         ),
         "formulation": entry.get("formulation", "equal_order"),
     }
+    if weight is not None:
+        options["body_force"] = weight
     flow_initial = {key: initial[key] for key in ("velocity", "pressure") if key in initial}
     if flow_initial:
         options["initial_condition"] = flow_initial

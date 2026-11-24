@@ -38,6 +38,7 @@ section_order = (
     "method",
     "physics",
     "properties",
+    "gravity",
     "models",
     "initial_conditions",
     "boundary_conditions",
@@ -943,11 +944,30 @@ def mesh(value, path, tree_context):
     return result
 
 
+def gravity(value, path, tree_context):
+    """The gravitational acceleration: one quantity in m/s^2 per direction of space."""
+    count = tree_context.space_dimension()
+    if not isinstance(value, (list, tuple)) or (count is not None and len(value) != count):
+        examples = {1: '["-9.81 m/s^2"]', 3: '["0 m/s^2", "0 m/s^2", "-9.81 m/s^2"]'}
+        example = examples.get(count, '["0 m/s^2", "-9.81 m/s^2"]')
+        fail(
+            path,
+            "gravity is a list of "
+            + (f"{count} accelerations" if count is not None else "one acceleration per direction")
+            + f", such as {example}, got {value!r}.",
+        )
+    return [
+        quantity("m/s^2")(entry, f"{path}[{index}]", tree_context)
+        for index, entry in enumerate(value)
+    ]
+
+
 sections = {
     "mesh": (mesh, required),
     "method": (text(methods), optional),
     "physics": (physics, optional),  # A problem of user models alone has no physics section
     "properties": (properties, optional),
+    "gravity": (gravity, optional),
     "models": (models, optional),
     "initial_conditions": (initial_conditions, optional),
     "boundary_conditions": (boundary_conditions, optional),

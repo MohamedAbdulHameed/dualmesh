@@ -106,16 +106,26 @@ def first_Piola_Kirchhoff_stress(
 
 
 def add_finite_strain_solid(
-    problem, energy: str, dimension: int, Young_modulus: float, Poisson_ratio: float, path: str
+    problem,
+    energy: str,
+    dimension: int,
+    Young_modulus: float,
+    Poisson_ratio: float,
+    path: str,
+    weight: list[float] | None = None,
 ):
-    """Adds the displacement and its momentum balance at finite strain, and returns the solid."""
+    """Adds the displacement and its momentum balance at finite strain, and returns the solid.
+
+    `weight` is the force of gravity per volume of the undeformed body, rho_0 g in N/m^3, which
+    stays the same as the body deforms (a dead load)."""
     names = list(engine_component_names["displacement"][:dimension])
     for name in names:
         problem.add_variable(name)
     stress = first_Piola_Kirchhoff_stress(energy, dimension, Young_modulus, Poisson_ratio, path)
     for row, name in enumerate(names):
         flux = [f"-({write_expression(stress[row][column], path)})" for column in range(dimension)]
-        problem.add_kernel("parsed_kernel", variable=name, flux=flux)
+        source = {"source": repr(weight[row])} if weight and weight[row] != 0.0 else {}
+        problem.add_kernel("parsed_kernel", variable=name, flux=flux, **source)
     return finite_strain_solid(problem, names)
 
 

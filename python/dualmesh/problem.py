@@ -79,6 +79,11 @@ class problem:
         conditions = self._tree.get("boundary_conditions", {})
         self._merge("boundary_conditions", {boundary: {**conditions.get(boundary, {}), **values}})
 
+    def gravity(self, components: list) -> None:
+        """The gravitational acceleration, one quantity per direction of space, for example
+        ["0 m/s^2", "-9.81 m/s^2"]. Solids and flows take its force rho g."""
+        self._set(gravity=list(components))
+
     def time(self, **values) -> None:
         """Makes the analysis transient: end_time, initial_time_step and the step control."""
         self._set(time=dict(values))

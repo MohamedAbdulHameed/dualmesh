@@ -31,10 +31,11 @@ def solid_mechanics(properties, formulation=None, kinematics="small", strain_ene
     in three dimensions and in axisymmetric coordinates, where the input leaves it out.
     `kinematics` is small or finite strain. At finite strain, `strain_energy` is neo-Hookean
     (the default), Saint_Venant_Kirchhoff, or a formula of I_C, trace_C_squared, J,
-    shear_modulus and first_Lame_parameter in J/m^3. A transient problem reads the density.
+    shear_modulus and first_Lame_parameter in J/m^3. A transient problem reads the density,
+    and so does a problem with gravity, for the weight.
     """
     needed = ["Young_modulus", "Poisson_ratio"]
-    if properties.transient:
+    if properties.transient or properties.gravity:
         needed += ["density"]
     optional = ["body_force_density", "linear_expansion_coefficient", "stress_free_temperature"]
     return {"needed": needed, "optional": optional}

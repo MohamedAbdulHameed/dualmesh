@@ -207,3 +207,94 @@ def test_the_stress_at_a_point_of_a_pulled_bar_is_the_applied_traction():
     assert solution.postprocessor("axial")[-1] == pytest.approx(1.0e8, rel=1e-9)
     assert solution.postprocessor("lateral")[-1] == pytest.approx(0.0, abs=1e-3)
     assert solution.unit("axial") == "Pa"
+
+
+# ---- gravity ---------------------------------------------------------------------------------
+gravity_g, steel_density, column_height = 9.81, 7850.0, 2.0
+
+
+def standing_column(kinematics="small"):
+    """A steel column H = 2 m high on a fixed base, on rollers on its sides, under its weight.
+    It is in uniaxial strain, so sigma_yy = -rho g (H - y) and
+    u_y = -rho g (H y - y^2 / 2) / M, with M = E (1 - nu) / ((1 + nu) (1 - 2 nu)) the
+    constrained modulus.  Linear elements hold u_y exactly at the nodes."""
+    column = dualmesh.problem(
+        mesh={"rectangle": {"size": ["0.5 m", f"{column_height} m"], "cells": [2, 8]}}
+    )
+    column.physics("solid_mechanics", formulation="plane_strain", kinematics=kinematics)
+    column.properties(Young_modulus="200 GPa", Poisson_ratio=0.3, density=f"{steel_density} kg/m^3")
+    column.gravity(["0 m/s^2", f"-{gravity_g} m/s^2"])
+    column.boundary_conditions("bottom", displacement_y="0 m")
+    for side in ("left", "right"):
+        column.boundary_conditions(side, displacement_x="0 m")
+    return column
+
+
+def exact_column_displacement(y):
+    E, nu = 200e9, 0.3
+    constrained = E * (1 - nu) / ((1 + nu) * (1 - 2 * nu))
+    return -steel_density * gravity_g * (column_height * y - y**2 / 2) / constrained
+
+
+def test_a_column_sinks_under_its_own_weight_by_the_uniaxial_strain_solution():
+    solution = standing_column().solve(report="none")
+    y = solution.coordinates("displacement")[:, 1]
+    displacement = solution.field("displacement")
+    assert displacement[:, 1] == pytest.approx(exact_column_displacement(y), rel=1e-8, abs=1e-16)
+    assert numpy.abs(displacement[:, 0]).max() < 1e-12 * abs(exact_column_displacement(2.0))
+
+
+def test_the_weight_of_a_finite_strain_column_is_that_of_the_small_strain_one():
+    """The strains are about 1e-6, so finite strain differs from the small-strain solution by a
+    part in a million."""
+    solution = standing_column(kinematics="finite").solve(report="none")
+    y = solution.coordinates("displacement")[:, 1]
+    assert solution.field("displacement")[:, 1] == pytest.approx(
+        exact_column_displacement(y), rel=1e-4, abs=1e-14
+    )
+
+
+@pytest.mark.parametrize("method", ["DMCDM", "FEM"])
+def test_water_at_rest_in_a_tank_carries_the_hydrostatic_pressure(method):
+    """Water in a closed tank 1 m deep, open to p = 0 at the top, stays at rest, and its pressure
+    is p = rho g (H - y): the pressure gradient balances the weight, with no spurious flow."""
+    tank = dualmesh.problem(
+        mesh={"rectangle": {"size": ["1 m", "1 m"], "cells": [6, 6]}}, method=method
+    )
+    tank.physics("fluid_dynamics")
+    tank.properties(density="1000 kg/m^3", dynamic_viscosity="1e-3 Pa*s")
+    tank.gravity(["0 m/s^2", f"-{gravity_g} m/s^2"])
+    for side in ("left", "right", "bottom"):
+        tank.boundary_conditions(side, velocity=["0 m/s", "0 m/s"])
+    tank.boundary_conditions("top", pressure="0 Pa")
+    solution = tank.solve(report="none")
+    y = solution.coordinates("pressure")[:, 1]
+    assert solution.field("pressure") == pytest.approx(
+        1000.0 * gravity_g * (1.0 - y), rel=1e-8, abs=1e-6
+    )
+    assert numpy.abs(solution.field("velocity")).max() < 1e-10
+
+
+def test_gravity_on_a_problem_without_a_solid_or_a_flow_is_refused():
+    slab = heated_slab()
+    slab.gravity(["-9.81 m/s^2"])
+    with pytest.raises(dualmesh.input_error, match="gravity: no physics of the problem reads"):
+        slab.solve(report="none")
+
+
+def test_a_heated_flow_under_gravity_asks_for_its_expansion_coefficient():
+    cavity = dualmesh.problem(mesh={"rectangle": {"size": ["1 m", "1 m"], "cells": [4, 4]}})
+    cavity.physics("heat_conduction")
+    cavity.physics("fluid_dynamics")
+    cavity.properties(
+        thermal_conductivity="0.6 W/(m*K)", density="1000 kg/m^3", dynamic_viscosity="1e-3 Pa*s"
+    )
+    cavity.gravity(["0 m/s^2", "-9.81 m/s^2"])
+    with pytest.raises(dualmesh.input_error, match="volumetric expansion coefficient"):
+        cavity.solve(report="none")
+
+
+def test_gravity_takes_one_acceleration_per_direction_of_space():
+    column = standing_column()
+    with pytest.raises(dualmesh.input_error, match="gravity is a list of 2 accelerations"):
+        column.gravity(["-9.81 m/s^2"])
