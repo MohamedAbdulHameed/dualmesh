@@ -84,6 +84,8 @@ public:
   /// linear sub-simplices, and the control domain of a node is the union of
   /// its median sub-cells in every sub-simplex that touches it.
   const std::vector<Patch> & controlVolume(int node) const { return _scv[node]; }
+  /// Whether the element has control domains (Quad8, Hex20 and Pyramid5 have none).
+  bool hasControlDomains() const { return !_scv.empty(); }
   const std::vector<DualFace> & dualFaces() const { return _faces; }
   /// Sub-patches of side @p s that belong to the control domain of the
   /// side's local node @p j (in parent reference coordinates).

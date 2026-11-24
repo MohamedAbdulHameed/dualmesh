@@ -231,7 +231,10 @@ Problem::errorIndicator(const std::string & var) const
   for (Index e = 0; e < numIntegratedElements(); ++e)
   {
     const auto & el = _mesh->element(e);
-    buildElementPoints(*_mesh, e, true, PointSet::Volume, rule, points);
+    // An element without control domains shares each point equally among its nodes, which keeps
+    // the weights positive (the corner shape functions of Quad8 integrate to negative values).
+    const bool dual = ReferenceElement::get(el.type).hasControlDomains();
+    buildElementPoints(*_mesh, e, dual, PointSet::Volume, rule, points);
     std::vector<double> share(el.numNodes(), 0.0);
     std::vector<Point> gradient(el.numNodes(), Point{0, 0, 0});
     for (const auto & p : points)
@@ -240,8 +243,18 @@ Problem::errorIndicator(const std::string & var) const
       Point g{0, 0, 0};
       for (int k = 0; k < el.numNodes(); ++k)
         g = g + _U[dof(el.nodes[k], v)] * mp.dN[k];
-      share[p.owner] += p.weight;
-      gradient[p.owner] = gradient[p.owner] + p.weight * g;
+      if (dual)
+      {
+        share[p.owner] += p.weight;
+        gradient[p.owner] = gradient[p.owner] + p.weight * g;
+        continue;
+      }
+      const double w = p.weight / el.numNodes();
+      for (int k = 0; k < el.numNodes(); ++k)
+      {
+        share[k] += w;
+        gradient[k] = gradient[k] + w * g;
+      }
     }
     for (int k = 0; k < el.numNodes(); ++k)
     {

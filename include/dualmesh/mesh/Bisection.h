@@ -150,6 +150,8 @@ private:
   std::vector<Index> elementNodes(const Index * corners, Index origin);
   /// Rebuild the mesh from the triangles, keeping the numbers of its nodes for transfer().
   void build();
+  /// Add the node sets to @p out, whose elements and constraints are set.
+  void addNodeSets(Mesh & out) const;
 
   /// An element of a mesh: its initial element and its nodes in the fixed numbers.
   struct Placed
@@ -182,6 +184,10 @@ private:
   std::map<Edge, std::vector<std::pair<std::string, int>>> _edge_sets;
   std::vector<std::string> _node_set_names;
   std::vector<std::vector<char>> _in_node_set;
+  /// Whether every member of each node set of the initial mesh lies on its boundary, and the
+  /// number of nodes of the initial mesh.
+  std::vector<char> _boundary_node_set;
+  Index _initial_nodes = 0;
   /// The fixed number of each node of the current mesh and of the mesh before the last change.
   std::vector<Index> _numbers, _numbers_before;
   Mesh _mesh;

@@ -194,6 +194,10 @@ def build_problem(validated: dict, engine_mesh=None):
 
     engine_physics = {}
     initial = validated.get("initial_conditions", {})
+    solved = {field for name in physics for field in physics_fields[name]}
+    for key in initial:
+        if key not in solved:
+            fail(join("initial_conditions", key), f"no physics of the problem solves for {key}.")
     for name, entry in physics.items():
         engine_physics[name] = _add_physics(
             problem,
@@ -210,6 +214,23 @@ def build_problem(validated: dict, engine_mesh=None):
     if "volumetric_heat_source" in properties:
         _add_heat_source(
             problem, mesh, engine_mesh, properties["volumetric_heat_source"], coordinate_system
+        )
+    expansion = [
+        key
+        for key in ("linear_expansion_coefficient", "stress_free_temperature")
+        if key in properties
+    ]
+    if len(expansion) == 1:
+        fail(
+            join("properties", expansion[0]),
+            "a thermal expansion takes linear_expansion_coefficient and stress_free_temperature "
+            f"together, and the input gives only {expansion[0]}.",
+        )
+    if expansion and "heat_conduction" not in engine_physics:
+        fail(
+            "properties.linear_expansion_coefficient",
+            "a thermal expansion follows the temperature of heat_conduction, which the problem "
+            "does not have.",
         )
     if "heat_conduction" in engine_physics and "linear_expansion_coefficient" in properties:
         if isinstance(engine_physics.get("solid_mechanics"), finite_strain_solid):
@@ -383,6 +404,12 @@ def _add_physics(
                 )
             if transient:
                 fail(path, "a moving solid at finite strain is not available yet in this version.")
+            if "displacement" in initial:
+                fail(
+                    "initial_conditions.displacement",
+                    "an initial displacement is the start of a transient run, which a solid at "
+                    "finite strain does not take yet in this version.",
+                )
             return add_finite_strain_solid(
                 problem,
                 entry.get("strain_energy", "neo-Hookean"),
@@ -409,6 +436,14 @@ def _add_physics(
             )
         if weight is not None:
             options["body_force"] = weight
+        if "displacement" in initial:
+            if not transient:
+                fail(
+                    "initial_conditions.displacement",
+                    "an initial displacement is the start of a transient run with inertia, so it "
+                    "needs the time section.",
+                )
+            options["initial_condition"] = {"displacement": list(initial["displacement"])}
         return problem.add_physics("solid_mechanics", **options)
     options = {
         "density": constant_everywhere(properties["density"], "density", "properties.density"),
@@ -609,6 +644,9 @@ def add_postprocessors(
     """Adds the postprocessors that the engine computes, and returns the SI unit of each, and the
     stress components at points, which `stresses_at_points` computes after the solve."""
     unit_of, stress_requests = {}, {}
+    # An axisymmetric integral spans the revolved body (the factor 2 pi r), so it has the
+    # dimension of a three-dimensional one.
+    measured = 3 if coordinate_system == "axisymmetric" else dimension
     for name, definition in postprocessors.items():
         path = join("postprocessors", name)
         if "region" in definition:
@@ -626,7 +664,7 @@ def add_postprocessors(
                 variable=variables["temperature"][0],
                 boundary=definition["boundary"],
             )
-            unit_of[name] = "W" if dimension == 3 else ("W/m" if dimension == 2 else "W/m^2")
+            unit_of[name] = "W" if measured == 3 else ("W/m" if measured == 2 else "W/m^2")
             continue
         reduction = next(
             key
@@ -654,14 +692,15 @@ def add_postprocessors(
             parameters["point"] = list(definition["point"]) + [0.0] * (3 - len(definition["point"]))
         problem.add_postprocessor(reduction, name, **parameters)
         field_unit = units.standard_names()[base_name].unit
-        unit_of[name] = f"{field_unit}*m^{dimension}" if reduction == "integral" else field_unit
+        unit_of[name] = f"{field_unit}*m^{measured}" if reduction == "integral" else field_unit
     return unit_of, stress_requests
 
 
 def stresses_at_points(engine, requests: dict, variables: dict, validated: dict) -> dict:
     """The Cauchy stress components of the requests, in Pa, from the displacement gradient at each
-    point: sigma = lambda tr(epsilon) I + 2 mu epsilon, with epsilon the symmetric part of the
-    gradient, in plane strain, plane stress or three dimensions."""
+    point: sigma = lambda tr(e) I + 2 mu e, with e = epsilon - alpha (T - T_0) I the mechanical
+    strain, epsilon the symmetric part of the gradient and alpha (T - T_0) I the thermal strain of
+    a thermal expansion, in plane strain, plane stress or three dimensions."""
     if not requests:
         return {}
     path = "postprocessors"
@@ -696,6 +735,24 @@ def stresses_at_points(engine, requests: dict, variables: dict, validated: dict)
         )
     points = [request[1] for request in requests.values()]
     gradients = [engine.sample_gradient(name, points) for name in names]
+    # The thermal strain of a thermal expansion, which the solve applied (build_problem).
+    thermal = numpy.zeros(len(points))
+    if "linear_expansion_coefficient" in properties and "temperature" in variables:
+        expansion = constant_everywhere(
+            properties["linear_expansion_coefficient"],
+            "linear_expansion_coefficient",
+            "properties.linear_expansion_coefficient",
+        )
+        stress_free = constant_everywhere(
+            properties["stress_free_temperature"],
+            "stress_free_temperature",
+            "properties.stress_free_temperature",
+        )
+        temperatures = numpy.asarray(engine.sample(variables["temperature"][0], points))
+        thermal = expansion * (temperatures - stress_free)
+    # In plane stress the thermal strain enters the in-plane strains, and the condensed first Lame
+    # parameter takes the out-of-plane one into account.
+    thermal_axes = numpy.diag([1.0, 1.0, 0.0]) if plane_stress else numpy.eye(3)
     result = {}
     for index, (name, (component, _point)) in enumerate(requests.items()):
         if any(numpy.isnan(gradient[index]).any() for gradient in gradients):
@@ -706,6 +763,7 @@ def stresses_at_points(engine, requests: dict, variables: dict, validated: dict)
                 strain[row, column] = 0.5 * (
                     gradients[row][index][column] + gradients[column][index][row]
                 )
+        strain = strain - thermal[index] * thermal_axes
         trace = numpy.trace(strain)
         stress = first_Lame_parameter * trace * numpy.eye(3) + 2 * shear_modulus * strain
         if plane_stress:

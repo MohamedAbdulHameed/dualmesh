@@ -395,3 +395,29 @@ def test_gravity_takes_one_acceleration_per_direction_of_space():
     column = standing_column()
     with pytest.raises(dualmesh.input_error, match="gravity is a list of 2 accelerations"):
         column.gravity(["-9.81 m/s^2"])
+
+
+def test_an_initial_displacement_of_a_steady_solid_is_refused():
+    bar = dualmesh.problem(mesh={"rectangle": {"size": ["2 m", "0.5 m"], "cells": [4, 1]}})
+    bar.physics("solid_mechanics", formulation="plane_stress")
+    bar.properties(Young_modulus="200 GPa", Poisson_ratio=0.3)
+    bar.initial_conditions(displacement=["0 m", "0 m"])
+    bar.boundary_conditions("left", displacement_x="0 m", displacement_y="0 m")
+    with pytest.raises(dualmesh.input_error, match="initial displacement is the start of a"):
+        bar.solve(report="none")
+
+
+def test_a_thermal_expansion_takes_its_two_properties_together():
+    slab = dualmesh.problem(mesh={"rectangle": {"size": ["1 m", "1 m"], "cells": [2, 2]}})
+    slab.physics("heat_conduction")
+    slab.physics("solid_mechanics", formulation="plane_strain")
+    slab.properties(
+        thermal_conductivity="45 W/(m*K)",
+        Young_modulus="200 GPa",
+        Poisson_ratio=0.3,
+        linear_expansion_coefficient="1.2e-5 1/K",
+    )
+    slab.boundary_conditions("left", temperature="400 K", displacement_x="0 m")
+    slab.boundary_conditions("bottom", displacement_y="0 m")
+    with pytest.raises(dualmesh.input_error, match="gives only linear_expansion_coefficient"):
+        slab.solve(report="none")

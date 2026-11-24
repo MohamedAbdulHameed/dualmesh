@@ -65,8 +65,8 @@ struct SolverOptions
   /// (AssemblyOptions::reference), or at the round-off level of its rows: a test with no unit,
   /// whatever the start.
   double relative_tolerance = 1e-10;
-  /// Book relaxation (Eq. 6.2.15): U = (1 - gamma) U^{r+1} + gamma U^r, from the second step on,
-  /// without a line search.
+  /// The relaxation gamma, from 0 to below 1, of an iteration without a line search:
+  /// U = (1 - gamma) U^{r+1} + gamma U^r, from the second step on.
   double relaxation = 0.0;
   /// Newton only: "none" takes the full Newton step; "backtracking" halves
   /// the step until the residual norm falls, ||R(U + a dU)|| <= (1 - 1e-4 a)
@@ -232,6 +232,9 @@ struct SolveResult
 /// @param error_by_extrapolation the "error" stepper estimates the local error of the theta method
 ///        from one step and the extrapolation of the last accepted states.  Otherwise, and before
 ///        enough states are accepted, it estimates it by step doubling.
+/// @param order the order of accuracy in time of a step, which the step-doubling estimate and the
+///        choice of the next step take.  Zero takes that of the theta method of transient.theta: two
+///        for the midpoint rule, one for every other member.
 SolveResult
 runTransient(const TransientOptions & transient,
              const SolverOptions & options,
@@ -244,7 +247,8 @@ runTransient(const TransientOptions & transient,
              const std::function<void(int, double)> & after_step = {},
              const std::function<double(double)> & courant = {},
              const std::function<double(const Vector &, const Vector &)> & relative_difference = {},
-             bool error_by_extrapolation = false);
+             bool error_by_extrapolation = false,
+             int order = 0);
 
 /// A time integration that takes the place of the theta method in a transient solve.
 /// The transient loop stays (the output times, the checkpoints, the callbacks), and the integrator advances the solution by one step.
@@ -258,6 +262,8 @@ public:
   virtual SolveResult step(Vector & solution, const Vector & old, double time, double dt) = 0;
   /// The step to @p time was accepted with @p solution.
   virtual void accept(const Vector & solution, double time) = 0;
+  /// The order of accuracy in time of a step, which the error estimate by step doubling takes.
+  virtual int order() const = 0;
   /// The Courant number of a step @p dt at @p solution, on every process alike; zero for an integration that does not measure it.
   virtual double courantNumber(const Vector & solution, double dt) const
   {
@@ -635,6 +641,9 @@ public:
   /// well as the row keeps a symmetric problem symmetric, which is valid
   /// because the increment at a prescribed degree of freedom is zero.
   void dirichletRows(const Vector & U, double data_fraction, Vector & R, SparseMatrix * J) const;
+  /// Add the equation of each periodic copy and hanging node to those of its primaries, with the
+  /// weights of its constraint, in @p R and, when given, in the rows and columns of @p J.
+  void foldDependents(Vector & R, SparseMatrix * J) const;
   /// The degrees of freedom whose equations are replaced by a prescribed
   /// value: those of the nodal boundary conditions and the inactive ones.
   std::vector<char> constrainedDofs() const;

@@ -201,3 +201,32 @@ def test_the_input_of_anisotropy_is_checked():
             shear_modulus=G,
             cross_section={"width": 0.1, "height": 0.1},
         )
+
+
+def test_a_fully_anisotropic_plate_in_plane_stress_has_the_compliance_of_the_material():
+    """Plane stress sets sigma_zz = sigma_yz = sigma_xz = 0, so a uniform sigma_xx gives the
+    in-plane strains of the full compliance S = C^-1: eps_xx = S_11 sigma, eps_yy = S_21 sigma and
+    gamma_xy = S_61 sigma, also for a stiffness that couples the out-of-plane shears to zz.  The
+    displacement u = (eps_xx x, eps_yy y + gamma_xy x) is linear, so the elements hold it."""
+    rng = numpy.random.default_rng(3)
+    A = rng.normal(size=(6, 6))
+    C = (A @ A.T + 6.0 * numpy.eye(6)) * 1e10
+    assert abs(C[2, 3]) > 1e8 and abs(C[2, 4]) > 1e8
+    S = numpy.linalg.inv(C)
+    sigma = 50e6
+    mesh = dualmesh.generate_rectangle_mesh(0, size, 0, size, 2, 2)
+    problem = dualmesh.Problem(mesh)
+    body = problem.add_physics(
+        "solid_mechanics", formulation="plane_stress", stiffness=[float(c) for c in C.ravel()]
+    )
+    body.add_boundary_condition("disp_x = 0", boundary="left")
+    body.add_boundary_condition("disp_y = 0", point=[0.0, 0.0])
+    body.add_boundary_condition(f"traction = [{sigma}, 0]", boundary="right")
+    problem.solve(report="none")
+    far = size * (1 - 1e-9)
+    stretch = problem.sample("disp_x", [[far, size / 2]])[0] / far
+    lateral = problem.sample("disp_y", [[0.0, far]])[0] / far
+    shear = problem.sample("disp_y", [[far, 0.0]])[0] / far
+    assert [stretch, lateral, shear] == pytest.approx(
+        [S[0, 0] * sigma, S[1, 0] * sigma, S[5, 0] * sigma], rel=1e-8
+    )

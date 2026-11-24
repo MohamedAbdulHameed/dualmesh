@@ -28,10 +28,10 @@ Bisection::Bisection(const Mesh & initial)
   const ReferenceElement & reference_element = ReferenceElement::get(_type);
   for (const auto & el : initial.elements())
   {
-    _origin_nodes.emplace_back(el.nodes.begin(), el.nodes.end());
+    _origin_nodes.emplace_back(el.nodes.begin(), el.nodes.begin() + el.numNodes());
     std::map<Index, Point> coordinates;
-    for (std::size_t k = 0; k < el.nodes.size(); ++k)
-      coordinates[el.nodes[k]] = reference_element.node(static_cast<int>(k));
+    for (int k = 0; k < el.numNodes(); ++k)
+      coordinates[el.nodes[static_cast<std::size_t>(k)]] = reference_element.node(k);
     _origin_reference.push_back(std::move(coordinates));
   }
   _points = initial.nodes();
@@ -44,7 +44,7 @@ Bisection::Bisection(const Mesh & initial)
   for (const auto & el : initial.elements())
   {
     const int corners = _dimension + 1;
-    for (int k = corners; k < static_cast<int>(el.nodes.size()); ++k)
+    for (int k = corners; k < el.numNodes(); ++k)
     {
       const int * e =
           _dimension == 3 ? tetrahedron_edges[k - corners] : triangle_edges[k - corners];
@@ -94,13 +94,20 @@ Bisection::Bisection(const Mesh & initial)
       else
         _edge_sets[key(ends[0], ends[1])].push_back(set);
     }
+  _initial_nodes = initial.numNodes();
+  const std::vector<char> & on_boundary = initial.boundaryNodeMarkers();
   for (const auto & [name, members] : initial.nodesets())
   {
     _node_set_names.push_back(name);
     std::vector<char> in(_points.size(), 0);
+    bool boundary = !members.empty();
     for (Index n : members)
+    {
       in[n] = 1;
+      boundary = boundary && on_boundary[static_cast<std::size_t>(n)];
+    }
     _in_node_set.push_back(std::move(in));
+    _boundary_node_set.push_back(boundary);
   }
   build();
   _numbers_before = _numbers;
@@ -711,15 +718,31 @@ Bisection::build()
   }
   for (const auto & [name, list] : sets)
     out.addSideset(name, list);
+  addNodeSets(out);
+  _mesh = std::move(out);
+}
+
+void
+Bisection::addNodeSets(Mesh & out) const
+{
+  // A new node joins a node set on the boundary only where it lies on the boundary too, as
+  // Mesh::refined grows its sets: the middle of an edge between two members may lie inside, on a
+  // chord across a corner.
+  const std::vector<char> & boundary = out.boundaryNodeMarkers();
   for (std::size_t k = 0; k < _node_set_names.size(); ++k)
   {
     std::vector<Index> members;
     for (std::size_t i = 0; i < _numbers.size(); ++i)
-      if (_in_node_set[k][_numbers[i]])
-        members.push_back(static_cast<Index>(i));
+    {
+      const Index n = _numbers[i];
+      if (!_in_node_set[k][static_cast<std::size_t>(n)])
+        continue;
+      if (_boundary_node_set[k] && n >= _initial_nodes && !boundary[i])
+        continue;
+      members.push_back(static_cast<Index>(i));
+    }
     out.addNodeset(_node_set_names[k], members);
   }
-  _mesh = std::move(out);
 }
 
 std::vector<Index>

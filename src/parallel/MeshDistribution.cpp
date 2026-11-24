@@ -281,7 +281,8 @@ records(const Mesh & mesh,
       for (const auto & [primary, weight] : constraints[ci].on)
         nodes.push_back(primary);
       for (Index n : nodes)
-        if (std::find(el.nodes.begin(), el.nodes.end(), n) == el.nodes.end() &&
+        if (std::find(el.nodes.begin(), el.nodes.begin() + el.numNodes(), n) ==
+                el.nodes.begin() + el.numNodes() &&
             std::find(further.begin(), further.end(), n) == further.end())
           further.push_back(n);
     }

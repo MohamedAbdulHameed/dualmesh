@@ -173,8 +173,9 @@ def _expand_conditions(condition, parameters: dict, where: str) -> list[str]:
             raise InputError(
                 f"{where}: the definition {name} = {value!r} is not a number or an expression (a text).{hint(name)}"
             )
+        # In parentheses, so that a negative number keeps its sign under a power (2*F^2).
         known[name] = (
-            repr(float(value)) if not isinstance(value, str) else f"({substitute(value, known)})"
+            f"({float(value)!r})" if not isinstance(value, str) else f"({substitute(value, known)})"
         )
     used = set(
         re.findall(
@@ -1951,6 +1952,8 @@ class SolidMechanics(Physics):
                 for nodes in mesh.side_nodes(mesh.sideset(boundary)):
                     a, b = mesh.node(nodes[0]), mesh.node(nodes[1])
                     lengths.append(sum((p - q) ** 2 for p, q in zip(a, b)) ** 0.5)
+            # The scale only conditions the equations of the condition, so a modulus that varies
+            # (an expression or a property) takes 1 Pa, which leaves the solution unchanged.
             modulus = self.youngs_modulus if isinstance(self.youngs_modulus, (int, float)) else 1.0
             if self._anisotropic:
                 modulus = float(max(self._global_stiffness().diagonal()[:3]))
@@ -1968,13 +1971,20 @@ class SolidMechanics(Physics):
                 stiffness_scale=scale,
             )
 
-    def _surface_stiffness(self, problem, secondary: str) -> float:
+    def _surface_stiffness(self, problem, secondary: str, physical: bool = False) -> float:
         """E / h of a surface: the Young's modulus (the largest diagonal stiffness of an
-        anisotropic material) over the mean length of the surface's sides."""
+        anisotropic material) over the mean length of the surface's sides.  Where it only scales
+        the equations of a condition, a modulus that varies takes 1 Pa, which leaves the solution
+        unchanged; where it is a physical stiffness (``physical``), the modulus must be a number."""
         modulus = self.youngs_modulus
         if self._anisotropic:
             modulus = float(max(self._global_stiffness().diagonal()[:3]))
         elif not isinstance(modulus, (int, float)):
+            if physical:
+                raise InputError(
+                    f"{label(self.type_name, self.name)}: a cohesive zone is 50 E / h stiff before "
+                    "it opens, with E the Young's modulus, so it needs youngs_modulus as a number."
+                )
             modulus = 1.0
         mesh = problem.mesh
         lengths = []
@@ -1996,7 +2006,7 @@ class SolidMechanics(Physics):
                 displacements=names,
                 strength=float(zone["strength"]),
                 toughness=float(zone["toughness"]),
-                stiffness=50.0 * self._surface_stiffness(problem, zone["secondary"]),
+                stiffness=50.0 * self._surface_stiffness(problem, zone["secondary"], physical=True),
                 thickness=self._plane_thickness(),
                 large_deformation=self._finite,
             )
@@ -2208,7 +2218,8 @@ class SolidMechanics(Physics):
         problem.add_kernel("out_of_plane_stress", variable="strain_zz", **restrict)
         force = self.axial_force
         if force != 0.0:
-            area = problem.domain_volume()
+            # The force acts on the section of this solid, which its blocks bound.
+            area = problem.block_volume(restrict["block"]) if restrict else problem.domain_volume()
             value = f"({force})/{area!r}" if isinstance(force, str) else float(force) / area
             problem.add_kernel("body_force", variable="strain_zz", value=value, **restrict)
 

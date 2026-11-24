@@ -508,6 +508,15 @@ public:
         b.reference = kp.getReal("reference_temperature");
         _buoyancy[i].push_back(b);
       }
+      else if (type != "pressure_gradient" && type != "momentum_stabilization" &&
+               type != "penalty_incompressibility")
+        throw InputError("'" + owner +
+                         "': the stabilization of the flow takes the residual of "
+                         "the momentum equation from its convective_inertia, time_derivative, "
+                         "viscous_stress, body_force and Boussinesq_buoyancy terms, so '" +
+                         k->name() + "' (" + type + ") on '" + k->variableName() +
+                         "' would be missing from it. Give the force as a body_force, or turn "
+                         "the stabilization off.");
     }
     // The residual holds a time derivative when the flow has inertia (a Stokes flow has none).
     _time_term = _rho || _rho_time;
@@ -518,7 +527,6 @@ public:
       _rho_time = _rho;
     if (!_mu)
       _mu = zero;
-    (void) owner;
 
     const auto & mesh = problem.mesh();
     _h.resize(mesh.numElements());
@@ -612,7 +620,9 @@ private:
   {
     ADReal r(0.0);
     // The viscous term - mu Laplacian(v_i), which quadratic elements give.  It vanishes inside
-    // a linear element, whose residual therefore leaves it out (see Problem::fillContext).
+    // a linear element, whose residual therefore leaves it out (see Problem::fillContext).  It is
+    // div(2 mu eps(v)) for a viscosity that is uniform in space, and for one that varies it lacks
+    // the term grad mu . (grad v + grad v^T).
     if (!ctx.laplacian.empty())
       r -= _mu->value(ctx.x, ctx.time) * (ctx.laplacian[_v[i]] - hoop(ctx, i) * ctx.value(_v[i]));
     const double rho = density(ctx);

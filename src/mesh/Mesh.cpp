@@ -342,10 +342,52 @@ Mesh::exteriorSides() const
         it->second.second++;
     }
   }
-  _exterior_cache.clear();
+  // The sides that no other element shares.
+  std::vector<std::pair<std::vector<Index>, Side>> open;
   for (const auto & [key, v] : count)
     if (v.second == 1)
-      _exterior_cache.push_back(v.first);
+      open.emplace_back(key, v.first);
+  // With hanging nodes the side of a large cell faces the smaller sides of its neighbours, which
+  // hold the nodes that hang on it.  A side whose nodes are all corners of another element's side
+  // or hang on that side lies inside it, and both are inside the domain.
+  std::vector<char> inside(open.size(), 0);
+  if (!_node_constraints.empty())
+  {
+    std::map<Index, const std::vector<std::pair<Index, double>> *> hangs;
+    for (const auto & c : _node_constraints)
+      hangs[c.node] = &c.on;
+    std::map<Index, std::vector<std::size_t>> by_node;
+    for (std::size_t i = 0; i < open.size(); ++i)
+      for (Index n : open[i].first)
+        by_node[n].push_back(i);
+    const auto onSide = [&](Index n, const std::vector<Index> & corners)
+    {
+      if (std::binary_search(corners.begin(), corners.end(), n))
+        return true;
+      const auto h = hangs.find(n);
+      if (h == hangs.end())
+        return false;
+      for (const auto & [primary, weight] : *h->second)
+      {
+        (void) weight;
+        if (!std::binary_search(corners.begin(), corners.end(), primary))
+          return false;
+      }
+      return true;
+    };
+    for (std::size_t i = 0; i < open.size(); ++i)
+      for (Index n : open[i].first)
+        for (std::size_t j : by_node[n])
+          if (j != i && open[j].second.first != open[i].second.first &&
+              std::all_of(open[i].first.begin(),
+                          open[i].first.end(),
+                          [&](Index m) { return onSide(m, open[j].first); }))
+            inside[i] = inside[j] = 1;
+  }
+  _exterior_cache.clear();
+  for (std::size_t i = 0; i < open.size(); ++i)
+    if (!inside[i])
+      _exterior_cache.push_back(open[i].second);
   std::sort(_exterior_cache.begin(), _exterior_cache.end());
   _exterior_valid = true;
   return _exterior_cache;

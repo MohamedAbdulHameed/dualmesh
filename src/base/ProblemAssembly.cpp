@@ -1147,9 +1147,11 @@ Problem::constrainedDofs() const
 }
 
 void
-Problem::dirichletRows(const Vector & /*U*/, double /*lf*/, Vector & R, SparseMatrix * J) const
+Problem::foldDependents(Vector & R, SparseMatrix * J) const
 {
-  // A dependent degree of freedom is its primary: its equation is added to the primary's, and its column too (the Jacobian becomes P^T J P), after which its own row and column are empty and are replaced below by the identity, like a prescribed value.
+  // A periodic copy is its primary: its equation is added to the primary's, and its column too
+  // (the Jacobian becomes P^T J P).  Its own row and column are then empty, and the caller gives
+  // them the identity, like a prescribed value.
   if (!_primary_of.empty())
   {
     const auto primary = [&](Index i) { return _primary_of[i] >= 0 ? _primary_of[i] : i; };
@@ -1199,6 +1201,12 @@ Problem::dirichletRows(const Vector & /*U*/, double /*lf*/, Vector & R, SparseMa
       J->setFromTriplets(folded.begin(), folded.end());
     }
   }
+}
+
+void
+Problem::dirichletRows(const Vector & /*U*/, double /*lf*/, Vector & R, SparseMatrix * J) const
+{
+  foldDependents(R, J);
   const std::vector<char> fixed = constrainedDofs();
   for (Index i = 0; i < numDofs(); ++i)
     if (fixed[i])
@@ -2409,6 +2417,8 @@ Problem::initialAcceleration(const Vector & u, Vector & v, double dt, const Solv
   mass.include_steady_terms = false;
   SparseMatrix M;
   assemble(u, mass, unused, &M);
+  // The equations of periodic copies and hanging nodes belong to their primaries.
+  foldDependents(R, &M);
   // The other unknowns keep their acceleration: identity rows and columns.
   std::vector<char> keep(static_cast<std::size_t>(n), 0);
   for (Index d = 0; d < n; ++d)
@@ -2432,7 +2442,10 @@ Problem::initialAcceleration(const Vector & u, Vector & v, double dt, const Solv
   SparseMatrix system(n, n);
   system.setFromTriplets(entries.begin(), entries.end());
   int iterations = 0;
-  return linearSolve(system, rhs, options, &iterations);
+  Vector acceleration = linearSolve(system, rhs, options, &iterations);
+  // A periodic copy and a hanging node take the acceleration of their primaries.
+  updateDependentDofs(acceleration);
+  return acceleration;
 }
 
 Vector
@@ -2456,7 +2469,8 @@ runTransient(const TransientOptions & tr,
              const std::function<void(int, double)> & after_step,
              const std::function<double(double)> & courant,
              const std::function<double(const Vector &, const Vector &)> & relative_difference,
-             bool error_by_extrapolation)
+             bool error_by_extrapolation,
+             int order_of_step)
 {
   const auto difference = [&](const Vector & a, const Vector & b)
   {
@@ -2486,9 +2500,11 @@ runTransient(const TransientOptions & tr,
   const double span = tr.end_time - tr.start_time;
   const double dt_min = tr.dt_min > 0 ? tr.dt_min : tr.dt * 1.0e-6;
   const double dt_max = tr.dt_max > 0 ? tr.dt_max : std::abs(span);
-  // Order of the local truncation error of one step of the theta method: the
-  // midpoint rule (theta = 1/2) is second order, every other member is first.
-  const double order = std::abs(tr.theta - 0.5) < 1e-12 ? 2.0 : 1.0;
+  // The order of accuracy of a step: that given, or that of the theta method, whose midpoint rule
+  // (theta = 1/2) is second order and every other member first.
+  const double order = order_of_step > 0                  ? static_cast<double>(order_of_step)
+                       : std::abs(tr.theta - 0.5) < 1e-12 ? 2.0
+                                                          : 1.0;
 
   SolveResult total;
   current_time = tr.start_time;
@@ -2568,8 +2584,9 @@ runTransient(const TransientOptions & tr,
       // h1 and h2 the steps before it, u2 and u3 the second and third time derivatives:
       //   theta method of order one: error (theta - 1/2) h^2 u2, linear predictor of error
       //   -u2 h (h + h1) / 2, so e = |U - U_p| |2 c h / (2 c h + h + h1)| with c = theta - 1/2;
-      //   Crank-Nicolson: error -h^3 u3 / 12, quadratic predictor of error -u3 P / 6 with
-      //   P = h (h + h1) (h + h1 + h2), so e = |U - U_p| h^3 / (2 P - h^3).
+      //   Crank-Nicolson: error h^3 u3 / 12, quadratic predictor of error -u3 P / 6 with
+      //   P = h (h + h1) (h + h1 + h2), so e = |U - U_p| h^3 / (2 P + h^3).
+      // Each error is that of the step or the predictor minus the exact solution.
       current_time = oldcurrent_time + step_size;
       SolveResult r = take_step(old, step_size, true);
       record(r);
@@ -2593,7 +2610,7 @@ runTransient(const TransientOptions & tr,
           predicted = old * ((h + h1) * (h + h1 + h2) / (h1 * (h1 + h2))) -
                       u1 * (h * (h + h1 + h2) / (h1 * h2)) + u2 * (h * (h + h1) / ((h1 + h2) * h2));
           const double product = h * (h + h1) * (h + h1 + h2);
-          factor = h * h * h / (2.0 * product - h * h * h);
+          factor = h * h * h / (2.0 * product + h * h * h);
         }
         else
         {
@@ -2636,8 +2653,8 @@ runTransient(const TransientOptions & tr,
       }
       else
       {
-        // Richardson estimate of the error of the coarse step.  The two half
-        // steps are the more accurate answer and are the one kept.
+        // Richardson estimate of the error of the two half steps, which are the more accurate
+        // answer and the one kept.
         control(difference(solution, coarse_solution) / (std::pow(2.0, order) - 1.0));
       }
     }
@@ -2784,6 +2801,9 @@ Problem::solveTransient(const TransientOptions & transient, const SolverOptions 
     differential[v] = !_new_time_only[v] || _second_order_variables[v];
   if (std::none_of(differential.begin(), differential.end(), [](char c) { return c != 0; }))
     differential.clear();
+  const bool second_order = std::any_of(_second_order_variables.begin(),
+                                        _second_order_variables.end(),
+                                        [](char c) { return c != 0; });
   // Every process runs the same controller on the same numbers, so they all take the same steps
   // and accept or reject together: the residual norms that the decision rests on and the error
   // estimate are global.
@@ -2844,9 +2864,9 @@ Problem::solveTransient(const TransientOptions & transient, const SolverOptions 
       { return relativeStep(a, b, differential.empty() ? nullptr : &differential); },
       // The error of the theta method is estimated by extrapolation.  A second-order equation
       // and a time integration of its own keep step doubling, which needs no error constant.
-      !_time_integrator && std::none_of(_second_order_variables.begin(),
-                                        _second_order_variables.end(),
-                                        [](char c) { return c != 0; }));
+      !_time_integrator && !second_order,
+      // The generalized-alpha and Newmark (average acceleration) methods are second order.
+      _time_integrator ? _time_integrator->order() : (second_order ? 2 : 0));
 }
 
 } // namespace dualmesh

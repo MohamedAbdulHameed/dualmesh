@@ -457,6 +457,42 @@ def hanging_cells(dimension):
     return hierarchy.mesh()
 
 
+def test_the_middle_of_a_chord_between_two_corners_stays_out_of_a_boundary_node_set():
+    """A square of two triangles, whose four corners form a node set.  Bisecting both triangles
+    cuts the diagonal, which joins two members of the set, at the centre of the square: the
+    centre lies inside, so it stays out of the set, while the corners stay in."""
+    from dualmesh import _core
+
+    mesh = dualmesh.mesh_from_arrays(
+        [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]], [[0, 1, 2], [0, 2, 3]], "Tri3"
+    )
+    mesh.add_nodeset("corners", [0, 1, 2, 3])
+    hierarchy = _core.Bisection(mesh)
+    assert hierarchy.refine([1, 1], 5)
+    refined = hierarchy.mesh()
+    points = numpy.asarray(refined.points())
+    members = points[list(refined.boundary_nodes("corners"))]
+    assert len(members) == 4
+    assert not numpy.any(numpy.all(numpy.isclose(members[:, :2], 0.5), axis=1))
+
+
+@pytest.mark.parametrize("dimension", [2, 3])
+def test_the_sides_between_a_large_cell_and_its_halves_are_inside_the_domain(dimension):
+    """A side of a large cell faces the smaller sides of its split neighbours, which hold the
+    nodes that hang on it.  None of them is on the exterior: every exterior side of the unit
+    square or cube lies on its boundary."""
+    mesh = hanging_cells(dimension)
+    points = numpy.asarray(mesh.points())
+    for element, side in mesh.exterior_sides():
+        nodes = points[list(mesh.side_nodes([(element, side)])[0])]
+        on_a_face = [
+            numpy.allclose(nodes[:, axis], value)
+            for axis in range(dimension)
+            for value in (0.0, 1.0)
+        ]
+        assert any(on_a_face)
+
+
 @pytest.mark.parametrize("dimension", [2, 3])
 @pytest.mark.parametrize("method", ["fem", "dmcdm"])
 def test_hanging_nodes_pass_the_patch_test(method, dimension):

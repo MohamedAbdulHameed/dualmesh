@@ -1390,6 +1390,10 @@ public:
     _mesh = &problem.mesh();
     if (_mesh->spaceDimension() != 3 || _mesh->dimension() != 2)
       throw InputError("'" + name() + "': a shell takes a surface mesh in three dimensions.");
+    for (const auto & el : _mesh->elements())
+      if (activeOnBlock(el.block) && el.type != ElementType::Quad4)
+        throw InputError("'" + name() + "': a shell is a flat facet of four nodes, so it takes " +
+                         "Quad4 elements, not " + elementTypeName(el.type) + ".");
     auto names = _params.getStringList("displacements");
     const auto rotations = _params.getStringList("rotations");
     if (names.size() != 3 || rotations.size() != 3)

@@ -88,7 +88,7 @@ def compute(methods):
                     "drag": scale * force["x"],
                     "lift": scale * force["y"],
                     "dp": pressure[0] - pressure[1],
-                    "unknowns": problem.num_active_dofs(),
+                    "unknowns": problem.num_global_dofs,
                     "time": time.perf_counter() - started,
                 }
             )

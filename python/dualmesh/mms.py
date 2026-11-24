@@ -476,12 +476,12 @@ class ManufacturedSolution:
                 else:
                     problem.solve(**solve_options)
             result.sizes.append(h)
-            result.num_dofs.append(problem.num_active_dofs())
+            result.num_dofs.append(problem.num_global_dofs)
             for key, value in self.errors(problem).items():
                 result.errors.setdefault(key, []).append(value)
             if level == "full":
                 print(
-                    f"  mesh {n}: element size {h:.6g}, {problem.num_active_dofs()} unknowns",
+                    f"  mesh {n}: element size {h:.6g}, {problem.num_global_dofs} unknowns",
                     flush=True,
                 )
         if level != "none":

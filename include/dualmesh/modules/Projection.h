@@ -26,6 +26,7 @@
 #include "dualmesh/base/Problem.h"
 #include "dualmesh/linalg/PetscSolver.h"
 
+#include <algorithm>
 #include <deque>
 #include <memory>
 #include <string>
@@ -72,6 +73,10 @@ public:
   void start(const Vector & solution, double time) override;
   SolveResult step(Vector & solution, const Vector & old, double time, double dt) override;
   void accept(const Vector & solution, double time) override;
+  /// The velocity converges at the order k of the backward difference up to two, the order of
+  /// the splitting of the pressure (docs/theory/heat_and_fluids.rst, the stagnation flow and the
+  /// vortex).
+  int order() const override { return std::min(_settings.order, 2); }
   /// dt times the largest speed over the size of its element, over the nodes of every element of every process.
   double courantNumber(const Vector & solution, double dt) const override;
 

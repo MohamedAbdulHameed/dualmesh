@@ -158,9 +158,11 @@ public:
     std::vector<std::pair<Index, double>> on;
   };
   const std::vector<NodeConstraint> & nodeConstraints() const { return _node_constraints; }
+  /// The hanging nodes decide which sides are inside, so the cached exterior sides go too.
   void setNodeConstraints(std::vector<NodeConstraint> constraints)
   {
     _node_constraints = std::move(constraints);
+    invalidateCaches();
   }
   std::vector<int> blockIds() const;
   /// Resolve a block given by name or by its integer id written as text.

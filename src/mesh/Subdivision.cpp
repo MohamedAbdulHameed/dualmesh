@@ -64,7 +64,7 @@ Subdivision::Subdivision(const Mesh & initial)
   for (const auto & el : initial.elements())
   {
     Cell cell;
-    cell.n.assign(el.nodes.begin(), el.nodes.end());
+    cell.n.assign(el.nodes.begin(), el.nodes.begin() + el.numNodes());
     cell.block = el.block;
     cell.origin = static_cast<Index>(_cells.size());
     if (_dimension == 2)
@@ -82,13 +82,20 @@ Subdivision::Subdivision(const Mesh & initial)
       nodes.resize(static_cast<std::size_t>(1 << (_dimension - 1)));
       _face_sets[sortedFace(nodes)].push_back({name, initial.element(side.first).block});
     }
+  _initial_nodes = initial.numNodes();
+  const std::vector<char> & on_boundary = initial.boundaryNodeMarkers();
   for (const auto & [name, members] : initial.nodesets())
   {
     _node_set_names.push_back(name);
     std::vector<char> in(_points.size(), 0);
+    bool boundary = !members.empty();
     for (Index n : members)
+    {
       in[static_cast<std::size_t>(n)] = 1;
+      boundary = boundary && on_boundary[static_cast<std::size_t>(n)];
+    }
     _in_node_set.push_back(std::move(in));
+    _boundary_node_set.push_back(boundary);
   }
   build();
   _numbers_before = _numbers;
@@ -595,14 +602,6 @@ Subdivision::build()
   }
   for (const auto & [name, list] : sets)
     out.addSideset(name, list);
-  for (std::size_t k = 0; k < _node_set_names.size(); ++k)
-  {
-    std::vector<Index> members;
-    for (std::size_t i = 0; i < _numbers.size(); ++i)
-      if (_in_node_set[k][static_cast<std::size_t>(_numbers[i])])
-        members.push_back(static_cast<Index>(i));
-    out.addNodeset(_node_set_names[k], members);
-  }
   // The hanging nodes: a used middle of an edge of a leaf, and in 3D a used centre of a face of a
   // leaf, take the mean of the ends of the edge or the corners of the face.
   std::map<Index, Hanging> hanging;
@@ -645,7 +644,32 @@ Subdivision::build()
     constraints.push_back({h.node, h.on});
   }
   out.setNodeConstraints(std::move(constraints));
+  // After the constraints, which decide which sides are on the boundary.
+  addNodeSets(out);
   _mesh = std::move(out);
+}
+
+void
+Subdivision::addNodeSets(Mesh & out) const
+{
+  // A new node joins a node set on the boundary only where it lies on the boundary too, as
+  // Mesh::refined grows its sets: the middle of an edge between two members may lie inside, on a
+  // chord across a corner.
+  const std::vector<char> & boundary = out.boundaryNodeMarkers();
+  for (std::size_t k = 0; k < _node_set_names.size(); ++k)
+  {
+    std::vector<Index> members;
+    for (std::size_t i = 0; i < _numbers.size(); ++i)
+    {
+      const Index n = _numbers[i];
+      if (!_in_node_set[k][static_cast<std::size_t>(n)])
+        continue;
+      if (_boundary_node_set[k] && n >= _initial_nodes && !boundary[i])
+        continue;
+      members.push_back(static_cast<Index>(i));
+    }
+    out.addNodeset(_node_set_names[k], members);
+  }
 }
 
 Eigen::VectorXd

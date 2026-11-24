@@ -825,7 +825,11 @@ LinearSolver::setEntries(const std::vector<GlobalEntry> & entries)
   for (std::size_t k = 0; same && k < entries.size(); ++k)
     same = s.coo_rows[k] == static_cast<PetscInt>(entries[k].row) &&
            s.coo_cols[k] == static_cast<PetscInt>(entries[k].col);
-  if (!same)
+  // Setting a pattern is collective, so every process sets one when the pattern of any changed.
+  int changed = same ? 0 : 1;
+  if (MPI_Allreduce(MPI_IN_PLACE, &changed, 1, MPI_INT, MPI_MAX, s.comm) != MPI_SUCCESS)
+    throw std::runtime_error("dualmesh: MPI_Allreduce failed in LinearSolver::setEntries.");
+  if (changed)
     s.setPattern(entries);
   std::vector<PetscScalar> values(entries.size());
   for (std::size_t k = 0; k < entries.size(); ++k)

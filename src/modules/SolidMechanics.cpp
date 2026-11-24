@@ -135,17 +135,49 @@ isotropicStress(Formulation f, ADReal * ee, const Real & lambda, const Real & mu
 
 /// The stress sigma = C eps_e of an anisotropic material, with C the 6 x 6 stiffness in Voigt
 /// order (engineering shear strains, tensor shear stresses), row by row.  In plane stress the
-/// zz strain ee[2] is set to the one that makes sigma_zz zero.
+/// out-of-plane strains eps_zz, gamma_yz and gamma_xz (ee[2], ee[3], ee[4]) are set to those that
+/// make sigma_zz, sigma_yz and sigma_xz zero.
 void
 anisotropicStress(Formulation f, ADReal * ee, const std::array<double, 36> & C, ADReal * sigma)
 {
   if (f == Formulation::PlaneStress)
   {
-    ADReal rest(0.0);
-    for (int j = 0; j < 6; ++j)
-      if (j != 2)
-        rest += C[12 + j] * ee[j];
-    ee[2] = -rest / C[14];
+    // A e_o = -B e_p, with e_o the out-of-plane strains, e_p the in-plane ones (xx, yy, xy), A the
+    // block of C on e_o and B its block from e_p to the out-of-plane stresses.
+    static constexpr int out[3] = {2, 3, 4}, in[3] = {0, 1, 5};
+    double A[3][3];
+    std::array<ADReal, 3> b;
+    for (int i = 0; i < 3; ++i)
+    {
+      b[i] = 0.0;
+      for (int j = 0; j < 3; ++j)
+      {
+        A[i][j] = C[6 * out[i] + out[j]];
+        b[i] -= C[6 * out[i] + in[j]] * ee[in[j]];
+      }
+    }
+    const double det = A[0][0] * (A[1][1] * A[2][2] - A[1][2] * A[2][1]) -
+                       A[0][1] * (A[1][0] * A[2][2] - A[1][2] * A[2][0]) +
+                       A[0][2] * (A[1][0] * A[2][1] - A[1][1] * A[2][0]);
+    if (!(std::abs(det) > 0.0))
+      throw InputError("A plane stress state needs a stiffness whose block on the out-of-plane "
+                       "strains zz, yz and xz is invertible.");
+    // The inverse of A by its cofactors.
+    const double inv[3][3] = {{(A[1][1] * A[2][2] - A[1][2] * A[2][1]) / det,
+                               (A[0][2] * A[2][1] - A[0][1] * A[2][2]) / det,
+                               (A[0][1] * A[1][2] - A[0][2] * A[1][1]) / det},
+                              {(A[1][2] * A[2][0] - A[1][0] * A[2][2]) / det,
+                               (A[0][0] * A[2][2] - A[0][2] * A[2][0]) / det,
+                               (A[0][2] * A[1][0] - A[0][0] * A[1][2]) / det},
+                              {(A[1][0] * A[2][1] - A[1][1] * A[2][0]) / det,
+                               (A[0][1] * A[2][0] - A[0][0] * A[2][1]) / det,
+                               (A[0][0] * A[1][1] - A[0][1] * A[1][0]) / det}};
+    for (int i = 0; i < 3; ++i)
+    {
+      ee[out[i]] = 0.0;
+      for (int j = 0; j < 3; ++j)
+        ee[out[i]] += inv[i][j] * b[j];
+    }
   }
   for (int i = 0; i < 6; ++i)
   {
@@ -3271,7 +3303,8 @@ public:
           for (Index n : mesh.sideNodes(side))
           {
             const int a =
-                static_cast<int>(std::find(el.nodes.begin(), el.nodes.end(), n) - el.nodes.begin());
+                static_cast<int>(std::find(el.nodes.begin(), el.nodes.begin() + el.numNodes(), n) -
+                                 el.nodes.begin());
             for (int d = 0; d < 3; ++d)
               normals[n][d] += mp.N[a] * ip.area[d];
           }

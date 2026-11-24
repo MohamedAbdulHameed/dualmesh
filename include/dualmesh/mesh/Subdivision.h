@@ -113,6 +113,8 @@ private:
   const std::vector<std::array<int, 2>> & edges() const { return _edges; }
   const std::vector<std::vector<int>> & faces() const { return _faces; }
   void build();
+  /// Add the node sets to @p out, whose elements and constraints are set.
+  void addNodeSets(Mesh & out) const;
   bool refineCells(const std::vector<char> & marked_cells, int max_level);
   bool coarsenCells(const std::vector<char> & marked_cells);
 
@@ -135,6 +137,10 @@ private:
   std::map<Face, std::vector<std::pair<std::string, int>>> _face_sets;
   std::vector<std::string> _node_set_names;
   std::vector<std::vector<char>> _in_node_set;
+  /// Whether every member of each node set of the initial mesh lies on its boundary, and the
+  /// number of nodes of the initial mesh.
+  std::vector<char> _boundary_node_set;
+  Index _initial_nodes = 0;
   std::vector<Index> _numbers, _numbers_before;
   std::vector<Hanging> _hanging;
   Mesh _mesh;

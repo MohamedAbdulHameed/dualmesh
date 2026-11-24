@@ -594,6 +594,9 @@ Problem::nonlinearSolve(const SolverOptions & o,
       nonlinear.max_iterations = linear ? 1 : std::max(0, o.max_iterations - steps_before);
       nonlinear.line_search = line_search;
       nonlinear.max_line_search_steps = o.max_line_search_steps;
+      if (!(o.relaxation >= 0.0 && o.relaxation < 1.0))
+        throw InputError("relaxation is the weight gamma of the last iterate, from 0 (none) to "
+                         "below 1: the update takes the fraction 1 - gamma of each step.");
       nonlinear.relaxation = o.relaxation;
       // The automatic iterative solvers take the tolerance of Eisenstat and Walker, which
       // follows the decrease of the residual; a direct solve, a solver of the user and a linear

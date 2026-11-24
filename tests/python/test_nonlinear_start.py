@@ -110,3 +110,16 @@ def test_continuation_ramps_the_prescribed_values_from_the_starting_state():
     x = problem.node_coordinates()[:, 0]
     exact = (300.0**7 + (3000.0**7 - 300.0**7) * x) ** (1 / 7)
     assert problem.values("temperature") == pytest.approx(exact, rel=0.05)
+
+
+@pytest.mark.parametrize("relaxation", [-0.5, 1.0, 1.5])
+def test_a_relaxation_outside_zero_to_one_is_refused(relaxation):
+    """The update takes the fraction 1 - gamma of each step, so gamma = 1 would stop the
+    iteration and a larger one would reverse it."""
+    mesh = dualmesh.generate_rectangle_mesh(0.0, 1.0, 0.0, 1.0, 2, 2)
+    problem = dualmesh.Problem(mesh)
+    problem.add_variable("u")
+    problem.add_kernel("diffusion", variable="u")
+    problem.add_boundary_condition("Dirichlet", "left", variable="u", value=1.0)
+    with pytest.raises(Exception, match="relaxation is the weight"):
+        problem.solve(nonlinear_solver="picard", relaxation=relaxation, report="none")

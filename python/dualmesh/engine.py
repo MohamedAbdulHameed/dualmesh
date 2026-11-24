@@ -827,7 +827,7 @@ class Problem:
             print(self.summary(), flush=True)
         elif level == "summary":
             print(
-                f"dualmesh {study}: {self.num_active_dofs()} unknowns, method {self.method}",
+                f"dualmesh {study}: {self.num_global_dofs} unknowns, method {self.method}",
                 flush=True,
             )
 
@@ -1189,7 +1189,7 @@ class Problem:
             print(self.summary())
         elif level == "summary":
             print(
-                f"dualmesh eigenvalue study: {self.num_active_dofs()} unknowns, method {self.method}, shift-invert Arnoldi near {near:g}"
+                f"dualmesh eigenvalue study: {self.num_global_dofs} unknowns, method {self.method}, shift-invert Arnoldi near {near:g}"
             )
         result = solve_modes(self, num_modes=num_modes, near=near, tolerance=tolerance)
         files = self._write_fields(output) if output is not None else []
@@ -1280,6 +1280,27 @@ class Problem:
             probe.set_values("one", numpy.ones(len(probe.node_coordinates())))
             self._domain_volume = self._sum(float(probe.integrate("one")))
         return self._domain_volume
+
+    def block_volume(self, blocks) -> float:
+        """The volume (area, length) of the elements of ``blocks``, given by name or by id, with the
+        coordinate factor of the problem, as :meth:`domain_volume` gives that of the domain."""
+        names = self._mesh.block_names()
+        wanted = set()
+        for block in blocks:
+            text = str(block)
+            if text.lstrip("-").isdigit():
+                wanted.add(int(text))
+                continue
+            ids = [number for number, name in names.items() if name == text]
+            if not ids:
+                raise _core.InputError(
+                    f"There is no block '{text}'. The blocks are {sorted(names.values())}."
+                )
+            wanted.update(ids)
+        probe = Problem(self._mesh, method="fem", coordinates=self.coordinates, distributed=False)
+        volumes = probe.element_volumes()
+        in_blocks = [block in wanted for _, _, block in self._mesh.cells()]
+        return self._sum(float(numpy.sum(volumes[numpy.asarray(in_blocks, dtype=bool)])))
 
     # ---- results ---------------------------------------------------------
     @property

@@ -510,18 +510,19 @@ def write_mesh(mesh: Mesh, filename: str, file_format: str | None = None, **poin
     """Write a mesh (and optional nodal fields) through meshio."""
     import meshio
 
+    # meshio takes one cell block per element type, and one array of block ids per cell block.
     cells: dict[str, list[list[int]]] = {}
-    for element_type, connectivity, _ in mesh.cells():
+    blocks: dict[str, list[int]] = {}
+    for element_type, connectivity, block in mesh.cells():
         permutation = _meshio_permutation(element_type)
-        cells.setdefault(_DUALMESH_TO_MESHIO[element_type], []).append(
-            [int(connectivity[k]) for k in permutation]
-        )
-    blocks: list[int] = [block for _, _, block in mesh.cells()]
+        kind = _DUALMESH_TO_MESHIO[element_type]
+        cells.setdefault(kind, []).append([int(connectivity[k]) for k in permutation])
+        blocks.setdefault(kind, []).append(block)
     meshio_mesh = meshio.Mesh(
         points=numpy.asarray(mesh.points()),
         cells=[(t, numpy.asarray(c, dtype=numpy.int64)) for t, c in cells.items()],
         point_data={k: numpy.asarray(v) for k, v in point_data.items()},
-        cell_data={"block": [numpy.asarray(blocks, dtype=numpy.int32)]},
+        cell_data={"block": [numpy.asarray(blocks[t], dtype=numpy.int32) for t in cells]},
     )
     meshio.write(filename, meshio_mesh, file_format=file_format)
 

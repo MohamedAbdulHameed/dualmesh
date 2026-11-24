@@ -43,6 +43,7 @@ A worked example::
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Callable
@@ -140,13 +141,16 @@ def mark_by_fraction(indicators, fraction: float = 0.3) -> numpy.ndarray:
 
     This is the simplest marking rule: with ``fraction=0.3`` the worst thirty
     per cent of the elements are refined at every cycle, so the mesh grows at a
-    predictable rate whatever the shape of the error distribution.
+    predictable rate whatever the shape of the error distribution.  It marks
+    ceil(fraction N) of the N elements, and none when every indicator is zero.
     """
     values = numpy.asarray(indicators, dtype=float).ravel()
     if not 0.0 < fraction <= 1.0:
         raise ValueError("fraction must lie in (0, 1].")
-    count = max(1, int(round(fraction * values.size)))
     marked = numpy.zeros(values.size, dtype=bool)
+    if values.size == 0 or not values.max() > 0.0:
+        return marked
+    count = math.ceil(fraction * values.size)
     marked[numpy.argsort(values)[-count:]] = True
     return marked
 
@@ -301,11 +305,11 @@ def solve_with_adaptive_refinement(
         indicators = numpy.sqrt(sum(problem.gathered_error_indicator(name) ** 2 for name in names))
         result.problem, result.mesh = problem, mesh
         result.num_elements.append(int(mesh.num_elements))
-        result.num_dofs.append(int(problem.num_active_dofs()))
+        result.num_dofs.append(int(problem.num_global_dofs))
         result.estimated_error.append(float(numpy.sqrt(numpy.sum(indicators**2))))
         if level == "full" and root:
             print(
-                f"  cycle {cycle}: {mesh.num_elements} elements, {problem.num_active_dofs()} unknowns, estimated error {result.estimated_error[-1]:.6g}",
+                f"  cycle {cycle}: {mesh.num_elements} elements, {problem.num_global_dofs} unknowns, estimated error {result.estimated_error[-1]:.6g}",
                 flush=True,
             )
         if callback is not None:

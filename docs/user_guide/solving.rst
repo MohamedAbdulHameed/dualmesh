@@ -78,18 +78,18 @@ is returned with ``converged`` false so that the caller can decide.  Set it
 false inside a loop that is expected to fail sometimes, such as a continuation
 study, and leave it true otherwise.
 
-``relaxation`` applies to direct iteration only and defaults to zero, meaning no
-relaxation.  With :math:`\gamma` set, the coefficients are evaluated at the
+``relaxation`` applies to an iteration without a line search (direct iteration,
+or Newton's method without one) and defaults to zero, meaning no relaxation.  With :math:`\gamma` set, the coefficients are evaluated at the
 weighted combination of the last two iterates
 
 .. math::
 
    \bar{U} = (1 - \gamma) U^{(r)} + \gamma U^{(r-1)} ,
 
-so a value between zero and one under-relaxes and damps an oscillating
-iteration, while a value above one over-relaxes and accelerates a slow
-monotone one.  Under-relaxation is the usual remedy for a direct iteration that
-oscillates without settling.
+so each update takes the fraction :math:`1 - \gamma` of its step.  A value from
+zero to below one under-relaxes and damps an oscillating iteration, and the code
+refuses any other.  Under-relaxation is the usual remedy for a direct iteration
+that oscillates without settling.
 
 The full report (``report="full"``, the default) prints the residual norm at
 every iteration. The residual norms show whether an iteration converges slowly
