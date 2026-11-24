@@ -393,3 +393,37 @@ def test_the_source_leaves_through_the_boundary_with_hanging_nodes(method, dimen
     for boundary in mesh.sideset_names():
         flows.update(problem.boundary_flux("u", boundary, per_node=True))
     assert sum(flows.values()) == pytest.approx(1.0, rel=1e-10)
+
+
+def test_refinement_moves_the_new_nodes_of_a_curved_side_onto_its_curve():
+    """A quarter annulus of triangles, refined everywhere three times: with the projection of the
+    outer side onto the unit circle, every node of that side ends on the circle, where bisection
+    alone would leave the new ones on the chords."""
+    mesh = dualmesh.generate_annulus_mesh(0.5, 1.0, 2, 8, 0.0, 90.0, element_type="Tri3")
+
+    def build(mesh):
+        problem = dualmesh.Problem(mesh)
+        problem.add_variable("u")
+        problem.add_kernel("diffusion", variable="u")
+        problem.add_boundary_condition("Dirichlet", "outer", variable="u", value=0.0)
+        problem.add_boundary_condition("Dirichlet", "inner", variable="u", value=1.0)
+        return problem
+
+    def onto_circle(point):
+        radius = numpy.hypot(point[0], point[1])
+        return (point[0] / radius, point[1] / radius, 0.0)
+
+    result = dualmesh.solve_with_adaptive_refinement(
+        build,
+        mesh,
+        "u",
+        num_cycles=4,
+        marker=lambda indicators: numpy.ones(len(indicators), dtype=bool),
+        report="none",
+        boundaries={"outer": onto_circle},
+    )
+    points = numpy.asarray(result.mesh.points())
+    outer = list(result.mesh.boundary_nodes("outer"))
+    assert len(outer) > len(list(mesh.boundary_nodes("outer")))
+    radii = numpy.hypot(points[outer, 0], points[outer, 1])
+    assert radii == pytest.approx(1.0, abs=1e-12)

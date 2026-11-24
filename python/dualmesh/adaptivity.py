@@ -105,6 +105,16 @@ class _Hierarchy:
     def refine(self, marked) -> bool:
         return self._core.refine([int(bool(m)) for m in marked], 2**20)
 
+    def project(self, name: str, projection) -> None:
+        """Move the nodes of side set ``name`` onto a curved boundary: ``projection((x, y, z))``
+        gives the point of each."""
+        if not hasattr(self._core, "project"):
+            raise ValueError(
+                "A curved boundary is followed on meshes of triangles or tetrahedra in this "
+                "version."
+            )
+        self._core.project(name, projection)
+
     def transfer(self, values, width: int = 1) -> numpy.ndarray:
         """Values at the nodes of the mesh before the last change, carried to the current one."""
         return numpy.asarray(self._core.transfer(numpy.asarray(values, dtype=float), width))
@@ -226,12 +236,13 @@ class AdaptivityResult(ResultTables):
 def solve_with_adaptive_refinement(
     build_problem: Callable[[object], Problem],
     mesh,
-    variable: str,
+    variable: str | Sequence[str],
     num_cycles: int = 3,
     marker: Callable[[numpy.ndarray], numpy.ndarray] = mark_by_error_fraction,
     max_elements: int | None = None,
     callback: Callable[[int, Problem, numpy.ndarray], None] | None = None,
     report: str = "full",
+    boundaries: dict | None = None,
 ):
     """Solve, estimate, mark and refine, ``num_cycles`` times.
 
@@ -244,6 +255,15 @@ def solve_with_adaptive_refinement(
     past that size, and ``callback(cycle, problem, indicators)`` is called after
     every solve, which is where a calculation writes output or records a
     convergence history.
+
+    ``variable`` names the variable whose error indicator drives the marking,
+    or several (the components of a velocity), whose indicators add as
+    squares.  ``boundaries`` maps side set names to the projections of their
+    curves, ``projection((x, y, z))`` giving the point of the curve for a
+    node: after each refinement, the nodes of the side set move onto it, so
+    that refining there also refines the geometry (a mesh of triangles or
+    tetrahedra).  In a distributed run every process holds the whole mesh and
+    marks it from the indicators of the whole mesh.
 
     ``report`` sets what the study prints: ``"full"`` (the default: a line
     for each cycle and the summary), ``"summary"`` (one line that names the
@@ -258,9 +278,12 @@ def solve_with_adaptive_refinement(
     level = report_level(report, "solve_with_adaptive_refinement")
     if level == "full":
         print(header("adaptive refinement"))
-    if level != "none":
+    names = [variable] if isinstance(variable, str) else list(variable)
+    root = _core.mpi_rank() == 0
+    if level != "none" and root:
         print(
-            f"dualmesh adaptive refinement of {variable}: at most {num_cycles} cycles", flush=True
+            f"dualmesh adaptive refinement of {', '.join(names)}: at most {num_cycles} cycles",
+            flush=True,
         )
     result = AdaptivityResult(problem=None, mesh=mesh)
     # One hierarchy of bisections for the whole loop, so that the triangles keep their refinement
@@ -270,12 +293,12 @@ def solve_with_adaptive_refinement(
         with inner_study():
             problem = build_problem(mesh)
             problem.solve()
-        indicators = numpy.asarray(problem.error_indicator(variable))
+        indicators = numpy.sqrt(sum(problem.gathered_error_indicator(name) ** 2 for name in names))
         result.problem, result.mesh = problem, mesh
         result.num_elements.append(int(mesh.num_elements))
         result.num_dofs.append(int(problem.num_active_dofs()))
         result.estimated_error.append(float(numpy.sqrt(numpy.sum(indicators**2))))
-        if level == "full":
+        if level == "full" and root:
             print(
                 f"  cycle {cycle}: {mesh.num_elements} elements, {problem.num_active_dofs()} unknowns, estimated error {result.estimated_error[-1]:.6g}",
                 flush=True,
@@ -290,7 +313,9 @@ def solve_with_adaptive_refinement(
         if not marked.any():
             break
         hierarchy.refine(marked)
+        for name, projection in (boundaries or {}).items():
+            hierarchy.project(name, projection)
         mesh = hierarchy.mesh()
-    if level != "none":
+    if level != "none" and root:
         print(result.summary())
     return result

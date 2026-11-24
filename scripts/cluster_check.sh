@@ -73,6 +73,10 @@ run() {
   for benchmark in solids/run_Cook solids/run_NAFEMS_LE1; do
     step "benchmark_$(basename $benchmark)" python "verification/benchmarks/$benchmark.py" "$LOGS/figures"
   done
+  # The adapted DFG 2D-1 on 1 and 4 processes, each holding the hierarchy and distributing the problems.
+  for n in 1 4; do
+    step "benchmark_dfg_adapted_$n" mpiexec -n $n python verification/benchmarks/fluids/run_dfg_adapted.py "$LOGS/figures"
+  done
   micromamba deactivate
 
   micromamba activate "$ENVS/fenicsx"
