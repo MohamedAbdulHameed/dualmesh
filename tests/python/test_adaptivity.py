@@ -500,11 +500,12 @@ def test_the_source_leaves_through_the_boundary_with_hanging_nodes(method, dimen
     assert sum(flows.values()) == pytest.approx(1.0, rel=1e-10)
 
 
-def test_refinement_moves_the_new_nodes_of_a_curved_side_onto_its_curve():
-    """A quarter annulus of triangles, refined everywhere three times: with the projection of the
-    outer side onto the unit circle, every node of that side ends on the circle, where bisection
-    alone would leave the new ones on the chords."""
-    mesh = dualmesh.generate_annulus_mesh(0.5, 1.0, 2, 8, 0.0, 90.0, element_type="Tri3")
+@pytest.mark.parametrize("element_type", ["Tri3", "Quad4"])
+def test_refinement_moves_the_new_nodes_of_a_curved_side_onto_its_curve(element_type):
+    """A quarter annulus of triangles or quadrilaterals, refined everywhere three times: with the
+    projection of the outer side onto the unit circle, every node of that side ends on the
+    circle, where refinement alone would leave the new ones on the chords."""
+    mesh = dualmesh.generate_annulus_mesh(0.5, 1.0, 2, 8, 0.0, 90.0, element_type=element_type)
 
     def build(mesh):
         problem = dualmesh.Problem(mesh)
@@ -532,3 +533,46 @@ def test_refinement_moves_the_new_nodes_of_a_curved_side_onto_its_curve():
     assert len(outer) > len(list(mesh.boundary_nodes("outer")))
     radii = numpy.hypot(points[outer, 0], points[outer, 1])
     assert radii == pytest.approx(1.0, abs=1e-12)
+
+
+def test_a_hanging_node_on_a_curved_side_stays_on_the_straight_side_of_its_neighbour():
+    """The unit cube of 2 by 2 by 2 hexahedra with its top side bent to y = 1 + x (1 - x) / 10,
+    and one cell under the top split.  The middles of the top edges that it shares with whole
+    neighbours hang, and stay on the straight edges of those neighbours, where their
+    constraints put them.  Every other node of the top moves onto the curve."""
+    from dualmesh import _core
+
+    def bend(point):
+        return (point[0], 1.0 + 0.1 * point[0] * (1.0 - point[0]), point[2])
+
+    hierarchy = _core.Subdivision(
+        dualmesh.generate_box_mesh(0, 1, 0, 1, 0, 1, 2, 2, 2, element_type="Hex8")
+    )
+    hierarchy.project("top", bend)
+    points = numpy.asarray(hierarchy.mesh().points())
+    marked = []
+    for _type, cell, _block in hierarchy.mesh().cells():
+        corners = points[list(cell)]
+        marked.append(
+            int(
+                corners[:, 0].max() < 0.6
+                and corners[:, 2].max() < 0.6
+                and corners[:, 1].min() > 0.4
+            )
+        )
+    assert sum(marked) == 1
+    hierarchy.refine(marked, 5)
+    hierarchy.project("top", bend)
+    mesh = hierarchy.mesh()
+    points = numpy.asarray(mesh.points())
+    hanging = dict(hierarchy.hanging())
+    off_the_curve = 0
+    for node in set(mesh.boundary_nodes("top")):
+        curve = bend(points[node])[1]
+        if node in hanging:
+            straight = sum(weight * points[primary, 1] for primary, weight in hanging[node])
+            assert points[node, 1] == pytest.approx(straight, abs=1e-14)
+            off_the_curve += abs(straight - curve) > 1e-3
+        else:
+            assert points[node, 1] == pytest.approx(curve, abs=1e-14)
+    assert off_the_curve >= 1

@@ -105,12 +105,8 @@ class _Hierarchy:
 
     def project(self, name: str, projection) -> None:
         """Move the nodes of side set ``name`` onto a curved boundary: ``projection((x, y, z))``
-        gives the point of each."""
-        if not hasattr(self._core, "project"):
-            raise ValueError(
-                "A curved boundary is followed on meshes of triangles or tetrahedra in this "
-                "version."
-            )
+        gives the point of each.  A hanging node stays on the straight side of its large
+        neighbour until that side is split."""
         self._core.project(name, projection)
 
     def origins(self) -> numpy.ndarray:
@@ -265,8 +261,9 @@ def solve_with_adaptive_refinement(
     squares.  ``boundaries`` maps side set names to the projections of their
     curves, ``projection((x, y, z))`` giving the point of the curve for a
     node: after each refinement, the nodes of the side set move onto it, so
-    that refining there also refines the geometry (a mesh of triangles or
-    tetrahedra).  In a distributed run every process holds the whole mesh and
+    that refining there also refines the geometry.  A hanging node stays on
+    the straight side of its large neighbour until that side is split.  In a
+    distributed run every process holds the whole mesh and
     marks it from the indicators of the whole mesh.
 
     ``report`` sets what the study prints: ``"full"`` (the default: a line

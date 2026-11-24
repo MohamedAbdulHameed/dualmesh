@@ -384,6 +384,14 @@ more than one level finer, so a node hangs on one level only.  Coarsening
 merges a family of :math:`2^d` children back into their parent when all of
 them are marked and the parent keeps the balance.
 
+A new node is placed by the bilinear (trilinear) map of the corners of its
+parent as they are.  On a curved side, the ``boundaries`` argument of
+:func:`~dualmesh.solve_with_adaptive_refinement` moves the nodes of the side
+onto the curve after each refinement, and the later splits start from the
+moved nodes.  A hanging node on such a side stays on the straight side of its
+large neighbour, where its constraint puts it, and moves onto the curve once
+that side is split.
+
 The two methods treat a hanging node differently.
 
 - FEM constrains it.  The value at a hanging node is that of the large side:

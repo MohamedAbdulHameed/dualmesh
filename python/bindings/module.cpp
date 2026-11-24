@@ -943,6 +943,26 @@ PYBIND11_MODULE(_core, m)
           py::arg("refine"),
           py::arg("coarsen"),
           py::arg("max_level"))
+      .def(
+          "project",
+          [](Subdivision & s, const std::string & name, const py::function & projection)
+          {
+            s.project(
+                name,
+                [&](const Point & x)
+                {
+                  const auto moved =
+                      projection(py::make_tuple(x[0], x[1], x[2])).cast<std::vector<double>>();
+                  Point out{0, 0, 0};
+                  for (std::size_t k = 0; k < moved.size() && k < 3; ++k)
+                    out[static_cast<int>(k)] = moved[k];
+                  return out;
+                });
+          },
+          py::arg("name"),
+          py::arg("projection"),
+          "Move the nodes of a side set onto a curved boundary, except the hanging nodes: "
+          "projection((x, y, z)) gives the point of each.")
       .def("levels", &Subdivision::levels)
       .def("origins", &Subdivision::origins)
       .def(

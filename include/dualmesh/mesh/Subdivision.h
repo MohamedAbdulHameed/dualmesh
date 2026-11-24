@@ -15,7 +15,9 @@
 // The coarsening merges a family of 2^d leaves back into their parent when all are marked and the
 // parent keeps the balance.  The hierarchy keeps its nodes under fixed numbers, and a new node
 // takes the value of the interpolant of the old cell it lies in, which carries the fields of the
-// elements exactly.
+// elements exactly.  A new node is placed by the bilinear (trilinear) map of the corners of its
+// parent as they are, so the nodes that project() moves onto a curved boundary carry over to the
+// cells that later splits make.
 #pragma once
 
 #include "dualmesh/mesh/Mesh.h"
@@ -23,6 +25,7 @@
 #include <Eigen/Core>
 
 #include <array>
+#include <functional>
 #include <map>
 #include <string>
 #include <utility>
@@ -48,6 +51,12 @@ public:
   /// Coarsen where @p coarsen marks a whole family that @p refine does not mark, then refine, in
   /// one change of the mesh: transfer() carries values across both.
   bool adapt(const std::vector<char> & refine, const std::vector<char> & coarsen, int max_level);
+
+  /// Move the nodes of side set @p name onto a curved boundary: each takes the point that
+  /// @p projection gives for it, except a hanging node, which stays on the straight side of its
+  /// large neighbour until that side is split.  It changes no numbering, so transfer() still
+  /// carries values from the mesh before.
+  void project(const std::string & name, const std::function<Point(const Point &)> & projection);
 
   /// The level of each element of the current mesh (0 for a cell of the initial mesh), and the
   /// element of the initial mesh it comes from.
@@ -92,8 +101,8 @@ private:
   /// The node at the middle of @p edge, and at the centre of a face with the corners @p face.
   Index middle(const Edge & edge, const Point & position);
   Index centre(const Face & face, const Point & position);
-  /// The point of the initial cell @p origin at the reference coordinates @p xi.
-  Point place(Index origin, const Point & xi) const;
+  /// The point of @p cell at its reference coordinates @p eta, by its corners as they are now.
+  Point place(const Cell & cell, const Point & eta) const;
   /// Split leaf @p c into its children.
   void split(Index c);
   /// The leaves whose split the 2:1 balance needs.
@@ -118,9 +127,7 @@ private:
   std::vector<Point> _points;
   std::map<Edge, Index> _middles;
   std::map<Face, Index> _centres;
-  /// The corners of every initial cell, and the reference coordinates of every node in the
-  /// initial cells whose closure holds it.
-  std::vector<std::vector<Index>> _origin_nodes;
+  /// The reference coordinates of every node in the initial cells whose closure holds it.
   std::vector<std::map<Index, Point>> _origin_reference;
   std::vector<Cell> _cells;
   /// The cells of the elements of the current mesh, and of the mesh before the last change.

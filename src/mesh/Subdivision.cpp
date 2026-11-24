@@ -69,7 +69,6 @@ Subdivision::Subdivision(const Mesh & initial)
     cell.origin = static_cast<Index>(_cells.size());
     if (_dimension == 2)
       cell.low[2] = cell.high[2] = 0.0;
-    _origin_nodes.push_back(cell.n);
     std::map<Index, Point> xi;
     for (int k = 0; k < corners; ++k)
       xi[cell.n[static_cast<std::size_t>(k)]] = _corner_xi[k];
@@ -97,15 +96,14 @@ Subdivision::Subdivision(const Mesh & initial)
 }
 
 Point
-Subdivision::place(Index origin, const Point & xi) const
+Subdivision::place(const Cell & cell, const Point & eta) const
 {
   std::array<double, 8> N{};
   std::array<Point, 8> dN{};
-  ReferenceElement::get(_type).shape(xi, N.data(), dN.data());
+  ReferenceElement::get(_type).shape(eta, N.data(), dN.data());
   Point x{0, 0, 0};
-  const auto & corners = _origin_nodes[static_cast<std::size_t>(origin)];
-  for (std::size_t k = 0; k < corners.size(); ++k)
-    x = x + N[k] * _points[static_cast<std::size_t>(corners[k])];
+  for (std::size_t k = 0; k < cell.n.size(); ++k)
+    x = x + N[k] * _points[static_cast<std::size_t>(cell.n[k])];
   return x;
 }
 
@@ -157,9 +155,14 @@ Subdivision::split(Index c)
   for (int p = 0; p < size; ++p)
   {
     const int t[3] = {p % 3, (p / 3) % 3, p / 9};
-    Point xi{0, 0, 0};
+    // The point in the reference coordinates of the initial cell, which the transfer locates,
+    // and in those of the parent, where its corners as they are now place it.
+    Point xi{0, 0, 0}, eta{0, 0, 0};
     for (int a = 0; a < d; ++a)
+    {
       xi[a] = parent.low[a] + 0.5 * t[a] * (parent.high[a] - parent.low[a]);
+      eta[a] = t[a] - 1.0;
+    }
     std::vector<Index> spanned;
     for (int k = 0; k < corners; ++k)
     {
@@ -174,13 +177,13 @@ Subdivision::split(Index c)
     if (spanned.size() == 1)
       node = spanned[0];
     else if (spanned.size() == 2)
-      node = middle(key(spanned[0], spanned[1]), place(parent.origin, xi));
+      node = middle(key(spanned[0], spanned[1]), place(parent, eta));
     else if (spanned.size() == 4 && d == 3)
-      node = centre(sortedFace(spanned), place(parent.origin, xi));
+      node = centre(sortedFace(spanned), place(parent, eta));
     else
     {
       node = static_cast<Index>(_points.size());
-      _points.push_back(place(parent.origin, xi));
+      _points.push_back(place(parent, eta));
       for (auto & in : _in_node_set)
       {
         bool all = true;
@@ -485,6 +488,34 @@ Subdivision::adapt(const std::vector<char> & refine,
     return false;
   build();
   return true;
+}
+
+void
+Subdivision::project(const std::string & name,
+                     const std::function<Point(const Point &)> & projection)
+{
+  const auto found = _mesh.sidesets().find(name);
+  if (found == _mesh.sidesets().end())
+    throw InputError("There is no side set '" + name + "' to move onto its boundary.");
+  // A hanging node stays on the straight side of its large neighbour, where the constraint of its
+  // value puts it.  It moves onto the curve at the projection after that side is split.
+  std::vector<char> done(static_cast<std::size_t>(_mesh.numNodes()), 0);
+  for (const Hanging & h : _hanging)
+    done[static_cast<std::size_t>(h.node)] = 1;
+  for (const Side & side : found->second)
+    for (Index i : _mesh.sideNodes(side))
+    {
+      if (done[static_cast<std::size_t>(i)])
+        continue;
+      done[static_cast<std::size_t>(i)] = 1;
+      Point & x = _points[static_cast<std::size_t>(_numbers[static_cast<std::size_t>(i)])];
+      x = projection(x);
+    }
+  // The same mesh with the moved positions, and the same mesh before the last change.
+  const std::vector<Index> numbers_before = _numbers_before, leaves_before = _leaves_before;
+  build();
+  _numbers_before = numbers_before;
+  _leaves_before = leaves_before;
 }
 
 std::vector<int>
