@@ -242,6 +242,15 @@ def _coarsening(squared, fraction, refine, coarsenable):
     return marked
 
 
+def _check_adaptivity_field(settings: dict, variables: dict) -> None:
+    """The field of mesh_adaptivity is one that the physics solve for."""
+    if settings["field"] not in variables:
+        raise input_error(
+            f"mesh_adaptivity.field: '{settings['field']}' is not a field of the physics, "
+            f"which solve for {', '.join(sorted(variables))}."
+        )
+
+
 def _adapt(validated: dict, report: str, options: dict):
     """The steady adaptive loop: solve, estimate, mark, adapt, until no cell below the maximum
     refinement level is marked to refine.  Each solve starts from the solution of the last mesh,
@@ -256,14 +265,10 @@ def _adapt(validated: dict, report: str, options: dict):
     # Refinement and coarsening may undo each other, so the cycles are bounded.
     for cycle in range(4 * hierarchy.mesh().dimension * max_level + 1):
         engine, _, variables = build_problem(validated, hierarchy.mesh())
+        _check_adaptivity_field(settings, variables)
         for name, values in start.items():
             engine.set_gathered_values(name, values)
         engine.solve(report="none", **options)
-        if settings["field"] not in variables:
-            raise input_error(
-                f"mesh_adaptivity.field: '{settings['field']}' is not a field of the physics, "
-                f"which solve for {', '.join(sorted(variables))}."
-            )
         # Every process holds the same hierarchy of the whole mesh, so the indicators and the
         # values are those of the whole mesh, and every process adapts it the same way.
         squared = sum(
@@ -298,6 +303,7 @@ def _adapt_in_time(validated, engine, variables, writer, accepted, report, optio
     from dualmesh.input.build import build_mesh
 
     settings = validated["mesh_adaptivity"]
+    _check_adaptivity_field(settings, variables)
     time_options = transient_options(validated["time"])
     end_time = time_options["end_time"]
     hierarchy = _Hierarchy(build_mesh(validated["mesh"]))

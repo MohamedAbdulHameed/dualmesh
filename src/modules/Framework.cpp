@@ -263,6 +263,12 @@ TimeDerivative::computeSource(const QpContext & ctx) const
   return _c.value(ctx) * ctx.rate(_var);
 }
 
+double
+TimeDerivative::sourceTermSize(const QpContext & ctx, const ADReal & source) const
+{
+  return std::max(std::abs(source.value()), std::abs(_c.value(ctx).value()) * ctx.rateSize(_var));
+}
+
 // ---------------------------------------------------------------------------
 InputParameters
 SecondTimeDerivative::validParams()
@@ -296,6 +302,13 @@ ADReal
 SecondTimeDerivative::computeSource(const QpContext & ctx) const
 {
   return _c.value(ctx) * ctx.acceleration(_var);
+}
+
+double
+SecondTimeDerivative::sourceTermSize(const QpContext & ctx, const ADReal & source) const
+{
+  return std::max(std::abs(source.value()),
+                  std::abs(_c.value(ctx).value()) * ctx.accelerationSize(_var));
 }
 
 // ---------------------------------------------------------------------------

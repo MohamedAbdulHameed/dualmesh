@@ -74,6 +74,8 @@ public:
   bool hasSource() const override { return true; }
   bool isTimeKernel() const override { return true; }
   ADReal computeSource(const QpContext & ctx) const override;
+  /// The size of the terms whose difference is the rate (QpContext::rateSize).
+  double sourceTermSize(const QpContext & ctx, const ADReal & source) const override;
 
 private:
   FieldCoefficient _c;
@@ -91,6 +93,8 @@ public:
   bool isTimeKernel() const override { return true; }
   bool isSecondOrder() const override { return true; }
   ADReal computeSource(const QpContext & ctx) const override;
+  /// The size of the terms whose difference is the acceleration (QpContext::accelerationSize).
+  double sourceTermSize(const QpContext & ctx, const ADReal & source) const override;
 
 private:
   FieldCoefficient _c;

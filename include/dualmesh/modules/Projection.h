@@ -18,7 +18,7 @@
 //     nu (grad v, grad u^n) + (beta_0 / dt) (v, u^n) = (v, u*) / dt - (v, dP/dx) .
 //
 // The equations are written with test functions: the shape functions of the finite element method, or the indicator of the control domain of each node for the methods of the dual mesh (DMCDM), for which (v, f) is an integral over the control domain and (grad q, F) the flux of F out of it.
-// The pressure equation is a Poisson equation, solved by the conjugate gradient method with algebraic multigrid (hypre BoomerAMG), and each Helmholtz equation is symmetric and diagonally dominant, solved by the conjugate gradient method with a Jacobi preconditioner.
+// The pressure equation is a Poisson equation, solved with algebraic multigrid (hypre BoomerAMG), and each Helmholtz equation is diagonally dominant, solved with a Jacobi preconditioner: inside the conjugate gradient method for the finite element method, whose matrices are symmetric, and inside GMRES for the methods of the dual mesh, whose matrices are not in general.
 // The matrices are assembled once and kept, with their preconditioners, as long as the step size is unchanged.
 // The coefficients beta_j and alpha_j are those of a variable step, so a step shortened to land on an output time keeps the order.
 #pragma once

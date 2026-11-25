@@ -250,10 +250,11 @@ def solve_with_adaptive_refinement(
 ):
     """Solve, estimate, mark and refine, ``num_cycles`` times.
 
-    ``build_problem`` is called with a mesh and must return a solved-ready
-    :class:`~dualmesh.Problem` defined on it: the whole problem is
-    rebuilt on every mesh rather than transferred, which keeps the boundary
-    conditions and the material state exactly as the user wrote them.
+    ``build_problem`` is called with a mesh and returns a
+    :class:`~dualmesh.Problem` defined on it, ready to solve.  The problem is
+    built anew on every mesh, which keeps its boundary conditions and
+    properties exactly as the user wrote them, and its solve starts from the
+    solution of the last mesh, carried to the new one.
     ``marker`` turns the vector of indicators into a boolean array of elements
     to refine.  ``max_elements`` stops the loop early once the mesh has grown
     past that size, and ``callback(cycle, problem, indicators)`` is called after

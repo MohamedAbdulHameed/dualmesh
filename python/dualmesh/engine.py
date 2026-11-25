@@ -568,7 +568,7 @@ class Problem:
             heat = problem.add_physics(
                 "heat_transfer", thermal_conductivity=20.0, heat_source=1.0e6
             )
-            heat.add_boundary_condition("Dirichlet", "left", value=40.0)
+            heat.add_boundary_condition("temperature = 40", boundary="left")
         """
         from . import physics as _physics
 
@@ -932,7 +932,7 @@ class Problem:
 
         with :math:`\theta = 1` for ``"backward_Euler"`` (the default), which is
         unconditionally stable and first-order accurate, :math:`\theta = 1/2`
-        for ``"Crank-Nicolson"``, the midpoint rule, which is unconditionally
+        for ``"Crank-Nicolson"``, the trapezoidal rule, which is unconditionally
         stable and second-order accurate and can oscillate after a sharp
         transient, and :math:`\theta = 0` for ``"forward_Euler"``, which is
         explicit in the steady terms and stable only below a critical step.

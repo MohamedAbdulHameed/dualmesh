@@ -2,6 +2,8 @@
 //
 // pybind11 bindings: the whole framework is usable from Python, including
 // user-defined kernels, boundary conditions, and property objects written in Python.
+#include <algorithm>
+#include <cctype>
 #include <pybind11/functional.h>
 #include <pybind11/numpy.h>
 #include <pybind11/operators.h>
@@ -269,13 +271,19 @@ public:
 };
 
 Method
-methodFromString(const std::string & s)
+methodFromString(const std::string & given)
 {
+  // The abbreviations keep their capitals, and the lower case is accepted too.
+  std::string s = given;
+  std::transform(s.begin(),
+                 s.end(),
+                 s.begin(),
+                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
   if (s == "dmcdm")
     return Method::DualMesh;
   if (s == "fem")
     return Method::FiniteElement;
-  throw InputError("Unknown method '" + s +
+  throw InputError("Unknown method '" + given +
                    "' (use 'FEM', the finite element method, for solids, or 'DMCDM', the dual "
                    "mesh control domain method, for fluids).");
 }

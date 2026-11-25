@@ -163,6 +163,8 @@ Problem::assemble(const Vector & U, const AssemblyOptions & opts, Vector & R, Sp
       s.ctx.accel_scale = opts.accel_scale;
       s.ctx.rate_shift.assign(nv, 0.0);
       s.ctx.accel_shift.assign(nv, 0.0);
+      s.ctx.rate_shift_size.assign(nv, 0.0);
+      s.ctx.accel_shift_size.assign(nv, 0.0);
       s.ctx.grad_rate_shift.assign(nv, Point{0, 0, 0});
     }
     if (want_jac)
@@ -207,10 +209,16 @@ Problem::assemble(const Vector & U, const AssemblyOptions & opts, Vector & R, Sp
     {
       s.rate_shift.resize(ld);
       s.accel_shift.resize(ld);
+      s.rate_shift_size.assign(ld, 0.0);
+      s.accel_shift_size.assign(ld, 0.0);
       for (int i = 0; i < ld; ++i)
       {
         s.rate_shift[i] = (*opts.rate_shift)[s.dofs[i]];
         s.accel_shift[i] = (*opts.accel_shift)[s.dofs[i]];
+        if (opts.rate_shift_size)
+          s.rate_shift_size[i] = (*opts.rate_shift_size)[s.dofs[i]];
+        if (opts.accel_shift_size)
+          s.accel_shift_size[i] = (*opts.accel_shift_size)[s.dofs[i]];
       }
     }
     s.Rloc.assign(ld, ADReal(0.0));
@@ -239,6 +247,8 @@ Problem::assemble(const Vector & U, const AssemblyOptions & opts, Vector & R, Sp
         {
           s.rate_shift.push_back((*opts.rate_shift)[d]);
           s.accel_shift.push_back((*opts.accel_shift)[d]);
+          s.rate_shift_size.push_back(opts.rate_shift_size ? (*opts.rate_shift_size)[d] : 0.0);
+          s.accel_shift_size.push_back(opts.accel_shift_size ? (*opts.accel_shift_size)[d] : 0.0);
         }
       }
     const int all = static_cast<int>(s.dofs.size());
@@ -335,7 +345,8 @@ Problem::assemble(const Vector & U, const AssemblyOptions & opts, Vector & R, Sp
         }
         fillContext(ctx, el, *fp, cur, use_lag ? &lag : nullptr, opts.old ? &old : nullptr, nd);
         if (opts.rate_shift)
-          fillShifts(ctx, el, *fp, s.rate_shift, s.accel_shift);
+          fillShifts(
+              ctx, el, *fp, s.rate_shift, s.accel_shift, s.rate_shift_size, s.accel_shift_size);
         ctx.x = geo.x;
         ctx.state_owner = e;
         ctx.state_key = stateKey(point_set, group_index, 0, static_cast<unsigned>(q));
@@ -1644,10 +1655,11 @@ std::vector<std::vector<int>>
 Problem::physicsBlocks() const
 {
   if (flowConstraint())
-    throw InputError("The preconditioner 'physics_blocks' solves each block with algebraic "
-                     "multigrid, which does not apply to the velocity and pressure of a flow. "
-                     "Use preconditioner 'LSC' or 'PCD', which split the flow itself and take "
-                     "the other unknowns (a temperature, for instance) into its first block.");
+    throw InputError("The split by physics (-dualmesh_split physics) solves each block with "
+                     "algebraic multigrid, which does not apply to the velocity and pressure of "
+                     "a flow. Use the Schur complement split of the flow (-dualmesh_schur lsc or "
+                     "pcd), which takes the other unknowns (a temperature, for instance) into its "
+                     "first block.");
   std::vector<std::vector<int>> blocks = displacementGroups();
   std::vector<char> grouped(numVariables(), 0);
   for (const auto & group : blocks)
@@ -2241,10 +2253,7 @@ Problem::takeTimeStep(const Vector & old,
   // The old contribution is evaluated once, before the nonlinear iteration,
   // and it is evaluated at the old time t^n: a source, a coefficient or a
   // boundary flux that depends on time explicitly has to be taken at t^n in
-  // this term and at t^{n+1} in the other.  Evaluating both at t^{n+1}, as an
-  // earlier version did, is consistent but only first-order accurate, which
-  // the manufactured-solution tests exposed as a Crank-Nicolson run
-  // converging at order one.
+  // this term and at t^{n+1} in the other, which keeps the Crank-Nicolson method second order.
   // An equation with a second time derivative takes the generalized-alpha method: its steady
   // terms at the level 1 - alpha_f between the two states, as the theta method weights them, and
   // its time derivatives by the Newmark relations from the velocity and the acceleration of the
@@ -2254,7 +2263,7 @@ Problem::takeTimeStep(const Vector & old,
                                    [](char c) { return c != 0; });
   double theta = tr.theta;
   double alpha_m = 0.0, alpha_f = 0.0, beta = 0.25, gamma = 0.5;
-  Vector rate_shift, accel_shift, predicted, predicted_rate;
+  Vector rate_shift, accel_shift, predicted, predicted_rate, rate_shift_size, accel_shift_size;
   if (dynamic)
   {
     if (tr.second_order_scheme == "generalized_alpha")
@@ -2295,6 +2304,16 @@ Problem::takeTimeStep(const Vector & old,
     const double rate_scale = (1.0 - alpha_f) * gamma / (beta * dt);
     accel_shift = accel_scale * predicted - alpha_m * state->a;
     rate_shift = rate_scale * predicted - (1.0 - alpha_f) * predicted_rate - alpha_f * state->v;
+    // The size of the terms of each shift.  For a mode far beyond the step, dt^2 a_n is far
+    // larger than u_n and the terms cancel, so the round-off of the shift, and of the time
+    // derivatives made from it, is the machine epsilon times this size: the floor of the
+    // convergence test of the step (Kernel::sourceTermSize).
+    const Vector size_predicted = state->u.cwiseAbs() + dt * state->v.cwiseAbs() +
+                                  dt * dt * std::abs(0.5 - beta) * state->a.cwiseAbs();
+    const Vector size_rate = state->v.cwiseAbs() + dt * std::abs(1.0 - gamma) * state->a.cwiseAbs();
+    accel_shift_size = accel_scale * size_predicted + std::abs(alpha_m) * state->a.cwiseAbs();
+    rate_shift_size = rate_scale * size_predicted + std::abs(1.0 - alpha_f) * size_rate +
+                      std::abs(alpha_f) * state->v.cwiseAbs();
   }
   if (theta <= 0.0)
     for (const auto & k : _kernels)
@@ -2350,6 +2369,8 @@ Problem::takeTimeStep(const Vector & old,
     base.accel_scale = (1.0 - alpha_m) / (beta * dt * dt);
     base.rate_shift = &rate_shift;
     base.accel_shift = &accel_shift;
+    base.rate_shift_size = &rate_shift_size;
+    base.accel_shift_size = &accel_shift_size;
   }
   // An explicit step still takes the equations without a time derivative at the new time.
   base.include_steady_terms =
@@ -2500,8 +2521,8 @@ runTransient(const TransientOptions & tr,
   const double span = tr.end_time - tr.start_time;
   const double dt_min = tr.dt_min > 0 ? tr.dt_min : tr.dt * 1.0e-6;
   const double dt_max = tr.dt_max > 0 ? tr.dt_max : std::abs(span);
-  // The order of accuracy of a step: that given, or that of the theta method, whose midpoint rule
-  // (theta = 1/2) is second order and every other member first.
+  // The order of accuracy of a step: that given, or that of the theta method, whose trapezoidal
+  // rule (theta = 1/2, Crank-Nicolson) is second order and every other member first.
   const double order = order_of_step > 0                  ? static_cast<double>(order_of_step)
                        : std::abs(tr.theta - 0.5) < 1e-12 ? 2.0
                                                           : 1.0;
@@ -2704,8 +2725,12 @@ runTransient(const TransientOptions & tr,
         {
           std::ostringstream os;
           os << "dualmesh: the transient solve failed at t = " << oldcurrent_time
-             << ". The step was rejected " << rejected_in_a_row << " times and the step size "
-             << "reached " << next_dt << ", below the minimum " << dt_min << ".";
+             << ". The step was rejected " << rejected_in_a_row << " times in a row";
+          if (next_dt < dt_min)
+            os << " and the step size reached " << next_dt << ", below the minimum " << dt_min
+               << ".";
+          else
+            os << ", more than max_rejected_steps = " << tr.max_rejected_steps << ".";
           throw std::runtime_error(os.str());
         }
         return total;

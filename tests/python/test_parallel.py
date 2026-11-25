@@ -6,7 +6,7 @@ valid, balanced partitions, that a sub-mesh keeps everything a rank needs, that
 the distributed code path reproduces the serial answer, and that threading the
 assembly does not change the result.  The behaviour on several MPI ranks is
 checked by the C++ program ``dualmesh_parallel_tests``, which is launched with
-``mpirun`` (see docs/parallel.rst).
+``mpirun`` (see docs/theory/parallel.rst).
 """
 
 from __future__ import annotations
