@@ -1213,9 +1213,7 @@ Problem::fillShifts(QpContext & ctx,
                     const Element & el,
                     const MappedPoint & fp,
                     const std::vector<double> & rate_local,
-                    const std::vector<double> & accel_local,
-                    const std::vector<double> & rate_size_local,
-                    const std::vector<double> & accel_size_local) const
+                    const std::vector<double> & accel_local) const
 {
   // The shifts of the time derivatives of the second-order variables, interpolated as the
   // variables are (QpContext::rate and acceleration).
@@ -1229,25 +1227,18 @@ Problem::fillShifts(QpContext & ctx,
     const double * N = corner ? fp.corner_shape : fp.N;
     const Point * dN = corner ? fp.corner_gradient : fp.dN;
     const int count = corner ? fp.num_corners : el.numNodes();
-    double r = 0, a = 0, r_size = 0, a_size = 0;
+    double r = 0, a = 0;
     Point g{0, 0, 0};
     for (int k = 0; k < count; ++k)
     {
       const int i = localDofIndex(el, k, v);
       r += N[k] * rate_local[i];
       a += N[k] * accel_local[i];
-      // The sizes take |N|, as a quadratic shape function may be negative.
-      if (!rate_size_local.empty())
-        r_size += std::abs(N[k]) * rate_size_local[i];
-      if (!accel_size_local.empty())
-        a_size += std::abs(N[k]) * accel_size_local[i];
       for (int d = 0; d < dim; ++d)
         g[d] += dN[k][d] * rate_local[i];
     }
     ctx.rate_shift[v] = r;
     ctx.accel_shift[v] = a;
-    ctx.rate_shift_size[v] = r_size;
-    ctx.accel_shift_size[v] = a_size;
     ctx.grad_rate_shift[v] = g;
   }
 }

@@ -233,7 +233,9 @@ Solver (MUMPS) [Amestoy2001]_ when PETSc has it, on one process and on
 several.  MUMPS pivots, so it factorises the saddle point systems of the
 Taylor-Hood element, which have zeros on the diagonal.  Without MUMPS, the solver
 takes PETSc's own lower-upper (LU) factorisation on one process, which does
-not pivot, and block Jacobi with incomplete LU on several processes.
+not pivot, and block Jacobi with incomplete LU on several processes.  A
+direct solve that you choose with ``-pc_type lu`` also takes MUMPS, unless
+``-pc_factor_mat_solver_type`` names another package.
 
 When an iterative choice does not converge in 500 iterations, the solve goes
 on with the direct factorisation from the last nonlinear iterate.  GMRES with

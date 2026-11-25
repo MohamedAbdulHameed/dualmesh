@@ -472,6 +472,12 @@ Verification and benchmarks
    of Manufactured Solutions*, Sandia National Laboratories report
    SAND2000-1444, 2000.  DOI: 10.2172/759450.
 
+.. [ThomeeWahlbin2008] V. Thomée and L. B. Wahlbin, "On the existence of
+   maximum principles in parabolic finite element equations", *Mathematics of
+   Computation*, 77(261):11–19, 2008.  DOI: 10.1090/S0025-5718-07-02021-2.  The
+   consistent capacity has no maximum principle for a short step, and the
+   lumped capacity keeps it under conditions on the angles of the mesh.
+
 .. [TimoshenkoGoodier1970] S. P. Timoshenko and J. N. Goodier, *Theory of
    Elasticity*, 3rd edition, McGraw-Hill, New York, NY, 1970.  The exact
    solutions of the thick cylinder and of the thermal stresses in a long

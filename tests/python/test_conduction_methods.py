@@ -142,3 +142,25 @@ def test_a_jump_of_the_conductivity_between_blocks_is_exact_at_the_nodes(method)
     # Both methods are exact at the nodes in one dimension, where the nodes include the face
     # between the blocks.
     assert max(errors) < 1e-12, errors
+
+
+@pytest.mark.parametrize("method", ["FEM", "DMCDM"])
+def test_a_short_step_keeps_the_temperature_between_its_initial_and_boundary_values(method):
+    """A plate at 300 K takes 400 K on its left side.  The step is far shorter than the time
+    heat takes to cross an element (diffusivity times step over size squared is 0.0064), where a
+    consistent heat capacity undershoots ahead of the front.  The lumped capacity of linear
+    elements keeps the maximum principle of conduction."""
+    mesh = dualmesh.generate_rectangle_mesh(0, 1, 0, 1, 8, 8, element_type="Tri3")
+    problem = dualmesh.Problem(mesh, method=method)
+    heat = problem.add_physics(
+        "heat_transfer",
+        thermal_conductivity=1.0,
+        density=1.0,
+        specific_heat=1.0,
+        initial_condition=300.0,
+    )
+    heat.add_boundary_condition("temperature = 400", boundary="left")
+    problem.solve_transient(end_time=1e-3, time_step=1e-4, report="none")
+    temperature = problem.values("temperature")
+    assert temperature.min() >= 300.0 - 1e-9
+    assert temperature.max() <= 400.0 + 1e-9

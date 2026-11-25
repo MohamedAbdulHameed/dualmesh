@@ -102,7 +102,10 @@ struct Settings
   /// PETSc option string; empty selects the default described above.
   std::string options;
   double relative_tolerance = 1e-12;
-  double absolute_tolerance = 1e-50;
+  /// Zero, so that the Krylov solve stops on relative_tolerance alone.  A Newton correction has
+  /// the units and the size of the solution, and a fixed absolute tolerance ends the solve of a
+  /// small correction at its first iteration with a zero correction.
+  double absolute_tolerance = 0.0;
   int max_iterations = 5000;
   /// Degrees of freedom per node (the number of variables), which the
   /// dualmesh numbering interlaces.  It is given to PETSc as the matrix block

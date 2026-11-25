@@ -163,8 +163,6 @@ Problem::assemble(const Vector & U, const AssemblyOptions & opts, Vector & R, Sp
       s.ctx.accel_scale = opts.accel_scale;
       s.ctx.rate_shift.assign(nv, 0.0);
       s.ctx.accel_shift.assign(nv, 0.0);
-      s.ctx.rate_shift_size.assign(nv, 0.0);
-      s.ctx.accel_shift_size.assign(nv, 0.0);
       s.ctx.grad_rate_shift.assign(nv, Point{0, 0, 0});
     }
     if (want_jac)
@@ -209,16 +207,10 @@ Problem::assemble(const Vector & U, const AssemblyOptions & opts, Vector & R, Sp
     {
       s.rate_shift.resize(ld);
       s.accel_shift.resize(ld);
-      s.rate_shift_size.assign(ld, 0.0);
-      s.accel_shift_size.assign(ld, 0.0);
       for (int i = 0; i < ld; ++i)
       {
         s.rate_shift[i] = (*opts.rate_shift)[s.dofs[i]];
         s.accel_shift[i] = (*opts.accel_shift)[s.dofs[i]];
-        if (opts.rate_shift_size)
-          s.rate_shift_size[i] = (*opts.rate_shift_size)[s.dofs[i]];
-        if (opts.accel_shift_size)
-          s.accel_shift_size[i] = (*opts.accel_shift_size)[s.dofs[i]];
       }
     }
     s.Rloc.assign(ld, ADReal(0.0));
@@ -247,8 +239,6 @@ Problem::assemble(const Vector & U, const AssemblyOptions & opts, Vector & R, Sp
         {
           s.rate_shift.push_back((*opts.rate_shift)[d]);
           s.accel_shift.push_back((*opts.accel_shift)[d]);
-          s.rate_shift_size.push_back(opts.rate_shift_size ? (*opts.rate_shift_size)[d] : 0.0);
-          s.accel_shift_size.push_back(opts.accel_shift_size ? (*opts.accel_shift_size)[d] : 0.0);
         }
       }
     const int all = static_cast<int>(s.dofs.size());
@@ -345,8 +335,7 @@ Problem::assemble(const Vector & U, const AssemblyOptions & opts, Vector & R, Sp
         }
         fillContext(ctx, el, *fp, cur, use_lag ? &lag : nullptr, opts.old ? &old : nullptr, nd);
         if (opts.rate_shift)
-          fillShifts(
-              ctx, el, *fp, s.rate_shift, s.accel_shift, s.rate_shift_size, s.accel_shift_size);
+          fillShifts(ctx, el, *fp, s.rate_shift, s.accel_shift);
         ctx.x = geo.x;
         ctx.state_owner = e;
         ctx.state_key = stateKey(point_set, group_index, 0, static_cast<unsigned>(q));
@@ -2242,7 +2231,7 @@ Problem::takeTimeStep(const Vector & old,
                                    [](char c) { return c != 0; });
   double theta = tr.theta;
   double alpha_m = 0.0, alpha_f = 0.0, beta = 0.25, gamma = 0.5;
-  Vector rate_shift, accel_shift, predicted, predicted_rate, rate_shift_size, accel_shift_size;
+  Vector rate_shift, accel_shift, predicted, predicted_rate;
   if (dynamic)
   {
     if (tr.second_order_scheme == "generalized_alpha")
@@ -2283,16 +2272,6 @@ Problem::takeTimeStep(const Vector & old,
     const double rate_scale = (1.0 - alpha_f) * gamma / (beta * dt);
     accel_shift = accel_scale * predicted - alpha_m * state->a;
     rate_shift = rate_scale * predicted - (1.0 - alpha_f) * predicted_rate - alpha_f * state->v;
-    // The size of the terms of each shift.  For a mode far beyond the step, dt^2 a_n is far
-    // larger than u_n and the terms cancel, so the round-off of the shift, and of the time
-    // derivatives made from it, is the machine epsilon times this size: the floor of the
-    // convergence test of the step (Kernel::sourceTermSize).
-    const Vector size_predicted = state->u.cwiseAbs() + dt * state->v.cwiseAbs() +
-                                  dt * dt * std::abs(0.5 - beta) * state->a.cwiseAbs();
-    const Vector size_rate = state->v.cwiseAbs() + dt * std::abs(1.0 - gamma) * state->a.cwiseAbs();
-    accel_shift_size = accel_scale * size_predicted + std::abs(alpha_m) * state->a.cwiseAbs();
-    rate_shift_size = rate_scale * size_predicted + std::abs(1.0 - alpha_f) * size_rate +
-                      std::abs(alpha_f) * state->v.cwiseAbs();
   }
   if (theta <= 0.0)
     for (const auto & k : _kernels)
@@ -2348,8 +2327,6 @@ Problem::takeTimeStep(const Vector & old,
     base.accel_scale = (1.0 - alpha_m) / (beta * dt * dt);
     base.rate_shift = &rate_shift;
     base.accel_shift = &accel_shift;
-    base.rate_shift_size = &rate_shift_size;
-    base.accel_shift_size = &accel_shift_size;
   }
   // An explicit step still takes the equations without a time derivative at the new time.
   base.include_steady_terms =
@@ -2399,6 +2376,9 @@ Problem::initialAcceleration(const Vector & u, Vector & v, double dt, const Solv
       v[d] = (after[d] - before[d]) / (2.0 * h);
       a[d] = (after[d] - 2.0 * u[d] + before[d]) / (h * h);
     }
+  // A periodic copy and a hanging node move with their primaries.  The differences above hold
+  // them still, which would drop the velocity carried from the last mesh.
+  updateDependentDofs(v);
   // M a = -R(u, v): the residual with the velocity v and no acceleration, and the Jacobian of
   // the second time derivatives alone, which is M.
   AssemblyOptions ao;

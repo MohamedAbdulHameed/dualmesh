@@ -133,8 +133,8 @@ public:
                   ParameterKind::Function,
                   1.0,
                   "Specific heat capacity c_p at constant pressure in J/(kg K): a constant, a "
-                  "registered function, or an expression of x, y, z and t. Default 1, for a "
-                  "problem written in dimensionless form.");
+                  "registered function, the name of a property, or an expression. Default 1, "
+                  "for a problem written in dimensionless form.");
     p.setRange("specific_heat", ParameterRange::Positive);
     addAdvectionSchemeParam(p);
     return p;
@@ -160,7 +160,7 @@ public:
     for (const auto & n : names)
       _v.push_back(problem.variableIndex(n));
     _rho = getFunction(problem, "density");
-    _cp = getFunction(problem, "specific_heat");
+    _cp.setup(problem, _params, "specific_heat", name());
     _scheme = advectionScheme(problem, _scheme_text, name());
     _mass = conservingMassEquation(problem, variable());
     _flux = _face_scheme || (_mass && problem.isDual());
@@ -203,7 +203,7 @@ public:
       velocity += w[d].value() * ctx.normal[d];
     const ADReal T =
         ctx.advectedValue(variable(), velocity, _scheme) - ctx.referenceValue(variable());
-    const double rc = _rho->value(ctx.x, ctx.time) * _cp->value(ctx.x, ctx.time);
+    const ADReal rc = _rho->value(ctx.x, ctx.time) * _cp.value(ctx);
     for (std::size_t d = 0; d < _v.size(); ++d)
       F[d] = -rc * w[d] * T;
   }
@@ -214,12 +214,13 @@ public:
     ADReal s(0.0);
     for (std::size_t d = 0; d < _v.size(); ++d)
       s += w[d] * g[d];
-    return _rho->value(ctx.x, ctx.time) * _cp->value(ctx.x, ctx.time) * s;
+    return _rho->value(ctx.x, ctx.time) * _cp.value(ctx) * s;
   }
 
 private:
   std::vector<int> _v;
-  FunctionPtr _rho, _cp;
+  FunctionPtr _rho;
+  FieldCoefficient _cp;
   std::string _scheme_text;
   /// Whether the scheme is a face flux of DMCDM (upwind, linear_upwind, limited).
   bool _face_scheme;
@@ -273,8 +274,8 @@ public:
                   ParameterKind::Function,
                   1.0,
                   "Specific heat capacity c_p in J/(kg K), for the diffusivity kappa of tau: a "
-                  "constant, a registered function, or an expression of x, y, z and t. Default "
-                  "1, for a problem written in dimensionless form.");
+                  "constant, a registered function, the name of a property, or an expression. "
+                  "Default 1, for a problem written in dimensionless form.");
     p.setRange("specific_heat", ParameterRange::Positive);
     p.addRequired("thermal_conductivity",
                   ParameterKind::String,
@@ -290,7 +291,7 @@ public:
     for (const auto & n : _params.getStringList("velocities"))
       _v.push_back(problem.variableIndex(n));
     _rho = getFunction(problem, "density");
-    _cp = getFunction(problem, "specific_heat");
+    _cp.setup(problem, _params, "specific_heat", name());
     _k.setup(problem, _params.getString("thermal_conductivity"), name());
     // The terms of the residual: the sources of the other kernels of the temperature, matched by
     // name, because a kernel after this one in the list has not resolved its variable yet.
@@ -345,7 +346,7 @@ public:
     // and temperature.
     if (!ctx.laplacian.empty())
       r -= _k.value(ctx) * ctx.laplacian[variable()];
-    const double rc = _rho->value(ctx.x, ctx.time) * _cp->value(ctx.x, ctx.time);
+    const double rc = _rho->value(ctx.x, ctx.time) * _cp.value(ctx).value();
     const double h = ctx.element >= 0 ? _h[ctx.element] : 1.0;
     ADReal speed2(1e-300);
     for (int v : _v)
@@ -365,7 +366,8 @@ public:
 
 private:
   std::vector<int> _v;
-  FunctionPtr _rho, _cp;
+  FunctionPtr _rho;
+  FieldCoefficient _cp;
   FieldCoefficient _k;
   std::vector<const Kernel *> _terms;
   std::vector<double> _h;
@@ -382,7 +384,13 @@ public:
         "m = rho c_p T, taken as rho c_p (T - T_old) / dt. Here rho is the density, c_p the "
         "specific heat capacity, T the temperature, T_old the temperature at the start of the "
         "step and dt the time step. A steady solve skips the term, and the weight theta of the "
-        "theta method, which multiplies the steady terms, does not multiply it.");
+        "theta method, which multiplies the steady terms, does not multiply it. With the "
+        "automatic quadrature, the term is lumped (the nodal rule) on a mesh of linear "
+        "elements when no flow carries the temperature: the system of each step then keeps "
+        "the maximum principle of conduction on a mesh without obtuse angles, for every time "
+        "step, and the heat stored is unchanged. A quadratic element, whose lumped weights "
+        "are not all positive, and a temperature carried by a flow, whose transport loses "
+        "phase accuracy with a lumped capacity, take the Gauss rule.");
     p.addOptional("density",
                   ParameterKind::Function,
                   1.0,
@@ -406,6 +414,8 @@ public:
   explicit HeatConductionTimeDerivative(const InputParameters & p) : Kernel(p) {}
   void initialSetup(Problem & problem) override
   {
+    if (_quad.automatic && lumped(problem))
+      _quad = QuadratureSpec::parse("nodal", _params.getBool("reduced_integration"));
     Kernel::initialSetup(problem);
     _rho.setup(problem, _params, "density", name());
     _cp.setup(problem, _params, "specific_heat", name());
@@ -418,6 +428,23 @@ public:
   }
 
 private:
+  /// Whether the automatic rule lumps the term: linear elements only, and no kernel that carries
+  /// the temperature with a flow.  The consistent capacity has positive entries off the diagonal,
+  /// so a short step undershoots ahead of a front on any mesh (Thomee and Wahlbin 2008).  The
+  /// lumped capacity keeps the maximum principle on a mesh without obtuse angles (Fujii 1973).
+  bool lumped(const Problem & problem) const
+  {
+    for (const auto & el : problem.mesh().elements())
+      if (elementIsQuadratic(el.type))
+        return false;
+    for (const auto & k : problem.kernels())
+      if (k->variableName() == variableName() &&
+          (k->type() == "heat_convection" || k->type() == "advection" ||
+           k->type() == "heat_streamline_stabilization"))
+        return false;
+    return true;
+  }
+
   FieldCoefficient _rho, _cp;
 };
 

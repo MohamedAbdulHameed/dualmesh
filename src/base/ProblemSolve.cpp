@@ -586,6 +586,12 @@ Problem::nonlinearSolve(const SolverOptions & o,
         residualAt(_U, lf, R, &J);
         jacobian_current = true;
       }
+      // A matrix with NaN or infinite entries makes every solver fail, so its cause is named first.
+      if (par.any(!J.coeffs().allFinite()))
+        throw std::runtime_error(
+            "dualmesh: the Jacobian has NaN or infinite entries: a property or a term is not "
+            "finite at the current state (for example the square root of zero has an infinite "
+            "slope). Check the expressions of the properties and terms there.");
       std::optional<petsc::SchurBlocks> schur;
       petsc::Settings settings = attemptSettings(*this, choice, J, rows, user.linear, schur);
       settings.relative_tolerance = o.linear_tolerance;

@@ -887,8 +887,12 @@ sideArea(const Mesh & mesh, const std::string & name)
   double sum = 0.0;
   for (const Side & side : mesh.sidesets().at(name))
   {
+    // A triangle, or a planar quadrilateral by its diagonals.
     const std::vector<Index> c = mesh.sideNodes(side);
-    sum += 0.5 * norm(cross(mesh.node(c[1]) - mesh.node(c[0]), mesh.node(c[2]) - mesh.node(c[0])));
+    sum += c.size() == 4 ? 0.5 * norm(cross(mesh.node(c[2]) - mesh.node(c[0]),
+                                            mesh.node(c[3]) - mesh.node(c[1])))
+                         : 0.5 * norm(cross(mesh.node(c[1]) - mesh.node(c[0]),
+                                            mesh.node(c[2]) - mesh.node(c[0])));
   }
   return sum;
 }

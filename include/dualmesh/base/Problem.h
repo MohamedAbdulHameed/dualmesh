@@ -609,9 +609,6 @@ public:
     double rate_scale = 0.0, accel_scale = 0.0;
     const Vector * rate_shift = nullptr;
     const Vector * accel_shift = nullptr;
-    /// The size of the terms whose sums are the shifts, whose round-off they carry.
-    const Vector * rate_shift_size = nullptr;
-    const Vector * accel_shift_size = nullptr;
     /// When set, the assembly also sums the size of every contribution to each entry of the
     /// residual: the reference residual, whose norm over the unknowns of one variable is the
     /// size of the terms of its equation, in its units (the conducted and carried heat, the
@@ -898,7 +895,7 @@ private:
   /// updated atomically.
   struct ThreadScratch
   {
-    std::vector<double> cur, lag, old, rate_shift, accel_shift, rate_shift_size, accel_shift_size;
+    std::vector<double> cur, lag, old, rate_shift, accel_shift;
     std::vector<Index> dofs;
     /// Node-based methods: the columns of a face flux that depends on the gradients at the face's
     /// nodes, the element's degrees of freedom and then those of the nodes around the two.
@@ -933,9 +930,7 @@ private:
                   const Element & el,
                   const MappedPoint & field_point,
                   const std::vector<double> & rate_local,
-                  const std::vector<double> & accel_local,
-                  const std::vector<double> & rate_size_local,
-                  const std::vector<double> & accel_size_local) const;
+                  const std::vector<double> & accel_local) const;
   void evaluateProperties(QpContext & ctx) const;
   /// One integration point of an interface condition, paired with the
   /// closest point on the other side of the gap.

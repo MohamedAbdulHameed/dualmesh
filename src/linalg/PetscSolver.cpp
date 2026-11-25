@@ -772,6 +772,21 @@ LinearSolver::LinearSolver(bool distributed,
     DM_PETSC(PCSetType(pc, PCFIELDSPLIT));
     s.splits = {indexSet(s.comm, settings.schur->other_rows),
                 indexSet(s.comm, settings.schur->pressure_rows)};
+    // Every node holds all the unknowns, so the first block has the other unknowns of each node
+    // together.  With that block size, multigrid on the block judges the strength of a connection
+    // between entries of one unknown only (the unknown approach of systems AMG): entries of
+    // unknowns in other units (the velocities and the temperature) then change neither its
+    // coarsening nor, with it, the iterations when the units change.
+    const int others = settings.block_size - 1;
+    if (others > 1)
+    {
+      int divisible =
+          settings.schur->other_rows.size() % static_cast<std::size_t>(others) == 0 ? 1 : 0;
+      if (MPI_Allreduce(MPI_IN_PLACE, &divisible, 1, MPI_INT, MPI_MIN, s.comm) != MPI_SUCCESS)
+        throw std::runtime_error("dualmesh: MPI_Allreduce failed in LinearSolver.");
+      if (divisible)
+        DM_PETSC(ISSetBlockSize(s.splits[0], others));
+    }
     DM_PETSC(PCFieldSplitSetIS(pc, "0", s.splits[0]));
     DM_PETSC(PCFieldSplitSetIS(pc, "1", s.splits[1]));
   }
@@ -793,6 +808,20 @@ LinearSolver::LinearSolver(bool distributed,
     DM_PETSC(PCFieldSplitSetIS(pc, std::to_string(k).c_str(), set));
   }
   DM_PETSC(KSPSetFromOptions(s.ksp));
+#ifdef PETSC_HAVE_MUMPS
+  // A direct solve that names no package takes MUMPS, which pivots.  PETSc's own LU does not
+  // pivot and stops at the first zero pivot, which the saddle point system of the Taylor-Hood
+  // element has on its pressure rows.
+  {
+    PetscBool lu = PETSC_FALSE;
+    DM_PETSC(PetscObjectTypeCompare(reinterpret_cast<PetscObject>(pc), PCLU, &lu));
+    MatSolverType package = nullptr;
+    if (lu)
+      DM_PETSC(PCFactorGetMatSolverType(pc, &package));
+    if (lu && !package)
+      DM_PETSC(PCFactorSetMatSolverType(pc, MATSOLVERMUMPS));
+  }
+#endif
   s.schur_split = settings.schur && isSchurSplit(s.ksp);
   if (settings.schur)
     s.schur_approximation = settings.schur->approximation;
@@ -873,7 +902,7 @@ LinearSolver::solve(const Vector & b_owned, const Vector * guess, Result & resul
     DM_PETSC(VecNorm(s.r, NORM_2, &r_norm));
     const double tolerance =
         r_norm > 0 ? std::min(0.5, s.relative_tolerance * b_norm / r_norm) : 0.5;
-    DM_PETSC(KSPSetTolerances(s.ksp, tolerance, PETSC_DEFAULT, PETSC_DEFAULT, PETSC_DEFAULT));
+    DM_PETSC(KSPSetTolerances(s.ksp, tolerance, 0.0, PETSC_DEFAULT, PETSC_DEFAULT));
     DM_PETSC(VecSet(s.x, 0.0));
     DM_PETSC(KSPSetInitialGuessNonzero(s.ksp, PETSC_FALSE));
     solved = r_norm > 0;

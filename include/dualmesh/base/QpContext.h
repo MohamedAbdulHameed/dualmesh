@@ -116,28 +116,10 @@ public:
   std::vector<char> second_order;
   double rate_scale = 0.0, accel_scale = 0.0;
   std::vector<double> rate_shift, accel_shift;
-  /// The size of the terms whose sum is each shift: their round-off is the machine epsilon times
-  /// it (AssemblyOptions::rate_shift_size).
-  std::vector<double> rate_shift_size, accel_shift_size;
   std::vector<Point> grad_rate_shift;
   bool secondOrder(int v) const
   {
     return v < static_cast<int>(second_order.size()) && second_order[v];
-  }
-  /// The size of the terms whose difference is du/dt and d2u/dt2 of variable v.  They nearly
-  /// cancel for a mode far beyond the step, so the round-off of the difference is the machine
-  /// epsilon times this size (Kernel::sourceTermSize).
-  double rateSize(int v) const
-  {
-    if (!secondOrder(v))
-      return (std::abs(u[v].value()) + std::abs(u_old[v])) / dt;
-    const double shift = v < static_cast<int>(rate_shift_size.size()) ? rate_shift_size[v] : 0.0;
-    return std::abs(rate_scale) * std::abs(u[v].value()) + shift;
-  }
-  double accelerationSize(int v) const
-  {
-    const double shift = v < static_cast<int>(accel_shift_size.size()) ? accel_shift_size[v] : 0.0;
-    return std::abs(accel_scale) * std::abs(u[v].value()) + shift;
   }
   /// du/dt of variable v: (u - u_old) / dt, or by the Newmark relations.
   ADReal rate(int v) const

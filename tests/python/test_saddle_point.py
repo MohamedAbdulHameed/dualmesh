@@ -31,7 +31,10 @@ direct = "-ksp_type preonly -pc_type lu"
 
 def exact_split(approximation):
     """The Schur split with the given approximation, and exact solves of its blocks."""
-    return f"-dualmesh_schur {approximation} -fieldsplit_0_pc_type lu -fieldsplit_1_laplacian_pc_type lu"
+    return (
+        f"-dualmesh_schur {approximation} -fieldsplit_0_pc_type lu "
+        "-fieldsplit_1_laplacian_pc_type lu -fieldsplit_1_pc_type lu"
+    )
 
 
 def _cavity(formulation, element_type, n, density=0.0, method="fem"):
@@ -154,8 +157,8 @@ def test_it_needs_a_mass_conservation_equation():
 
 def test_the_split_by_physics_is_exact_for_a_one_way_coupling_with_exact_block_solves():
     """The temperature drives the displacements and not the other way, so the block lower
-    triangle with the temperature first is the matrix itself.  On a mesh small enough that
-    multigrid has one level, which it solves exactly, GMRES converges in one iteration."""
+    triangle with the temperature first is the matrix itself.  With exact solves of the two
+    blocks, GMRES converges in one iteration."""
     mesh = dualmesh.generate_rectangle_mesh(x=[0.0, 0.1], y=[0.0, 0.02], num_elements=[10, 2])
     problem = dualmesh.Problem(mesh)
     heat = problem.add_physics("heat_transfer", thermal_conductivity=20.0, heat_source=1.0e6)
@@ -175,5 +178,8 @@ def test_the_split_by_physics_is_exact_for_a_one_way_coupling_with_exact_block_s
         linear_expansion_coefficient=1.2e-5,
         stress_free_temperature=293.0,
     )
-    result = problem.solve(petsc_options="-dualmesh_split physics", report="none")
+    result = problem.solve(
+        petsc_options="-dualmesh_split physics -fieldsplit_0_pc_type lu -fieldsplit_1_pc_type lu",
+        report="none",
+    )
     assert result.linear_iterations == 1

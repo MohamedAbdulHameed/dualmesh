@@ -71,6 +71,18 @@ solve leaves it out, and the time-integration weight :math:`\theta` of
 :math:`\rho c_p` enters, so you can give a known volumetric heat capacity as
 one of the two factors and set the other to 1.
 
+On a mesh of linear elements, the storage term of conduction is lumped: each
+node takes the integral of its shape function, and :math:`T` is evaluated at
+the node.  The consistent storage, integrated by a Gauss rule, has positive
+entries off the diagonal, so a short step undershoots the initial and boundary
+temperatures ahead of a front on any mesh [ThomeeWahlbin2008]_.  The lumped
+storage keeps the maximum principle of conduction for every step on a mesh
+without obtuse angles, stores the same heat and keeps the second-order accuracy
+in space.  A quadratic element, whose lumped weights are not all positive, and
+a temperature carried by a flow, whose transport loses phase accuracy with a
+lumped storage, take the Gauss rule.  A ``quadrature`` that you give replaces
+this choice.
+
 The ``heat_transfer`` physics adds the storage term when you give both
 ``density`` and ``specific_heat``, and it refuses one without the other.  A
 transient solve needs them.  When you leave ``thermal_conductivity`` out, the
