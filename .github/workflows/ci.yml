@@ -186,12 +186,22 @@ jobs:
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined" -Dpybind11_DIR=$(python -c "import pybind11; print(pybind11.get_cmake_dir())")
       - name: Build
         run: cmake --build build -j
+      # Open MPI patches malloc and mmap through its memory hooks and UCX, which AddressSanitizer
+      # intercepts as well: the two together crash at start-up, so the sanitized runs leave them
+      # out and use the shared-memory transport.
       - name: C++ tests
+        env:
+          OMPI_MCA_memory: ^patcher
+          OMPI_MCA_pml: ob1
+          OMPI_MCA_btl: self,vader
         run: ctest --test-dir build --output-on-failure
       - name: Python tests of the core, the physics and the neutronics
         env:
           ASAN_OPTIONS: detect_leaks=0
           UBSAN_OPTIONS: print_stacktrace=1
+          OMPI_MCA_memory: ^patcher
+          OMPI_MCA_pml: ob1
+          OMPI_MCA_btl: self,vader
         run: |
           export LD_PRELOAD=$(gcc -print-file-name=libasan.so):$(gcc -print-file-name=libubsan.so)
           PYTHONPATH=$PWD/python python -m pytest tests/python/test_framework.py tests/python/test_physics.py tests/python/test_Jacobian.py tests/python/test_criticality.py tests/python/test_eigenvalue_study.py -q

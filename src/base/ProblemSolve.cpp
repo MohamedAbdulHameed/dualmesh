@@ -213,6 +213,12 @@ Problem::linearSolve(const SparseMatrix & A,
                      int * iterations) const
 {
   const Parallel & par = parallel();
+  // A matrix with NaN or infinite entries makes every solver fail, so its cause is named first.
+  if (par.any(!A.coeffs().allFinite() || !b.allFinite()))
+    throw std::runtime_error(
+        "dualmesh: the linear system has NaN or infinite entries: a property or a term is not "
+        "finite at the current state (for example the square root of zero has an infinite "
+        "slope). Check the expressions of the properties and terms there.");
   const GlobalRows rows = par.globalRows(*this);
   const user_options_parts user = user_choice(o.petsc_options);
   const std::vector<petsc::GlobalEntry> entries = globalEntries(*this, A, rows);
@@ -464,7 +470,12 @@ Problem::nonlinearSolve(const SolverOptions & o,
         jacobian_current = true;
       }
       if (par.any(!J.coeffs().allFinite()))
+      {
+        inadmissible = "the Jacobian has NaN or infinite entries: a property or a term is not "
+                       "finite at the current state (for example the square root of zero has an "
+                       "infinite slope).";
         return false;
+      }
       solver.setEntries(globalEntries(*this, J, rows));
       if (schur_approximation)
       {

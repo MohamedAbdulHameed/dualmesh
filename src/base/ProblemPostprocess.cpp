@@ -57,8 +57,20 @@ Problem::boundaryOutflow(const std::string & var,
     held = held || (bc->variable() == v && on(bc->boundaries()));
   std::map<Index, double> out;
   const std::vector<char> fixed = constrainedDofs();
+  // The equations of periodic copies and hanging nodes belong to their primaries, as in the solve,
+  // so a held primary carries their share of the reaction.
+  Vector residual = _last_residual;
+  foldDependents(residual, nullptr);
+  const auto dependent = [&](Index d)
+  {
+    return (!_primary_of.empty() && _primary_of[static_cast<std::size_t>(d)] >= 0) ||
+           (!_hanging_of.empty() && !_hanging_of[static_cast<std::size_t>(d)].empty());
+  };
   for (Index n : _mesh->boundaryNodes(boundary))
-    out[n] = held && fixed[dof(n, v)] && (!owned || (*owned)[n]) ? -_last_residual[dof(n, v)] : 0.0;
+  {
+    const Index d = dof(n, v);
+    out[n] = held && fixed[d] && !dependent(d) && (!owned || (*owned)[n]) ? -residual[d] : 0.0;
+  }
   std::vector<IntegratedBC *> conditions;
   for (const auto & bc : _ibcs)
   {

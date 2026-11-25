@@ -216,9 +216,7 @@ def test_a_fully_anisotropic_plate_in_plane_stress_has_the_compliance_of_the_mat
     sigma = 50e6
     mesh = dualmesh.generate_rectangle_mesh(0, size, 0, size, 2, 2)
     problem = dualmesh.Problem(mesh)
-    body = problem.add_physics(
-        "solid_mechanics", formulation="plane_stress", stiffness=[float(c) for c in C.ravel()]
-    )
+    body = problem.add_physics("solid_mechanics", formulation="plane_stress", stiffness=C.tolist())
     body.add_boundary_condition("disp_x = 0", boundary="left")
     body.add_boundary_condition("disp_y = 0", point=[0.0, 0.0])
     body.add_boundary_condition(f"traction = [{sigma}, 0]", boundary="right")

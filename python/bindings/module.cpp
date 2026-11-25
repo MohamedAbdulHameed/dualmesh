@@ -975,7 +975,19 @@ PYBIND11_MODULE(_core, m)
             return out;
           },
           "The hanging nodes: (node, [(node, weight), ...]) for each.")
-      .def("transfer", &Subdivision::transfer, py::arg("values"), py::arg("width"));
+      .def(
+          "transfer",
+          [](Subdivision & h, const std::vector<double> & values, int width)
+          {
+            const Eigen::VectorXd after = h.transfer(
+                Eigen::Map<const Eigen::VectorXd>(values.data(), static_cast<Index>(values.size())),
+                width);
+            return std::vector<double>(after.data(), after.data() + after.size());
+          },
+          py::arg("values"),
+          py::arg("width"),
+          "Values at the nodes of the mesh before the last change, width per node, carried to "
+          "the current mesh.");
   py::class_<Bisection>(m, "Bisection")
       .def(py::init<const Mesh &>(), py::arg("mesh"))
       .def(
@@ -1033,12 +1045,19 @@ PYBIND11_MODULE(_core, m)
           "point of each.")
       .def("generations", &Bisection::generations)
       .def("origins", &Bisection::origins)
-      .def("transfer",
-           &Bisection::transfer,
-           py::arg("values"),
-           py::arg("width"),
-           "Carry nodal values, width per node, from the mesh before the last change to the "
-           "current one.");
+      .def(
+          "transfer",
+          [](Bisection & h, const std::vector<double> & values, int width)
+          {
+            const Eigen::VectorXd after = h.transfer(
+                Eigen::Map<const Eigen::VectorXd>(values.data(), static_cast<Index>(values.size())),
+                width);
+            return std::vector<double>(after.data(), after.data() + after.size());
+          },
+          py::arg("values"),
+          py::arg("width"),
+          "Carry nodal values, width per node, from the mesh before the last change to the "
+          "current one.");
 
   m.def("generate_box_mesh",
         &generateBoxMesh,
