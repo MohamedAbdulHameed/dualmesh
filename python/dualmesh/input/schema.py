@@ -81,7 +81,7 @@ model_keys = (
 # Names that a formula reads as the position, the time or the cell size, so no property takes them.
 reserved_names = {*itertools.chain(*position_names.values()), "time", "time_step", "cell_size"}
 ranks_of_shape = {"scalar": (0,), "vector": (1,), "tensor": (2,), "scalar_or_tensor": (0, 2)}
-fixed_value_message = "a fixed value takes a constant. A formula or a table is not implemented yet"
+fixed_value_message = "a fixed value takes a constant. A formula or a table is not available"
 declaration_example = "{unit: mol/m^3, value: 10 mol/m^3}"
 
 required = object()  # Marks a key without a default that must be present
@@ -592,7 +592,7 @@ def fixed_value(value, name: str, path: str, tree_context):
             fail(path, f"{name} is a scalar, so it takes one constant, got the list {value!r}.")
         return constant(value, name, path, tree_context, expected, unit)
     if ranks != (1,):
-        fail(path, f"{name} is a tensor. A fixed value of a tensor is not implemented yet.")
+        fail(path, f"{name} is a tensor. A fixed value of a tensor is not available.")
     count = tree_context.space_dimension()
     if not isinstance(value, (list, tuple)) or (count is not None and len(value) != count):
         fail(

@@ -224,15 +224,15 @@ ProjectionSolver::setUp()
                      "or a curve in space.");
   if (!mesh.nodeConstraints().empty())
     throw InputError("The projection solver of incompressible flow is not available on a mesh "
-                     "with hanging nodes yet.");
+                     "with hanging nodes.");
   _dual = _problem.isDual();
   if (_problem.coordinateSystem() != CoordinateSystem::Cartesian)
     throw InputError("Projection: the projection time integration runs in Cartesian coordinates "
-                     "so far.");
+                     "only.");
   if (_problem.hasMixedOrder())
     throw InputError("Projection: the velocity and the pressure must have the order of the mesh "
-                     "(the Taylor-Hood element is not supported by the projection time "
-                     "integration so far).");
+                     "(the projection time integration does not take the Taylor-Hood "
+                     "element).");
   if (static_cast<int>(_settings.velocities.size()) != _dim)
     throw InputError("Projection: one velocity variable per coordinate is needed.");
   _velocity.clear();

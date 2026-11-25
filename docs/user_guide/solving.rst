@@ -423,7 +423,8 @@ The ``time`` section takes three keys:
      of nonlinear iterations of a step.  The default target is 5.
    - ``{by: Courant, Courant_number: 0.5}``: the step keeps the Courant number
      of a flow advanced by the projection.  The default is 0.5.
-   - ``{by: fixed}``: the step stays at ``initial_time_step``.
+   - ``{by: fixed}``: the step stays at ``initial_time_step``, apart from
+     the retries of a step that fails to converge.
 
    `Control the time step`_ describes each of them.
 
@@ -543,8 +544,9 @@ first one.  The input names of ``step_control.by`` are in brackets.
 ``"fixed"`` (``fixed``)
    The default of ``solve_transient``.  The step stays at ``time_step``.  The
    last step shortens to end exactly at ``end_time``, and a step shortens to
-   land on an output time.  After a rejected step, the run keeps the shorter
-   step.
+   land on an output time.  A step that fails to converge is retried at
+   ``cutback_factor`` times its size, and the steps after it grow by
+   ``growth_factor`` each until they reach ``time_step`` again.
 
 ``"error"`` (``error``)
    The default of the input.  The step keeps an estimate of the local

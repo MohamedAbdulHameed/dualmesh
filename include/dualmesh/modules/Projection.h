@@ -74,8 +74,7 @@ public:
   SolveResult step(Vector & solution, const Vector & old, double time, double dt) override;
   void accept(const Vector & solution, double time) override;
   /// The velocity converges at the order k of the backward difference up to two, the order of
-  /// the splitting of the pressure (docs/theory/heat_and_fluids.rst, the stagnation flow and the
-  /// vortex).
+  /// the splitting of the pressure (docs/verification.rst, the stagnation flow).
   int order() const override { return std::min(_settings.order, 2); }
   /// dt times the largest speed over the size of its element, over the nodes of every element of every process.
   double courantNumber(const Vector & solution, double dt) const override;

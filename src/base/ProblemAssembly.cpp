@@ -1605,27 +1605,6 @@ Problem::addInflowRobin(const Kernel & constraint, double theta, SaddlePointBloc
   }
 }
 
-bool
-Problem::preferDirectSolver(Index n) const
-{
-  // A direct factorisation of a sparse matrix from a mesh fills in: with a
-  // good ordering the factors of a two-dimensional problem hold O(n log n)
-  // entries, but those of a three-dimensional problem hold O(n^{4/3}) and
-  // cost O(n^2) operations (George, SIAM J. Numer. Anal. 10 (1973) 345-363;
-  // Lipton, Rose and Tarjan, SIAM J. Numer. Anal. 16 (1979) 346-358).  A
-  // preconditioned Krylov iteration costs a few matrix-vector products per
-  // iteration.  So the direct solver is kept where it is cheap, which is
-  // everywhere in one dimension, up to a large size in two and only for small
-  // problems in three; the limits were measured on this library's own
-  // systems.
-  const int d = _mesh->dimension();
-  if (d <= 1)
-    return true;
-  if (d == 2)
-    return n <= 100000;
-  return n <= 4000;
-}
-
 std::vector<std::vector<int>>
 Problem::displacementGroups() const
 {
@@ -2706,7 +2685,8 @@ runTransient(const TransientOptions & tr,
           next_dt = step_size;
       }
       else
-        next_dt = dt;
+        // The fixed stepper grows back to the given step after a cutback.
+        next_dt = std::min(std::max(dt, step_size * tr.growth_factor), tr.dt);
     }
 
     if (!accepted)
@@ -2805,7 +2785,7 @@ Problem::solveTransient(const TransientOptions & transient, const SolverOptions 
   if (!tr.restart_file.empty() && std::any_of(_second_order_variables.begin(),
                                               _second_order_variables.end(),
                                               [](char c) { return c != 0; }))
-    throw InputError("A run with inertia does not restart from a checkpoint yet: the checkpoint "
+    throw InputError("A run with inertia does not restart from a checkpoint: the checkpoint "
                      "holds no velocity and acceleration.");
   const auto write = [&](int index)
   {

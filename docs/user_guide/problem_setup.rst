@@ -720,7 +720,7 @@ coefficient in :math:`\mathrm{1/K}`:
    problem.add_kernel(NonlinearConduction(variable="temperature", k0=20.0, b=1.0e-3))
 
 The constructor takes ``variable``, ``name``, ``block``, ``quadrature`` (default
-``"gauss2"``) and ``reduced_integration``.  Every other keyword becomes an
+``"automatic"``, as for the built-in kernels) and ``reduced_integration``.  Every other keyword becomes an
 attribute, here ``self.k0`` and ``self.b``, and an entry of
 ``self.parameters``.  ``self.variable`` is the index of the variable once the
 problem is set up.

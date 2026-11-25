@@ -960,8 +960,7 @@ class Problem:
         spectral_radius:
             The damping of ``"generalized_alpha"``: the spectral radius
             :math:`\rho_\infty` at infinite frequency, from 0 (the highest
-            frequency damped out in one step) to 1 (no damping).  Default 0.75,
-            COMSOL's default.
+            frequency damped out in one step) to 1 (no damping).  Default 0.75.
         output:
             An :class:`~dualmesh.Output` group: the files, the output times,
             the fields and the formats.  The time steps land on the output
@@ -975,7 +974,10 @@ class Problem:
             then the result) or ``"none"``.
         time_stepper:
             ``"fixed"`` keeps the step, shortening only the last one so that
-            the run lands exactly on ``end_time``.
+            the run lands exactly on ``end_time``.  A step that fails to
+            converge is retried at ``cutback_factor`` times its size, and the
+            accepted steps after it grow back by ``growth_factor`` each until
+            they reach ``time_step``.
 
             ``"error"`` chooses the step from an estimate of the local
             truncation error of the variables with a time derivative.  A step
@@ -1003,13 +1005,12 @@ class Problem:
             projection time integration (``time_integration="projection"`` of
             ``fluid_dynamics``) at ``courant_number``: each step is the one
             that gives that Courant number at the velocity of the step before,
-            grown by at most ``growth_factor``, as Nek5000 and nekRS choose their
-            steps.
+            grown by at most ``growth_factor``.
         courant_number:
             The Courant number the ``"cfl"`` stepper aims for,
-            :math:`\Delta t \max_e |\mathbf{u}| / h_e` over the nodes of every
-            element.  Default 0.5, the value Nek5000 and nekRS use with BDF3 and
-            EXT3.
+            :math:`\Delta t \max_e |\mathbf{v}| / h_e` over the nodes of every
+            element :math:`e`, with :math:`\mathbf{v}` the velocity and :math:`h_e`
+            the size of the element.  Default 0.5.
         min_time_step, max_time_step:
             Bounds on the step.  A run that has to go below ``min_time_step``
             is reported as a failure.  Zero means ``time_step`` divided by one

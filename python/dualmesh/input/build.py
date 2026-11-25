@@ -4,7 +4,7 @@ The schema has checked the keys, the units and the dimensions. This module lower
 left onto the objects of the engine: the mesh, one property object per property and
 region, the physics with the names of the properties they read, the boundary conditions as
 the text that the physics read, and the postprocessors. An input that the engine cannot run
-yet stops here with its key, so that no part of the input is dropped without a message.
+stops here with its key, so that no part of the input is dropped without a message.
 """
 
 import numpy
@@ -128,7 +128,7 @@ def region_blocks(mesh: dict, engine_mesh, region: str, path: str) -> dict:
 def engine_value(value, unit: str, path: str, coordinate_system: str) -> str:
     """A constant or a formula of the validated tree as an expression of the engine."""
     if isinstance(value, dict) and "table" in value:
-        fail(path, "a table is not available yet in this version. Give a constant or a formula.")
+        fail(path, "a table is not available. Give a constant or a formula.")
     if isinstance(value, (int, float)):
         return repr(float(value))
     return engine_formula(value, unit, path, coordinate_system)
@@ -162,7 +162,7 @@ def build_problem(validated: dict, engine_mesh=None):
     if not physics:
         fail("physics", "the problem needs a physics, such as heat_conduction.")
     if "models" in validated:
-        fail("models", "models of your own are not available yet in this version.")
+        fail("models", "models of your own are not available.")
     methods = {entry["method"] for entry in physics.values() if "method" in entry}
     if "method" in validated:
         methods.add(validated["method"])
@@ -236,7 +236,7 @@ def build_problem(validated: dict, engine_mesh=None):
         if isinstance(engine_physics.get("solid_mechanics"), finite_strain_solid):
             fail(
                 "properties.linear_expansion_coefficient",
-                "the thermal expansion at finite strain is not available yet in this version.",
+                "the thermal expansion at finite strain is not available.",
             )
         if "solid_mechanics" not in engine_physics:
             fail(
@@ -327,7 +327,7 @@ def _check_properties(physics: dict, properties: dict, transient: bool, gravity:
         if property_name not in engine_property_names:
             fail(
                 join("properties", property_name),
-                "this property is not available yet in this version.",
+                "this property is not available.",
             )
 
 
@@ -403,12 +403,12 @@ def _add_physics(
                     "dimensions in this version.",
                 )
             if transient:
-                fail(path, "a moving solid at finite strain is not available yet in this version.")
+                fail(path, "a moving solid at finite strain is not available.")
             if "displacement" in initial:
                 fail(
                     "initial_conditions.displacement",
                     "an initial displacement is the start of a transient run, which a solid at "
-                    "finite strain does not take yet in this version.",
+                    "finite strain does not take.",
                 )
             return add_finite_strain_solid(
                 problem,
@@ -521,7 +521,7 @@ def _add_boundary_conditions(
                 fail(
                     path,
                     "a pressure on a solid at finite strain follows the deformed boundary, "
-                    "which is not available yet in this version. Give a traction.",
+                    "which is not available. Give a traction.",
                 )
             if key == "traction" and isinstance(solid, finite_strain_solid):
                 components = [
@@ -652,7 +652,7 @@ def add_postprocessors(
         if "region" in definition:
             fail(
                 join(path, "region"),
-                "a postprocessor over one region is not available yet in this version.",
+                "a postprocessor over one region is not available.",
             )
         if "boundary_flux" in definition:
             flux = definition["boundary_flux"]

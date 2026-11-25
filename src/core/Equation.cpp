@@ -1007,9 +1007,8 @@ private:
   void vectorsInPlane(const std::string & what) const
   {
     if (_scope.axisymmetric)
-      fail(what +
-           " in axisymmetric coordinates has hoop terms that the equation language does not yet "
-           "write; use the axisymmetric physics");
+      fail(what + " in axisymmetric coordinates has hoop terms that the equation language does not "
+                  "write. Use the axisymmetric physics");
   }
 
   Value map(Value v, const std::function<SymPtr(const SymPtr &)> & f) const

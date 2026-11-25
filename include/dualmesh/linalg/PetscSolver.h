@@ -220,6 +220,7 @@ struct NonlinearSettings
   int max_line_search_steps = 10;
   /// Without the line search: the weight gamma of the last iterate in each new one,
   /// U^{r+1} = U^r + (1 - gamma) dU, from the second step on (the relaxation of direct iteration).
+  /// With line_search, 1 - gamma is the first trial of the backtracking.
   double relaxation = 0.0;
   /// The tolerance of each linear solve of Eisenstat and Walker (SIAM J. Sci. Comput. 17 (1996)
   /// 16-32), which follows the decrease of the residual; otherwise that of the LinearSolver.

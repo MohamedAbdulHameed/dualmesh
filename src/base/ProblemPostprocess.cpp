@@ -79,7 +79,7 @@ Problem::boundaryOutflow(const std::string & var,
     if (dynamic_cast<const InterfaceBC *>(bc.get()))
       throw InputError("The flow through '" + boundary +
                        "' is not available: an interface condition acts on it, and the flow "
-                       "across an interface is not computed yet.");
+                       "across an interface is not computed.");
     conditions.push_back(bc.get());
   }
   const bool dual = isDual();

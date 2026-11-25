@@ -420,7 +420,7 @@ protected:
     if (!_material)
       throw InputError("'" + name() +
                        "': the stress needs the section given by its material "
-                       "(youngs_modulus); a section given by its stiffnesses "
+                       "(youngs_modulus). A section given by its stiffnesses "
                        "has no material law to evaluate.");
     Point x = ctx.x;
     x[2] = z;

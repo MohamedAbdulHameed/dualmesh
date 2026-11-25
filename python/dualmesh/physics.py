@@ -13,13 +13,14 @@ initialised::
     solid.add_boundary_condition("total_force = [0, -150, 0]", boundary="grip")
     problem.solve()
 
-Each physics defines its variables: temperature (heat_transfer); disp_x,
-disp_y, disp_z (solid_mechanics); velocity_x, velocity_y, velocity_z and
-pressure (fluid_dynamics); the fields of general_form_PDE are named in
-its ``variables``.  The boundary conditions of a physics are written as text: a variable on the
-left prescribes its value, and the name of the flux of the physics on the
-left prescribes the flux; a vector (``traction``, ``total_force``) is split
-into one object per component.  The extra terms of a physics take the type
+Each physics defines its variables.  heat_transfer has ``temperature``,
+solid_mechanics has ``disp_x``, ``disp_y`` and ``disp_z``, and fluid_dynamics
+has ``velocity_x``, ``velocity_y``, ``velocity_z`` and ``pressure``.  The
+fields of general_form_PDE are named in its ``variables``.  The boundary
+conditions of a physics are written as text.  A variable on the left
+prescribes its value, and the name of the flux of the physics on the left
+prescribes the flux.  A vector (``traction``, ``total_force``) is split into
+one object per component.  The extra terms of a physics take the type
 names and the parameters of the objects (:doc:`/objects`), with the
 variables of the physics filled in.  A coupling between two physics
 (``thermal_expansion`` or ``nonisothermal_flow``) is added with
@@ -1563,7 +1564,7 @@ class SolidMechanics(Physics):
         if self.formulation in STRUCTURAL:
             if (self.damping or {}).get("stiffness"):
                 raise InputError(
-                    f"solid_mechanics: the {self.formulation} takes mass-proportional damping only; stiffness-proportional damping of the structures is not available yet."
+                    f"solid_mechanics: the {self.formulation} takes mass-proportional damping only. Stiffness-proportional damping of the structures is not available."
                 )
             if self.density is not None and self.cross_section is None and self.thickness is None:
                 raise InputError(
@@ -1687,7 +1688,7 @@ class SolidMechanics(Physics):
 
     def _attach_member(self, problem) -> None:
         """The checks of a truss or a shell: the mesh, the section and the parameters the members
-        do not take yet."""
+        do not take."""
         where = label(self.type_name, self.name)
         mesh = problem.mesh
         if problem.coordinates == "axisymmetric":
@@ -1750,13 +1751,13 @@ class SolidMechanics(Physics):
             unavailable.append("axial_force")
         if unavailable:
             raise InputError(
-                f"{where}: a {self.formulation} is linear elastic and static; {', '.join(unavailable)} {'is' if len(unavailable) == 1 else 'are'} not available for it yet."
+                f"{where}: a {self.formulation} is linear elastic and static, and takes no {', '.join(unavailable)}."
             )
 
     def _build_member(self, problem) -> None:
         if self._coupled.get("thermal_expansion"):
             raise InputError(
-                f"{label(self.type_name, self.name)}: the thermal expansion of a {self.formulation} is not available yet."
+                f"{label(self.type_name, self.name)}: the thermal expansion of a {self.formulation} is not available."
             )
         names = self.variable_names()
         force = {"body_force": [float(f) for f in self.body_force]} if self.body_force else {}
@@ -2499,7 +2500,7 @@ class SolidMechanics(Physics):
         if damping.get("stiffness"):
             if self.formulation == "generalized_plane_strain":
                 raise InputError(
-                    f"{label(self.type_name, self.name)}: stiffness-proportional damping in generalized_plane_strain is not available yet."
+                    f"{label(self.type_name, self.name)}: stiffness-proportional damping in generalized_plane_strain is not available."
                 )
             names = [v for v in self.variable_names() if v.startswith("disp_")]
             moduli = {
@@ -2760,7 +2761,7 @@ class SolidMechanics(Physics):
         }
         if self._anisotropic and self._finite:
             raise InputError(
-                f"{label(self.type_name, self.name)}: an anisotropic material is available at small strain; large deformation of it is not available yet."
+                f"{label(self.type_name, self.name)}: an anisotropic material is available at small strain only."
             )
         if self._finite and self.formulation == "plane_stress":
             raise InputError(

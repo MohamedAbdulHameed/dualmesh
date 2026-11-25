@@ -297,7 +297,7 @@ planeThickness(const Problem & problem, const std::string & variable, const std:
                          "' have the thicknesses " + std::to_string(thickness) + " and " +
                          std::to_string(h) +
                          ", and this condition takes one. Blocks of different thickness under "
-                         "one condition are not available yet.");
+                         "one condition are not available.");
       thickness = h;
     }
   return thickness > 0.0 ? thickness : 1.0;
@@ -364,7 +364,7 @@ public:
     if (_thickness != 1.0 && (problem.mesh().dimension() == 3 ||
                               problem.coordinateSystem() == CoordinateSystem::Axisymmetric))
       throw InputError("'" + name() +
-                       "': thickness is the out-of-plane thickness of a plane problem; a "
+                       "': thickness is the out-of-plane thickness of a plane problem. A "
                        "three-dimensional or axisymmetric problem has none, so leave it at 1.");
     const auto & registry = problem.propertyRegistry();
     _stress = registry.id(_params.getString("stress_property"));
@@ -585,7 +585,7 @@ public:
     if (_formulation == Formulation::AxisymmetricOneD)
       throw InputError("'" + name() +
                        "': the axisymmetric_1d formulation takes no stiffness "
-                       "damping yet.");
+                       "damping.");
     const auto stiffness = p.getRealList("stiffness");
     if (!stiffness.empty())
     {
@@ -946,7 +946,7 @@ public:
                        "hardening modulus.");
     if (!moduli.empty() && !_plastic)
       throw InputError("'" + name() +
-                       "': kinematic hardening is part of plasticity; give the "
+                       "': kinematic hardening is part of plasticity. Give the "
                        "yield_stress.");
     for (std::size_t k = 0; k < moduli.size(); ++k)
     {
@@ -978,7 +978,7 @@ public:
         (_creep != Creep::None || _plastic || _formulation == Formulation::PlaneStress))
       throw InputError("'" + name() +
                        "': viscoelasticity with creep or plasticity, or in plane "
-                       "stress, is not available yet.");
+                       "stress, is not available.");
     _cracking = !p.getString("damage").empty();
     if (_cracking && (_formulation == Formulation::PlaneStress ||
                       _formulation == Formulation::ThreeDimensional ||
@@ -1019,23 +1019,23 @@ public:
       if (_creep == Creep::None && !_plastic)
         throw InputError("'" + name() +
                          "': hill_coefficients is the equivalent stress of creep "
-                         "and plasticity; give one of them.");
+                         "and plasticity. Give one of them.");
       if (!_hardening.empty())
         throw InputError("'" + name() +
                          "': Hill plasticity with kinematic hardening is not "
-                         "available yet.");
+                         "available.");
       std::copy(hill.begin(), hill.end(), _hill.begin());
       _hill_given = true;
     }
     if (_anisotropic && !_hardening.empty())
       throw InputError("'" + name() +
                        "': kinematic hardening with an anisotropic stiffness is "
-                       "not available yet.");
+                       "not available.");
     if (_creep != Creep::None && !_hardening.empty())
       throw InputError("'" + name() +
-                       "': creep with kinematic hardening is not available yet "
+                       "': creep with kinematic hardening is not available "
                        "(creep acts on the stress, plasticity on the stress "
-                       "less the back stress); use isotropic hardening with "
+                       "less the back stress). Use isotropic hardening with "
                        "creep.");
   }
   void initialSetup(Problem & problem) override
@@ -2303,7 +2303,7 @@ public:
                        "': finite strain is available in plane_strain, axisymmetric, "
                        "axisymmetric_1d and three_dimensional problems.");
     if (!_viscous.empty())
-      throw InputError("'" + name() + "': viscoelasticity at finite strain is not available yet.");
+      throw InputError("'" + name() + "': viscoelasticity at finite strain is not available.");
     if (_cracking)
       throw InputError("'" + name() + "': phase-field fracture is available at small strain only.");
     // The stress laws at finite strain read the isotropic moduli.
@@ -2767,8 +2767,8 @@ public:
     const Mesh & mesh = problem.mesh();
     if (mesh.spaceDimension() != 2)
       throw InputError("'" + name() +
-                       "': mortar contact is available in two dimensions; in "
-                       "three it is not available yet.");
+                       "': mortar contact is available in two dimensions "
+                       "only.");
     _axisymmetric = problem.coordinateSystem() == CoordinateSystem::Axisymmetric;
     _disp.clear();
     for (const auto & d : _params.getStringList("displacements"))
@@ -3161,8 +3161,8 @@ public:
     const Mesh & mesh = problem.mesh();
     if (mesh.spaceDimension() != 2)
       throw InputError("'" + name() +
-                       "': cohesive zones are available in two dimensions; in "
-                       "three they are not available yet.");
+                       "': cohesive zones are available in two dimensions "
+                       "only.");
     const bool axisymmetric = problem.coordinateSystem() == CoordinateSystem::Axisymmetric;
     _disp.clear();
     for (const auto & d : _params.getStringList("displacements"))
@@ -3212,7 +3212,7 @@ public:
       if (std::abs(covered - 1.0) > 1e-8)
         throw InputError("'" + name() +
                          "': the surfaces of a cohesive zone must coincide at the "
-                         "start; part of the secondary side at (" +
+                         "start. Part of the secondary side at (" +
                          std::to_string(a[0]) + ", " + std::to_string(a[1]) +
                          ") faces no primary side.");
     }

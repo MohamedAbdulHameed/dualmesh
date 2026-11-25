@@ -37,7 +37,7 @@ def _base_parameters(
     variable=None,
     name=None,
     block=(),
-    quadrature="gauss2",
+    quadrature="automatic",
     reduced_integration=False,
     boundary=None,
     type_name="PythonObject",
@@ -78,7 +78,7 @@ class PythonKernel(_core.Kernel, _PythonObjectMixin):
         variable: str,
         name: str | None = None,
         block=(),
-        quadrature: str = "gauss2",
+        quadrature: str = "automatic",
         reduced_integration: bool = False,
         **parameters,
     ):
@@ -128,7 +128,7 @@ class PythonBoundaryCondition(_core.IntegratedBC, _PythonObjectMixin):
         boundary,
         name: str | None = None,
         block=(),
-        quadrature: str = "gauss2",
+        quadrature: str = "automatic",
         reduced_integration: bool = False,
         **parameters,
     ):

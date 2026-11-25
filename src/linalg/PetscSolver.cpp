@@ -148,9 +148,7 @@ checkTrueResidual(Mat A, Vec b, Vec x, double relative_tolerance, Result & resul
 /// @p prefix: hypre BoomerAMG with the coarsening and interpolation that keep the cost of a cycle
 /// low in three dimensions (HMIS coarsening, De Sterck, Yang and Heys 2006, aggressive on the
 /// first level, and extended+i interpolation with at most four entries per row, De Sterck,
-/// Falgout, Nolting and Yang 2008), or PETSc's own GAMG when PETSc has no hypre.  Measured on a
-/// three-dimensional Taylor-Hood cavity, these settings make lsc three to four times faster than
-/// BoomerAMG's defaults, at twice the iterations.
+/// Falgout, Nolting and Yang 2008), or PETSc's own GAMG when PETSc has no hypre.
 std::string
 amgOptions(const std::string & prefix)
 {
@@ -1039,7 +1037,8 @@ convergenceTest(SNES snes,
 
 /// Backtracking on the scaled norm of the residual, which measures each equation against the size
 /// of its own terms.  The 2-norm that PETSc's own backtracking lowers adds equations in different
-/// units.  The new state is X - a Y, with Y the Newton direction of PETSc.
+/// units.  The new state is X - a Y, with Y the Newton direction of PETSc.  The first trial a is 1
+/// on the first step and 1 - gamma on the later ones, with gamma the relaxation.
 PetscErrorCode
 backtrack(SNESLineSearch line_search, void * pointer)
 {
@@ -1049,7 +1048,11 @@ backtrack(SNESLineSearch line_search, void * pointer)
                  {
                    Vec X, F, Y, W, G;
                    DM_PETSC(SNESLineSearchGetVecs(line_search, &X, &F, &Y, &W, &G));
-                   double alpha = 1.0;
+                   SNES snes;
+                   PetscInt step = 0;
+                   DM_PETSC(SNESLineSearchGetSNES(line_search, &snes));
+                   DM_PETSC(SNESGetIterationNumber(snes, &step));
+                   double alpha = step == 0 ? 1.0 : 1.0 - c.settings.relaxation;
                    for (int k = 0; k <= c.settings.max_line_search_steps; ++k)
                    {
                      DM_PETSC(VecWAXPY(W, -alpha, Y, X));

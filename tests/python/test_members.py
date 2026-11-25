@@ -258,7 +258,7 @@ def test_the_input_of_the_members_is_checked():
         dualmesh.Problem(line).add_physics(
             "solid_mechanics", formulation="truss", youngs_modulus=1.0
         )
-    with pytest.raises(InputError, match="plasticity is not available for it yet"):
+    with pytest.raises(InputError, match="static, and takes no .*plasticity"):
         dualmesh.Problem(line).add_physics(
             "solid_mechanics",
             formulation="truss",

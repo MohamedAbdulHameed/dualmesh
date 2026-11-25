@@ -481,12 +481,10 @@ private:
 /// convection and the diffusion across an element of size h.  tau r_m has the
 /// units of a velocity.  For a quadratic element h is half the element size,
 /// because the interpolation resolves half the element.  The viscous term of
-/// r_m needs second derivatives, which the kernels do not have.  For linear
-/// elements it vanishes (simplices, and bilinear elements on parallelograms)
-/// or nearly so, and omitting it keeps the optimal first order in the energy
-/// norm.  For quadratic elements the omission is an inconsistency that limits
-/// the velocity to second order in L2; Taylor-Hood elements, which need no
-/// stabilisation, are the quadratic alternative.
+/// r_m needs the second derivatives of the shape functions, which quadratic
+/// elements provide.  Inside a linear element it vanishes (simplices, and
+/// bilinear elements on parallelograms) or nearly so, and leaving it out keeps
+/// the optimal first order in the energy norm.
 class MomentumResidual
 {
 public:

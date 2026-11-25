@@ -385,11 +385,12 @@ case.
 
 ``interface``
     One point at the corner of the control domain nearest the element centroid,
-    weighted by the measure of the control domain.  In one dimension the point
+    weighted as the ``nodal`` rule weights its point.  In one dimension the point
     is the interface of the control domain, and on a linear element in two and
     three dimensions it is the element centroid.  On a quadratic simplex the
     point is the mean of these corners over the sub-cells, weighted by their
-    measures.
+    measures.  The elements without control domains, ``Quad8``, ``Hex20`` and
+    ``Pyramid5``, refuse this rule and ``control_domain_trapezoid``.
 
 ``control_domain_trapezoid`` (alias ``cd_trapezoid``)
     The trapezoidal rule over the whole control domain.  For an interior node in

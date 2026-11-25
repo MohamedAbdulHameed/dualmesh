@@ -80,7 +80,7 @@ prefer_direct_solver(int dimension, long long unknowns)
   // problem hold O(n^{4/3}) and cost O(n^2) operations (George, SIAM J. Numer. Anal. 10 (1973)
   // 345-363; Lipton, Rose and Tarjan, SIAM J. Numer. Anal. 16 (1979) 346-358).  So the direct
   // solver is kept where it is cheap: everywhere in one dimension, up to a large size in two and
-  // only for small problems in three.  The limits were measured on this library's own systems.
+  // only for small problems in three.
   if (dimension <= 1)
     return true;
   if (dimension == 2)
@@ -103,11 +103,10 @@ linear_solve_attempts(const linear_system_traits & system, const user_split & sp
   const linear_solve_attempt direct{kind::direct};
   if (prefer_direct_solver(system.dimension, system.global_unknowns))
     return {direct};
-  // A large flow: flexible GMRES with the least squares commutator, which had the fewest
-  // iterations in every case measured from Re = 100 on and costs one factorisation of the
-  // momentum block instead of one of the whole system.  Multigrid and an incomplete factorisation
-  // of the whole saddle point system fail or crawl, since a Taylor-Hood system has a zero
-  // pressure block.
+  // A large flow: flexible GMRES with the least squares commutator, which costs one
+  // factorisation of the momentum block instead of one of the whole system.  Multigrid and an
+  // incomplete factorisation of the whole saddle point system fail, since a Taylor-Hood system
+  // has a zero pressure block.
   if (system.flow)
     return {{kind::Schur_split, SchurApproximation::LeastSquaresCommutator, false}, direct};
   if (system.mixed_order)

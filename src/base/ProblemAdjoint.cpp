@@ -149,11 +149,11 @@ Problem::sensitivities(const Objective & objective,
   initialize();
   if (!_primary_of.empty() || !_hanging_of.empty())
     throw InputError("sensitivities: a problem with periodic boundary conditions or hanging "
-                     "nodes is not differentiated yet; their constraints tie degrees of freedom "
+                     "nodes is not differentiated. Their constraints tie degrees of freedom "
                      "together in a way the adjoint does not follow.");
   if (_state_record > 0)
     throw InputError("sensitivities: a problem with a material history (creep, a stateful property "
-                     "object) is not differentiated yet; its solution depends on the whole "
+                     "object) is not differentiated. Its solution depends on the whole "
                      "history, which the adjoint of the last state does not follow.");
   if (parameters.empty())
     throw InputError("sensitivities: no parameter was named. Give the names of settable "

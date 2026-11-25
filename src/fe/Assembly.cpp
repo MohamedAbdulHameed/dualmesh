@@ -773,6 +773,13 @@ buildElementPoints(const Mesh & mesh,
 
   if (set == PointSet::Volume)
   {
+    if ((spec.kind == QuadratureSpec::Kind::ControlDomainTrapezoid ||
+         spec.kind == QuadratureSpec::Kind::Interface) &&
+        !ref.supportsDualMesh())
+      throw InputError("The quadrature rules interface and control_domain_trapezoid place their "
+                       "points in the control domains of the nodes, which the element " +
+                       elementTypeName(el.type) +
+                       " does not have. Use a Gauss rule or the nodal rule.");
     if (spec.kind == QuadratureSpec::Kind::ControlDomainTrapezoid)
     {
       // Trapezoidal rule over the whole control domain.  For a node inside the
@@ -806,8 +813,8 @@ buildElementPoints(const Mesh & mesh,
     if (spec.kind == QuadratureSpec::Kind::Nodal || spec.kind == QuadratureSpec::Kind::Interface)
     {
       const bool at_node = spec.kind == QuadratureSpec::Kind::Nodal;
-      // Lumped: one point at each node.  DMCDM weight = |CD_a within e|;
-      // FEM weight = \int psi_a (row-sum lumping).
+      // Lumped: one point per node, at the node or at the interface point of its control domain.
+      // DMCDM weight = |CD_a within e|, FEM weight = \int psi_a (row-sum lumping).
       for (int a = 0; a < ref.numNodes(); ++a)
       {
         IntegrationPoint ip;
@@ -831,7 +838,7 @@ buildElementPoints(const Mesh & mesh,
               std::array<Point, 3> T;
               const Point xi = patch.map(s[q], &T);
               mapPoint(mesh, el, xi, mp);
-              m += w[q] * std::abs(mp.detJ * patchDet(T, dim)) * (at_node ? mp.N[a] : 1.0);
+              m += w[q] * std::abs(mp.detJ * patchDet(T, dim)) * mp.N[a];
             }
           }
           ip.weight = m;

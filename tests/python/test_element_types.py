@@ -18,6 +18,7 @@ from __future__ import annotations
 import dualmesh
 import numpy
 import pytest
+from dualmesh._core import InputError
 
 methods = ("dmcdm", "fem")
 supported = {
@@ -228,3 +229,32 @@ def test_prisms_and_pyramids_cannot_be_promoted_to_second_order():
     for element_type in ("Wedge6", "Pyramid5"):
         with pytest.raises(ValueError, match="cannot be promoted"):
             distorted_cube(element_type, num_elements=1).second_order()
+
+
+@pytest.mark.parametrize("quadrature", ["interface", "control_domain_trapezoid"])
+def test_control_domain_rules_refuse_elements_without_control_domains(quadrature):
+    """The interface and control_domain_trapezoid rules place their points in
+    the control domains of the nodes, which a serendipity element lacks."""
+    problem = dualmesh.Problem(distorted_square("Quad8", num_elements=2), method="fem")
+    problem.add_variable("u")
+    problem.add_kernel("diffusion", variable="u")
+    problem.add_kernel("body_force", variable="u", value=1.0, quadrature=quadrature)
+    problem.add_boundary_condition("Dirichlet", "left", variable="u", value=0.0)
+    with pytest.raises(InputError, match="does not have"):
+        problem.solve()
+
+
+def test_interface_rule_under_FEM_weights_each_node_by_its_shape_function():
+    """-u'' = 2 with u(0) = u(1) = 0 has the solution u = x (1 - x).  Under the
+    finite element method the interface rule weights its point by the integral
+    of the shape function, so linear elements keep the nodal values exact."""
+    mesh = dualmesh.generate_line_mesh(start=0.0, end=1.0, num_elements=8)
+    problem = dualmesh.Problem(mesh, method="fem")
+    problem.add_variable("u")
+    problem.add_kernel("diffusion", variable="u")
+    problem.add_kernel("body_force", variable="u", value=2.0, quadrature="interface")
+    problem.add_boundary_condition("Dirichlet", "left", variable="u", value=0.0)
+    problem.add_boundary_condition("Dirichlet", "right", variable="u", value=0.0)
+    problem.solve()
+    x = numpy.linspace(0.0, 1.0, 9)
+    assert problem.values("u") == pytest.approx(x * (1.0 - x), abs=1e-10)

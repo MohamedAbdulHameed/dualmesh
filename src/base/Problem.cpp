@@ -955,7 +955,7 @@ Problem::initialize()
               "'" + k->name() +
               "': the linear upwind and limited schemes of DMCDM reconstruct the gradient at a "
               "node from the nodes around it, which a part of a distributed mesh does not hold "
-              "at its interfaces yet. Use them on one process, or the upwind scheme.");
+              "at its interfaces. Use them on one process, or the upwind scheme.");
         buildNodeGradients();
         break;
       }
@@ -968,7 +968,7 @@ Problem::initialize()
           if (_full_order_rank[v] < 0)
             throw InputError("'" + ib->name() + "' couples the first-order variable '" +
                              _vars[v].name +
-                             "' across an interface, which is not supported yet. Interface "
+                             "' across an interface, which is not supported. Interface "
                              "conditions work with variables of the mesh order.");
   for (auto & b : _nbcs)
     b->initialSetup(*this);

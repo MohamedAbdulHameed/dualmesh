@@ -495,8 +495,6 @@ public:
   /// The mass conservation equation of a flow: the one kernel that provides
   /// the flow coefficients, or null.
   const Kernel * flowConstraint() const;
-  /// Whether "automatic" should factorise a system of @p n unknowns directly.
-  bool preferDirectSolver(Index n) const;
   /// The time step and the weight of the steady terms of the last linear solve of a Newton step
   /// (zero and one for a steady solve), which the flow preconditioners take.
   double linearDt() const { return _linear_dt; }
