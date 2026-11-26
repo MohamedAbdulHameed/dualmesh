@@ -68,7 +68,6 @@ Solve from a case file
           boundary: right
       output:
         file: slab
-        interval: 1
         fields: [temperature]
 
 2. Run the case:
@@ -96,10 +95,10 @@ The command prints a line that names the solve, its number of unknowns and its
 method, then the result of the solve.  It writes the files in the folder of
 ``slab.yaml``:
 
-* ``slab_0000.vtu``, the temperature on the mesh, in the unstructured grid
-  format of the Visualization Toolkit (VTK), which ParaView reads.
-* ``slab.pvd``, the collection of the ``.vtu`` files, which ParaView opens as one
-  time series.
+* ``slab.vtu``, the temperature on the mesh, in the unstructured grid
+  format of the Visualization Toolkit (VTK), which ParaView reads. A transient
+  run writes ``slab_00000.vtu``, ``slab_00001.vtu`` and so on, with the
+  collection ``slab.pvd``, which ParaView opens as one time series.
 * ``slab.csv``, the post-processors as comma-separated values (CSV).  Its
   header is ``time [s],heat_to_air [W/m^2]``, and a steady run gives one row,
   at the time 0 s.
@@ -125,7 +124,7 @@ The same case in Python is one call per section:
        convection={"heat_transfer_coefficient": "250 W/(m^2*K)", "ambient_temperature": "300 K"},
    )
    slab.postprocessor("heat_to_air", boundary_flux="heat_flux", boundary="right")
-   slab.output(file="slab", interval=1, fields=["temperature"])
+   slab.output(file="slab", fields=["temperature"])
    solution = slab.solve()
 
    flux = solution.postprocessor("heat_to_air")[-1]

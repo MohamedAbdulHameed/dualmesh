@@ -1,7 +1,7 @@
 Concepts
 ========
 
-A simulation in dualmesh-multiphysics is a *problem*: a mesh, the physics that
+A simulation in dualmesh is a *problem*: a mesh, the physics that
 act on it, the properties of the materials, the initial and boundary
 conditions, and a study that solves them.  This page defines each part in that
 order, then the two methods that discretize the equations, and then the object
@@ -55,7 +55,7 @@ Each top-level section of the tree has one Python call:
      - ``postprocessor(name, ...)``
      - Named scalar results.
    * - ``output``
-     - ``output(file, interval, fields)``
+     - ``output(file, fields, interval)``
      - The files of the fields and the post-processors.
    * - ``solver``
      - ``solver(...)``
@@ -203,12 +203,8 @@ The sections of the input choose the study:
 * A ``time`` section makes the study transient from the time 0 s to its
   ``end_time``, starting with its ``initial_time_step``.  Its ``step_control``
   sets the time step :math:`\Delta t` by the estimated error of the step
-  (``error``, the default), by the number of Newton iterations of the step
-  (``iterations``), by the Courant number :math:`C = |\mathbf{v}| \Delta t / h`
-  of a flow (``Courant``), or keeps it ``fixed``.  In :math:`C`,
-  :math:`\mathbf{v}` is the velocity in :math:`\mathrm{m/s}`, :math:`\Delta t`
-  the time step in :math:`\mathrm{s}` and :math:`h` the element size in
-  :math:`\mathrm{m}`.
+  (``error``, the default) or by the number of Newton iterations of the step
+  (``iterations``), or keeps it ``fixed``.
 * A ``mesh_adaptivity`` section refines and coarsens the mesh where the
   estimated error of a field is largest.  A steady study repeats the solve on
   the adapted mesh, and a transient study adapts the mesh every ``interval``
@@ -272,7 +268,7 @@ The object level
 The input builds its problem from the objects of the code, which you can also
 use directly.  :class:`dualmesh.Problem` takes a mesh and a method.  Its
 :meth:`~dualmesh.Problem.add_physics` adds a physics, such as
-``heat_transfer``, ``solid_mechanics``, ``fluid_dynamics`` or
+``heat_conduction``, ``solid_mechanics``, ``fluid_dynamics`` or
 ``general_form_PDE``, and :meth:`~dualmesh.Problem.add_kernel` adds one term of
 an equation.  A kernel supplies a flux, a source, or both, to the equation of
 one field, and a property object computes a named property for the kernels.

@@ -113,10 +113,13 @@ jobs:
       - name: Examples
         run: |
           python examples/cooling_fin.py
-          python examples/custom_kernel.py
-          python examples/functionally_graded_beam.py
+          python examples/large_deformation_bar.py
+          python examples/lid_driven_cavity.py
+          python examples/plate_with_hole/plate_with_hole.py
           python examples/transient_slab.py
-          python examples/natural_convection.py
+          python examples/natural_convection/natural_convection.py
+          python examples/reactor_criticality.py
+          python examples/wrench/wrench.py
       - name: Command line
         run: |
           dualmesh --version

@@ -78,7 +78,7 @@ when the problem is built at the first solve.
 
 .. code-block:: python
 
-   heat = problem.add_physics("heat_transfer", thermal_conductivity=20.0, heat_source=1.0e5)
+   heat = problem.add_physics("heat_conduction", thermal_conductivity=20.0, heat_source=1.0e5)
    heat.add_boundary_condition("temperature = 313.15", boundary="left")
    heat.add_boundary_condition("heat_flux = 75*(temperature - 293.15)", boundary="top")
    problem.solve()
@@ -94,7 +94,7 @@ and you refer to it through that object, here ``heat``.
    * - Physics
      - Variables
      - Equations
-   * - ``heat_transfer``
+   * - ``heat_conduction``
      - ``temperature``
      - Heat conduction,
        :math:`\rho c_p \partial T / \partial t + \nabla \cdot \mathbf{q} = s`
@@ -125,7 +125,7 @@ In this table :math:`T` is the temperature in :math:`\mathrm{K}`,
 :math:`\mathrm{W/(m\,K)}` and :math:`\mathbf{q}` the heat flux in
 :math:`\mathrm{W/m^2}`.
 
-``dualmesh describe heat_transfer`` prints every parameter of a physics with
+``dualmesh describe heat_conduction`` prints every parameter of a physics with
 its unit and its description, which states the default.  ``dualmesh list
 --category physics`` lists the physics.
 
@@ -140,7 +140,7 @@ on the side sets or node sets named by ``boundary``.
   number, the name of a registered function or an expression in :math:`x`,
   :math:`y`, :math:`z` and :math:`t`.
 * The name of a flux of the physics on the left prescribes that flux.  For
-  ``heat_transfer`` the name is ``heat_flux``, the heat flux along the outward
+  ``heat_conduction`` the name is ``heat_flux``, the heat flux along the outward
   unit normal :math:`\mathbf{n}`, :math:`\mathbf{n} \cdot \mathbf{q}`, which is
   the heat leaving the body.  For ``solid_mechanics`` the names are
   ``traction``, the surface traction
@@ -175,7 +175,7 @@ they name:
    solid.add_boundary_condition("total_force = [0, -force, 0]", boundary="grip", force=150.0)
    flow.add_boundary_condition(["velocity_x = 1", "velocity_y = 0"], boundary="inlet")
    flow.add_boundary_condition("pressure = 0", point=[0.5, 0.0])
-   heat.add_boundary_condition("heat_flux = 5.67e-8*0.8*(temperature^4 - 293.15^4)", boundary="surface")
+   heat.add_boundary_condition("heat_flux = 5.670374419e-8*0.8*(temperature^4 - 293.15^4)", boundary="surface")
 
 A boundary without a condition carries a zero flux.  It is an insulated wall
 for heat transfer and a traction-free surface for a solid.
@@ -205,7 +205,7 @@ Properties from property objects
 
 A material parameter of a physics that you leave out is read from the property
 of the same name.  This holds for ``thermal_conductivity`` of
-``heat_transfer`` and for ``youngs_modulus`` and ``poissons_ratio`` of
+``heat_conduction`` and for ``youngs_modulus`` and ``poissons_ratio`` of
 ``solid_mechanics``.  A property object on a block then supplies the value on
 that block:
 
@@ -218,7 +218,7 @@ that block:
        expression="10.0 + 0.01*temperature",
    )
    problem.add_property("constant", block=["coolant"], properties={"thermal_conductivity": 0.6})
-   heat = problem.add_physics("heat_transfer")
+   heat = problem.add_physics("heat_conduction")
 
 This example needs a mesh with the blocks ``wall`` and ``coolant``.
 
@@ -228,7 +228,7 @@ Extra terms of a physics
 :meth:`~dualmesh.physics.Physics.add_kernel` adds a kernel of the object
 reference to the equations of a physics and fills in the variable when the
 physics has one.  A physics with several variables needs ``variable``.
-``heat_transfer`` also takes the word ``heat_source``, which adds a
+``heat_conduction`` also takes the word ``heat_source``, which adds a
 ``body_force`` kernel:
 
 .. code-block:: python
@@ -243,20 +243,20 @@ A coupling joins two physics.  It takes each physics as the object that
 
 .. code-block:: python
 
-   heat = problem.add_physics("heat_transfer", thermal_conductivity=20.0)
+   heat = problem.add_physics("heat_conduction", thermal_conductivity=20.0)
    solid = problem.add_physics(
        "solid_mechanics", youngs_modulus=200.0e9, poissons_ratio=0.3, formulation="plane_stress"
    )
    problem.add_coupling(
        "thermal_expansion",
-       heat_transfer=heat,
+       heat_conduction=heat,
        solid_mechanics=solid,
        linear_expansion_coefficient=1.2e-5,
        stress_free_temperature=293.15,
    )
 
 You may leave out a physics when the problem has only one physics of its type,
-so ``heat_transfer=heat`` and ``solid_mechanics=solid`` are optional here.  Add
+so ``heat_conduction=heat`` and ``solid_mechanics=solid`` are optional here.  Add
 the couplings before the first solve.
 
 ``thermal_expansion``
@@ -268,7 +268,9 @@ the couplings before the first solve.
 
 ``nonisothermal_flow``
    The heat that a flow carries, :math:`\rho c_p \mathbf{v} \cdot \nabla T`
-   with :math:`\mathbf{v}` the velocity in :math:`\mathrm{m/s}`.  With
+   with :math:`\mathbf{v}` the velocity in :math:`\mathrm{m/s}`, and with
+   :math:`\rho` and :math:`c_p` the ``density`` and ``specific_heat`` of
+   ``heat_conduction``, which the coupling needs.  With
    ``gravity`` and ``volumetric_expansion_coefficient`` it adds the Boussinesq
    buoyancy force :math:`-\rho \beta (T - T_0) \mathbf{g}` to the flow, with
    :math:`\mathbf{g}` the gravitational acceleration in :math:`\mathrm{m/s^2}`,
@@ -278,9 +280,9 @@ the couplings before the first solve.
 
 The streamline upwind Petrov-Galerkin (SUPG) term stabilizes the heat that a
 ``nonisothermal_flow`` coupling carries.  ``advection_scheme`` of
-``heat_transfer`` chooses another discretization of that heat: ``"limited"``,
+``heat_conduction`` chooses another discretization of that heat: ``"limited"``,
 ``"linear_upwind"``, ``"upwind"`` or ``"central"`` (see
-:doc:`/theory/finite_volume`).  A ``heat_transfer`` physics without the
+:doc:`/theory/finite_volume`).  A ``heat_conduction`` physics without the
 coupling refuses ``advection_scheme``.
 
 ``dualmesh list --category coupling`` lists the couplings.
@@ -377,8 +379,8 @@ with the kernel flux :math:`\hat{\mathbf{F}}` and the kernel source
    \hat{\mathbf{F}} = -\mathbf{F} , \qquad
    \hat{S} = \frac{\partial m}{\partial t} - s ,
 
-so the kernel flux is minus the physical flux.  The ``heat_conduction`` kernel
-returns :math:`\hat{\mathbf{F}} = k \nabla T`, which is the physical flux
+so the kernel flux is minus the physical flux.  The ``diffusion`` kernel of a
+temperature returns :math:`\hat{\mathbf{F}} = k \nabla T`, which is the physical flux
 :math:`\mathbf{F} = \mathbf{q} = -k \nabla T`.  The same sign holds at a
 boundary.  The ``flux`` of a ``Neumann`` condition is
 :math:`\mathbf{n} \cdot \hat{\mathbf{F}} = -\mathbf{n} \cdot \mathbf{F}`, the
@@ -433,7 +435,7 @@ condition on the top and insulated sides elsewhere:
    )
    problem = dualmesh.Problem(mesh, method="DMCDM")
    problem.add_variable("temperature", initial_condition=293.15, unit="K")
-   problem.add_kernel("heat_conduction", variable="temperature", thermal_conductivity=20.0)
+   problem.add_kernel("diffusion", variable="temperature", diffusivity=20.0)
    problem.add_kernel("body_force", variable="temperature", value=1.0e5)
    problem.add_boundary_condition("Dirichlet", "left", variable="temperature", value=313.15)
    problem.add_boundary_condition(
@@ -463,8 +465,9 @@ with :math:`h_\mathrm{c}` the transfer coefficient
 (``transfer_coefficient``), :math:`u_\infty` the ambient value
 (``ambient_value``) and :math:`q_0` the prescribed part (``flux``).  For heat
 transfer, :math:`h_\mathrm{c}` is in :math:`\mathrm{W/(m^2\,K)}`.
-``radiative_heat_flux`` and the ``traction`` and ``pressure`` of a solid are
-integrated conditions too.
+A radiation condition is a ``Neumann`` condition with the flux of grey-body
+radiation.  The ``traction`` and ``pressure`` of a solid are integrated
+conditions too.
 
 A nodal condition prescribes the value at nodes.  ``Dirichlet`` writes the
 value into the solution at every node of the boundary.  ``point_Dirichlet``
@@ -496,7 +499,7 @@ Add a property object
 A property object computes named properties at the integration points of its
 blocks.  Kernels, boundary conditions, physics and expressions read a property
 by its name, and a coefficient given as the name of a property reads it, as in
-``thermal_conductivity="thermal_conductivity"``.
+``diffusivity="thermal_conductivity"``.
 
 ``constant``
    Properties constant in space and time:
@@ -651,12 +654,12 @@ An expression holds these elements:
   ``abs``, ``floor``, ``ceil``, ``erf`` and ``sign`` of one argument, and
   ``atan2``, ``pow``, ``hypot``, ``min`` and ``max`` of two.
 
-The spellings ``Abs`` and ``E`` that SymPy prints are accepted.  An
-expression compiles once to a short program that C++ evaluates.  A text that
-is neither a registered name nor a valid expression is refused with the
-position at which it fails to parse.  The equations of ``general_form_PDE``
-use a larger language with vectors and tensors (see
-:doc:`/user_guide/equations`).
+An expression compiles once to a short program that C++ evaluates.  A text
+that is neither a registered name nor a valid expression is refused with the
+position at which it fails to parse.  The formulas of the input and the
+equations of ``general_form_PDE`` use a larger language, with units, vectors,
+tensors and derivatives, which the library writes in this one (see
+:doc:`/user_guide/input` and :doc:`/user_guide/equations`).
 
 Find what exists
 ----------------
@@ -668,7 +671,7 @@ the description always matches the code.
 
    dualmesh list                        # every type
    dualmesh list --category kernel      # the kernels
-   dualmesh list --module heat_transfer # the types of one module
+   dualmesh list --module heat_conduction # the types of one module
    dualmesh describe heat_conduction    # the parameters of one type
 
 The categories are ``physics``, ``coupling``, ``kernel``,
@@ -680,7 +683,7 @@ The categories are ``physics``, ``coupling``, ``kernel``,
    dualmesh.list_objects(category="kernel")
    dualmesh.registered_types()  # every object type
    dualmesh.object_category("heat_conduction")  # 'kernel'
-   dualmesh.object_module("heat_conduction")  # 'heat_transfer'
+   dualmesh.object_module("heat_conduction")  # 'heat_conduction'
    print(dualmesh.describe("heat_conduction"))
 
 :func:`dualmesh.describe` prints the description of a type, then each
@@ -790,5 +793,5 @@ The other objects follow the same pattern:
 
 An object written in Python puts the assembly on one thread, for the reason
 given in :ref:`problem-setup-values`.  Move a term to C++ once its form is
-settled (see :doc:`/developing`).  :doc:`/tutorials/custom_kernel` solves a
-problem with a kernel written in Python.
+settled (see :doc:`/developing`), which solves a problem with a kernel
+written in Python.

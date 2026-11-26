@@ -1,7 +1,7 @@
 Verification
 ============
 
-This page gives the evidence that dualmesh-multiphysics computes what it
+This page gives the evidence that dualmesh computes what it
 claims.  Each case compares a computed quantity with a reference: a published
 value, an analytical solution, or the result of an independent code.  For each
 case you find the problem and its source, the quantity compared, the result,
@@ -303,6 +303,16 @@ and a linear pressure.
    * - a uniform body force on a fluid at rest in a periodic box
      - :math:`v_x = f t / \rho` to a relative :math:`10^{-9}`
      - ``test_projection.py::test_the_body_force_of_the_flow_is_applied``
+   * - the accelerating shear flow :math:`\mathbf{v} = (g(t) + y, 0)`,
+       :math:`p = -\rho g'(t) x` with :math:`g(t) = 1 + t / 2`, on
+       ``Quad4`` and ``Hex8`` meshes with hanging nodes, both methods
+     - velocity and pressure exact to :math:`10^{-7}`
+     - ``test_projection.py::test_a_linear_flow_stays_exact_across_hanging_nodes``
+   * - the uniform body force on ``Quad4`` meshes with hanging nodes, and the
+       channel driven by a body force, whose second row is split (FEM)
+     - :math:`v_x = f t / \rho` to a relative :math:`10^{-9}`, and the force
+       on the walls equal to the body force to a relative :math:`10^{-6}`
+     - ``test_projection.py``
 
 Lid-driven cavity at Re = 100
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -541,9 +551,10 @@ number :math:`Nu` is the heat flow through the hot wall, and :math:`u_m` and
 :math:`v_m` are the largest :math:`v_x` on the vertical centerline and the
 largest :math:`v_y` on the horizontal centerline, in units of
 :math:`\kappa / L`, with :math:`\kappa` the thermal diffusivity and :math:`L`
-the side.  The problem is the one of
-``examples/natural_convection.py`` on a :math:`32 \times 32` mesh whose lines
-cluster at the walls.
+the side.  The example ``examples/natural_convection`` solves a cavity of air
+of side :math:`100\ \mathrm{mm}` in SI units, with the default equal-order
+formulation of the flow, on a mesh of :math:`80 \times 80` cells whose lines
+cluster at the walls with a cosine spacing.
 
 .. list-table:: Reference values of [DeVahlDavis1983]_
    :header-rows: 1
@@ -565,7 +576,15 @@ cluster at the walls.
      - 34.73
      - 68.59
 
-The tests in ``tests/python/test_multiphysics.py`` check, with both methods:
+The test ``test_natural_convection_has_the_Nusselt_numbers_of_de_Vahl_Davis``
+in ``tests/python/test_examples.py`` checks the example, with both methods,
+at every :math:`Ra` of the table: :math:`Nu` within 0.5 % and :math:`u_m` and
+:math:`v_m` within 2 %, with the largest differences 0.18 % and 0.19 % at
+:math:`Ra = 10^5`.
+
+The tests in ``tests/python/test_multiphysics.py`` solve the dimensionless
+Boussinesq equations of :doc:`theory/fluids` with the penalty formulation on a
+:math:`32 \times 32` mesh of the same spacing, and check, with both methods:
 
 * at every :math:`Ra` of the table, :math:`Nu` within 0.5 % and :math:`u_m`
   and :math:`v_m` within 2 %, with the default advection scheme of the heat
@@ -795,7 +814,7 @@ Comparison with OpenFOAM
 ------------------------
 
 The scripts in ``verification/openfoam`` run OpenFOAM [OpenFOAM1998]_ and
-dualmesh-multiphysics on the same problem and print both results.  They need
+dualmesh on the same problem and print both results.  They need
 an OpenFOAM installation.
 
 1. Load the OpenFOAM environment, for example:
@@ -985,7 +1004,7 @@ balance closes to :math:`10^{-11}` of its largest term:
 
    * - Physics or coupling
      - Balance
-   * - ``heat_transfer``
+   * - ``heat_conduction``
      - steady, with a source, a given flux and a convective condition, on
        ``Quad4``, ``Tri3``, ``Quad9`` and ``Tri6``, in Cartesian and
        axisymmetric coordinates, and one step of backward Euler and of

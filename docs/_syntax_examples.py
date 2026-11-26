@@ -24,13 +24,14 @@ def _add(name: str, text: str) -> None:
 _add(
     "diffusion",
     r"""
-``diffusion`` is the generic second-order operator, with the flux
+``diffusion`` is the second-order operator with the flux
 :math:`\mathbf{F} = -k \nabla u` of the unknown :math:`u` and the diffusivity
-:math:`k`.  Use it when the flux is proportional to the gradient of the
-unknown and no physics module has a kernel with a more specific name.  The
-diffusivity is a number, a named function of position and time, or a
-property, and a polynomial in the unknown can multiply it, which makes the
-problem nonlinear:
+:math:`k`.  Use it for any flux proportional to the gradient of the unknown,
+heat conduction included, with the temperature :math:`T` in :math:`\mathrm{K}`
+and the thermal conductivity :math:`k` in :math:`\mathrm{W/(m\,K)}`.  The
+diffusivity is a number, a named function of position and time, a property or
+an expression of the fields, and a polynomial in the unknown can multiply it,
+which makes the problem nonlinear:
 
 .. code-block:: python
 
@@ -43,7 +44,10 @@ problem nonlinear:
    # A diffusivity that depends on the solution: k_eff = 1.0 * (1 + 0.5 u).
    problem.add_kernel("diffusion", variable="u", diffusivity=1.0, solution_polynomial=[1.0, 0.5])
 
-The last form needs a nonlinear solve.  With ``nonlinear_solver="Newton"``
+   # Heat conduction with the conductivity k = 45 (1 + 0.002 T) in W/(m K).
+   problem.add_kernel("diffusion", variable="temperature", diffusivity=45.0, solution_polynomial=[1.0, 0.002])
+
+The last two forms need a nonlinear solve.  With ``nonlinear_solver="Newton"``
 the automatic differentiation carries the derivative of the polynomial
 exactly, so the iteration converges quadratically.
 """,
@@ -97,9 +101,10 @@ unknown:
 _add(
     "body_force",
     """
-``body_force`` is the generic distributed source.  Each physics module has an
-equivalent source with a physical name.  ``body_force`` takes any function,
-and the verification problems use it for a source that has no physical name:
+``body_force`` is the distributed source of every equation: the heat source of
+a temperature, the body force of a displacement or a velocity component, and a
+source without a physical name in the verification problems.  The value is a
+number, a function, a property or an expression of the fields:
 
 .. code-block:: python
 
@@ -107,6 +112,9 @@ and the verification problems use it for a source that has no physical name:
 
    problem.add_function("source", lambda x, y, z, t: 10.0 * numpy.cos(x))
    problem.add_kernel("body_force", variable="u", value="source")
+
+   # A heat source in W/m^3 that grows with the temperature.
+   problem.add_kernel("body_force", variable="temperature", value="1e5*(1 + 0.01*temperature)")
 
 The ``quadrature`` keyword sets the rule that integrates the source.  The
 trapezoidal rule over the whole control domain, the source rule of the finite
@@ -121,14 +129,28 @@ volume method of [Reddy2024]_, is ``control_domain_trapezoid``:
 _add(
     "advection",
     r"""
-``advection`` transports the unknown with a prescribed velocity, so with
-``diffusion`` it forms the advection-diffusion equation.  The velocity is
-constant or given by functions, one per component:
+``advection`` transports the unknown with a velocity, so with ``diffusion`` it
+forms the advection-diffusion equation.  A prescribed velocity is constant or
+given by functions, one per component:
 
 .. code-block:: python
 
    problem.add_kernel("diffusion", variable="c", diffusivity=1.0)
    problem.add_kernel("advection", variable="c", velocity=[75.0, 0.0])
+
+The names of the velocity variables of a flow make it the transport by that
+flow.  With the coefficient :math:`\rho c_p`, the density :math:`\rho` in
+:math:`\mathrm{kg/m^3}` times the specific heat capacity :math:`c_p` in
+:math:`\mathrm{J/(kg\,K)}`, it is the heat that the flow carries, which the
+``nonisothermal_flow`` coupling adds.  With the coefficient :math:`\rho` on a
+velocity component, it is the inertia of the flow, which ``fluid_dynamics``
+adds:
+
+.. code-block:: python
+
+   velocities = ["velocity_x", "velocity_y"]
+   problem.add_kernel("advection", variable="temperature", velocity=velocities, coefficient=4.2e6)
+   problem.add_kernel("advection", variable=velocities, velocity=velocities, coefficient=1000.0)
 
 The cell Peclet number :math:`Pe_h = |\mathbf{v}| h / k`, with the velocity
 :math:`\mathbf{v}`, the element size :math:`h` and the diffusivity :math:`k`,
@@ -211,10 +233,12 @@ in :math:`\mathrm{s}`.
 
 _add(
     "time_derivative",
-    """
-``time_derivative`` makes a steady equation transient.  Add it to every
-equation that evolves in time.  An equation without it holds at every
-instant, as the moment equation of a mixed beam does.
+    r"""
+``time_derivative`` is the storage term of every equation that evolves in
+time.  An equation without it holds at every instant, as the moment equation
+of a mixed beam does.  With a capacity :math:`c` it is :math:`c\, \partial
+u/\partial t`, such as the heat capacity :math:`\rho c_p\, \partial T/\partial
+t` of heat conduction:
 
 .. code-block:: python
 
@@ -223,7 +247,24 @@ instant, as the moment equation of a mixed beam does.
    problem.add_kernel("time_derivative", variable="u", coefficient=1.0)
    problem.solve_transient(end_time=0.1, time_step=0.001, time_scheme="Crank-Nicolson")
 
-To lump the capacity, give the nodal quadrature:
+   # Steel: rho c_p = 7850 * 460 J/(m^3 K).
+   problem.add_kernel("time_derivative", variable="temperature", coefficient=7850.0 * 460.0)
+
+With a storage :math:`m` it is :math:`(m - m_\mathrm{old})/\Delta t` over a step
+of length :math:`\Delta t`, with :math:`m_\mathrm{old}` the storage at the
+start of the step.  The stored amount then changes by exactly what the fluxes
+and the sources bring, for a storage nonlinear in the fields or in the states
+of a ``parsed_state`` object, here a solute ``c`` and its trapped concentration:
+
+.. code-block:: python
+
+   states = problem.add_property("parsed_state", states=["trapped"], rates=["2*c - 0.5*trapped"], rate_derivatives=["-0.5"], initial_values=[0.0])
+   problem.add_kernel("time_derivative", variable="c", storage="c + trapped", state_object=states.name)
+
+On a mesh of linear elements the automatic quadrature of time stepping lumps
+the storage of an equation of first order in time unless a kernel of the
+variable carries it with a flow, and an eigenvalue study takes the Gauss rule.
+To lump it on any mesh and in every study, give the nodal quadrature:
 
 .. code-block:: python
 
@@ -361,84 +402,7 @@ values in different blocks:
 
    problem.add_property("constant", properties={"conductivity": 400.0}, block=["copper_bar"])
    problem.add_property("constant", properties={"conductivity": 45.0}, block=["steel_bar"])
-   problem.add_kernel("heat_conduction", variable="temperature", thermal_conductivity="conductivity")
-""",
-)
-
-_add(
-    "function",
-    """
-``function`` is the counterpart of ``constant`` for a property that varies
-through the body.  Register the functions on the problem first:
-
-.. code-block:: python
-
-   problem.add_function("k_of_x", lambda x, y, z, t: 50.0 * (1.0 + x))
-   problem.add_property("function", properties={"conductivity": "k_of_x"})
-
-A property that depends on the solution is a ``parsed`` property, or a Python
-subclass of ``PythonProperty``, as :doc:`/user_guide/problem_setup` shows.
-""",
-)
-
-# ---------------------------------------------------------------------------
-# Heat transfer
-# ---------------------------------------------------------------------------
-_add(
-    "heat_conduction",
-    r"""
-``heat_conduction`` states Fourier's law, the heat flux
-:math:`\mathbf{q} = -k \nabla T` with the thermal conductivity :math:`k` in
-:math:`\mathrm{W/(m\,K)}` and the temperature :math:`T` in :math:`\mathrm{K}`:
-
-.. code-block:: python
-
-   problem.add_variable("temperature")
-   problem.add_kernel("heat_conduction", variable="temperature", thermal_conductivity=20.0)
-
-A polynomial in the temperature can multiply the conductivity:
-
-.. code-block:: python
-
-   # k(T) = 45 (1 + 0.002 T)
-   problem.add_kernel("heat_conduction", variable="temperature", thermal_conductivity=45.0, temperature_polynomial=[1.0, 0.002])
-   problem.solve(nonlinear_solver="Newton")
-""",
-)
-
-_add(
-    "heat_conduction_time_derivative",
-    """
-``heat_conduction_time_derivative`` is the heat capacity term of the energy
-equation and makes a thermal problem transient:
-
-.. code-block:: python
-
-   problem.add_kernel("heat_conduction", variable="temperature", thermal_conductivity=45.0)
-   problem.add_kernel("heat_conduction_time_derivative", variable="temperature", density=7850.0, specific_heat=460.0)
-   problem.solve_transient(end_time=600.0, time_step=5.0, time_scheme="Crank-Nicolson")
-
-Only the product of the density and the specific heat enters, so you can
-give a volumetric heat capacity as the density with the specific heat set to
-one.
-""",
-)
-
-_add(
-    "radiative_heat_flux",
-    """
-``radiative_heat_flux`` adds grey-body radiation to a surface.  The flux
-varies with the fourth power of the temperature, so the condition is strongly
-nonlinear, and it needs temperatures on an absolute scale:
-
-.. code-block:: python
-
-   # A surface at a few hundred kelvin radiating to surroundings at 300 K.
-   problem.add_boundary_condition("radiative_heat_flux", variable="temperature", boundary="top", emissivity=0.8, ambient_temperature=300.0)
-   problem.solve(nonlinear_solver="Newton")
-
-Radiation and convection often act together.  The fluxes of two objects on
-the same side set add up.
+   problem.add_kernel("diffusion", variable="temperature", diffusivity="conductivity")
 """,
 )
 
@@ -665,8 +629,8 @@ _add(
     """
 ``viscous_stress`` is the viscous term of the momentum equation.  With a
 treatment of the pressure, the penalty term or the ``pressure_gradient`` and
-``mass_conservation`` kernels, it describes a Stokes flow, and
-``convective_inertia`` adds the inertia of the Navier-Stokes equations:
+``mass_conservation`` kernels, it describes a Stokes flow, and ``advection``
+of the velocity by itself adds the inertia of the Navier-Stokes equations:
 
 .. code-block:: python
 
@@ -697,23 +661,6 @@ a rule with more points locks the velocity field.
 )
 
 _add(
-    "convective_inertia",
-    """
-``convective_inertia`` adds the nonlinear transport term of the
-Navier-Stokes equations.  A Stokes flow leaves this kernel out:
-
-.. code-block:: python
-
-   velocities = ["velocity_x", "velocity_y"]
-   problem.add_kernel("convective_inertia", variable=velocities, velocities=velocities, density=1.0)
-   problem.solve(nonlinear_solver="Newton")
-
-When Newton's method does not converge from rest at a high Reynolds number,
-the solve ramps the boundary velocity up from rest by itself.
-""",
-)
-
-_add(
     "Boussinesq_buoyancy",
     r"""
 ``Boussinesq_buoyancy`` adds the buoyancy force that a temperature field
@@ -739,39 +686,11 @@ Prandtl number, with the dynamic viscosity :math:`\mu`:
 The default ``density`` of 1 is the value of the non-dimensional equations.
 When Newton's method does not converge on a strongly buoyant flow, the steady
 solve ramps the buoyancy up from a fluid at rest.  The ``nonisothermal_flow``
-coupling of a ``heat_transfer`` and a ``fluid_dynamics`` physics adds this
+coupling of a ``heat_conduction`` and a ``fluid_dynamics`` physics adds this
 kernel when it is given ``gravity`` and
-``volumetric_expansion_coefficient``.  The complete problem is in
-``examples/natural_convection.py``.
-""",
-)
-
-_add(
-    "heat_convection",
-    r"""
-``heat_convection`` is the heat that a flow carries,
-:math:`\rho c_p \mathbf{v} \cdot \nabla T`, with the density :math:`\rho`,
-the specific heat capacity :math:`c_p`, the velocity :math:`\mathbf{v}` and
-the temperature :math:`T`.  The velocities are variables of the same problem,
-so the Jacobian of Newton's method holds the coupling in both directions:
-
-.. code-block:: python
-
-   problem.add_kernel("heat_convection", variable="temperature", velocities=["u", "v"], density=1.0, specific_heat=1.0)
-
-The ``nonisothermal_flow`` coupling of a ``heat_transfer`` and a
-``fluid_dynamics`` physics adds this kernel:
-
-.. code-block:: python
-
-   flow = problem.add_physics("fluid_dynamics", dynamic_viscosity=0.71, density=1.0)
-   heat = problem.add_physics("heat_transfer", thermal_conductivity=1.0)
-   problem.add_coupling("nonisothermal_flow", heat_transfer=heat, fluid_dynamics=flow)
-
-``advection_scheme="central"``, the default, takes the temperature at each
-integration point.  ``"upwind"``, ``"linear_upwind"`` and ``"limited"`` make
-the term a face flux with the face value of that scheme, for
-``method="DMCDM"``.
+``volumetric_expansion_coefficient``.  The example
+``examples/natural_convection`` solves a cavity of air with it through the
+input.
 """,
 )
 
@@ -779,21 +698,26 @@ _add(
     "heat_streamline_stabilization",
     """
 ``heat_streamline_stabilization`` adds the streamline upwind Petrov-Galerkin
-(SUPG) term of the energy equation.  Its residual is the sum of the sources
-of the other kernels of the temperature (the convection, the heat sources and
-the heat capacity term), so a source added as a kernel is part of it:
+(SUPG) term of the energy equation.  Its residual is the strong residual of
+the other kernels of the temperature (the advection, the heat sources, the
+heat capacity term and, on quadratic elements, the conduction), so a source
+added as a kernel is part of it.  It takes the conductivity of the
+``diffusion`` kernels and the heat capacity of the ``advection`` kernels of
+the temperature, and its parameter is that of ``momentum_stabilization``:
 
 .. code-block:: python
 
-   problem.add_kernel("heat_streamline_stabilization", variable="temperature", velocities=["u", "v"], thermal_conductivity=1.0e-4)
+   problem.add_kernel("heat_streamline_stabilization", variable="temperature", velocities=["u", "v"])
 
 The ``nonisothermal_flow`` coupling adds it, with the values of the
-``heat_transfer`` physics, when that physics has ``advection_scheme="SUPG"``,
+``heat_conduction`` physics, when that physics has ``advection_scheme="SUPG"``,
 its default:
 
 .. code-block:: python
 
-   heat = problem.add_physics("heat_transfer", thermal_conductivity=1.0e-4)
+   flow = problem.add_physics("fluid_dynamics", dynamic_viscosity=0.71, density=1.0)
+   heat = problem.add_physics("heat_conduction", thermal_conductivity=1.0e-4, density=1.0, specific_heat=1.0)
+   problem.add_coupling("nonisothermal_flow", heat_conduction=heat, fluid_dynamics=flow)
 """,
 )
 
@@ -803,17 +727,16 @@ _add(
 The penalty formulation eliminates the pressure from the unknowns, and the
 pressure follows from the divergence of the velocity.  ``penalty_pressure``
 gives it as the property ``pressure``, which the post-processing evaluates at
-the element centroids:
+the element centroids.  Give it the penalty parameter of the
+``penalty_incompressibility`` kernels of the same velocities, which the
+``fluid_dynamics`` physics passes to both:
 
 .. code-block:: python
 
    velocities = ["velocity_x", "velocity_y"]
-   problem.add_property("penalty_pressure", velocities=velocities)
+   problem.add_property("penalty_pressure", velocities=velocities, penalty_parameter=1.0e8)
    problem.solve()
    pressure = problem.property_at_centroids("pressure")
-
-It reads the penalty parameter of the ``penalty_incompressibility`` of the
-same velocities, so the two always agree.
 """,
 )
 
@@ -840,9 +763,10 @@ _add(
     "mass_conservation",
     """
 ``mass_conservation`` is the mass equation, on the pressure variable.  With
-equal-order interpolation it includes the pressure stabilisation, and it
-reads the momentum residual of that stabilisation from the momentum kernels
-of the same velocities (the density, the viscosity and the body forces):
+equal-order interpolation it includes the pressure stabilisation, whose
+momentum residual it builds from the momentum kernels of the same velocities.
+The Taylor-Hood element, a first-order pressure with quadratic velocities,
+takes no stabilisation:
 
 .. code-block:: python
 
@@ -859,12 +783,13 @@ _add(
     "momentum_stabilization",
     """
 ``momentum_stabilization`` adds the streamline upwind term to one momentum
-equation of a flow with inertia.  Like ``mass_conservation``, it reads the
-momentum equations from their kernels:
+equation of a flow with inertia.  Like ``mass_conservation``, it builds the
+momentum residual from the kernels of the velocities, the pressure gradient
+included:
 
 .. code-block:: python
 
-   problem.add_kernel("momentum_stabilization", variable=["u", "v"], pressure="pressure", velocities=["u", "v"])
+   problem.add_kernel("momentum_stabilization", variable=["u", "v"], velocities=["u", "v"])
 """,
 )
 
@@ -1105,7 +1030,16 @@ fields:
 .. code-block:: python
 
    problem.add_property("parsed", property_name="thermal_conductivity", expression="k0*(1 + b*(temperature - 300))", constants={"k0": 20.0, "b": 1.0e-3})
-   heat = problem.add_physics("heat_transfer")  # reads the property thermal_conductivity
+   heat = problem.add_physics("heat_conduction")  # reads the property thermal_conductivity
+
+``parsed`` is also the counterpart of ``constant`` for a property that varies
+through the body only, as a formula of :math:`x`, :math:`y`, :math:`z` and
+:math:`t` or the name of a registered function of them:
+
+.. code-block:: python
+
+   problem.add_function("k_of_x", lambda x, y, z, t: 50.0 * (1.0 + x))
+   problem.add_property("parsed", property_name="conductivity", expression="k_of_x")
 """,
 )
 
@@ -1129,6 +1063,21 @@ value.
 )
 
 _add(
+    "parsed_tensor",
+    """
+``parsed_tensor`` declares a property of several components, each an
+expression of the fields and their gradients.  The heat flux
+:math:`-k \\nabla T` of a conductivity :math:`k = 45\\ \\mathrm{W/(m\\,K)}` on
+a plane mesh, with :math:`T` the temperature in K, as a property of two
+components that a postprocessor reads:
+
+.. code-block:: python
+
+   problem.add_property("parsed_tensor", property_name="heat_flux", components=["-45*grad_x(temperature)", "-45*grad_y(temperature)"])
+""",
+)
+
+_add(
     "finite_strain_stress",
     """
 ``finite_strain_stress`` is the stress at large strain, for equations written
@@ -1136,12 +1085,22 @@ on the undeformed mesh.  It provides the first Piola-Kirchhoff stress
 ``first_piola_kirchhoff_stress``, which ``stress_divergence`` reads with
 ``stress_property``.  Its material laws are those of
 ``small_strain_stress``, creep included, carried to finite rotation, or a
-neo-Hookean solid:
+hyperelastic law: ``neo-Hookean``, ``Saint_Venant_Kirchhoff``, or
+``strain_energy`` with the energy as an expression.  A neo-Hookean solid in
+plane strain:
 
 .. code-block:: python
 
    problem.add_property("finite_strain_stress", displacements=["disp_x", "disp_y"], formulation="plane_strain", youngs_modulus=1.0e6, poissons_ratio=0.45, stress_update="neo-Hookean")
    problem.add_kernel("stress_divergence", displacements=["disp_x", "disp_y"], stress_property="first_piola_kirchhoff_stress")
+
+A plate in plane stress with an energy of your own, whose stretch of the
+thickness the code finds at each point:
+
+.. code-block:: python
+
+   energy = "shear_modulus/2*(I_C - 3) - shear_modulus*log(J) + first_Lame_parameter/4*(J^2 - 1 - 2*log(J))"
+   problem.add_property("finite_strain_stress", displacements=["disp_x", "disp_y"], formulation="plane_stress", youngs_modulus=1.0e6, poissons_ratio=0.45, stress_update="strain_energy", strain_energy=energy)
 """,
 )
 
@@ -1179,7 +1138,7 @@ coordinates of its nodes:
 )
 
 _add(
-    "heat_transfer",
+    "heat_conduction",
     r"""
 A bus bar with internal heat generation, fixed temperatures on two sides and
 convection on the top.  A boundary condition is written as text.  The
@@ -1189,13 +1148,16 @@ outward unit normal :math:`\mathbf{n}`, prescribes the flux:
 
 .. code-block:: python
 
-   heat = problem.add_physics("heat_transfer", thermal_conductivity=20.0, heat_source=1.0e6)
+   heat = problem.add_physics("heat_conduction", thermal_conductivity=20.0, heat_source=1.0e6)
    heat.add_boundary_condition("temperature = 40", boundary="left")
    heat.add_boundary_condition("temperature = 10", boundary="right")
    heat.add_boundary_condition("heat_flux = 75*temperature", boundary="top")
 
-A heater is a negative ``heat_flux``, heat that enters, and radiation is
-``"heat_flux = 5.67e-8*0.8*(temperature^4 - 293^4)"``.  A transient problem
+A heater is a negative ``heat_flux``, heat that enters.  Grey-body radiation
+with the emissivity 0.8 to surroundings at 293 K is
+``"heat_flux = 5.670374419e-8*0.8*(temperature^4 - 293^4)"``, with the
+Stefan-Boltzmann constant :math:`\sigma = 5.670374419 \times 10^{-8}\,
+\mathrm{W/(m^2\,K^4)}`.  A transient problem
 gives ``density`` and ``specific_heat``, and a conductivity that differs
 between blocks comes from the property objects when ``thermal_conductivity``
 is not given.
@@ -1360,9 +1322,9 @@ The thermal stress of a body heated by conduction:
 
 .. code-block:: python
 
-   heat = problem.add_physics("heat_transfer", thermal_conductivity=50.0)
+   heat = problem.add_physics("heat_conduction", thermal_conductivity=50.0)
    solid = problem.add_physics("solid_mechanics", formulation="plane_strain", youngs_modulus=200.0e9, poissons_ratio=0.3)
-   problem.add_coupling("thermal_expansion", heat_transfer=heat, solid_mechanics=solid, linear_expansion_coefficient=1.2e-5, stress_free_temperature=293.15)
+   problem.add_coupling("thermal_expansion", heat_conduction=heat, solid_mechanics=solid, linear_expansion_coefficient=1.2e-5, stress_free_temperature=293.15)
 """,
 )
 
@@ -1371,12 +1333,26 @@ _add(
     """
 Natural convection in a square cavity in the non-dimensional form of
 [DeVahlDavis1983]_, at a Rayleigh number of 1e5 and a Prandtl number of
-0.71, as in ``examples/natural_convection.py``:
+0.71, as in ``tests/python/test_multiphysics.py``:
 
 .. code-block:: python
 
    flow = problem.add_physics("fluid_dynamics", dynamic_viscosity=0.71, density=1.0, formulation="penalty", penalty_parameter=1.0e7)
-   heat = problem.add_physics("heat_transfer", thermal_conductivity=1.0)
-   problem.add_coupling("nonisothermal_flow", heat_transfer=heat, fluid_dynamics=flow, gravity=[0.0, -1.0], volumetric_expansion_coefficient=1.0e5 * 0.71)
+   heat = problem.add_physics("heat_conduction", thermal_conductivity=1.0, density=1.0, specific_heat=1.0)
+   problem.add_coupling("nonisothermal_flow", heat_conduction=heat, fluid_dynamics=flow, gravity=[0.0, -1.0], volumetric_expansion_coefficient=1.0e5 * 0.71)
+""",
+)
+
+_add(
+    "parsed_state",
+    """
+``parsed_state`` keeps internal states at each integration point, each with
+its rate law, and declares each as a property of its name. The trapped
+concentration ``trapped`` of a solute ``c`` in mol/m^3, with the trapping rate
+2 1/s and the release rate 0.5 1/s, starting empty:
+
+.. code-block:: python
+
+   states = problem.add_property("parsed_state", states=["trapped"], rates=["2*c - 0.5*trapped"], rate_derivatives=["-0.5"], initial_values=[0.0])
 """,
 )

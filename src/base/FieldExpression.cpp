@@ -110,6 +110,14 @@ FieldExpressions::compile(const Problem & problem,
   _expressions.clear();
   for (const auto & text : texts)
     _expressions.push_back(std::make_shared<ParsedExpression>(text, used_names));
+  _names = std::move(used_names);
+}
+
+int
+FieldExpressions::argumentIndex(const std::string & name) const
+{
+  const auto it = std::find(_names.begin(), _names.end(), name);
+  return it == _names.end() ? -1 : static_cast<int>(it - _names.begin());
 }
 
 void
@@ -149,6 +157,48 @@ FieldExpressions::arguments(const QpContext & ctx, const Point & x, ADReal * out
       break;
     case Argument::Property:
       out[k] = ctx.property(a.index);
+      break;
+    case Argument::Constant:
+      out[k] = ADReal(a.constant);
+      break;
+    }
+  }
+}
+
+void
+FieldExpressions::startArguments(const QpContext & ctx,
+                                 const std::function<double(int)> & start,
+                                 ADReal * out) const
+{
+  const double t = ctx.time - ctx.dt;
+  for (std::size_t k = 0; k < _arguments.size(); ++k)
+  {
+    const Argument & a = _arguments[k];
+    switch (a.kind)
+    {
+    case Argument::Value:
+      out[k] = ADReal(ctx.u_old[a.index]);
+      break;
+    case Argument::Gradient:
+      out[k] = ADReal(ctx.grad_u_old[a.index][a.component]);
+      break;
+    case Argument::Coordinate:
+      out[k] = ADReal(ctx.x[a.component]);
+      break;
+    case Argument::Time:
+      out[k] = ADReal(t);
+      break;
+    case Argument::Eigenvalue:
+      out[k] = ADReal(ctx.eigenvalue);
+      break;
+    case Argument::Function:
+      out[k] = ADReal(a.function->value(ctx.x, t));
+      break;
+    case Argument::ElementField:
+      out[k] = ADReal(ctx.element >= 0 ? (*a.field)[ctx.element] : 0.0);
+      break;
+    case Argument::Property:
+      out[k] = ADReal(start(a.index));
       break;
     case Argument::Constant:
       out[k] = ADReal(a.constant);

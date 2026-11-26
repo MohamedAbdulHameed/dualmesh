@@ -46,7 +46,6 @@ Graded coordinates
    :toctree: generated/
 
    graded_coordinates
-   annulus_coordinates
    meshing.coordinates_from_spacings
 
 Reading, writing and inspecting
@@ -59,4 +58,3 @@ Reading, writing and inspecting
    write_mesh
    write_sidesets
    sideset_summary
-   meshing.mesh_summary

@@ -182,7 +182,8 @@ public:
   /// Bounding box: {min, max}.
   std::pair<Point, Point> boundingBox() const;
   /// Build the default side sets (left/right/bottom/top/back/front) from the
-  /// bounding box for meshes that are aligned with the coordinate axes.
+  /// bounding box for meshes that are aligned with the coordinate axes.  A node is on a face when
+  /// its distance to it is at most @p tolerance times the largest extent of the mesh.
   void addBoundingBoxSidesets(double tolerance = 1e-10);
   /// A short report of the mesh: dimensions, counts, element types, blocks,
   /// side sets and node sets, one item per line.

@@ -61,7 +61,7 @@ def test_a_problem_refuses_an_inverted_element():
     mesh.add_element("Quad4", [0, 3, 2, 1])  # Clockwise: det J < 0
     problem = dualmesh.Problem(mesh, method="fem")
     problem.add_variable("temperature")
-    problem.add_kernel("heat_conduction", variable="temperature", thermal_conductivity=1.0)
+    problem.add_kernel("diffusion", variable="temperature", diffusivity=1.0)
     with pytest.raises(ValueError, match="Element 0 of block 0 .* is inverted"):
         problem.initialize()
 
@@ -75,7 +75,7 @@ def test_a_problem_names_a_degenerate_element():
     mesh.add_element("Tri3", [0, 1, 3])
     problem = dualmesh.Problem(mesh, method="fem")
     problem.add_variable("temperature")
-    problem.add_kernel("heat_conduction", variable="temperature", thermal_conductivity=1.0)
+    problem.add_kernel("diffusion", variable="temperature", diffusivity=1.0)
     with pytest.raises(ValueError, match="Element 1 of block 0 is degenerate"):
         problem.initialize()
 

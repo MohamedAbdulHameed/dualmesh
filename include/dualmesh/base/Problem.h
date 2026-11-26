@@ -19,7 +19,9 @@
 #include <limits>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace dualmesh
@@ -110,13 +112,9 @@ struct TransientOptions
   /// damping).  The first-order equations of the same problem take theta = 1 - alpha_f.
   std::string second_order_scheme = "generalized_alpha";
   double spectral_radius = 0.75;
-  /// The times at which the solution is written, in increasing order.  The
-  /// steps land on these times.  Empty: the run writes no file.
+  /// The times at which the output callback (Problem::setOutputCallback) is called, in
+  /// increasing order.  The steps land on these times.  Empty: no call.
   std::vector<double> output_times;
-  /// The path and the start of the name of the files.  Empty: no file.
-  std::string output_file_base;
-  /// The variables that the files contain.  Empty: all the variables.
-  std::vector<std::string> output_fields;
   /// The file of the checkpoint, written every checkpoint_interval accepted steps and after the last step.
   /// Empty: no checkpoint.
   std::string checkpoint_file;
@@ -127,18 +125,22 @@ struct TransientOptions
   // ---- adaptive time stepping --------------------------------------------
   /// How the step size is chosen.
   ///
+  /// "error", the default, controls the local truncation error.  The theta method estimates it
+  /// from one step and the polynomial through the last accepted states extrapolated to the end
+  /// of the step (linear for an order-one member, quadratic for Crank-Nicolson): their
+  /// difference is in proportion to the error.  The projection integration of a flow compares
+  /// its step with the extrapolation of its own order (TimeIntegrator::predict).  The first
+  /// steps and an equation with a second time derivative estimate it by step doubling instead:
+  /// the same interval is advanced once with one step and once with two half steps, and the
+  /// solution of the half steps is kept, at three nonlinear solves per step.  Each variable is
+  /// measured against the largest of its range, its change from the start of the run and the
+  /// square root of the machine epsilon times its magnitude, the largest each has reached in the
+  /// run, with the components of a vector unknown together.  A step whose estimated error
+  /// exceeds `error_tolerance` is thrown away and retried with a smaller step.  An accepted step
+  /// is followed by the largest step the estimate says will still meet the tolerance.
+  ///
   /// "fixed" keeps `dt` throughout, except that the last step is shortened to
   /// land exactly on `end_time`.
-  ///
-  /// "error" controls the local truncation error.  The theta method estimates it from one step
-  /// and the polynomial through the last accepted states extrapolated to the end of the step
-  /// (linear for an order-one member, quadratic for Crank-Nicolson): their difference is in
-  /// proportion to the error.  The first steps, an equation with a second time derivative and a
-  /// time integration of its own estimate it by step doubling instead: the same interval is
-  /// advanced once with one step and once with two half steps, and the solution of the half steps
-  /// is kept, at three nonlinear solves per step.  A step whose estimated error exceeds
-  /// `error_tolerance` is thrown away and retried with a smaller step; an accepted step is
-  /// followed by the largest step the estimate says will still meet the tolerance.
   ///
   /// "iteration" watches the nonlinear solver instead: a step that converged
   /// in fewer than `optimal_iterations - iteration_window` iterations is
@@ -147,7 +149,7 @@ struct TransientOptions
   /// did not converge at all is thrown away and retried.  It costs nothing
   /// beyond the solve itself and is the right choice when the difficulty is
   /// the nonlinearity rather than the accuracy.
-  std::string time_stepper = "fixed";
+  std::string time_stepper = "error";
   /// Smallest step allowed; a step that would have to go below it is an error.
   /// Zero means `dt` divided by one million.
   double dt_min = 0.0;
@@ -155,7 +157,8 @@ struct TransientOptions
   double dt_max = 0.0;
   /// The most the step may grow from one step to the next.
   double growth_factor = 2.0;
-  /// The factor applied to the step after it has been rejected.
+  /// The factor applied to a step whose nonlinear solve failed, or that the "iteration" stepper
+  /// shrinks.  A step that the "error" stepper rejects takes the step that its estimate allows.
   double cutback_factor = 0.5;
   /// Target for the relative local error of one step ("error" stepper).
   double error_tolerance = 1.0e-3;
@@ -205,50 +208,12 @@ struct SolveResult
   std::vector<std::pair<double, double>> step_history;
   /// The step that the step controller chose to take next (transient runs).
   double next_time_step = 0.0;
+  /// The largest change of the velocity of a flow over its largest speed, when a transient run
+  /// projected the initial velocity onto a field without divergence
+  /// (Problem::projectInitialVelocity), and empty when it did not.
+  std::optional<double> start_correction;
   std::vector<IterationRecord> history;
 };
-
-/// The time-stepping loop, shared by the serial and distributed executioners.
-///
-/// @param take_step advances @p solution by one step of the given size,
-///        starting from the state it is given, and reports whether the
-///        nonlinear solve converged and how many iterations it took.  It must
-///        not throw on non-convergence.  Its third argument says whether the
-///        step starts from the last accepted state (so a material history
-///        starts from its committed values) or continues the step before it
-///        (the second half of a doubled step).
-/// @param on_accept is called after every accepted step with the step number
-///        and the step size, for user callbacks.
-/// @param write_output is called with the index of an output time (of
-///        TransientOptions::output_times) when the solution is at that time:
-///        at the start, and after the accepted step that lands on it.  The
-///        steps land on the output times.  It can be empty.
-/// @param verbose_root suppresses the progress messages on every process but
-///        one in a distributed run.
-/// @param relative_difference the difference of two solution vectors relative to their size,
-///        without a unit (Problem::relativeStep: each variable against its range), global in a
-///        distributed run so that every process estimates the same error and takes the same
-///        decision.  Empty: the norm of the difference over the norm of the first, at least 1.
-/// @param error_by_extrapolation the "error" stepper estimates the local error of the theta method
-///        from one step and the extrapolation of the last accepted states.  Otherwise, and before
-///        enough states are accepted, it estimates it by step doubling.
-/// @param order the order of accuracy in time of a step, which the step-doubling estimate and the
-///        choice of the next step take.  Zero takes that of the theta method of transient.theta: two
-///        for the midpoint rule, one for every other member.
-SolveResult
-runTransient(const TransientOptions & transient,
-             const SolverOptions & options,
-             Vector & solution,
-             double & current_time,
-             const std::function<SolveResult(const Vector &, double, bool)> & take_step,
-             const std::function<void(int, double)> & on_accept,
-             const std::function<void(int)> & write_output,
-             bool verbose_root = true,
-             const std::function<void(int, double)> & after_step = {},
-             const std::function<double(double)> & courant = {},
-             const std::function<double(const Vector &, const Vector &)> & relative_difference = {},
-             bool error_by_extrapolation = false,
-             int order = 0);
 
 /// A time integration that takes the place of the theta method in a transient solve.
 /// The transient loop stays (the output times, the checkpoints, the callbacks), and the integrator advances the solution by one step.
@@ -258,13 +223,30 @@ public:
   virtual ~TimeIntegrator() = default;
   /// Called once before the first step, with the solution at the start time.
   virtual void start(const Vector & solution, double time) = 0;
-  /// Advance @p solution from @p old, the last accepted solution, at time - dt, to @p time.
-  virtual SolveResult step(Vector & solution, const Vector & old, double time, double dt) = 0;
+  /// Advance @p solution from @p old, at time - dt, to @p time.  @p old is the last accepted
+  /// solution, or, when @p continues, the solution of the step just taken (the second half of a
+  /// doubled step).
+  virtual SolveResult
+  step(Vector & solution, const Vector & old, double time, double dt, bool continues) = 0;
   /// The step to @p time was accepted with @p solution.
   virtual void accept(const Vector & solution, double time) = 0;
-  /// The order of accuracy in time of a step, which the error estimate by step doubling takes.
+  /// The order of accuracy in time of a step, which the error estimate and the choice of the
+  /// next step take.
   virtual int order() const = 0;
-  /// The Courant number of a step @p dt at @p solution, on every process alike; zero for an integration that does not measure it.
+  /// The predictor of the step @p dt from the last accepted solution, and the factor that turns
+  /// the difference of the step from it into the estimate of its local error, as runTransient
+  /// takes them.  False when too few states are accepted for it, or for an integration without
+  /// one: the step is then doubled.
+  virtual bool predict(double dt, Vector & predicted, double & factor) const
+  {
+    (void) dt;
+    (void) predicted;
+    (void) factor;
+    return false;
+  }
+  /// Whether the integration measures the Courant number of a step, which the cfl stepper takes.
+  virtual bool measuresCourantNumber() const { return false; }
+  /// The Courant number of a step @p dt at @p solution, on every process alike.
   virtual double courantNumber(const Vector & solution, double dt) const
   {
     (void) solution;
@@ -291,6 +273,13 @@ struct GlobalRows
   std::vector<char> owned_dof;
 };
 
+/// Join the ids of every pair (secondary, primary) into groups (a union-find), so that an id
+/// joined in several directions, such as a corner of a doubly periodic domain, ends in one group.
+/// Returns, for every joined id other than its group's representative, the representative: the
+/// smallest member that is a primary only.  A group whose every member is a secondary was joined
+/// in a loop, which is an InputError.
+std::unordered_map<Index, Index> joinedRepresentatives(const std::vector<std::pair<Index, Index>> & pairs);
+
 /// What the solvers of a Problem need from the processes that share it.  The
 /// default is the serial identity: one process holds the whole problem.  A
 /// DistributedProblem implements it for the part of the problem its process
@@ -313,31 +302,31 @@ public:
   virtual Index globalDof(Index dof) const { return dof; }
   /// The norm of a vector of unknowns over the processes, each unknown counted once.
   virtual double norm(const Vector & v) const { return v.norm(); }
-  /// Add the contributions of the other processes to the entries of an assembled residual
-  /// that they share.
-  virtual void addShared(Vector &) const {}
+  /// The number of local node @p node in the numbering of the nodes of all processes.
+  virtual Index globalNode(Index node) const { return node; }
+  /// Add to @p values, @p width per local node (the unknowns of a node, or a field), the values
+  /// of the other processes at the nodes they share.
+  virtual void addAtNodes(double * values, int width) const
+  {
+    (void) values;
+    (void) width;
+  }
+  /// Make every value of @p values, @p width per local node, at a node another process owns
+  /// that of the owner.
+  virtual void copyFromOwners(double * values, int width) const
+  {
+    (void) values;
+    (void) width;
+  }
   /// After the prescribed values are written into @p solution: make them, and every value of
   /// a node another process owns, those of the owner.
   virtual void shareDirichlet(Vector &) const {}
   /// The global numbering of the unknowns of @p problem.
   virtual GlobalRows globalRows(const Problem & problem) const;
-  /// Make every value of @p v at a node another process owns that of the owner.
-  virtual void copyFromOwners(Vector &) const {}
-  /// Add to @p values, @p width per local node, the values of the other processes at the nodes
-  /// they share.
-  virtual void addAtNodes(std::vector<double> & values, int width) const
-  {
-    (void) values;
-    (void) width;
-  }
   /// Whether the singularity check of the Jacobian runs, which needs the whole matrix.
   virtual bool checksSingularity() const { return true; }
   /// The global numbers of the nodes and elements of @p problem, for a checkpoint.
   virtual CheckpointLayout checkpointLayout(const Problem & problem) const;
-  /// Write the fields of @p problem to the files of @p base (one file, or one per process).
-  virtual void writeFields(Problem & problem,
-                           const std::string & base,
-                           const std::vector<std::string> & fields) const;
 };
 
 class Problem
@@ -356,10 +345,22 @@ public:
   /// The largest step of @p after from @p before over the unknowns of each variable, relative to
   /// the range of that variable (its largest value less its smallest, or its largest magnitude
   /// when they are equal): a number with no unit, which a temperature offset does not shrink.
-  /// With @p variables, over the variables it marks only.
-  double relativeStep(const Vector & after,
-                      const Vector & before,
-                      const std::vector<char> * variables = nullptr) const;
+  double relativeStep(const Vector & after, const Vector & before) const;
+  /// The sizes of each variable of @p state over its active unknowns, on every process.
+  struct VariableSizes
+  {
+    /// The largest value less the smallest.
+    std::vector<double> range;
+    /// The largest difference from the reference state.
+    std::vector<double> change;
+    /// The largest magnitude.
+    std::vector<double> magnitude;
+  };
+  VariableSizes variableSizes(const Vector & state, const Vector & reference) const;
+  /// The equation of each variable: the components of a vector unknown, a velocity or a
+  /// displacement, which a kernel of one of them names in its list 'velocities', 'velocity' or
+  /// 'displacements', share the number of the first of them, and any other variable has its own.
+  std::vector<int> vectorEquations() const;
   Problem(std::shared_ptr<Mesh> mesh,
           Method method = Method::DualMesh,
           CoordinateSystem coord = CoordinateSystem::Cartesian);
@@ -382,12 +383,6 @@ public:
   void addNodalBC(std::shared_ptr<NodalBC> bc);
   void addNodalLoad(std::shared_ptr<NodalLoad> load);
   void addConstraint(std::shared_ptr<Constraint> constraint);
-  /// The distributed solver joins the constraints across processes, so the local problem of one process leaves them to it.
-  void setConstraintsHandledOutside(bool outside)
-  {
-    _constraints_outside = outside;
-    _initialized = false;
-  }
   /// Degrees of freedom to treat as prescribed besides the problem's own: the distributed solver sets the copies of prescribed nodes that only another process knows as prescribed.
   void setExtraConstrainedDofs(std::vector<char> mask) { _extra_constrained = std::move(mask); }
   /// The residual from which reactions are read: the distributed solver sets the residual summed over the processes.
@@ -408,9 +403,15 @@ public:
   /// Change the method before the problem is initialised: the method chosen from the physics.
   void setMethod(Method method);
   CoordinateSystem coordinateSystem() const { return _coord; }
+  /// The factor of the measure of the coordinate system at @p x: 1, 2 pi r in axisymmetric coordinates and 4 pi r^2 in spherical ones.
+  double coordFactor(const Point & x) const;
   /// The value of the symbol eigenvalue that the expressions read; an eigenvalue study sets it.
   void setEigenvalue(double value) { _eigenvalue = value; }
   double eigenvalue() const { return _eigenvalue; }
+  /// Whether the assembly is that of an eigenvalue study, whose kernels take their rule of that
+  /// study (Kernel::eigenvalueStudyQuadrature): a storage term takes its consistent rule there.
+  void setEigenvalueStudy(bool on);
+  bool eigenvalueStudy() const { return _eigenvalue_study; }
   int numVariables() const { return static_cast<int>(_vars.size()); }
   const Variable & variable(int i) const { return _vars[i]; }
   int variableIndex(const std::string & name) const;
@@ -480,7 +481,7 @@ public:
     const int rank = _full_order_rank[var];
     return rank < 0 ? -1 : corners * numVariables() + (node - corners) * _num_full_order + rank;
   }
-  /// Set every degree of freedom that is not an unknown of its own: the unused slots of every first-order variable (the non-corner nodes of quadratic elements) to the linear interpolant of the corner values, and every degree of freedom that a constraint makes dependent to the value of its primary.
+  /// Set every dependent degree of freedom (dependentDofs) to the weighted sum of the independent ones it depends on.
   void updateDependentDofs(Vector & U) const;
 
   /// The blocks of the preconditioner of a flow for the linear system with
@@ -527,8 +528,32 @@ public:
   /// to decide which process applies a load given by coordinates.
   const std::vector<std::shared_ptr<NodalLoad>> & nodalLoads() const { return _loads; }
   const std::vector<std::shared_ptr<Constraint>> & constraints() const { return _constraints; }
-  /// The primary of every degree of freedom that a constraint makes dependent, and -1 for every other one; empty when the problem has no constraint.
-  const std::vector<Index> & primaryDofs() const { return _primary_of; }
+  /// The map of the dependent degrees of freedom: for each, the independent degrees of freedom
+  /// and the weights of u_d = sum_j w_j u_j, with chains resolved.  A periodic copy has weight 1
+  /// on its group's representative (on one process; a distributed run joins the copies in its
+  /// gather-scatter), a hanging node under FEM the weights of the side it lies on (DMCDM keeps it
+  /// as an unknown), and the slot of a first-order variable at a non-corner node of a quadratic
+  /// element the linear interpolant of the corners.  An empty list for every independent degree
+  /// of freedom, and empty when none depends.
+  const std::vector<std::vector<std::pair<Index, double>>> & dependentDofs() const
+  {
+    return _dependent_of;
+  }
+  bool isDependent(Index d) const
+  {
+    return !_dependent_of.empty() && !_dependent_of[static_cast<std::size_t>(d)].empty();
+  }
+  /// The degrees of freedom that a nodal boundary condition prescribes.
+  std::vector<char> prescribedDofs() const;
+  /// Under DMCDM, the polygon (polyhedron) of element @p e when nodes hang on its sides, and null
+  /// for every other element.
+  const PolygonCell * polygonCell(Index e) const
+  {
+    return _polygon_of.empty() || _polygon_of[static_cast<std::size_t>(e)] < 0
+               ? nullptr
+               : &_polygon_cells[static_cast<std::size_t>(
+                     _polygon_of[static_cast<std::size_t>(e)])];
+  }
   const std::vector<std::shared_ptr<NodalBC>> & nodalBCs() const { return _nbcs; }
   std::vector<std::string> objectNames() const;
   double time() const { return _time; }
@@ -621,15 +646,16 @@ public:
   };
   /// The initial velocity of the second-order variables of a transient run (zero: at rest).
   void setInitialVelocity(const Vector & v) { _initial_velocity = v; }
-  /// The velocity of the solution, after a run of the generalized-alpha method (empty
-  /// otherwise).
+  /// The velocity that the last transient run of the generalized-alpha or Newmark method
+  /// reached (empty before one).
   Vector velocity() const;
   /// The variables of second-order equations (Kernel::isSecondOrder), one flag per variable.
   const std::vector<char> & secondOrderVariables() const { return _second_order_variables; }
   /// Assemble R(U) (and optionally dR/dU) without applying Dirichlet rows.
   void assemble(const Vector & U, const AssemblyOptions & opts, Vector & R, SparseMatrix * J);
-  /// Write the prescribed values into @p U at the nodes of every essential
-  /// boundary condition.
+  /// Write the prescribed values into @p U at the nodes of every essential boundary condition,
+  /// set the dependent degrees of freedom, and give every process the values of the owners
+  /// (Parallel::shareDirichlet).
   void applyDirichlet(Vector & U, double data_fraction) const;
   /// Replace the equations of the prescribed degrees of freedom: the residual
   /// entry becomes zero, and the row and the column of the Jacobian are
@@ -638,12 +664,14 @@ public:
   /// units).  Dropping the column as
   /// well as the row keeps a symmetric problem symmetric, which is valid
   /// because the increment at a prescribed degree of freedom is zero.
-  void dirichletRows(const Vector & U, double data_fraction, Vector & R, SparseMatrix * J) const;
-  /// Add the equation of each periodic copy and hanging node to those of its primaries, with the
-  /// weights of its constraint, in @p R and, when given, in the rows and columns of @p J.
+  void dirichletRows(Vector & R, SparseMatrix * J) const;
+  /// Move the equation of every dependent degree of freedom into those of the independent ones
+  /// it depends on, with its weights: R becomes C^T R and J becomes C^T J C, with C the map from
+  /// the independent degrees of freedom to all of them.  The rows and columns of the dependent
+  /// ones are left empty, for the caller to give them the identity.
   void foldDependents(Vector & R, SparseMatrix * J) const;
-  /// The degrees of freedom whose equations are replaced by a prescribed
-  /// value: those of the nodal boundary conditions and the inactive ones.
+  /// The degrees of freedom whose equations are replaced by a prescribed value: those of the
+  /// nodal boundary conditions, the inactive ones and the dependent ones.
   std::vector<char> constrainedDofs() const;
   /// The near null space of the system for the algebraic multigrid
   /// preconditioner: for every set of displacement variables named by a
@@ -700,6 +728,18 @@ public:
     if (_step_callback)
       _step_callback(_time, *this);
   }
+  /// Add the projection of the initial velocity of a flow onto a field without divergence
+  /// (projectInitialVelocity of Projection.h), which returns the size of its correction.
+  void addStartProjection(std::function<double(Vector &)> project)
+  {
+    _start_projections.push_back(std::move(project));
+  }
+  /// Project the initial velocity of every flow (addStartProjection) onto a field without
+  /// divergence that keeps the values prescribed at the current time, and return the largest
+  /// correction, or nothing for a problem without a flow.  A transient run does it before its
+  /// first step, unless it restarts from a checkpoint or starts from the state that the last
+  /// transient run of the problem reached.
+  std::optional<double> projectInitialVelocity();
   /// Advance the transient solves with @p integrator instead of the theta method; nullptr restores the theta method.
   void setTimeIntegrator(std::shared_ptr<TimeIntegrator> integrator)
   {
@@ -710,9 +750,8 @@ public:
     _step_callback = std::move(cb);
   }
   /// Called with the index of an output time of a transient run
-  /// (TransientOptions::output_times) when the solution is at that time,
-  /// after the VTU file of that time is written.  An empty function removes
-  /// it.
+  /// (TransientOptions::output_times) when the solution is at that time, to write the files of
+  /// that time.  An empty function removes it.
   void setOutputCallback(std::function<void(int)> cb) { _output_callback = std::move(cb); }
 
   // ---- post-processing --------------------------------------------------------------------
@@ -783,6 +822,10 @@ public:
                         int quadrature_points = 0) const;
   /// A property evaluated at element centroids (rows: elements).
   std::vector<std::vector<double>> propertyAtCentroids(const std::string & property) const;
+  /// A property evaluated at arbitrary points, in the element that holds each (rows: points, NaN
+  /// outside the mesh).  A property with a history takes the average history of that element.
+  std::vector<std::vector<double>> propertyAtPoints(const std::string & property,
+                                                    const std::vector<Point> & points) const;
   /// Flux of a kernel evaluated at element centroids.
   std::vector<Point> kernelFluxAtCentroids(const std::string & kernel) const;
   /// The stress at the height @p z above the mid-surface, at the element centroids, of the
@@ -792,9 +835,24 @@ public:
   /// Call @p visit with the context of every element centroid (the solution and the properties
   /// evaluated there) and the block of the element.
   void centroidContexts(const std::function<void(QpContext &, int)> & visit) const;
-  /// The integral over the blocks of variable @p v of the shape function of each node (partial
-  /// at the nodes that processes share).
+  /// The weight of each node in the nodal (lumped) rule over the blocks of variable @p v, every
+  /// block when @p v is negative: under DMCDM the measure of its control domain, the pieces in a
+  /// cell with hanging nodes included, and under FEM the integral of its shape function, each
+  /// times the coordinate factor of the problem at the node (2 pi r in axisymmetric
+  /// coordinates).  Partial at the nodes that processes share.  For a first-order variable on
+  /// quadratic elements the weights of the nodes that are not corners hold its interpolant, so
+  /// the weighted sum of its values is still its integral.
   Vector nodeWeights(int v) const;
+  /// The node nearest @p x among those that @p accept, over every process, with a tie to the
+  /// smaller global number of the node so that every process agrees: its local number, or -1
+  /// where this process does not hold it.  @p distance receives its distance (infinite when no
+  /// node is accepted).  Collective in a distributed problem.
+  Index nearestNode(const Point & x,
+                    const std::function<bool(Index)> & accept,
+                    double * distance = nullptr) const;
+  /// The measure of each node, nodeWeights over every block, with the measure of the whole mesh
+  /// at a node that processes share.  The problem must be set up (initialize).
+  std::vector<double> nodeMeasures() const;
   /// Integral of a variable over the domain (with the coordinate factor).
   double integrate(const std::string & var) const;
   /// The integral of a variable over every element, with the coordinate factor.  An empty name gives
@@ -945,6 +1003,37 @@ private:
   /// Pair every integration point of every interface condition (called by
   /// initialize()).  Indexed [condition][primary side or face][point].
   void buildInterfacePairs();
+  /// The local fields of element @p el from @p U into @p s, in the layout of localDofIndex and
+  /// then at the hanging nodes of @p polygon: the current values, and the lagged and old values
+  /// and the shifts that @p opts gives, with zero local residuals.  Returns the number of local
+  /// degrees of freedom.
+  int gatherLocal(ThreadScratch & s,
+                  const Element & el,
+                  const Vector & U,
+                  const AssemblyOptions & opts,
+                  const PolygonCell * polygon = nullptr) const;
+  /// The geometry of integration point @p ip of element @p el, @p mapped when the points were
+  /// mapped as they were built, and otherwise mapped into s.geo.  It fills s.ctx with the local
+  /// fields of @p s there (at the field point of a @p reduced rule), with @p nd derivatives, and
+  /// evaluates the properties for the history state @p key of element @p owner (-1 for none).
+  const MappedPoint & evaluatePoint(ThreadScratch & s,
+                                    const Element & el,
+                                    const IntegrationPoint & ip,
+                                    MappedPoint * mapped,
+                                    bool reduced,
+                                    const AssemblyOptions & opts,
+                                    int nd,
+                                    Index owner,
+                                    std::uint64_t key) const;
+  /// The residual of integrated condition @p bc, the condition @p index of the problem, on
+  /// @p side, times @p wfac, into the local residual of @p s, whose fields gatherLocal set.
+  void conditionResidual(const IntegratedBC & bc,
+                         unsigned index,
+                         const Side & side,
+                         double wfac,
+                         const AssemblyOptions & opts,
+                         int nd,
+                         ThreadScratch & s) const;
   void assembleInterface(const InterfaceBC & bc,
                          const Vector & U,
                          const AssemblyOptions & opts,
@@ -952,7 +1041,6 @@ private:
                          Vector & R,
                          std::vector<Eigen::Triplet<double>> * triplets,
                          ThreadScratch & scratch);
-  double coordFactor(const Point & x) const;
   void markActiveDofs();
   /// Refuse an element whose Jacobian determinant is negative at its centroid
   /// or at any of its nodes: an inverted element would be integrated with a
@@ -1030,31 +1118,19 @@ private:
                              AssemblyOptions base,
                              const OldResidual * steady_old,
                              const Vector * ramp_from = nullptr);
-  /// Advance the solution from @p old by one step of size @p dt, leaving the
-  /// result in solution().  Used by every time stepper.
-  SolveResult takeTimeStep(const Vector & old,
-                           double dt,
-                           const TransientOptions & transient,
-                           const SolverOptions & options);
-  /// A step taken: the state it started from and the state it reached, its size and its theta.
-  /// The old time of the next step finds there the step that reached its old state, whose residual
-  /// gives the velocity that the mass equation of that step conserved.  A step may be retried or
-  /// split, so the last few are kept.
-  struct StepRecord
-  {
-    Vector start, reached;
-    double dt = 0.0;
-    double theta = 1.0;
-  };
-  std::vector<StepRecord> _step_records;
-  /// The velocity and the acceleration of the states that steps of the generalized-alpha method
-  /// reached, by their solution (the last few), and the initial velocity of a run.
-  struct DynamicState
-  {
-    Vector u, v, a;
-  };
-  std::vector<DynamicState> _dynamic_states;
+  /// The theta, generalized-alpha and Newmark methods (ProblemTransient.cpp), kept for the next
+  /// run when it continues the last one.
+  class ThetaIntegrator;
+  std::shared_ptr<ThetaIntegrator> _theta;
   Vector _initial_velocity;
+  /// The time-stepping loop of solveTransient: the steps of @p integrator, chosen by the
+  /// stepper of @p transient, the outputs at the output times, and the checkpoints of
+  /// @p layout numbered from @p first_step.
+  SolveResult runTransient(TimeIntegrator & integrator,
+                           const TransientOptions & transient,
+                           const SolverOptions & options,
+                           const CheckpointLayout & layout,
+                           int first_step);
   /// The acceleration at the state @p u with the velocity @p v: M a = -R(u, v), and the second
   /// derivative of the prescribed values in time.  The prescribed values also set @p v.
   Vector
@@ -1081,26 +1157,21 @@ private:
   std::vector<std::shared_ptr<NodalBC>> _nbcs;
   std::vector<std::shared_ptr<NodalLoad>> _loads;
   std::vector<std::shared_ptr<Constraint>> _constraints;
-  std::vector<Index> _primary_of;
-  /// The hanging degrees of freedom of a mesh with hanging nodes (Mesh::nodeConstraints): each one
-  /// a weighted sum of independent degrees of freedom, empty for the others.
-  std::vector<std::vector<std::pair<Index, double>>> _hanging_of;
+  /// See dependentDofs.  Whether a dependent degree of freedom carries an equation to fold (a
+  /// periodic copy or a hanging node; the slots of first-order variables carry none).
+  std::vector<std::vector<std::pair<Index, double>>> _dependent_of;
+  bool _fold_dependents = false;
   Index _num_integrated_elements = -1;
   std::map<std::string, std::vector<Side>> _interface_candidates;
-  bool _constraints_outside = false;
   std::vector<char> _extra_constrained;
-  /// The two parts of buildConstraints: the copies of periodic boundaries, and the hanging nodes.
-  void buildPeriodicConstraints();
-  void buildHangingConstraints();
   /// The dual mesh method keeps a hanging node as an unknown of its own and splits a cell with
   /// hanging nodes on its sides as a polygon (PolygonCell): the polygon of each such element, by
   /// element (-1 for the others).
   void buildPolygonCells();
   std::vector<int> _polygon_of;
   std::vector<PolygonCell> _polygon_cells;
-  /// Resolve the pairs of the constraints into one primary per dependent degree of freedom, following chains (a corner node periodic in two directions).
-  void buildConstraints();
-  void interpolateFirstOrderVariables(Vector & U) const;
+  /// Build the map of dependentDofs, and the polygon cells of DMCDM.
+  void buildDependentDofs();
   std::vector<std::shared_ptr<Property>> _property_objects;
   std::map<std::string, std::shared_ptr<Object>> _by_name;
   PropertyRegistry _props;
@@ -1150,8 +1221,12 @@ private:
   Vector _ramp_from;
   double _time = 0.0;
   double _eigenvalue = 0.0;
+  bool _eigenvalue_study = false;
   std::function<void(double, Problem &)> _step_callback;
   std::shared_ptr<TimeIntegrator> _time_integrator;
+  std::vector<std::function<double(Vector &)>> _start_projections;
+  /// The solution that the last transient run reached, from which a run that continues it starts.
+  Vector _transient_end;
   std::function<void(int)> _output_callback;
   std::map<std::string, std::vector<double>> _element_fields;
 

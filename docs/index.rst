@@ -1,7 +1,7 @@
-dualmesh-multiphysics
-=====================
+dualmesh
+========
 
-dualmesh-multiphysics solves coupled heat transfer, solid mechanics and
+dualmesh solves coupled heat transfer, solid mechanics and
 incompressible flow by the finite element method (FEM) and the dual mesh
 control domain method (DMCDM) [Reddy2024]_.  You import it in Python as
 ``dualmesh``, and its command-line program is ``dualmesh``.

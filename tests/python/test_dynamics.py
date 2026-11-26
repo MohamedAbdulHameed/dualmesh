@@ -39,7 +39,9 @@ def test_a_vibrating_string_is_second_order_in_time(scheme):
     errors = []
     for dt in (0.0375, 0.01875):
         problem = string()
-        problem.solve_transient(end_time=0.75, time_step=dt, time_scheme=scheme, report="none")
+        problem.solve_transient(
+            end_time=0.75, time_step=dt, time_scheme=scheme, time_stepper="fixed", report="none"
+        )
         errors.append(abs(problem.sample("u", [[0.5, 0, 0]])[0] - numpy.cos(0.75 * numpy.pi)))
     assert errors[0] / errors[1] == pytest.approx(4.0, rel=0.15)
 
@@ -65,7 +67,9 @@ def test_newmark_keeps_the_energy_of_a_linear_system():
         energies.append(0.5 * v @ (mass @ v) + 0.5 * u @ (stiffness @ u))
 
     problem.set_time_step_callback(energy)
-    problem.solve_transient(end_time=5.0, time_step=0.13, time_scheme="Newmark", report="none")
+    problem.solve_transient(
+        end_time=5.0, time_step=0.13, time_scheme="Newmark", time_stepper="fixed", report="none"
+    )
     assert len(energies) > 30
     assert max(energies) - min(energies) < 1e-12 * max(energies)
 
@@ -96,7 +100,9 @@ def test_generalized_alpha_damps_an_unresolved_mode_at_its_spectral_radius(rho):
     problem.set_time_step_callback(lambda t, core: history.append(abs(core.solution()[1])))
     omega = numpy.sqrt(12.0)
     dt = 1e3 / omega
-    problem.solve_transient(end_time=40 * dt, time_step=dt, spectral_radius=rho, report="none")
+    problem.solve_transient(
+        end_time=40 * dt, time_step=dt, spectral_radius=rho, time_stepper="fixed", report="none"
+    )
     if rho == 0.0:
         # The root is -rho_infinity at infinite frequency only: (omega dt)^-2 = 1e-6 is left
         # after three steps.
@@ -120,7 +126,9 @@ def test_mass_proportional_damping_decays_a_vibration_as_the_closed_form():
     for dt in (0.01, 0.005):
         problem = single_degree_of_freedom()
         problem.add_kernel("time_derivative", variable="u", coefficient=a)
-        problem.solve_transient(end_time=2.0, time_step=dt, time_scheme="Newmark", report="none")
+        problem.solve_transient(
+            end_time=2.0, time_step=dt, time_scheme="Newmark", time_stepper="fixed", report="none"
+        )
         errors.append(abs(problem.values("u")[1] - exact))
     assert errors[1] < 1e-4
     assert errors[0] / errors[1] == pytest.approx(4.0, rel=0.1)
@@ -262,6 +270,7 @@ def test_the_support_force_changes_the_momentum():
         end_time=4e-4,
         time_step=2e-5,
         time_scheme="Newmark",
+        time_stepper="fixed",
         relative_tolerance=1e-14,
         report="none",
     )

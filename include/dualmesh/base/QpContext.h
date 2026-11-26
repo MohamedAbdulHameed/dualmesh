@@ -58,7 +58,7 @@ public:
   bool old_level = false;
   /// At the old time: whether the old values are the state that the previous step started from,
   /// with dt and theta those of that step, so that the residual of that step, and the velocity
-  /// that its mass equation conserved, can be formed again (Problem::takeTimeStep).  The old time
+  /// that its mass equation conserved, can be formed again (Problem::ThetaIntegrator).  The old time
   /// of a first step has no previous step.
   bool previous_step = false;
   /// The value of the symbol eigenvalue of the expressions, set by an eigenvalue study (0 otherwise).
@@ -112,7 +112,7 @@ public:
   /// A variable of a second-order equation (Kernel::isSecondOrder) in a step of the
   /// generalized-alpha method has its time derivatives by the Newmark relations, at the levels
   /// of the method: du/dt = rate_scale u - rate_shift and d2u/dt2 = accel_scale u - accel_shift
-  /// (Problem::takeTimeStep).  second_order marks those variables; empty: none.
+  /// (Problem::ThetaIntegrator).  second_order marks those variables; empty: none.
   std::vector<char> second_order;
   double rate_scale = 0.0, accel_scale = 0.0;
   std::vector<double> rate_shift, accel_shift;

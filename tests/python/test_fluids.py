@@ -31,12 +31,12 @@ def flow_problem(mesh, viscosity=1.0, density=0.0, penalty=default_penalty, meth
         )
         if density > 0.0:
             problem.add_kernel(
-                "convective_inertia",
+                "advection",
                 variable=variable,
-                velocities=velocities,
-                density=density,
+                velocity=velocities,
+                coefficient=density,
             )
-    problem.add_property("penalty_pressure", velocities=velocities)
+    problem.add_property("penalty_pressure", velocities=velocities, penalty_parameter=penalty)
     return problem
 
 

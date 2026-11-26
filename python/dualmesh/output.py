@@ -52,12 +52,16 @@ class Output:
     times: Sequence[float] | None = parameter(
         None,
         unit="s",
-        description="Times at which a transient study writes the fields. The time steps land on these times. Give only one of times and interval. Default None: the times of interval, or the start and the end of the study when interval is not given.",
+        description="Times at which a transient study writes the fields. The time steps land on these times. Give at most one of times, interval and step_interval. Default None: the times of interval or step_interval, or the start and the end of the study when neither is given.",
     )
     interval: float | None = parameter(
         None,
         unit="s",
-        description="Time between two outputs of a transient study, from its start time. The study also writes the fields at its end time. Give only one of times and interval. Default None: the times of times.",
+        description="Time between two outputs of a transient study, from its start time. The study also writes the fields at its end time. Give at most one of times, interval and step_interval. Default None: the times of times or step_interval.",
+    )
+    step_interval: int | None = parameter(
+        None,
+        description="A transient study writes the fields at its start, every this many accepted steps and after its last step. The steps keep the sizes that the stepper chooses. Give at most one of times, interval and step_interval. Default None: the times of times or interval.",
     )
     fields: Sequence[str] | None = parameter(
         None, description="Variables that the files contain. Default None: all the variables."
@@ -72,19 +76,23 @@ class Output:
     )
 
     def __post_init__(self):
-        if self.times is not None and self.interval is not None:
+        given = [
+            name
+            for name in ("times", "interval", "step_interval")
+            if getattr(self, name) is not None
+        ]
+        if len(given) > 1:
             raise InputError(
-                "Output: give only one of times and interval. The two set the output times."
+                f"Output: give at most one of times, interval and step_interval, which all set the output times, not {' and '.join(given)}."
             )
         if self.interval is not None and not self.interval > 0.0:
             raise InputError(f"Output: interval must be positive, not {self.interval}.")
-        if self.checkpoint_interval is not None and (
-            int(self.checkpoint_interval) != self.checkpoint_interval
-            or self.checkpoint_interval < 1
-        ):
-            raise InputError(
-                f"Output: checkpoint_interval is a number of steps, a positive integer, not {self.checkpoint_interval}."
-            )
+        for name in ("step_interval", "checkpoint_interval"):
+            steps = getattr(self, name)
+            if steps is not None and (int(steps) != steps or steps < 1):
+                raise InputError(
+                    f"Output: {name} is a number of steps, a positive integer, not {steps}."
+                )
         if self.times is not None:
             times = numpy.asarray(self.times, dtype=float).ravel()
             if times.size == 0 or numpy.any(numpy.diff(times) <= 0.0):
@@ -104,7 +112,10 @@ class Output:
     # ---- used by the studies -------------------------------------------------
     def output_times(self, start: float, end: float) -> numpy.ndarray:
         """The times at which a transient study from ``start`` to ``end``
-        writes the fields."""
+        writes the fields, which the steps land on.  None with step_interval, whose times the
+        steps choose."""
+        if self.step_interval is not None:
+            return None
         if self.times is not None:
             times = numpy.asarray(self.times, dtype=float).ravel()
             tolerance = 1e-10 * max(abs(end - start), 1e-300)
@@ -127,23 +138,47 @@ class Output:
         Path(self.directory).mkdir(parents=True, exist_ok=True)
         return os.path.join(self.directory, self.file_base + suffix)
 
-    def write_collection(self, times: Sequence[float], extension: str) -> str:
-        """Write the ParaView collection (``.pvd``) of the files of a
-        transient study, which ParaView opens as one time series."""
+
+class Series:
+    """The numbered files of the fields of a transient run, with their ParaView collection.
+
+    A loop that runs on from one mesh to the next passes one series to the run on each mesh, so
+    the files keep one numbering and one collection. Each of ``actions`` is called as
+    ``action(problem, time)`` after the fields are written, for the files that the output times
+    of the run also write."""
+
+    def __init__(self, output: Output, actions=()):
+        self.output = output
+        self.actions = list(actions)
+        #: The time of each file, by its number.
+        self.times: dict[int, float] = {}
+        #: The accepted steps of the runs so far.
+        self.steps = 0
+
+    def write(self, problem, time: float, index: int | None = None) -> list[str]:
+        """Writes the fields at ``time`` as the file of number ``index``, by default the next."""
+        index = max(self.times, default=-1) + 1 if index is None else index
+        self.times[index] = float(time)
+        files = problem._write_fields(self.output, index)
+        for action in self.actions:
+            files += action(problem, time)
+        return files
+
+    def write_collection(self, extension: str) -> str:
+        """Writes the ParaView collection (``.pvd``) of the files, which ParaView opens as one
+        time series.  The first process writes it."""
+        from . import _core
+
         lines = [
             '<?xml version="1.0"?>',
             '<VTKFile type="Collection" version="0.1">',
             "<Collection>",
         ]
-        for index, time in enumerate(times):
-            lines.append(
-                f'<DataSet timestep="{float(time):.12g}" file="{self.file_base}_{index:05d}.{extension}"/>'
-            )
+        for index, time in sorted(self.times.items()):
+            name = f"{self.output.file_base}_{index:05d}.{extension}"
+            lines.append(f'<DataSet timestep="{time:.12g}" file="{name}"/>')
         lines += ["</Collection>", "</VTKFile>", ""]
-        path = self.path(".pvd")
-        from . import _core
-
-        # One index for the whole run: the first process writes it.
+        path = self.output.path(".pvd")
         if _core.mpi_rank() == 0:
             Path(path).write_text("\n".join(lines))
         return path

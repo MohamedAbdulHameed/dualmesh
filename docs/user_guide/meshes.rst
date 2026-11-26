@@ -17,7 +17,7 @@ The mesh section of the input
 -----------------------------
 
 In a YAML or TOML case file, or in :func:`dualmesh.problem`, the ``mesh`` section takes exactly
-one of four forms. A generated mesh starts at the origin and takes its sizes with their units:
+one of four forms. A generated mesh takes its sizes with their units:
 
 .. code-block:: yaml
 
@@ -45,9 +45,12 @@ This section comes from ``examples/heated_plate.yaml``. The four forms are:
    the unit of its coordinates, so you give it as ``length_unit``, for example ``length_unit:
    mm``. The boundaries are the side sets of the file, and the regions are its named blocks.
 
-A generated mesh has one region, ``domain``. The key ``coordinate_system`` is ``cartesian`` (the
-default) or ``axisymmetric``, in which the first coordinate is the radius. A segment or a box
-can't be axisymmetric. :doc:`input` lists every key of the section.
+A generated mesh has one region, ``domain``. It starts at its ``origin``, the corner with the
+smallest coordinates, which is :math:`0\,\mathrm{m}` by default. Its ``grading`` along each axis
+is the ratio of the length of each cell to the one before it, 1 by default, a uniform mesh. The
+key ``coordinate_system`` is ``cartesian`` (the default) or ``axisymmetric``, in which the first
+coordinate is the radius. A segment or a box can't be axisymmetric. :doc:`input` lists every
+key of the section.
 
 The rest of this page describes the meshes of the Python API, which the input builds on.
 
@@ -73,7 +76,7 @@ Blocks
 Side sets
    Named lists of boundary faces, each stored as a pair ``(element, local side)``. The element
    gives the outward normal of the face. A condition that prescribes a flux, such as
-   ``Neumann``, ``Robin``, ``radiative_heat_flux``, ``traction`` or ``pressure``, needs a side
+   ``Neumann``, ``Robin``, ``traction`` or ``pressure``, needs a side
    set, because its integral needs the faces and their normals.
 
 Node sets

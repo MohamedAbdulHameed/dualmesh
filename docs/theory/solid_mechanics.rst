@@ -297,7 +297,7 @@ Thermal expansion
 
 A change of temperature :math:`T` (K) makes a free body expand without stress.
 The coupling ``thermal_expansion`` of a ``solid_mechanics`` and a
-``heat_transfer`` physics adds the thermal eigenstrain
+``heat_conduction`` physics adds the thermal eigenstrain
 
 .. math::
    :label: solid-thermal
@@ -319,7 +319,7 @@ In plane strain, where the out-of-plane strain is zero as well, it carries
 stress it expands freely through its thickness and carries
 :math:`\sigma_{xx} = \sigma_{yy} = -E\alpha(T - T_0)/(1 - \nu)`.
 
-The temperature is the field of the ``heat_transfer`` physics.  When that field
+The temperature is the field of the ``heat_conduction`` physics.  When that field
 is an unknown of the same problem, the stress depends on it, and the automatic
 differentiation carries :math:`\partial\boldsymbol{\sigma}/\partial T` into the
 Jacobian.  Newton's method then converges at its usual rate on the coupled
@@ -350,10 +350,11 @@ object ``finite_strain_stress`` declares :math:`\mathbf{P}` as
 ``green_lagrange_strain``, the strain
 :math:`\tfrac{1}{2}(\mathbf{F}_d^{\mathsf{T}}\mathbf{F}_d - \mathbf{I})`.
 ``stress`` holds the Cauchy stress and ``volumetric_strain`` holds
-:math:`J - 1`.  Finite strain is available in plane strain, axisymmetric and
-three-dimensional problems.
+:math:`J - 1`.  ``finite_strain_stress`` is available in plane strain,
+axisymmetric and three-dimensional problems, and in plane stress with a
+hyperelastic law (`Hyperelastic laws`_).
 
-The parameter ``elasticity`` chooses the law.
+The parameters ``elasticity`` and ``strain_energy`` choose the law.
 
 - ``linear`` with ``large_deformation=True`` applies the rotated small strain of
   Hughes and Winget.  Over a step, with :math:`\Delta\mathbf{F}_d` the change of
@@ -376,23 +377,268 @@ The parameter ``elasticity`` chooses the law.
   back stresses of kinematic hardening rotate with :math:`\mathbf{Q}`.  This law
   suits materials whose elastic strains stay small while their total strains
   are large, such as metals and ceramics.
-- ``neo-Hookean`` is the compressible neo-Hookean law
-
-  .. math::
-
-     \mathbf{P} = G\left(\mathbf{F}_d - \mathbf{F}_d^{-\mathsf{T}}\right)
-     + \lambda \ln J\,\mathbf{F}_d^{-\mathsf{T}} ,
-
-  exact for any deformation.  An eigenstrain enters as
-  :math:`\mathbf{F}_d = \mathbf{F}_e\mathbf{F}_{\mathrm{eig}}`, with the law
-  applied to the elastic part :math:`\mathbf{F}_e`.  The neo-Hookean law has no
-  creep or plasticity.
+- ``neo-Hookean``, ``Saint_Venant_Kirchhoff`` and an energy given as
+  ``strain_energy`` are hyperelastic laws, exact for any deformation
+  (`Hyperelastic laws`_).  A hyperelastic law has no creep or plasticity.
 
 A ``pressure`` at finite strain acts on the deformed surface.  Per unit
 undeformed area its traction is
 :math:`-p\,J\,\mathbf{F}_d^{-\mathsf{T}}\mathbf{N}` (Nanson's relation), with
 :math:`p` the pressure (Pa) and :math:`\mathbf{N}` the undeformed outward
 normal.
+
+Hyperelastic laws
+~~~~~~~~~~~~~~~~~
+
+A hyperelastic material has a strain energy :math:`\psi`
+(:math:`\mathrm{J/m^3}`) per unit volume of its stress-free state.  An
+eigenstrain :math:`\boldsymbol{\varepsilon}_{\mathrm{eig}}` (dimensionless)
+without shear components splits the deformation gradient into an elastic part
+:math:`\mathbf{F}_e` and a stretch free of stress,
+
+.. math::
+
+   \mathbf{F}_d = \mathbf{F}_e\,\mathbf{F}_{\mathrm{eig}} , \qquad
+   \mathbf{F}_{\mathrm{eig}} = \operatorname{diag}(1 + \varepsilon_{\mathrm{eig},11},
+   1 + \varepsilon_{\mathrm{eig},22}, 1 + \varepsilon_{\mathrm{eig},33}) .
+
+The energy reads three invariants of the elastic right Cauchy-Green tensor
+:math:`\mathbf{C}_e = \mathbf{F}_e^{\mathsf{T}}\mathbf{F}_e` (dimensionless):
+:math:`I_C = \operatorname{tr}\mathbf{C}_e`,
+:math:`\operatorname{tr}(\mathbf{C}_e^2)` and
+:math:`J_e = \det\mathbf{F}_e`.  With :math:`\psi_1`, :math:`\psi_2` and
+:math:`\psi_J` (Pa) its derivatives by these three invariants, the stress of
+the elastic part is
+
+.. math::
+
+   \mathbf{P}_e = \frac{\partial \psi}{\partial \mathbf{F}_e}
+   = 2\,\psi_1\,\mathbf{F}_e + 4\,\psi_2\,\mathbf{F}_e\mathbf{C}_e
+   + \psi_J\,J_e\,\mathbf{F}_e^{-\mathsf{T}} .
+
+The stress-free state fills :math:`J_{\mathrm{eig}} = \det\mathbf{F}_{\mathrm{eig}}`
+times the undeformed volume, so the energy per undeformed volume is
+:math:`\psi_0 = J_{\mathrm{eig}}\,\psi` (:math:`\mathrm{J/m^3}`), and
+
+.. math::
+
+   \mathbf{P} = \frac{\partial \psi_0}{\partial \mathbf{F}_d}
+   = J_{\mathrm{eig}}\,\mathbf{P}_e\,\mathbf{F}_{\mathrm{eig}}^{-\mathsf{T}} .
+
+The law is one of three.
+
+- ``neo-Hookean``, the compressible neo-Hookean energy of Simo and Hughes,
+  with :math:`G` and :math:`\lambda` those of :eq:`solid-hooke`:
+
+  .. math::
+
+     \psi = \frac{G}{2}\,(I_C - 3) - G\ln J_e + \frac{\lambda}{2}\,(\ln J_e)^2 .
+
+- ``Saint_Venant_Kirchhoff``, with
+  :math:`\mathbf{E}_e = \tfrac{1}{2}(\mathbf{C}_e - \mathbf{I})` the elastic
+  Green-Lagrange strain (dimensionless):
+
+  .. math::
+
+     \psi = \frac{\lambda}{2}\,(\operatorname{tr}\mathbf{E}_e)^2
+     + G\,\operatorname{tr}(\mathbf{E}_e^2) .
+
+- ``strain_energy``, an expression of ``I_C``, ``trace_C_squared``, ``J``
+  (that is :math:`J_e`), ``shear_modulus`` (:math:`G`) and
+  ``first_Lame_parameter`` (:math:`\lambda`).  The code takes its gradient
+  :math:`g_k` and its Hessian :math:`H_{km}` by the five arguments
+  :math:`a_m` at their values :math:`a_m^0`, by forward automatic
+  differentiation to second order.  The derivatives
+
+  .. math::
+
+     \psi_k = g_k + \sum_{m=1}^{5} H_{km}\,(a_m - a_m^0) , \qquad k = 1, 2, 3 ,
+
+  then carry their derivatives by the unknowns, so the Jacobian is exact.
+
+Every law has the small-strain limit :eq:`solid-hooke` with the same
+:math:`E` and :math:`\nu`.  For every variation :math:`\delta\mathbf{u}` (m)
+of the displacement that the conditions admit, the balance of momentum on the
+undeformed body :math:`\Omega_0` with boundary :math:`\Gamma_0` reads
+
+.. math::
+
+   \int_{\Omega_0} \left( \rho_0\,\ddot{\mathbf{u}}\cdot\delta\mathbf{u}
+   + \mathbf{P} : \nabla_{\mathbf{X}}\delta\mathbf{u}
+   + \frac{\partial \psi_0}{\partial \mathbf{u}}\cdot\delta\mathbf{u} \right) \mathrm{d}V
+   = \int_{\Omega_0} \mathbf{f}_0\cdot\delta\mathbf{u}\,\mathrm{d}V
+   + \int_{\Gamma_0} \mathbf{t}_0\cdot\delta\mathbf{u}\,\mathrm{d}A ,
+
+with :math:`\rho_0` the density per undeformed volume
+(:math:`\mathrm{kg/m^3}`), :math:`\ddot{\mathbf{u}}` the acceleration
+(:math:`\mathrm{m/s^2}`), :math:`\mathbf{t}_0` the traction per undeformed
+area (Pa), and :math:`\mathrm{d}V` and :math:`\mathrm{d}A` the undeformed
+volume and area.  The term :math:`\partial\psi_0/\partial\mathbf{u}` is
+nonzero only in axisymmetric coordinates.  The in-plane part of
+:math:`\mathbf{F}_d` is :math:`\mathbf{I} + \nabla_{\mathbf{X}}\mathbf{u}`.
+Its out-of-plane component :math:`F_{d,33}` is 1 in plane strain, the hoop
+stretch in axisymmetric coordinates and the stretch of the thickness in plane
+stress.
+
+**Axisymmetric coordinates.**  A material circle of undeformed radius
+:math:`R` (m) moves to the radius :math:`R + u_r`, with :math:`u_r` the radial
+displacement (m), so
+
+.. math::
+
+   F_{d,33} = 1 + \frac{u_r}{R} .
+
+On the axis :math:`R = 0` the code takes the limit
+:math:`1 + \partial u_r/\partial R`, as at small strain.  The energy then
+depends on :math:`u_r` itself, and the radial equation takes the hoop source
+
+.. math::
+
+   s_r = -\frac{\partial \psi_0}{\partial u_r} = -\frac{P_{33}}{R} ,
+
+with :math:`P_{33}` (Pa) the hoop component of :math:`\mathbf{P}`.  The source
+is zero on the axis.  The integrals carry the measure
+:math:`2\pi R\,\mathrm{d}R\,\mathrm{d}Z`, with :math:`Z` the undeformed axial
+coordinate (m), so the hoop term
+:math:`\int P_{33}\,\delta u_r\,2\pi\,\mathrm{d}R\,\mathrm{d}Z` stays regular
+on the axis.
+
+**Plane stress.**  A thin plate carries no stress across its thickness, so
+the stretch of the thickness :math:`\lambda_3` (dimensionless) is an unknown
+at each point.  It is the root of
+
+.. math::
+
+   r(\lambda_3) = \frac{\partial \psi_0}{\partial F_{d,33}}\bigg|_{F_{d,33} = \lambda_3} = P_{33} = 0 ,
+
+with :math:`r` (Pa) the residual.  At each point ``finite_strain_stress``
+solves :math:`r = 0` by Newton's method in floating-point numbers, from the
+:math:`\lambda_3` of the last state, or from 1 at the start.  The slope
+:math:`r' = \partial r/\partial F_{d,33}` (Pa) comes from a pass of automatic
+differentiation in :math:`F_{d,33}` alone.  The method halves a step that
+would make :math:`\lambda_3 \le 0`, and it stops when
+:math:`|r| \le 64\,\epsilon_{\mathrm{m}}\,m_r`, with :math:`\epsilon_{\mathrm{m}}`
+the machine epsilon and
+
+.. math::
+
+   m_r = \frac{J_{\mathrm{eig}}}{F_{\mathrm{eig},33}} \left(
+   \left|2\,\psi_1\,F_{e,33}\right| + \left|4\,\psi_2\,(\mathbf{F}_e\mathbf{C}_e)_{33}\right|
+   + \left|\psi_J\,J_e\,(\mathbf{F}_e^{-\mathsf{T}})_{33}\right| \right)
+
+(Pa) the size of the terms that :math:`r` sums.  A point at which :math:`r`
+or :math:`r'` is not finite, :math:`r' \le 0`, or 50 iterations do not reach
+the root is inadmissible.  A stable material has :math:`r' > 0`, since
+:math:`r'` is the stiffness of the thickness.
+
+Let :math:`g` stand for any of the in-plane components of
+:math:`\nabla_{\mathbf{X}}\mathbf{u}` (dimensionless), the temperature
+:math:`T` (K) of a thermal expansion, and any other field that the moduli
+read.  The implicit function theorem gives the derivative of the root,
+
+.. math::
+
+   \frac{\partial \lambda_3}{\partial g} = -\frac{1}{r'}\,\frac{\partial r}{\partial g} .
+
+The code obtains it in one step of automatic differentiation.  With
+:math:`\lambda_3^*` the root, held constant, it sets
+
+.. math::
+
+   \lambda_3 = \lambda_3^* - \frac{r(\lambda_3^*, g)}{r'(\lambda_3^*)} ,
+
+whose derivative by :math:`g` is the one above, and whose value is one more
+Newton step from :math:`\lambda_3^*`.  The in-plane rows of
+:math:`\mathbf{P}` are the derivatives of :math:`\psi_0` at a fixed
+:math:`F_{d,33}`.  They are those of the energy
+:math:`\hat\psi_0 = \psi_0(F_{d,iJ}, \lambda_3(F_{d,iJ}))` of the in-plane
+components :math:`F_{d,iJ}` alone (:math:`\mathrm{J/m^3}`), with
+:math:`i, J \in \{1, 2\}`, because
+
+.. math::
+
+   \frac{\partial \hat\psi_0}{\partial F_{d,iJ}}
+   = P_{iJ} + P_{33}\,\frac{\partial \lambda_3}{\partial F_{d,iJ}} = P_{iJ} .
+
+The stress reads :math:`\lambda_3` with its derivative, so the Jacobian holds
+:math:`(\partial P_{iJ}/\partial\lambda_3)(\partial\lambda_3/\partial g)`.
+For the Saint Venant-Kirchhoff energy without a thermal expansion,
+:math:`S_{33} = 0`, with :math:`S_{33} = P_{33}/\lambda_3` (Pa) the second
+Piola-Kirchhoff stress across the thickness, gives
+
+.. math::
+
+   \lambda_3^2 = \frac{2G - \lambda\,(C_{11} + C_{22} - 3)}{\lambda + 2G} ,
+
+with :math:`C_{11}` and :math:`C_{22}` the in-plane diagonal components of
+:math:`\mathbf{C} = \mathbf{F}_d^{\mathsf{T}}\mathbf{F}_d`.  The residual
+:math:`r = \lambda_3 S_{33}` is convex in :math:`\lambda_3 > 0`, so Newton's
+method reaches the root whenever it exists from any start with :math:`r' > 0`,
+in compression too.  The start 1 has :math:`r'(1) > 0`.  It has no root once
+:math:`C_{11} + C_{22} \ge 3 + 2G/\lambda`, and such a state is inadmissible.
+
+**Thermal expansion.**  The eigenstrain :eq:`solid-thermal` of a thermal
+expansion gives the isotropic thermal stretch
+
+.. math::
+
+   \mathbf{F}_{\mathrm{eig}} = \vartheta\,\mathbf{I} , \qquad
+   \vartheta = 1 + \alpha\,(T - T_0) ,
+
+with :math:`\vartheta` the thermal stretch (dimensionless), and
+:math:`\alpha`, :math:`T` and :math:`T_0` those of :eq:`solid-thermal`.  The
+thermal stretch is linear in the temperature, as the linear expansion
+coefficient is a ratio of lengths.  Then
+:math:`\psi_0 = \vartheta^3\,\psi(\mathbf{C}/\vartheta^2)` and
+
+.. math::
+
+   \mathbf{P} = \vartheta^2\,\mathbf{P}_e\!\left(\frac{\mathbf{F}_d}{\vartheta}\right) .
+
+In plane strain :math:`F_{d,33} = 1`, so the elastic part holds the
+out-of-plane stretch :math:`1/\vartheta`.  In plane stress the residual
+:math:`r` of :math:`\lambda_3` reads :math:`\vartheta`, so a free plate
+reaches :math:`\lambda_3 = \vartheta`.  The temperature is a field of the
+same problem, and the automatic differentiation carries
+:math:`\partial\mathbf{P}/\partial T` into the Jacobian.  A state with
+:math:`J \le 0` is inadmissible: Newton's method shortens its step there, or
+the step is cut.
+
+**Pressure.**  A pressure :math:`p` (Pa) acts on the deformed boundary.
+Nanson's relation :math:`\mathbf{n}\,\mathrm{d}a = J\,\mathbf{F}_d^{-\mathsf{T}}\mathbf{N}\,\mathrm{d}A`
+carries it to the undeformed boundary, with :math:`\mathbf{n}` and
+:math:`\mathrm{d}a` the outward unit normal and the area of the deformed
+boundary.  Per undeformed area its traction is
+
+.. math::
+
+   \mathbf{t}_0 = -p\,J\,\mathbf{F}_d^{-\mathsf{T}}\mathbf{N}
+   = -p\,\operatorname{cof}\mathbf{F}_d\,\mathbf{N} ,
+
+with :math:`\operatorname{cof}\mathbf{F}_d = J\,\mathbf{F}_d^{-\mathsf{T}}`
+the cofactor of the full :math:`3 \times 3` matrix :math:`\mathbf{F}_d`.  In
+axisymmetric coordinates the cofactor carries the deformed hoop length, and in
+plane stress the deformed thickness through :math:`F_{d,33} = \lambda_3`.  The
+traction depends on the displacement, and its derivative
+
+.. math::
+
+   \delta\mathbf{t}_0 = -p \left( \frac{\partial\,\operatorname{cof}\mathbf{F}_d}{\partial \mathbf{F}_d}
+   : \nabla_{\mathbf{X}}\delta\mathbf{u} \right) \mathbf{N}
+
+is the load stiffness, which the automatic differentiation gives.  The load
+stiffness is in general not symmetric.  The ``pressure`` condition reads
+:math:`\mathbf{F}_d` from the property ``deformation_gradient`` of
+``finite_strain_stress``.
+
+**Inertia.**  With a ``time`` section the inertia
+:math:`\rho_0\,\ddot{\mathbf{u}}` takes the density per undeformed volume
+:math:`\rho_0` as a constant.  A transient solve integrates it by the
+generalized-alpha method of Chung and Hulbert [ChungHulbert1993]_, with the
+stress and the loads at the level :math:`1 - \alpha_f` between the two states
+of a step, :math:`\alpha_f = \rho_\infty/(1 + \rho_\infty)` (dimensionless),
+and :math:`\rho_\infty` the spectral radius of `Dynamics`_.  The initial
+displacement is a constant of the input, and the initial velocity is zero.
 
 Creep and plasticity
 --------------------

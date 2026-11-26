@@ -89,28 +89,22 @@ public:
   /// its variables and is zero before that.
   Index numGlobalDofs() const { return _num_global_dofs; }
 
-  /// Make a local vector consistent: add the contributions of every rank that
-  /// touches a node, so that all of them end up with the same complete value.
-  void addAcrossRanks(Vector & v) const;
-  /// Replace shared values by the owner's value.  Used after an operation that
-  /// is not guaranteed to give the same answer on every rank.
-  void copyFromOwners(Vector & v) const override;
   /// Inner product that counts every degree of freedom exactly once.
   double dot(const Vector & a, const Vector & b) const;
 
   // ---- one value per entity, for a solver that works on the local problem directly -------------
   /// Set up the distributed problem: the solves call it, and a solver that works on the local problem directly calls it first.
   void prepare();
-  /// addAcrossRanks and copyFromOwners for @p width values per local entity (a node).
-  void addAcrossRanks(double * values, int width) const { _gs.sum(values, width); }
-  void copyFromOwners(double * values, int width) const { _gs.copyFromOwners(values, width); }
+  /// The numbers of @p width unknowns at each local entity that @p owned marks, contiguous on each
+  /// rank and those of the ranks before it first, from @p first, of @p total in all.  A copy has
+  /// its owner's numbers, and an entity that no rank owns -1.
+  std::vector<Index>
+  globalNumbers(const std::vector<char> & owned, int width, Index & first, Index & total) const;
   /// The global number of every local entity, in a numbering in which each rank numbers its owned entities contiguously from firstOwnedEntity(); a copy has its owner's number, and an entity that only this rank has -1.
   const std::vector<Index> & globalEntityNumbers() const { return _global_entity; }
   Index firstOwnedEntity() const { return _first_owned_entity; }
   Index numOwnedEntities() const;
   Index numGlobalEntities() const { return _num_global_entities; }
-  /// Write the prescribed values at the time of the local problem into @p U on every rank that holds them.
-  void applyDirichlet(Vector & U, double data_fraction = 1.0) const;
   double norm(const Vector & a) const override { return std::sqrt(dot(a, a)); }
 
   // ---- the Parallel of the local problem ---------------------------------------------------
@@ -120,18 +114,16 @@ public:
   double minimum(double value) const override { return _comm.min(value); }
   double maximum(double value) const override { return _comm.max(value); }
   Index globalDof(Index dof) const override { return _global_dof[dof]; }
-  void addShared(Vector & v) const override { addAcrossRanks(v); }
-  void addAtNodes(std::vector<double> & values, int width) const override
+  Index globalNode(Index node) const override { return _local_to_global[node]; }
+  void addAtNodes(double * values, int width) const override { _gs.sum(values, width); }
+  void copyFromOwners(double * values, int width) const override
   {
-    addAcrossRanks(values.data(), width);
+    _gs.copyFromOwners(values, width);
   }
   void shareDirichlet(Vector & U) const override;
   GlobalRows globalRows(const Problem & problem) const override;
   bool checksSingularity() const override { return false; }
   CheckpointLayout checkpointLayout(const Problem & problem) const override;
-  void writeFields(Problem & problem,
-                   const std::string & base,
-                   const std::vector<std::string> & fields) const override;
 
   SolveResult solveSteady(const SolverOptions & options = {});
   SolveResult solveTransient(const TransientOptions & transient,
@@ -196,8 +188,6 @@ private:
   bool _has_ghosts = false;
   /// Mark the copies of a prescribed node that only another rank knows as prescribed, after the point conditions have been resolved.
   void agreePrescribedValues();
-  /// The degrees of freedom that this rank's nodal boundary conditions prescribe.
-  std::vector<char> localPrescribed() const;
   /// Give the copies of a prescribed node that only another rank knows as prescribed the prescribed value.
   void shareDirichletValues(Vector & U) const;
   /// Whether this rank owns each local node as a node of the mesh, before constraints join nodes: the rank that reports and loads it.

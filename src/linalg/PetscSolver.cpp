@@ -103,12 +103,10 @@ private:
 std::string
 defaultOptions(bool parallel)
 {
-  // MUMPS pivots during the factorisation, so it also factorises saddle point
-  // systems whose diagonal has zeros (the pressure block of the Taylor-Hood
-  // element); PETSc's own LU does not pivot and stops at the first zero pivot.
+  // The solver takes MUMPS for a factorisation that names no package (LinearSolver).
 #ifdef PETSC_HAVE_MUMPS
   (void) parallel;
-  return "-ksp_type gmres -pc_type lu -pc_factor_mat_solver_type mumps";
+  return "-ksp_type gmres -pc_type lu";
 #else
   if (!parallel)
     return "-ksp_type gmres -pc_type lu";
@@ -165,10 +163,11 @@ amgOptions(const std::string & prefix)
 std::string
 schurOptions(SchurApproximation approximation)
 {
-  std::string o = "-ksp_type fgmres -ksp_gmres_restart 200 -pc_type fieldsplit "
-                  "-pc_fieldsplit_type schur -pc_fieldsplit_schur_fact_type upper "
-                  "-fieldsplit_0_ksp_type preonly" +
-                  amgOptions("fieldsplit_0_") + " -fieldsplit_1_ksp_type preonly";
+  std::string o =
+      "-ksp_type fgmres -ksp_gmres_restart 200 " + std::string(gmresOrthogonalization) +
+      " -pc_type fieldsplit -pc_fieldsplit_type schur -pc_fieldsplit_schur_fact_type upper "
+      "-fieldsplit_0_ksp_type preonly" +
+      amgOptions("fieldsplit_0_") + " -fieldsplit_1_ksp_type preonly";
   if (approximation == SchurApproximation::PressureMass)
     return o + " -pc_fieldsplit_schur_precondition user" + amgOptions("fieldsplit_1_");
   return o + " -pc_fieldsplit_schur_precondition self -fieldsplit_1_laplacian_ksp_type preonly" +
@@ -179,8 +178,8 @@ schurOptions(SchurApproximation approximation)
 std::string
 physicsBlockOptions(std::size_t blocks)
 {
-  std::string o = "-ksp_type fgmres -ksp_gmres_restart 200 -pc_type fieldsplit "
-                  "-pc_fieldsplit_type multiplicative";
+  std::string o = "-ksp_type fgmres -ksp_gmres_restart 200 " + std::string(gmresOrthogonalization) +
+                  " -pc_type fieldsplit -pc_fieldsplit_type multiplicative";
   for (std::size_t b = 0; b < blocks; ++b)
     o += " -fieldsplit_" + std::to_string(b) + "_ksp_type preonly -fieldsplit_" +
          std::to_string(b) + "_pc_type gamg";
@@ -253,6 +252,23 @@ assembledVector(Mat like, const std::vector<GlobalEntry> & entries)
     DM_PETSC(VecSetValue(v, static_cast<PetscInt>(e.row), e.value, ADD_VALUES));
   DM_PETSC(VecAssemblyBegin(v));
   DM_PETSC(VecAssemblyEnd(v));
+  return v;
+}
+
+/// The vector of the layout of @p like whose owned entries are @p values, in the order of the rows.
+Vec
+ownedVector(Mat like, const Vector & values)
+{
+  Vec v;
+  DM_PETSC(MatCreateVecs(like, nullptr, &v));
+  PetscInt n = 0;
+  DM_PETSC(VecGetLocalSize(v, &n));
+  if (values.size() != static_cast<Index>(n))
+    throw std::logic_error("dualmesh: a vector of the owned rows has the wrong size.");
+  PetscScalar * a = nullptr;
+  DM_PETSC(VecGetArray(v, &a));
+  std::copy(values.data(), values.data() + n, a);
+  DM_PETSC(VecRestoreArray(v, &a));
   return v;
 }
 
@@ -348,8 +364,10 @@ struct SchurShell
   Mat convection_diffusion = nullptr, commutator_stabilization = nullptr;
   KSP laplacian_solver = nullptr;
   Vec inverse_velocity_mass = nullptr, inverse_pressure_mass = nullptr;
+  /// One over the factor of each pressure row of the matrix (SchurBlocks::row_scale).
+  Vec inverse_pressure_scale = nullptr;
   Vec prescribed = nullptr, free = nullptr;
-  Vec p1 = nullptr, p2 = nullptr, u1 = nullptr, u2 = nullptr;
+  Vec unscaled = nullptr, p1 = nullptr, p2 = nullptr, u1 = nullptr, u2 = nullptr;
 
   ~SchurShell()
   {
@@ -359,8 +377,16 @@ struct SchurShell
     for (Mat * m :
          {&gradient, &momentum, &laplacian, &convection_diffusion, &commutator_stabilization})
       MatDestroy(m);
-    for (Vec * v :
-         {&inverse_velocity_mass, &inverse_pressure_mass, &prescribed, &free, &p1, &p2, &u1, &u2})
+    for (Vec * v : {&inverse_velocity_mass,
+                    &inverse_pressure_mass,
+                    &inverse_pressure_scale,
+                    &prescribed,
+                    &free,
+                    &unscaled,
+                    &p1,
+                    &p2,
+                    &u1,
+                    &u2})
       VecDestroy(v);
   }
 };
@@ -371,17 +397,20 @@ applySchurShell(PC pc, Vec r, Vec z)
   SchurShell * s = nullptr;
   PetscFunctionBeginUser;
   PetscCall(PCShellGetContext(pc, &s));
+  // The operators approximate the Schur complement S of the unscaled equations.  That of the
+  // matrix, whose pressure rows are multiplied by D_p, is D_p S, so its inverse takes D_p^{-1} r.
+  PetscCall(VecPointwiseMult(s->unscaled, s->inverse_pressure_scale, r));
   if (s->approximation == SchurApproximation::ConvectionDiffusion)
   {
     // z = A_p^{-1} F_p Q_p^{-1} r
-    PetscCall(VecPointwiseMult(s->p1, s->inverse_pressure_mass, r));
+    PetscCall(VecPointwiseMult(s->p1, s->inverse_pressure_mass, s->unscaled));
     PetscCall(MatMult(s->convection_diffusion, s->p1, s->p2));
     PetscCall(KSPSolve(s->laplacian_solver, s->p2, z));
   }
   else
   {
     // z = A_p^{-1} (G^T Q_v^{-1} F Q_v^{-1} G + C_2) A_p^{-1} r
-    PetscCall(KSPSolve(s->laplacian_solver, r, s->p1));
+    PetscCall(KSPSolve(s->laplacian_solver, s->unscaled, s->p1));
     PetscCall(MatMult(s->gradient, s->p1, s->u1));
     PetscCall(VecPointwiseMult(s->u1, s->u1, s->inverse_velocity_mass));
     PetscCall(MatMult(s->momentum, s->u1, s->u2));
@@ -391,14 +420,18 @@ applySchurShell(PC pc, Vec r, Vec z)
     PetscCall(KSPSolve(s->laplacian_solver, s->p2, z));
   }
   PetscCall(VecScale(z, s->sign));
-  // A prescribed pressure is a row of the diagonal, whose Schur complement is its entry.
+  // A prescribed pressure is a row of the diagonal, whose Schur complement is its entry, in the
+  // scaled matrix.
   PetscCall(VecPointwiseMult(z, z, s->free));
   PetscCall(VecPointwiseMult(s->p1, s->prescribed, r));
   PetscCall(VecAXPY(z, 1.0, s->p1));
   PetscFunctionReturn(PETSC_SUCCESS);
 }
 
-/// Build the shell of pcd or lsc for the Schur split of @p ksp, set up, whose matrix is @p A.
+/// Build the shell of pcd or lsc for the Schur split of @p ksp, set up, whose matrix is @p A.  The
+/// rows of @p A are those of the equations times the factors of SchurBlocks::row_scale, and the
+/// shell divides the blocks it takes from @p A by them, so that every operator belongs to the
+/// unscaled equations.
 std::unique_ptr<SchurShell>
 makeSchurShell(KSP ksp, Mat A, IS other_set, IS pressure_set, const SchurBlocks & blocks)
 {
@@ -407,7 +440,13 @@ makeSchurShell(KSP ksp, Mat A, IS other_set, IS pressure_set, const SchurBlocks 
   s->sign = blocks.sign;
   MPI_Comm comm;
   DM_PETSC(PetscObjectGetComm(reinterpret_cast<PetscObject>(A), &comm));
+  Vec inverse_scale = ownedVector(A, blocks.row_scale);
+  invert(inverse_scale, 1.0);
+  Vec inverse_other_scale = subvector(inverse_scale, other_set);
+  s->inverse_pressure_scale = subvector(inverse_scale, pressure_set);
+  VecDestroy(&inverse_scale);
   DM_PETSC(MatCreateSubMatrix(A, other_set, pressure_set, MAT_INITIAL_MATRIX, &s->gradient));
+  DM_PETSC(MatDiagonalScale(s->gradient, inverse_other_scale, nullptr));
   Vec lumped = assembledVector(A, blocks.lumped_mass);
   s->inverse_velocity_mass = subvector(lumped, other_set);
   invert(s->inverse_velocity_mass, 0.0);
@@ -432,6 +471,7 @@ makeSchurShell(KSP ksp, Mat A, IS other_set, IS pressure_set, const SchurBlocks 
   else
   {
     DM_PETSC(MatCreateSubMatrix(A, other_set, other_set, MAT_INITIAL_MATRIX, &s->momentum));
+    DM_PETSC(MatDiagonalScale(s->momentum, inverse_other_scale, nullptr));
     s->commutator_stabilization =
         restricted(assembledMatrix(A, blocks.commutator_stabilization, {}), pressure_set);
   }
@@ -457,8 +497,10 @@ makeSchurShell(KSP ksp, Mat A, IS other_set, IS pressure_set, const SchurBlocks 
     DM_PETSC(VecPointwiseDivide(s->prescribed, s->prescribed, pressure_diagonal));
     VecDestroy(&pressure_diagonal);
   }
+  VecDestroy(&inverse_other_scale);
   DM_PETSC(MatCreateVecs(s->gradient, &s->p1, &s->u1));
   DM_PETSC(VecDuplicate(s->p1, &s->p2));
+  DM_PETSC(VecDuplicate(s->p1, &s->unscaled));
   DM_PETSC(VecDuplicate(s->u1, &s->u2));
 
   DM_PETSC(KSPCreate(comm, &s->laplacian_solver));
@@ -502,6 +544,13 @@ isSchurSplit(KSP ksp)
 }
 
 } // namespace
+
+std::string
+multigridOptions(bool smoothed_aggregation)
+{
+  return "-ksp_type gmres -ksp_gmres_restart 100 " + std::string(gmresOrthogonalization) +
+         " -ksp_pc_side right" + (smoothed_aggregation ? " -pc_type gamg" : amgOptions(""));
+}
 
 std::string
 version()
@@ -638,7 +687,9 @@ struct LinearSolver::Impl
     if (schur_split && schur_approximation == SchurApproximation::PressureMass)
     {
       // sign (1/mu) M_p plus the symmetric part of the pressure block of the matrix, whose
-      // prescribed rows are rows of the diagonal already.
+      // prescribed rows are rows of the diagonal already.  The mass belongs to the unscaled
+      // equations and takes the factor of the pressure rows of the matrix
+      // (SchurBlocks::row_scale), which the Schur complement of the matrix carries.
       MatDestroy(&schur_preconditioner);
       Mat block;
       DM_PETSC(MatCreateSubMatrix(matrix, splits[1], splits[1], MAT_INITIAL_MATRIX, &block));
@@ -647,6 +698,11 @@ struct LinearSolver::Impl
       DM_PETSC(MatScale(schur_preconditioner, 0.5));
       MatDestroy(&block);
       Mat mass = restricted(assembledMatrix(matrix, blocks->mass, {}), splits[1]);
+      Vec scale = ownedVector(matrix, blocks->row_scale);
+      Vec pressure_scale = subvector(scale, splits[1]);
+      DM_PETSC(MatDiagonalScale(mass, pressure_scale, nullptr));
+      VecDestroy(&scale);
+      VecDestroy(&pressure_scale);
       DM_PETSC(MatAXPY(schur_preconditioner, blocks->sign, mass, DIFFERENT_NONZERO_PATTERN));
       MatDestroy(&mass);
       DM_PETSC(PCFieldSplitSetSchurPre(pc, PC_FIELDSPLIT_SCHUR_PRE_USER, schur_preconditioner));
@@ -811,7 +867,9 @@ LinearSolver::LinearSolver(bool distributed,
 #ifdef PETSC_HAVE_MUMPS
   // A direct solve that names no package takes MUMPS, which pivots.  PETSc's own LU does not
   // pivot and stops at the first zero pivot, which the saddle point system of the Taylor-Hood
-  // element has on its pressure rows.
+  // element has on its pressure rows.  MUMPS then takes its own ordering, unless the options
+  // name one: the nested dissection ordering that PETSc chose for its own LU reaches MUMPS as a
+  // given permutation, which MUMPS refuses for a matrix of several unknowns per node.
   {
     PetscBool lu = PETSC_FALSE;
     DM_PETSC(PetscObjectTypeCompare(reinterpret_cast<PetscObject>(pc), PCLU, &lu));
@@ -819,7 +877,15 @@ LinearSolver::LinearSolver(bool distributed,
     if (lu)
       DM_PETSC(PCFactorGetMatSolverType(pc, &package));
     if (lu && !package)
+    {
       DM_PETSC(PCFactorSetMatSolverType(pc, MATSOLVERMUMPS));
+      const char * prefix = nullptr;
+      DM_PETSC(PCGetOptionsPrefix(pc, &prefix));
+      PetscBool ordering = PETSC_FALSE;
+      DM_PETSC(PetscOptionsHasName(nullptr, prefix, "-pc_factor_mat_ordering_type", &ordering));
+      if (!ordering)
+        DM_PETSC(PCFactorSetMatOrderingType(pc, MATORDERINGEXTERNAL));
+    }
   }
 #endif
   s.schur_split = settings.schur && isSchurSplit(s.ksp);

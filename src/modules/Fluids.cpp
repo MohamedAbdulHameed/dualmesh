@@ -42,6 +42,7 @@
 #include "dualmesh/base/Problem.h"
 #include "dualmesh/base/Property.h"
 #include "dualmesh/fe/Assembly.h"
+#include "dualmesh/modules/Framework.h"
 
 #include <algorithm>
 #include <cmath>
@@ -96,6 +97,36 @@ addVelocitiesParam(InputParameters & p)
                 "Names of the velocity variables, exactly one per mesh dimension and in "
                 "coordinate order (x, y, then z). The place of 'variable' in this list fixes the "
                 "component i of the momentum equation that the object acts on.");
+}
+
+/// The default penalty parameter gamma of the penalty formulation, in Pa s.
+constexpr double kDefaultPenalty = 1.0e8;
+
+/// The parameter penalty_parameter of the penalty formulation, for @p p.
+void
+addPenaltyParam(InputParameters & p)
+{
+  p.addOptional("penalty_parameter",
+                ParameterKind::Real,
+                kDefaultPenalty,
+                "Penalty parameter gamma in Pa s, which enforces incompressibility through the "
+                "constitutive relation p = -gamma div v. Reddy, Anand and Roy (2023) give 10^4 "
+                "to 10^12 times the dynamic viscosity. A value that is too small leaves the flow "
+                "compressible, and a value that is too large makes the linear system so "
+                "ill-conditioned that the direct solver loses accuracy. Default 10^8, which lies "
+                "in that range for a dynamic viscosity from 10^-4 to 10^4 Pa s.");
+}
+
+/// div v of the velocity @p v, with the term v_r / r in axisymmetric coordinates.
+ADReal
+velocityDivergence(const QpContext & ctx, const std::vector<int> & v, bool axisymmetric)
+{
+  ADReal div(0.0);
+  for (std::size_t d = 0; d < v.size(); ++d)
+    div += ctx.gradient(v[d])[d];
+  if (axisymmetric && ctx.x[0] != 0.0)
+    div += ctx.value(v[0]) / ctx.x[0];
+  return div;
 }
 
 /// Viscous stress of a Newtonian fluid: mu (grad v + grad v^T), or its Laplacian form mu grad v.
@@ -155,12 +186,29 @@ public:
   }
   bool hasFlux() const override { return true; }
   bool hasSource() const override { return _hoop; }
+  /// The dynamic viscosity mu at the point of @p ctx.
+  double viscosity(const QpContext & ctx) const { return _mu->value(ctx.x, ctx.time); }
   void computeFlux(const QpContext & ctx, ADVector3 & F) const override
   {
-    const double mu = _mu->value(ctx.x, ctx.time);
+    const double mu = viscosity(ctx);
     const auto & gi = ctx.gradient(_v[_component]);
     for (int d = 0; d < ctx.dim; ++d)
       F[d] = _laplacian ? mu * gi[d] : mu * (gi[d] + ctx.gradient(_v[d])[_component]);
+  }
+  // The term - mu (Laplacian(v) - v_r / r^2 e_r)_i of the strong residual, which quadratic
+  // elements give.  It vanishes inside a linear element, whose residual therefore leaves it out
+  // (see Problem::fillContext).  It is div(2 mu eps(v)) for an incompressible flow with a
+  // viscosity uniform in space, and for one that varies it lacks the term
+  // grad mu . (grad v + grad v^T).  The radial component of the vector Laplacian of an
+  // axisymmetric flow without swirl is the scalar Laplacian of v_r less v_r / r^2.
+  bool inStrongResidual() const override { return true; }
+  bool oldStateFromFields() const override { return true; }
+  ADReal strongResidual(const QpContext & ctx) const override
+  {
+    if (ctx.laplacian.empty())
+      return ADReal(0.0);
+    const double hoop = _hoop && ctx.x[0] > 0.0 ? 1.0 / (ctx.x[0] * ctx.x[0]) : 0.0;
+    return -viscosity(ctx) * (ctx.laplacian[_v[_component]] - hoop * ctx.value(_v[_component]));
   }
   // In axisymmetric coordinates (r, z) without swirl, the radial equation
   // carries the hoop stress: -(div sigma)_r = -div_rz(sigma_r.) + sigma_tt / r,
@@ -172,7 +220,7 @@ public:
     const double r = ctx.x[0];
     if (r == 0.0)
       return ADReal(0.0);
-    return ((_laplacian ? 1.0 : 2.0) * _mu->value(ctx.x, ctx.time) / (r * r)) * ctx.value(_v[0]);
+    return ((_laplacian ? 1.0 : 2.0) * viscosity(ctx) / (r * r)) * ctx.value(_v[0]);
   }
 
 private:
@@ -200,16 +248,7 @@ public:
         "side. The term must be integrated with a reduced rule, which is the default here, "
         "because a rule with more points locks the velocity field.");
     addVelocitiesParam(p);
-    p.addOptional("penalty_parameter",
-                  ParameterKind::Real,
-                  1.0e8,
-                  "Penalty parameter gamma in Pa s, which enforces incompressibility through the "
-                  "constitutive relation p = -gamma div v. Reddy, Anand and Roy (2023) give 10^4 "
-                  "to 10^12 times the dynamic viscosity. A value that is too small leaves the flow "
-                  "compressible, and a value that is too large makes the linear system so "
-                  "ill-conditioned that the direct solver loses accuracy. penalty_pressure reads "
-                  "it from here. Default 10^8, which lies in that range for a dynamic viscosity "
-                  "from 10^-4 to 10^4 Pa s.");
+    addPenaltyParam(p);
     p.addOptional("quadrature",
                   ParameterKind::String,
                   std::string("midpoint"),
@@ -242,7 +281,7 @@ public:
   bool hasSource() const override { return _axisymmetric && _component == 0; }
   void computeFlux(const QpContext & ctx, ADVector3 & F) const override
   {
-    const ADReal div = divergence(ctx);
+    const ADReal div = velocityDivergence(ctx, _v, _axisymmetric);
     for (int d = 0; d < ctx.dim; ++d)
       F[d] = d == _component ? _gamma * div : ADReal(0.0);
   }
@@ -253,138 +292,14 @@ public:
     const double r = ctx.x[0];
     if (r == 0.0)
       return ADReal(0.0);
-    return (_gamma / r) * divergence(ctx);
+    return (_gamma / r) * velocityDivergence(ctx, _v, _axisymmetric);
   }
 
 private:
-  /// div v, with the u_r / r term in axisymmetric coordinates.
-  ADReal divergence(const QpContext & ctx) const
-  {
-    ADReal div(0.0);
-    for (std::size_t d = 0; d < _v.size(); ++d)
-      div += ctx.gradient(_v[d])[d];
-    if (_axisymmetric && ctx.x[0] != 0.0)
-      div += ctx.value(_v[0]) / ctx.x[0];
-    return div;
-  }
   int _component;
   double _gamma;
   bool _axisymmetric = false;
   std::vector<int> _v;
-};
-
-/// Convective (inertia) term of the Navier-Stokes equations.
-class ConvectiveInertia : public Kernel
-{
-public:
-  static InputParameters validParams()
-  {
-    InputParameters p = Kernel::validParams();
-    p.setClassDescription(
-        "The convective term rho (v . grad) v_i on the left side of the momentum equation of the "
-        "velocity component v_i, with rho the density and v the velocity. In an equal-order "
-        "flow, with the finite element method (FEM) or the dual mesh control domain method "
-        "(DMCDM) and the pressure formulation, the term carries the velocity w = v - tau r_m "
-        "that the mass equation conserves, with tau r_m the pressure stabilization of "
-        "mass_conservation. FEM then adds rho (w . grad) v_i, and DMCDM the face flux "
-        "rho (w . n)(v_i,f - v_i,C) for the control volume C on each side of a face, with v_i,f "
-        "the face value of the advection scheme and n the unit normal of the face. The momentum "
-        "is then conserved exactly against the discrete mass flux through the boundary (Hughes "
-        "and Wells 2005), and a uniform velocity stays unchanged. Without such a mass equation, "
-        "in the penalty and Taylor-Hood formulations, the term carries v, which conserves the "
-        "momentum only as far as the discrete velocity is free of divergence. Picard iteration "
-        "takes the transporting velocity from the previous iterate.");
-    addVelocitiesParam(p);
-    p.addOptional("density",
-                  ParameterKind::Function,
-                  1.0,
-                  "Density rho in kg/m^3: a constant, a registered function, or an expression of "
-                  "x, y, z and t. With the dynamic viscosity it sets the Reynolds number. For a "
-                  "Stokes flow, leave this kernel out. Default 1, for a problem written in "
-                  "dimensionless form.");
-    p.setRange("density", ParameterRange::NonNegative);
-    addAdvectionSchemeParam(p);
-    return p;
-  }
-  explicit ConvectiveInertia(const InputParameters & p)
-      : Kernel(p), _component(componentOf(name(), variableName(), p.getStringList("velocities"))),
-        _scheme_text(p.getString("advection_scheme")),
-        _face_scheme(_scheme_text == "upwind" || _scheme_text == "linear_upwind" ||
-                     _scheme_text == "limited"),
-        _flux(_face_scheme)
-  {
-  }
-  void initialSetup(Problem & problem) override
-  {
-    Kernel::initialSetup(problem);
-    _v =
-        resolveVelocities(problem, _params.getStringList("velocities"), problem.mesh().dimension());
-    _rho = getFunction(problem, "density");
-    _scheme = advectionScheme(problem, _scheme_text, name());
-    _mass = conservingMassEquation(problem, variable());
-    _flux = _face_scheme || (_mass && problem.isDual());
-  }
-  // The term is rho (w . grad) u_i with the velocity w that the mass equation conserves, where a
-  // mass equation tests with the functions of u_i (an equal-order flow), and with v otherwise: the
-  // source for FEM, and for DMCDM the face flux rho (w . n)(u_i,f - u_i,C) for the control volume
-  // C on each side, as heat_convection takes it.  The momentum is then conserved exactly, against
-  // the discrete mass flux through the boundary.
-  bool hasSource() const override { return !_flux; }
-  bool hasFlux() const override { return _flux; }
-  bool usesFaceSides() const override { return _flux; }
-  bool nonConservativeFaceFlux() const override { return _flux; }
-  bool inStrongResidual() const override { return true; }
-  bool isInertia() const override { return true; }
-  bool needsLineSearch() const override { return _scheme == AdvectionScheme::Limited; }
-  bool needsSideGradients() const override
-  {
-    return _scheme == AdvectionScheme::LinearUpwind || _scheme == AdvectionScheme::Limited;
-  }
-  bool advectingNormalVelocity(const QpContext & ctx, double & velocity) const override
-  {
-    if (!_flux)
-      return false;
-    const ADVector3 w = advectingVelocity(ctx, _mass, _v);
-    velocity = 0.0;
-    for (std::size_t d = 0; d < _v.size(); ++d)
-      velocity += w[d].value() * ctx.normal[d];
-    return true;
-  }
-  void computeFlux(const QpContext & ctx, ADVector3 & F) const override
-  {
-    const ADVector3 w = advectingVelocity(ctx, _mass, _v);
-    double velocity = 0.0;
-    for (std::size_t d = 0; d < _v.size(); ++d)
-      velocity += w[d].value() * ctx.normal[d];
-    const ADReal ui =
-        ctx.advectedValue(_v[_component], velocity, _scheme) - ctx.referenceValue(_v[_component]);
-    const double rho = ctx.inertia * _rho->value(ctx.x, ctx.time);
-    for (std::size_t d = 0; d < _v.size(); ++d)
-      F[d] = -rho * w[d] * ui;
-  }
-  ADReal computeSource(const QpContext & ctx) const override
-  {
-    const double rho = ctx.inertia * _rho->value(ctx.x, ctx.time);
-    const auto & gi = ctx.gradient(_v[_component]);
-    const ADVector3 w = advectingVelocity(ctx, _mass, _v);
-    ADReal s(0.0);
-    for (std::size_t d = 0; d < _v.size(); ++d)
-      s += w[d] * gi[d];
-    return rho * s;
-  }
-
-private:
-  int _component;
-  std::vector<int> _v;
-  FunctionPtr _rho;
-  std::string _scheme_text;
-  /// Whether the scheme is a face flux of DMCDM (upwind, linear_upwind, limited).
-  bool _face_scheme;
-  /// Whether the term is a flux (conservative with _mass, else non-conservative) or a source.
-  bool _flux;
-  AdvectionScheme _scheme = AdvectionScheme::Central;
-  /// The mass equation whose conserved velocity the flux carries (conservingMassEquation).
-  const Kernel * _mass = nullptr;
 };
 
 /// The buoyancy force of the Boussinesq approximation.
@@ -447,6 +362,7 @@ public:
     _beta = getFunction(problem, "volumetric_expansion_coefficient");
   }
   bool hasSource() const override { return true; }
+  bool oldStateFromFields() const override { return true; }
   ADReal computeSource(const QpContext & ctx) const override
   {
     // S = -f_i = rho0 beta (T - T0) g_i
@@ -468,280 +384,111 @@ private:
 
 /// The strong momentum residual,
 ///
-///   r_m = rho (du/dt + (u . grad) u) + grad p - mu Laplacian(u) - f ,
+///   r_m = rho_t dv/dt + rho (v . grad) v + grad p - mu Laplacian(v) - f ,
 ///
-/// with the viscous term on quadratic elements only (it vanishes inside a linear one),
+/// the strong residual (StrongResidual) of the momentum equation of each component, with the
+/// viscous term on quadratic elements only (it vanishes inside a linear one), and the
+/// stabilisation parameter tau of Tezduyar (1991) (stabilizationTau), written per unit density so
+/// that it also covers a Stokes flow (rho = 0):
 ///
-/// and the stabilisation parameter after Tezduyar (1991), written per unit density
-/// so that it also covers a Stokes flow (rho = 0):
+///   tau = [ (2 rho_t / dt)^2 + (2 rho |v| / h)^2 + 9 (4 mu / h^2)^2 ]^(-1/2) .
 ///
-///   tau = [ (2 rho / dt)^2 + (2 rho |u| / h)^2 + 9 (4 mu / h^2)^2 ]^(-1/2) ,
-///
-/// whose three terms are the reciprocal time scales of the unsteadiness, the
-/// convection and the diffusion across an element of size h.  tau r_m has the
-/// units of a velocity.  For a quadratic element h is half the element size,
-/// because the interpolation resolves half the element.  The viscous term of
-/// r_m needs the second derivatives of the shape functions, which quadratic
-/// elements provide.  Inside a linear element it vanishes (simplices, and
-/// bilinear elements on parallelograms) or nearly so, and leaving it out keeps
-/// the optimal first order in the energy norm.
+/// tau r_m has the units of a velocity.  For a quadratic element h is half the element size,
+/// because the interpolation resolves half the element.  The viscous term of r_m needs the
+/// second derivatives of the shape functions, which quadratic elements provide.  Inside a linear
+/// element it vanishes (simplices, and bilinear elements on parallelograms) or nearly so, and
+/// leaving it out keeps the optimal first order in the energy norm.  The densities rho of the
+/// convection and rho_t of the time derivative and the viscosity mu are the coefficients of the
+/// advection, time_derivative and viscous_stress kernels of the first velocity, and zero
+/// without one.
 class MomentumResidual
 {
 public:
-  /// Read the density, the viscosity, the body forces and the buoyancy from the momentum kernels
-  /// of @p velocities that the problem holds: convective_inertia, time_derivative,
-  /// viscous_stress, body_force and Boussinesq_buoyancy.
-  /// @p stabilized: the residual stabilizes the flow, so every term of the momentum equation must
-  /// enter it.
+  /// Read the coefficients of the momentum equations of @p velocities that the problem holds,
+  /// and with @p stabilized collect their terms, for the stabilisation named @p owner.
   void setup(Problem & problem,
              const std::string & owner,
              const std::vector<std::string> & velocities,
-             int pressure,
              bool stabilized)
   {
-    const int dim = problem.mesh().dimension();
-    _v = resolveVelocities(problem, velocities, dim);
-    _p = pressure;
-    _axisymmetric = problem.coordinateSystem() == CoordinateSystem::Axisymmetric;
-    _rho = _rho_time = _mu = nullptr;
-    _forces.assign(static_cast<std::size_t>(dim), {});
-    _sources.assign(static_cast<std::size_t>(dim), {});
-    _buoyancy.assign(static_cast<std::size_t>(dim), {});
+    _v = resolveVelocities(problem, velocities, problem.mesh().dimension());
+    _equations.assign(stabilized ? velocities.size() : 0, {});
+    for (std::size_t i = 0; i < _equations.size(); ++i)
+      _equations[i].setup(problem, velocities[i], owner);
+    _advection = nullptr;
+    _storage = nullptr;
+    _viscous = nullptr;
     for (const auto & k : problem.kernels())
     {
-      const auto & kp = k->parameters();
-      const auto it = std::find(velocities.begin(), velocities.end(), k->variableName());
-      if (it == velocities.end())
+      if (k->variableName() != velocities[0])
         continue;
-      const auto i = static_cast<std::size_t>(it - velocities.begin());
-      const auto & type = k->type();
-      if (type == "convective_inertia")
-      {
-        if (!_rho)
-          _rho = functionParameter(problem, kp, "density", k->name());
-      }
-      else if (type == "time_derivative")
-      {
-        if (!_rho_time)
-          _rho_time = functionParameter(problem, kp, "coefficient", k->name());
-      }
-      else if (type == "viscous_stress")
-      {
-        if (!_mu)
-          _mu = functionParameter(problem, kp, "dynamic_viscosity", k->name());
-      }
-      else if (type == "body_force")
-        _forces[i].push_back({functionParameter(problem, kp, "value", k->name())});
-      else if (type == "Boussinesq_buoyancy")
-      {
-        Buoyancy b;
-        b.temperature = problem.variableIndex(kp.getString("temperature"));
-        const auto g = kp.getRealList("gravity");
-        b.gravity = i < g.size() ? g[i] : 0.0;
-        b.density = functionParameter(problem, kp, "density", k->name());
-        b.expansion = functionParameter(problem, kp, "volumetric_expansion_coefficient", k->name());
-        b.reference = kp.getReal("reference_temperature");
-        _buoyancy[i].push_back(b);
-      }
-      else if (type == "pressure_gradient" || type == "momentum_stabilization" ||
-               type == "penalty_incompressibility")
-        continue;
-      // Any other term of the momentum equation enters the residual by its source.  A flux has
-      // no divergence inside a linear element, so a term with one cannot.
-      else if (stabilized && k->hasFlux())
-        throw InputError("'" + owner +
-                         "': the stabilization of the flow holds the residual of "
-                         "the momentum equation, which takes the sources of its terms, so '" +
-                         k->name() + "' (" + type + ") on '" + k->variableName() +
-                         "', a term with a flux, would be missing from it. Give the term as a "
-                         "source, or turn the stabilization off.");
-      else if (k->hasSource())
-        _sources[i].push_back(k.get());
+      if (!_advection)
+        _advection = dynamic_cast<const Advection *>(k.get());
+      if (!_storage)
+        _storage = dynamic_cast<const TimeDerivative *>(k.get());
+      if (!_viscous)
+        _viscous = dynamic_cast<const ViscousStress *>(k.get());
     }
-    // The residual holds a time derivative when the flow has inertia (a Stokes flow has none).
-    _time_term = _rho || _rho_time;
-    const auto zero = std::make_shared<ConstantFunction>(0.0);
-    if (!_rho)
-      _rho = zero;
-    if (!_rho_time)
-      _rho_time = _rho;
-    if (!_mu)
-      _mu = zero;
-
-    const auto & mesh = problem.mesh();
-    _h.resize(mesh.numElements());
-    for (Index e = 0; e < mesh.numElements(); ++e)
-      _h[e] = elementSize(mesh, e);
   }
 
   int dimension() const { return static_cast<int>(_v.size()); }
   int velocity(int i) const { return _v[i]; }
-  /// Whether every function read from the momentum kernels may be evaluated from several threads.
   bool threadSafe() const
   {
-    for (const auto & f : {_rho, _rho_time, _mu})
-      if (f && !f->threadSafe())
-        return false;
-    for (const auto & list : _sources)
-      for (const Kernel * source : list)
-        if (!source->threadSafe())
-          return false;
-    for (const auto & list : _forces)
-      for (const auto & force : list)
-        if (!force.value->threadSafe())
-          return false;
-    for (const auto & list : _buoyancy)
-      for (const auto & b : list)
-        if (!b.density->threadSafe() || !b.expansion->threadSafe())
-          return false;
-    return true;
+    return std::all_of(
+        _equations.begin(), _equations.end(), [](const auto & e) { return e.threadSafe(); });
   }
 
   /// The density of the convective term, zero for a Stokes flow and for the Stokes start of a
   /// steady flow (QpContext::inertia).
-  double density(const QpContext & ctx) const { return ctx.inertia * _rho->value(ctx.x, ctx.time); }
+  double density(const QpContext & ctx) const
+  {
+    return _advection ? _advection->coefficient(ctx).value() : 0.0;
+  }
+  /// The density of the time derivative at the point.
+  double timeDensity(const QpContext & ctx) const
+  {
+    return _storage ? _storage->coefficient(ctx).value() : 0.0;
+  }
+  /// The dynamic viscosity at the point.
+  double viscosity(const QpContext & ctx) const
+  {
+    return _viscous ? _viscous->viscosity(ctx) : 0.0;
+  }
 
   ADReal tau(const QpContext & ctx) const
   {
     const double rho = density(ctx);
-    const double rho_time = _rho_time->value(ctx.x, ctx.time);
-    const double mu = _mu->value(ctx.x, ctx.time);
-    const double h = ctx.element >= 0 ? _h[ctx.element] : 1.0;
     ADReal speed2(1e-300);
     for (int v : _v)
       speed2 += ctx.coefficientValue(v) * ctx.coefficientValue(v);
-    ADReal inverse2 = (4.0 * rho * rho / (h * h)) * speed2;
-    // The factor 3 (9 on the square) gives the viscous limit h^2 / (12 mu) of the optimal
-    // parameter of linear elements, per unit density.
-    const double viscous = 3.0 * 4.0 * mu / (h * h);
-    inverse2 += viscous * viscous;
-    if (ctx.dt > 0)
-    {
-      const double unsteady = 2.0 * rho_time / ctx.dt;
-      inverse2 += unsteady * unsteady;
-    }
-    return 1.0 / sqrt(inverse2);
+    return stabilizationTau(_equations[0].elementSize(ctx),
+                            ADReal(rho * rho * speed2),
+                            ADReal(viscosity(ctx)),
+                            ctx.dt > 0.0 ? 2.0 * timeDensity(ctx) / ctx.dt : 0.0);
   }
 
-  /// Component i of r_m, the residual of the momentum equation (the viscous term on quadratic
-  /// elements).  In a
-  /// step of the theta method it is the residual of the discrete equation: the time difference,
-  /// the pressure gradient at the new time (Problem::steadyWeight), and the other terms weighted
-  /// by theta at the new time and by 1 - theta at the old one.  It then vanishes for the
-  /// solution of the discrete equations, and the stabilisation is consistent in time.
+  /// Component i of r_m.  In a step of the theta method it is the residual of the discrete
+  /// equation: the time difference and the pressure gradient at the new time
+  /// (Problem::steadyWeight), and the other terms weighted by theta at the new time and by
+  /// 1 - theta at the old one.  It then vanishes for the solution of the discrete equations, and
+  /// the stabilisation is consistent in time.
   ADReal residual(const QpContext & ctx, int i) const { return residual(ctx, i, ctx.time_weight); }
   /// The same with the weight @p time_weight of the time derivative (QpContext::time_weight).
   ADReal residual(const QpContext & ctx, int i, double time_weight) const
   {
-    ADReal r = ctx.gradient(_p)[i];
-    const double rho_time = _rho_time->value(ctx.x, ctx.time);
-    if (rho_time != 0.0 && ctx.dt > 0)
-      r += (time_weight * rho_time / ctx.dt) * (ctx.value(_v[i]) - ctx.oldValue(_v[i]));
-    const bool average = ctx.dt > 0.0 && ctx.theta < 1.0;
-    if (average && !_sources[static_cast<std::size_t>(i)].empty())
-      throw InputError("A term of its own on a velocity enters the stabilized residual of the "
-                       "flow at the new time only, so the flow takes the backward_Euler scheme, "
-                       "whose residual holds no old state.");
-    r += (average ? ctx.theta : 1.0) * steadyResidual(ctx, i);
-    if (average)
-      r += (1.0 - ctx.theta) * oldSteadyResidual(ctx, i);
-    return r;
+    return _equations[static_cast<std::size_t>(i)].value(ctx, time_weight, true);
   }
 
-  /// The dynamic viscosity at the point.
-  double viscosity(const QpContext & ctx) const { return _mu->value(ctx.x, ctx.time); }
-  /// The density of the time derivative at the point.
-  double timeDensity(const QpContext & ctx) const { return _rho_time->value(ctx.x, ctx.time); }
-  /// Whether the residual holds the time derivative rho dv/dt (a flow with inertia).
-  bool hasTimeTerm() const { return _time_term; }
+  /// Whether the residual holds the time derivative rho_t dv/dt (a transient flow).
+  bool hasTimeTerm() const { return _storage != nullptr; }
 
 private:
-  /// The radial component of the vector Laplacian of an axisymmetric flow without swirl is the
-  /// scalar Laplacian of v_r less v_r / r^2: the factor 1 / r^2 for component @p i, zero otherwise.
-  double hoop(const QpContext & ctx, int i) const
-  {
-    return _axisymmetric && i == 0 && ctx.x[0] > 0.0 ? 1.0 / (ctx.x[0] * ctx.x[0]) : 0.0;
-  }
-  /// The terms of r_m besides the time difference and the pressure gradient, at the new state:
-  /// the inertia, minus the body forces, plus the buoyancy.
-  ADReal steadyResidual(const QpContext & ctx, int i) const
-  {
-    ADReal r(0.0);
-    // The viscous term - mu Laplacian(v_i), which quadratic elements give.  It vanishes inside
-    // a linear element, whose residual therefore leaves it out (see Problem::fillContext).  It is
-    // div(2 mu eps(v)) for a viscosity that is uniform in space, and for one that varies it lacks
-    // the term grad mu . (grad v + grad v^T).
-    if (!ctx.laplacian.empty())
-      r -= _mu->value(ctx.x, ctx.time) * (ctx.laplacian[_v[i]] - hoop(ctx, i) * ctx.value(_v[i]));
-    const double rho = density(ctx);
-    if (rho != 0.0)
-    {
-      const auto & g = ctx.gradient(_v[i]);
-      ADReal convection(0.0);
-      for (std::size_t d = 0; d < _v.size(); ++d)
-        convection += ctx.coefficientValue(_v[d]) * g[d];
-      r += rho * convection;
-    }
-    for (const auto & force : _forces[i])
-      r -= ctx.data_fraction * force.value->value(ctx.x, ctx.time);
-    for (const Kernel * source : _sources[static_cast<std::size_t>(i)])
-      // A kernel source S stands on the side of the residual, as S = -f of a body force does.
-      r += source->computeSource(ctx);
-    // f_i = -rho beta (T - T0) g_i, so r_m gains + rho beta (T - T0) g_i.
-    for (const auto & b : _buoyancy[i])
-      if (b.gravity != 0.0)
-      {
-        const double c =
-            b.density->value(ctx.x, ctx.time) * b.expansion->value(ctx.x, ctx.time) * b.gravity;
-        r += ctx.data_fraction * c * (ctx.value(b.temperature) - b.reference);
-      }
-    return r;
-  }
-  /// The same terms at the old state and the old time of a step.
-  double oldSteadyResidual(const QpContext & ctx, int i) const
-  {
-    const double t = ctx.time - ctx.dt;
-    double r = 0.0;
-    if (!ctx.laplacian_old.empty())
-      r -= _mu->value(ctx.x, t) * (ctx.laplacian_old[_v[i]] - hoop(ctx, i) * ctx.oldValue(_v[i]));
-    const double rho = ctx.inertia * _rho->value(ctx.x, t);
-    if (rho != 0.0)
-    {
-      const Point & g = ctx.oldGradient(_v[i]);
-      double convection = 0.0;
-      for (std::size_t d = 0; d < _v.size(); ++d)
-        convection += ctx.oldValue(_v[d]) * g[d];
-      r += rho * convection;
-    }
-    for (const auto & force : _forces[i])
-      r -= ctx.data_fraction * force.value->value(ctx.x, t);
-    for (const auto & b : _buoyancy[i])
-      if (b.gravity != 0.0)
-        r += ctx.data_fraction * b.density->value(ctx.x, t) * b.expansion->value(ctx.x, t) *
-             b.gravity * (ctx.oldValue(b.temperature) - b.reference);
-    return r;
-  }
-
-  struct Force
-  {
-    FunctionPtr value;
-  };
-  struct Buoyancy
-  {
-    int temperature = -1;
-    double gravity = 0.0, reference = 0.0;
-    FunctionPtr density, expansion;
-  };
   std::vector<int> _v;
-  int _p = -1;
-  bool _axisymmetric = false;
-  FunctionPtr _rho, _rho_time, _mu;
-  bool _time_term = false;
-  std::vector<std::vector<Force>> _forces;
-  /// The other terms of each component, which enter by their sources.
-  std::vector<std::vector<const Kernel *>> _sources;
-  std::vector<std::vector<Buoyancy>> _buoyancy;
-  std::vector<double> _h;
+  std::vector<StrongResidual> _equations;
+  const Advection * _advection = nullptr;
+  const TimeDerivative * _storage = nullptr;
+  const ViscousStress * _viscous = nullptr;
 };
 
 /// The pressure term of a momentum equation, in flux form.
@@ -781,6 +528,12 @@ public:
   {
     F[_component] = -ctx.value(_p);
   }
+  /// The term dp/dx_i of the strong residual, the divergence of the flux with the hoop source.
+  bool inStrongResidual() const override { return true; }
+  ADReal strongResidual(const QpContext & ctx) const override
+  {
+    return ctx.gradient(_p)[_component];
+  }
   ADReal computeSource(const QpContext & ctx) const override
   {
     const double r = ctx.x[0];
@@ -810,49 +563,34 @@ public:
         "element method (FEM), and the momentum interpolation of Rhie and Chow (1983) in the dual "
         "mesh control domain method (DMCDM). Here r_m is the strong residual of the momentum "
         "equations, rho_t dv/dt + rho (v . grad) v + grad p - mu Laplacian(v) - f, with rho_t the "
-        "coefficient of their time_derivative, rho the density of their convective_inertia, p "
-        "the pressure, mu the dynamic viscosity and f the body force. Quadratic elements give "
-        "the viscous term, and linear elements leave it out, since it vanishes inside them. The "
-        "code reads rho_t, rho, mu, the body forces, the buoyancy and the other source terms of "
-        "r_m from the momentum kernels of the velocities, and refuses a momentum kernel with a "
-        "flux of its own. Those other source terms require the backward_Euler time scheme. The "
-        "parameter is tau = [(2 rho_t / dt)^2 + (2 rho |v| / h)^2 + "
-        "9 (4 mu / h^2)^2]^(-1/2), after Tezduyar (1991), with dt the time step, whose term "
-        "enters a transient solve only, and h the element size, halved on a quadratic element. "
-        "The boundary condition mass_flux closes the balance on the boundary, and the "
-        "fluid_dynamics physics applies it on every side set.");
+        "coefficient of their time_derivative, rho the coefficient of their advection, p the "
+        "pressure, mu the dynamic viscosity and f the body force. Quadratic elements give the "
+        "viscous term, and linear elements leave it out, since it vanishes inside them. The "
+        "code builds r_m from the momentum kernels of the velocities, and refuses a momentum "
+        "kernel with a flux whose divergence r_m does not hold. A term other than the "
+        "viscous stress, the pressure, the advection, the body force and the buoyancy requires "
+        "the backward_Euler time scheme. The parameter is tau = [(2 rho_t / dt)^2 + "
+        "(2 rho |v| / h)^2 + 9 (4 mu / h^2)^2]^(-1/2), after Tezduyar (1991), with dt the time "
+        "step, whose term enters a transient solve only, and h the element size, halved on a "
+        "quadratic element. The Taylor-Hood element, a first-order pressure with quadratic "
+        "velocities, is stable without the stabilization and takes the flux F = v. The boundary "
+        "condition mass_flux closes the balance on the boundary, and the fluid_dynamics physics "
+        "applies it on every side set.");
     addVelocitiesParam(p);
-    p.addOptional("stabilization",
-                  ParameterKind::Boolean,
-                  true,
-                  "Add the residual-based pressure stabilization tau r_m. Equal-order velocity and "
-                  "pressure need it, and the code refuses false unless the pressure is a "
-                  "first-order variable with quadratic velocities, the Taylor-Hood element, which "
-                  "is stable without it. Default true, for the equal-order interpolation.");
     return p;
   }
-  explicit MassConservation(const InputParameters & p)
-      : Kernel(p), _stabilize(p.getBool("stabilization"))
-  {
-  }
+  explicit MassConservation(const InputParameters & p) : Kernel(p) {}
   void initialSetup(Problem & problem) override
   {
     Kernel::initialSetup(problem);
-    _r.setup(problem, name(), _params.getStringList("velocities"), variable(), _stabilize);
-    // Without the stabilisation only an inf-sup stable pair gives a unique
-    // pressure; equal-order interpolation then has spurious pressure modes
-    // (the checkerboard of Q1-Q1), and the solve fails or returns them.
-    const bool taylor_hood = problem.hasMixedOrder() &&
-                             problem.variable(variable()).order == VariableOrder::First &&
-                             problem.variable(_r.velocity(0)).order != VariableOrder::First;
-    if (!_stabilize && !taylor_hood)
-      throw InputError(
-          "mass_conservation '" + name() + "': 'stabilization' is false, but the pressure '" +
-          problem.variable(variable()).name +
-          "' is interpolated like the velocity. Equal-order velocity and pressure need the "
-          "stabilisation; without it the pressure has spurious modes. Either keep "
-          "stabilization = true, or use the Taylor-Hood element: a quadratic mesh, method "
-          "'FEM', and the pressure declared with order 'first'.");
+    // Only the Taylor-Hood element, an inf-sup stable pair, gives a unique pressure without the
+    // stabilisation.  Equal-order interpolation has spurious pressure modes without it (the
+    // checkerboard of Q1-Q1).
+    const auto velocities = _params.getStringList("velocities");
+    _stabilize =
+        !(problem.hasMixedOrder() && problem.variable(variable()).order == VariableOrder::First &&
+          problem.variable(problem.variableIndex(velocities[0])).order != VariableOrder::First);
+    _r.setup(problem, name(), velocities, _stabilize);
   }
   bool threadSafe() const override { return Kernel::threadSafe() && _r.threadSafe(); }
   bool hasFlux() const override { return true; }
@@ -902,7 +640,8 @@ public:
   }
 
 private:
-  bool _stabilize;
+  /// Whether the flux holds the pressure stabilisation (equal-order velocity and pressure).
+  bool _stabilize = true;
   MomentumResidual _r;
 };
 
@@ -916,20 +655,20 @@ public:
     p.setClassDescription(
         "Streamline upwind Petrov-Galerkin (SUPG) stabilization (Brooks and Hughes 1982) of the "
         "momentum equation of the velocity component v_i. It adds the flux "
-        "F = -rho tau (r_m)_i v to the balance law dm/dt + div F = s, with rho the density of "
-        "convective_inertia and v the velocity. In the finite element method (FEM) it adds the "
-        "integral of rho tau (v . grad N_j) (r_m)_i to the equation of node j, with N_j its "
-        "shape function. The dual mesh control domain method (DMCDM) takes the same flux "
-        "through the faces of the control domains. Here r_m is the strong residual of the "
-        "momentum equations and tau the stabilization parameter, both as in mass_conservation, "
-        "and the code reads their coefficients and terms from the momentum kernels of the "
-        "velocities. The term is consistent, because r_m vanishes for the exact solution, and "
-        "it suppresses the spurious oscillations of a flow dominated by convection on a coarse "
-        "mesh. It vanishes for a Stokes flow, which has no convective_inertia.");
+        "F = -rho tau (r_m)_i v to the balance law dm/dt + div F = s, with rho the coefficient "
+        "of the advection of the velocity and v the velocity. In the finite element method "
+        "(FEM) it adds the integral of rho tau (v . grad N_j) (r_m)_i to the equation of node j, "
+        "with N_j its shape function. The dual mesh control domain method (DMCDM) takes the "
+        "same flux through the faces of the control domains. Here r_m is the strong residual of "
+        "the momentum equations and tau the stabilization parameter, both as in "
+        "mass_conservation, and the code builds them from the momentum kernels of the "
+        "velocities, with the pressure gradient of their pressure_gradient kernels. With "
+        "rho c_p = rho and k = mu, tau is the parameter of heat_streamline_stabilization divided "
+        "by rho, so the two stabilizations add the same flux tau_heat r v. The term is "
+        "consistent, because r_m vanishes for the exact solution, and it suppresses the "
+        "spurious oscillations of a flow dominated by convection on a coarse mesh. It vanishes "
+        "for a Stokes flow, which has no advection of its velocity.");
     addVelocitiesParam(p);
-    p.addRequired("pressure",
-                  ParameterKind::String,
-                  "Name of the pressure variable, whose gradient enters r_m.");
     return p;
   }
   explicit MomentumStabilization(const InputParameters & p)
@@ -939,14 +678,12 @@ public:
   void initialSetup(Problem & problem) override
   {
     Kernel::initialSetup(problem);
-    _r.setup(problem,
-             name(),
-             _params.getStringList("velocities"),
-             coupledVariable(problem, "pressure"),
-             true);
+    _r.setup(problem, name(), _params.getStringList("velocities"), true);
   }
   bool threadSafe() const override { return Kernel::threadSafe() && _r.threadSafe(); }
   bool hasFlux() const override { return true; }
+  bool isStabilization() const override { return true; }
+  bool transportsVariable() const override { return true; }
   bool residualHasTimeDerivative() const override { return _r.hasTimeTerm(); }
   bool needsLaplacian() const override { return true; }
   bool atNewTime() const override { return true; }
@@ -1010,44 +747,33 @@ public:
     InputParameters p = Property::validParams();
     p.setClassDescription(
         "Declares the property 'pressure' = -gamma div v, the pressure that the penalty "
-        "relation recovers from the velocity v, with the penalty parameter gamma of the "
+        "relation recovers from the velocity v, with gamma the penalty parameter of the "
         "penalty_incompressibility kernels of the velocities. In axisymmetric coordinates the "
         "divergence includes v_r / r, with r the radius and v_r the radial velocity. Evaluate "
         "it at element centroids, the points of the reduced rule, where it is most accurate.");
     addVelocitiesParam(p);
+    addPenaltyParam(p);
     return p;
   }
-  explicit PenaltyPressure(const InputParameters & p) : Property(p) {}
+  explicit PenaltyPressure(const InputParameters & p)
+      : Property(p), _gamma(p.getReal("penalty_parameter"))
+  {
+  }
   void initialSetup(Problem & problem) override
   {
     Property::initialSetup(problem);
-    const auto velocities = _params.getStringList("velocities");
-    _v = resolveVelocities(problem, velocities, problem.mesh().dimension());
-    // The penalty parameter is that of the penalty_incompressibility kernels of the velocities.
-    _gamma = 0.0;
-    for (const auto & k : problem.kernels())
-      if (k->type() == "penalty_incompressibility" &&
-          std::find(velocities.begin(), velocities.end(), k->variableName()) != velocities.end())
-        _gamma = k->parameters().getReal("penalty_parameter");
-    if (_gamma == 0.0)
-      throw InputError("'" + name() +
-                       "': no penalty_incompressibility kernel acts on the velocities, so the "
-                       "penalty pressure has no penalty parameter.");
+    _v =
+        resolveVelocities(problem, _params.getStringList("velocities"), problem.mesh().dimension());
     _axisymmetric = problem.coordinateSystem() == CoordinateSystem::Axisymmetric;
   }
   void declareProperties(PropertyRegistry & r) override { _pressure = r.declare("pressure", 1); }
   void computeProperties(QpContext & ctx) const override
   {
-    ADReal divergence(0.0);
-    for (std::size_t d = 0; d < _v.size(); ++d)
-      divergence += ctx.gradient(_v[d])[d];
-    if (_axisymmetric && ctx.x[0] != 0.0)
-      divergence += ctx.value(_v[0]) / ctx.x[0];
-    ctx.property(_pressure) = -_gamma * divergence;
+    ctx.property(_pressure) = -_gamma * velocityDivergence(ctx, _v, _axisymmetric);
   }
 
 private:
-  double _gamma = 0.0;
+  double _gamma;
   bool _axisymmetric = false;
   std::vector<int> _v;
   int _pressure = -1;
@@ -1061,7 +787,6 @@ registerFluidObjects(Factory & f)
   const std::string m = "fluids";
   f.add<ViscousStress>("viscous_stress", ObjectCategory::Kernel, m);
   f.add<PenaltyIncompressibility>("penalty_incompressibility", ObjectCategory::Kernel, m);
-  f.add<ConvectiveInertia>("convective_inertia", ObjectCategory::Kernel, m);
   f.add<BoussinesqBuoyancy>("Boussinesq_buoyancy", ObjectCategory::Kernel, m);
   f.add<PressureGradient>("pressure_gradient", ObjectCategory::Kernel, m);
   f.add<MassConservation>("mass_conservation", ObjectCategory::Kernel, m);

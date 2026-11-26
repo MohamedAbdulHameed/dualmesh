@@ -115,7 +115,12 @@ def test_a_transient_system_converges_in_space_and_time(method):
         [4, 8, 16, 32],
         method=method,
         report="none",
-        transient={"end_time": 0.25, "time_step": lambda h: h / 4, "time_scheme": "Crank-Nicolson"},
+        transient={
+            "end_time": 0.25,
+            "time_step": lambda h: h / 4,
+            "time_scheme": "Crank-Nicolson",
+            "time_stepper": "fixed",
+        },
     )
     check(result, "u", method, "Quad4", norms=("l2",))
     check(result, "v", method, "Quad4", norms=("l2",))
@@ -178,6 +183,19 @@ def test_an_incomplete_or_wrong_system_is_refused(parameters, message):
         add_system(**parameters)
 
 
+@pytest.mark.parametrize("coefficient", ["if(x < 0.5, 1, 2)", "max(u, 1)", "1 + (u > 2)"])
+def test_a_manufactured_solution_refuses_a_term_with_a_condition(coefficient):
+    """The manufactured source is the divergence of the flux, which SymPy takes and the engine
+    reads back. The engine reads no condition of SymPy, so a term with if, max or a comparison is
+    refused, with the term that holds it."""
+    study = mms.ManufacturedSolution({"u": "1 + x**2"}, dimension=1)
+    study.add_physics(
+        "general_form_PDE", variables="u", equations=f"div(-({coefficient})*grad(u)) = 0"
+    )
+    with pytest.raises(ValueError, match="holds a condition"):
+        study.forcing()
+
+
 # ---------------------------------------------------------------------------
 # Conditions that depend on the fields
 # ---------------------------------------------------------------------------
@@ -200,7 +218,7 @@ def nonlinear_condition_problem(method, n):
         square_family("Quad4")(n), method=method, boundary=["left", "bottom", "top"]
     )
     exact = study.exact("u")
-    normal_flux = {v: str(study.flux(v)[0]) for v in ("u", "v")}
+    normal_flux = {v: mms._text(study.flux(v)[0]) for v in ("u", "v")}
     problem.add_boundary_condition(
         "Robin",
         "right",

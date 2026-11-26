@@ -9,8 +9,10 @@ method and its control volume counterpart in DMCDM).  The tests check
 * the orders of convergence, by manufactured solutions, for both methods,
   on distorted quadrilateral, triangular, axisymmetric and three-dimensional
   meshes, for the Stokes and the Navier-Stokes equations;
-* the physics, against the lid-driven cavity of Ghia et al. (1982) and the
-  natural convection benchmark of de Vahl Davis (1983);
+* the physics, against the lid-driven cavity of Ghia et al. (1982), while
+  test_examples.py checks the natural convection benchmark of de Vahl Davis
+  (1983) on the example examples/natural_convection, which takes this
+  formulation;
 * that Newton's method converges quadratically, which it does only with an
   exact Jacobian.
 
@@ -205,46 +207,6 @@ def test_cavity_matches_ghia(method):
     )
     assert numpy.max(numpy.abs(u - reference.ghia_u)) < 0.015
     assert numpy.max(numpy.abs(v - reference.ghia_v)) < 0.015
-
-
-@pytest.mark.parametrize("method", ["fem", "dmcdm"])
-def test_natural_convection_with_the_pressure_formulation(method):
-    """de Vahl Davis at Ra = 10^5 on the 32 by 32 graded mesh.  The buoyancy
-    force is part of the stabilisation, ramped with the force itself when the
-    solve ramps its data; without it the stabilisation pushes against the flow.
-    Measured: Nusselt number within 2.1 %, velocity maxima within 2.1 %."""
-    spec = importlib.util.spec_from_file_location(
-        "natural_convection", _root / "examples" / "natural_convection.py"
-    )
-    example = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(example)
-    Rayleigh_number = 1.0e5
-    problem = dualmesh.Problem(example.cavity_mesh(32), method=method)
-    heat = problem.add_physics("heat_transfer", thermal_conductivity=1.0)
-    flow = problem.add_physics(
-        "fluid_dynamics",
-        dynamic_viscosity=example.Prandtl_number,
-        density=1.0,
-        formulation="equal_order",
-    )
-    problem.add_coupling(
-        "nonisothermal_flow",
-        heat_transfer=heat,
-        fluid_dynamics=flow,
-        gravity=[0.0, -1.0],
-        volumetric_expansion_coefficient=Rayleigh_number * example.Prandtl_number,
-        reference_temperature=0.0,
-    )
-    flow.add_boundary_condition(
-        ["velocity_x = 0", "velocity_y = 0"], boundary=["left", "right", "bottom", "top"]
-    )
-    heat.add_boundary_condition("temperature = 0.5", boundary="left")
-    heat.add_boundary_condition("temperature = -0.5", boundary="right")
-    problem.solve()
-    computed = example.measure(problem)
-    reference = example.benchmark[Rayleigh_number]
-    for key in ("nusselt", "u_max", "v_max"):
-        assert computed[key] == pytest.approx(reference[key], rel=3e-2), key
 
 
 @pytest.mark.parametrize("method", methods)

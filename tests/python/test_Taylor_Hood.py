@@ -348,20 +348,3 @@ def test_Taylor_hood_needs_a_quadratic_mesh_and_the_finite_element_method():
         dualmesh.Problem(quadratic, method="dmcdm").add_physics(
             "fluid_dynamics", formulation="Taylor-Hood"
         )
-
-
-def test_unstabilised_equal_order_is_refused():
-    """Without stabilisation an equal-order pressure has spurious modes; the
-    kernel says so instead of returning them."""
-    mesh = dualmesh.generate_rectangle_mesh(0, 1, 0, 1, 2, 2, element_type="Quad9")
-    problem = dualmesh.Problem(mesh, method="fem")
-    for variable in ("velocity_x", "velocity_y", "pressure"):
-        problem.add_variable(variable)
-    problem.add_kernel(
-        "mass_conservation",
-        variable="pressure",
-        velocities=["velocity_x", "velocity_y"],
-        stabilization=False,
-    )
-    with pytest.raises(ValueError, match="order 'first'"):
-        problem.solve()

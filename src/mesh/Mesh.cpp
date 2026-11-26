@@ -954,7 +954,8 @@ Mesh::addBoundingBoxSidesets(double tolerance)
     // An axis along which a surface or a curve is flat has no faces.
     if (hi[d] - lo[d] <= tolerance * extent)
       continue;
-    const double tol = tolerance * std::max(1.0, hi[d] - lo[d]);
+    // Relative to the size of the mesh, so that the sets do not depend on the unit of length.
+    const double tol = tolerance * extent;
     for (int side = 0; side < 2; ++side)
     {
       const double target = side == 0 ? lo[d] : hi[d];

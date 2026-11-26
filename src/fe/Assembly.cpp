@@ -642,6 +642,78 @@ simplexQuadrature(int dim, int degree, std::vector<Point> & points, std::vector<
 
 namespace
 {
+/// A point of a reference element, with the shape functions of the element at it.
+ReferencePoint
+referencePoint(const ReferenceElement & ref,
+               const Point & xi,
+               double weight,
+               const std::array<Point, 3> & T,
+               int owner,
+               int neighbor)
+{
+  ReferencePoint p;
+  p.xi = xi;
+  p.weight = weight;
+  p.tangents = T;
+  p.owner = owner;
+  p.neighbor = neighbor;
+  ref.shape(xi, p.N, p.dNr);
+  return p;
+}
+
+/// Append the points of @p spec on @p patches, the control domain of @p owner (-1 for the whole
+/// element of the finite element method).
+void
+appendVolumePoints(const ReferenceElement & ref,
+                   const std::vector<Patch> & patches,
+                   const QuadratureSpec & spec,
+                   int owner,
+                   std::vector<ReferencePoint> & points)
+{
+  std::vector<Point> s;
+  std::vector<double> w;
+  for (const auto & patch : patches)
+  {
+    patchRule(spec, patch, s, w);
+    for (std::size_t q = 0; q < s.size(); ++q)
+    {
+      std::array<Point, 3> T;
+      const Point xi = patch.map(s[q], &T);
+      points.push_back(
+          referencePoint(ref, xi, w[q] * std::abs(patchDet(T, ref.dimension())), T, owner, -1));
+    }
+  }
+}
+
+/// Append the points of the interfaces @p faces between control domains.  They take a Gauss rule
+/// of the points of @p spec, two for a lumped rule.
+void
+appendInterfacePoints(const ReferenceElement & ref,
+                      const std::vector<DualFace> & faces,
+                      const QuadratureSpec & spec,
+                      std::vector<ReferencePoint> & points)
+{
+  QuadratureSpec fs = spec;
+  if (fs.kind == QuadratureSpec::Kind::Nodal || fs.kind == QuadratureSpec::Kind::Interface ||
+      fs.kind == QuadratureSpec::Kind::ControlDomainTrapezoid)
+  {
+    fs.kind = QuadratureSpec::Kind::Gauss;
+    fs.points = 2;
+  }
+  std::vector<Point> s;
+  std::vector<double> w;
+  for (const auto & face : faces)
+  {
+    patchRule(fs, face.patch, s, w);
+    for (std::size_t q = 0; q < s.size(); ++q)
+    {
+      std::array<Point, 3> T;
+      const Point xi = face.patch.map(s[q], &T);
+      points.push_back(referencePoint(ref, xi, w[q], T, face.a, face.b));
+    }
+  }
+}
+
 /// The reference points of one element type, rule and point set.  They are
 /// the same for every element of the type, so they are built once, on first
 /// use, instead of once per element per assembly; each thread keeps its own
@@ -666,18 +738,6 @@ referencePoints(ElementType type, bool dual_mesh, PointSet set, const Quadrature
   std::vector<ReferencePoint> points;
   std::vector<Point> s;
   std::vector<double> w;
-  const auto add =
-      [&](const Point & xi, double weight, const std::array<Point, 3> & T, int owner, int neighbor)
-  {
-    ReferencePoint p;
-    p.xi = xi;
-    p.weight = weight;
-    p.tangents = T;
-    p.owner = owner;
-    p.neighbor = neighbor;
-    ref.shape(xi, p.N, p.dNr);
-    points.push_back(p);
-  };
   // A symmetric simplex rule, where there is one, for the whole element; the
   // triangular prism takes the product of a triangle rule and a Gauss rule.
   const bool simplex = type == ElementType::Tri3 || type == ElementType::Tri6 ||
@@ -690,60 +750,25 @@ referencePoints(ElementType type, bool dual_mesh, PointSet set, const Quadrature
     const std::array<Point, 3> none{};
     if (simplex)
       for (std::size_t q = 0; q < s.size(); ++q)
-        add(s[q], w[q], none, -1, -1);
+        points.push_back(referencePoint(ref, s[q], w[q], none, -1, -1));
     else
     {
-      QuadratureSpec line = spec;
       std::vector<Point> z;
       std::vector<double> wz;
-      ruleTensor(line, 1, z, wz);
+      ruleTensor(spec, 1, z, wz);
       for (std::size_t k = 0; k < z.size(); ++k)
         for (std::size_t q = 0; q < s.size(); ++q)
-          add({s[q][0], s[q][1], z[k][0]}, w[q] * wz[k], none, -1, -1);
+          points.push_back(
+              referencePoint(ref, {s[q][0], s[q][1], z[k][0]}, w[q] * wz[k], none, -1, -1));
     }
-    return table.emplace(key, std::move(points)).first->second;
   }
-  if (set == PointSet::Volume)
-  {
-    const auto addPatches = [&](const std::vector<Patch> & patches, int owner)
-    {
-      for (const auto & patch : patches)
-      {
-        patchRule(spec, patch, s, w);
-        for (std::size_t q = 0; q < s.size(); ++q)
-        {
-          std::array<Point, 3> T;
-          const Point xi = patch.map(s[q], &T);
-          add(xi, w[q] * std::abs(patchDet(T, dim)), T, owner, -1);
-        }
-      }
-    };
-    if (dual_mesh)
-      for (int a = 0; a < ref.numNodes(); ++a)
-        addPatches(ref.controlVolume(a), a);
-    else
-      addPatches(ref.elementPatches(), -1);
-  }
+  else if (set == PointSet::Volume && dual_mesh)
+    for (int a = 0; a < ref.numNodes(); ++a)
+      appendVolumePoints(ref, ref.controlVolume(a), spec, a, points);
+  else if (set == PointSet::Volume)
+    appendVolumePoints(ref, ref.elementPatches(), spec, -1, points);
   else
-  {
-    QuadratureSpec fs = spec;
-    if (fs.kind == QuadratureSpec::Kind::Nodal || fs.kind == QuadratureSpec::Kind::Interface ||
-        fs.kind == QuadratureSpec::Kind::ControlDomainTrapezoid)
-    {
-      fs.kind = QuadratureSpec::Kind::Gauss;
-      fs.points = 2;
-    }
-    for (const auto & face : ref.dualFaces())
-    {
-      ruleTensor(fs, face.patch.dim, s, w);
-      for (std::size_t q = 0; q < s.size(); ++q)
-      {
-        std::array<Point, 3> T;
-        const Point xi = face.patch.map(s[q], &T);
-        add(xi, w[q], T, face.a, face.b);
-      }
-    }
-  }
+    appendInterfacePoints(ref, ref.dualFaces(), spec, points);
   return table.emplace(key, std::move(points)).first->second;
 }
 } // namespace
@@ -755,7 +780,8 @@ buildElementPoints(const Mesh & mesh,
                    PointSet set,
                    const QuadratureSpec & spec,
                    std::vector<IntegrationPoint> & out,
-                   std::vector<MappedPoint> * mapped)
+                   std::vector<MappedPoint> * mapped,
+                   const PolygonCell * polygon)
 {
   out.clear();
   if (mapped)
@@ -763,6 +789,7 @@ buildElementPoints(const Mesh & mesh,
   const auto & el = mesh.element(e);
   const auto & ref = ReferenceElement::get(el.type);
   const int dim = ref.dimension();
+  const int nn = ref.numNodes();
   const Point centroid = ref.centroid();
   std::vector<Point> s;
   std::vector<double> w;
@@ -770,6 +797,22 @@ buildElementPoints(const Mesh & mesh,
 
   if (!dual_mesh && set == PointSet::Faces)
     return;
+  // The slots of the dual mesh: the nodes of the element, or the corners and the hanging nodes of
+  // a polygon cell, each with its control domain.
+  const int slots = polygon ? static_cast<int>(polygon->nodes.size()) : nn;
+  const auto control = [&](int a) -> const std::vector<Patch> &
+  { return polygon ? polygon->control[static_cast<std::size_t>(a)] : ref.controlVolume(a); };
+  const auto slotNode = [&](int a)
+  { return polygon ? polygon->nodes[static_cast<std::size_t>(a)] : el.nodes[a]; };
+  const auto slotXi = [&](int a) -> const Point &
+  { return polygon ? polygon->xi[static_cast<std::size_t>(a)] : ref.node(a); };
+  // The points of a polygon cell are its own; those of a reference element are built once.
+  std::vector<ReferencePoint> own;
+  if (polygon && set == PointSet::Faces)
+    appendInterfacePoints(ref, polygon->faces, spec, own);
+  else if (polygon)
+    for (int a = 0; a < slots; ++a)
+      appendVolumePoints(ref, control(a), spec, a, own);
 
   if (set == PointSet::Volume)
   {
@@ -788,21 +831,21 @@ buildElementPoints(const Mesh & mesh,
       // of a boundary node is bounded by the node itself as well, which
       // contributes with half the weight.
       const auto & on_boundary = mesh.boundaryNodeMarkers();
-      for (int a = 0; a < ref.numNodes(); ++a)
+      for (int a = 0; a < slots; ++a)
       {
-        const double measure = patchMeasure(mesh, el, ref.controlVolume(a));
-        const bool boundary_node = on_boundary[el.nodes[a]] != 0;
+        const double measure = patchMeasure(mesh, el, control(a));
+        const bool boundary_node = on_boundary[static_cast<std::size_t>(slotNode(a))] != 0;
         IntegrationPoint ip;
         ip.area = {0, 0, 0};
         ip.owner = a;
         ip.neighbor = -1;
-        ip.xi = controlVolumePoint(mesh, el, ref.controlVolume(a));
+        ip.xi = controlVolumePoint(mesh, el, control(a));
         ip.xi_field = spec.reduced ? centroid : ip.xi;
         ip.weight = boundary_node ? 0.5 * measure : measure;
         out.push_back(ip);
         if (boundary_node)
         {
-          ip.xi = ref.node(a);
+          ip.xi = slotXi(a);
           ip.xi_field = spec.reduced ? centroid : ip.xi;
           ip.weight = 0.5 * measure;
           out.push_back(ip);
@@ -815,16 +858,16 @@ buildElementPoints(const Mesh & mesh,
       const bool at_node = spec.kind == QuadratureSpec::Kind::Nodal;
       // Lumped: one point per node, at the node or at the interface point of its control domain.
       // DMCDM weight = |CD_a within e|, FEM weight = \int psi_a (row-sum lumping).
-      for (int a = 0; a < ref.numNodes(); ++a)
+      for (int a = 0; a < slots; ++a)
       {
         IntegrationPoint ip;
-        ip.xi = at_node ? ref.node(a) : controlVolumePoint(mesh, el, ref.controlVolume(a));
+        ip.xi = at_node ? slotXi(a) : controlVolumePoint(mesh, el, control(a));
         ip.xi_field = spec.reduced ? centroid : ip.xi;
         ip.area = {0, 0, 0};
         ip.owner = a;
         ip.neighbor = -1;
         if (dual_mesh)
-          ip.weight = patchMeasure(mesh, el, ref.controlVolume(a));
+          ip.weight = patchMeasure(mesh, el, control(a));
         else
         {
           QuadratureSpec g;
@@ -859,198 +902,36 @@ buildElementPoints(const Mesh & mesh,
       out.push_back(ip);
       return;
     }
-    const int nn = ref.numNodes();
-    for (const auto & rp : referencePoints(el.type, dual_mesh, PointSet::Volume, spec))
-    {
-      mapWithShape(mesh, el, dim, nn, rp.xi, rp.N, rp.dNr, mp);
-      IntegrationPoint ip;
-      ip.xi = rp.xi;
-      ip.xi_field = spec.reduced ? centroid : ip.xi;
-      ip.weight = rp.weight * std::abs(mp.detJ);
-      ip.area = {0, 0, 0};
-      ip.owner = rp.owner;
-      ip.neighbor = -1;
-      out.push_back(ip);
-      if (mapped)
-        mapped->push_back(mp);
-    }
-    return;
   }
-
-  // Interfaces between control volumes.
-  const int nn = ref.numNodes();
-  for (const auto & rp : referencePoints(el.type, dual_mesh, PointSet::Faces, spec))
+  const auto & points = polygon ? own : referencePoints(el.type, dual_mesh, set, spec);
+  for (const auto & rp : points)
   {
     mapWithShape(mesh, el, dim, nn, rp.xi, rp.N, rp.dNr, mp);
-    const Point xab = mesh.node(el.nodes[rp.neighbor]) - mesh.node(el.nodes[rp.owner]);
-    Point n = areaVector(mp, rp.tangents, dim);
-    if (dot(n, xab) < 0)
-      n = -1.0 * n;
     IntegrationPoint ip;
     ip.xi = rp.xi;
     // The faces are integrated with a Gauss rule whatever the kind of `spec`,
     // but a reduced rule still evaluates the field at the centroid.
     ip.xi_field = spec.reduced ? centroid : ip.xi;
-    ip.area = rp.weight * n;
-    ip.weight = norm(ip.area);
     ip.owner = rp.owner;
     ip.neighbor = rp.neighbor;
-    out.push_back(ip);
-    if (mapped)
-      mapped->push_back(mp);
-  }
-}
-
-void
-buildPolygonPoints(const Mesh & mesh,
-                   Index e,
-                   const PolygonCell & cell,
-                   PointSet set,
-                   const QuadratureSpec & spec,
-                   std::vector<IntegrationPoint> & out,
-                   std::vector<MappedPoint> * mapped)
-{
-  out.clear();
-  if (mapped)
-    mapped->clear();
-  const auto & el = mesh.element(e);
-  const auto & ref = ReferenceElement::get(el.type);
-  const int dim = ref.dimension();
-  const int nn = ref.numNodes();
-  const Point centre = ref.centroid();
-  MappedPoint mp;
-  std::array<double, 27> N{};
-  std::array<Point, 27> dNr{};
-  const auto map = [&](const Point & xi)
-  {
-    ref.shape(xi, N.data(), dNr.data());
-    mapWithShape(mesh, el, dim, nn, xi, N.data(), dNr.data(), mp);
-  };
-  const auto add = [&](const Point & xi, double weight, const Point & area, int owner, int neighbor)
-  {
-    IntegrationPoint ip;
-    ip.xi = xi;
-    ip.xi_field = spec.reduced ? centre : xi;
-    ip.weight = weight;
-    ip.area = area;
-    ip.owner = owner;
-    ip.neighbor = neighbor;
-    out.push_back(ip);
-    if (mapped)
-      mapped->push_back(mp);
-  };
-  const auto at = [&](int slot) { return cell.xi[static_cast<std::size_t>(slot)]; };
-
-  // The flags: a simplex (the vertices, the last its owner) and the interface simplex before it.
-  struct Flag
-  {
-    std::array<Point, 4> v;
-    int owner;
-    int other;
-  };
-  std::vector<Flag> flags;
-  if (dim == 2)
-    for (const auto & [p, q] : cell.edges)
+    if (set == PointSet::Volume)
     {
-      const Point middle = 0.5 * (at(p) + at(q));
-      flags.push_back({{centre, middle, at(p), Point{}}, p, q});
-      flags.push_back({{centre, middle, at(q), Point{}}, q, p});
-    }
-  else
-    for (std::size_t f = 0; f < cell.faces.size(); ++f)
-    {
-      const auto & ring = cell.faces[f];
-      const Point face_centre = cell.face_centres[f];
-      for (std::size_t i = 0; i < ring.size(); ++i)
-      {
-        const int p = ring[i], q = ring[(i + 1) % ring.size()];
-        const Point middle = 0.5 * (at(p) + at(q));
-        flags.push_back({{centre, face_centre, middle, at(p)}, p, q});
-        flags.push_back({{centre, face_centre, middle, at(q)}, q, p});
-      }
-    }
-
-  if (set == PointSet::Faces)
-  {
-    // The interface between the ends p, q of a leaf edge: the simplex of the flag without its
-    // vertex, once for each pair, its normal from p to q.
-    std::vector<Point> s;
-    std::vector<double> w;
-    if (dim == 2)
-    {
-      const double g = 0.5 / std::sqrt(3.0);
-      s = {Point{0.5 - g, 0, 0}, Point{0.5 + g, 0, 0}};
-      w = {0.5, 0.5};
+      ip.weight = rp.weight * std::abs(mp.detJ);
+      ip.area = {0, 0, 0};
     }
     else
-      simplexQuadrature(2, 3, s, w);
-    for (const Flag & f : flags)
     {
-      if (f.owner > f.other)
-        continue;
-      std::array<Point, 3> T{f.v[1] - f.v[0], Point{0, 0, 0}, Point{0, 0, 0}};
-      if (dim == 3)
-        T[1] = f.v[2] - f.v[0];
-      const Point xab = mesh.node(cell.nodes[static_cast<std::size_t>(f.other)]) -
-                        mesh.node(cell.nodes[static_cast<std::size_t>(f.owner)]);
-      for (std::size_t k = 0; k < s.size(); ++k)
-      {
-        const Point xi = f.v[0] + s[k][0] * T[0] + s[k][1] * T[1];
-        map(xi);
-        Point n = areaVector(mp, T, dim);
-        if (dot(n, xab) < 0)
-          n = -1.0 * n;
-        const Point area = w[k] * n;
-        add(xi, norm(area), area, f.owner, f.other);
-      }
+      // The area vector points from the owner to the neighbour.
+      const Point xab = mesh.node(slotNode(rp.neighbor)) - mesh.node(slotNode(rp.owner));
+      Point n = areaVector(mp, rp.tangents, dim);
+      if (dot(n, xab) < 0)
+        n = -1.0 * n;
+      ip.area = rp.weight * n;
+      ip.weight = norm(ip.area);
     }
-    return;
-  }
-
-  std::vector<Point> s;
-  std::vector<double> w;
-  const bool lumped =
-      spec.kind == QuadratureSpec::Kind::Nodal || spec.kind == QuadratureSpec::Kind::Interface;
-  if (!lumped && spec.kind != QuadratureSpec::Kind::Gauss)
-    throw InputError("The dual mesh method on a cell with hanging nodes integrates its control "
-                     "domains by a Gauss rule or a lumped (nodal or interface) rule.");
-  if (!simplexQuadrature(dim, lumped ? 2 : std::min(5, std::max(1, 2 * spec.points - 1)), s, w))
-    simplexQuadrature(dim, 5, s, w);
-  // The measure and the centroid of the control domain of each slot in the cell.
-  std::vector<double> measure(cell.nodes.size(), 0.0);
-  std::vector<Point> moment(cell.nodes.size(), Point{0, 0, 0});
-  for (const Flag & f : flags)
-  {
-    const Point e1 = f.v[1] - f.v[0], e2 = f.v[2] - f.v[0];
-    const Point e3 = dim == 3 ? f.v[3] - f.v[0] : Point{0, 0, 0};
-    const double jacobian =
-        dim == 3 ? std::abs(dot(e1, cross(e2, e3))) : std::abs(e1[0] * e2[1] - e1[1] * e2[0]);
-    for (std::size_t k = 0; k < s.size(); ++k)
-    {
-      const Point xi = f.v[0] + s[k][0] * e1 + s[k][1] * e2 + s[k][2] * e3;
-      map(xi);
-      const double weight = w[k] * jacobian * std::abs(mp.detJ);
-      if (lumped)
-      {
-        measure[static_cast<std::size_t>(f.owner)] += weight;
-        moment[static_cast<std::size_t>(f.owner)] =
-            moment[static_cast<std::size_t>(f.owner)] + weight * xi;
-      }
-      else
-        add(xi, weight, Point{0, 0, 0}, f.owner, -1);
-    }
-  }
-  if (!lumped)
-    return;
-  // A lumped rule takes one point per slot: at its node, or at the centroid of its control domain.
-  for (std::size_t k = 0; k < cell.nodes.size(); ++k)
-  {
-    if (!(measure[k] > 0.0))
-      continue;
-    const Point xi =
-        spec.kind == QuadratureSpec::Kind::Nodal ? cell.xi[k] : (1.0 / measure[k]) * moment[k];
-    map(xi);
-    add(xi, measure[k], Point{0, 0, 0}, static_cast<int>(k), -1);
+    out.push_back(ip);
+    if (mapped)
+      mapped->push_back(mp);
   }
 }
 

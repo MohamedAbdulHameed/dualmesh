@@ -161,7 +161,7 @@ def test_the_split_by_physics_is_exact_for_a_one_way_coupling_with_exact_block_s
     blocks, GMRES converges in one iteration."""
     mesh = dualmesh.generate_rectangle_mesh(x=[0.0, 0.1], y=[0.0, 0.02], num_elements=[10, 2])
     problem = dualmesh.Problem(mesh)
-    heat = problem.add_physics("heat_transfer", thermal_conductivity=20.0, heat_source=1.0e6)
+    heat = problem.add_physics("heat_conduction", thermal_conductivity=20.0, heat_source=1.0e6)
     heat.add_boundary_condition("temperature = 300", boundary="left")
     solid = problem.add_physics(
         "solid_mechanics",
@@ -173,7 +173,7 @@ def test_the_split_by_physics_is_exact_for_a_one_way_coupling_with_exact_block_s
     solid.add_boundary_condition("fixed", boundary="left")
     problem.add_coupling(
         "thermal_expansion",
-        heat_transfer=heat,
+        heat_conduction=heat,
         solid_mechanics=solid,
         linear_expansion_coefficient=1.2e-5,
         stress_free_temperature=293.0,

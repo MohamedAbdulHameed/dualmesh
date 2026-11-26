@@ -53,6 +53,9 @@ class EigenmodesResult(ResultTables):
     num_dofs: int
     residual_norms: numpy.ndarray
     quadratic: bool
+    #: A vibration: the only time term is a second time derivative, so the eigenvalues are
+    #: lambda = i omega, with omega the angular frequency of a mode.
+    vibration: bool = False
     modes: list = field(default_factory=list, repr=False)
 
     @property
@@ -255,6 +258,7 @@ def solve_modes(
         num_dofs=n,
         residual_norms=numpy.asarray(residuals),
         quadratic=bool(is_quadratic),
+        vibration=bool(undamped),
         modes=modes,
     )
 

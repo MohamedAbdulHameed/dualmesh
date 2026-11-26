@@ -263,9 +263,19 @@ The two methods treat a hanging node differently.
 FEM constrains it.  The value at a hanging node is the mean of the two ends of
 its edge, or of the four corners of its face.  Each hanging unknown is therefore
 a weighted sum of independent ones, and its equation is added to theirs with the
-same weights.  The Jacobian :math:`\mathbf{J}` becomes
-:math:`\mathbf{C}_h^{\mathsf{T}}\mathbf{J}\,\mathbf{C}_h`, with :math:`\mathbf{C}_h`
-the matrix that maps the independent unknowns to all of them.
+same weights.  One map holds every such dependent unknown: a hanging node with
+its weights, a periodic copy with the weight one on its primary, and the value of
+a first-order variable at a node of a quadratic element that is not a corner,
+the linear interpolant of the corners.  Chains resolve to independent unknowns,
+so a node that hangs on a periodic boundary makes every copy of it hang alike.
+The residual :math:`\mathbf{R}` becomes :math:`\mathbf{C}^{\mathsf{T}}\mathbf{R}`
+and the Jacobian :math:`\mathbf{J}` becomes
+:math:`\mathbf{C}^{\mathsf{T}}\mathbf{J}\,\mathbf{C}`, with :math:`\mathbf{C}`
+the matrix that maps the independent unknowns to all of them.  The adjoint of
+the sensitivities solves with the transpose of the same matrix.  A distributed
+run joins periodic copies in its gather-scatter, and the process of one copy
+need not hold the side that another copy hangs on, so a distributed run under
+FEM refuses a node that hangs on a periodic boundary.
 
 DMCDM keeps the hanging node as an unknown of its own, with a control domain of
 its own.  The interfaces of the large cell would end at the middle of its side,
@@ -283,7 +293,13 @@ edges among its corners.  Each flag, the tetrahedron of the centre of the cell,
 the centre of a leaf face, the middle of an edge of that face and an end of the
 edge, belongs to the control domain of that end, and the triangle of its first
 three points is the interface between the ends.  The fields inside the large
-cell come from its own corners, so a linear field stays exact.
+cell come from its own corners, so a linear field stays exact.  The cell is
+integrated as a conforming cell is, with the same quadrature rules on patches of
+its reference element.  In 2D the two flags of a node make one quadrilateral, the
+shape of a sub-cell of a conforming quadrilateral.  In 3D the two flags of a node
+on a leaf face make a pyramid, a cube collapsed onto the centre of the cell, and
+each interface triangle is a square collapsed onto the centre.  A collapsed patch
+takes one Gauss point more per direction, as the sub-cells of a simplex do.
 
 Curved boundaries
 -----------------
@@ -303,15 +319,53 @@ Transfer of the fields
 ----------------------
 
 Every element records the element of the initial mesh it comes from, which
-carries a field stored per element to the new mesh.  A nodal field keeps its
-values at the nodes that stay.  A new node takes the value of the interpolant of
-the old element it lies in, found in the reference coordinates of its initial
-element.  A field that the elements represent, linear or quadratic, therefore
-transfers exactly under refinement.  Side sets and node sets follow the
-refinement: the halves of a bisected edge belong to the side sets of the edge
-and give them back when they merge, and a midpoint whose two ends belong to a
-node set joins that set.  After subdivision, a new node joins a node set on the
-boundary only where it lies on the boundary too.
+carries a field stored per element to the new mesh.  Side sets and node sets
+follow the refinement: the halves of a bisected edge belong to the side sets of
+the edge and give them back when they merge, and a midpoint whose two ends
+belong to a node set joins that set.  After subdivision, a new node joins a node
+set on the boundary only where it lies on the boundary too.
+
+Under FEM, a nodal field keeps its values at the nodes that stay.  A new node
+takes the value of the interpolant of the old element it lies in, found in the
+reference coordinates of its initial element.  A field that the elements
+represent, linear or quadratic, therefore transfers exactly under refinement.
+
+Under DMCDM, a change of mesh keeps the content of each field.  Let
+:math:`u_i` be the value of a field at node :math:`i`, in the unit of the field.
+Let :math:`M_i` be the measure of the control domain of the node, an area in
+:math:`\mathrm{m^2}` in two dimensions and a volume in :math:`\mathrm{m^3}` in
+three, times the coordinate factor of the problem at the node, such as
+:math:`2 \pi r` in axisymmetric coordinates with :math:`r` the radius in m.  The
+content of the field is :math:`\sum_i M_i u_i`.  A coarsening removes the middle
+of a bisected edge, or the middles of the edges, the centres of the faces and
+the centre of a cell whose children merge.  Let :math:`P_{ij}`, a dimensionless
+weight, be the value at old node :math:`i` of the shape function of node
+:math:`j` of the coarsened mesh.  It is 1 for :math:`i = j`, :math:`1/2` at each
+end of the edge of a removed edge middle, :math:`1/4` at each corner of the face
+of a removed face centre, and :math:`1/2^d` at each corner of the cell of a
+removed cell centre, with :math:`d` the dimension.  Each node :math:`j` of the
+coarsened mesh takes the weighted mean over the old nodes :math:`i`
+
+.. math::
+   :label: adaptivity-restriction
+
+   u_j = \frac{\sum_i P_{ij} M_i u_i}{\sum_i P_{ij} M_i}.
+
+The weights are positive, so the mean lies between the old values, and a
+constant field stays the same constant.  Every old node has
+:math:`\sum_j P_{ij} = 1`, so the content stays the same wherever the measure of
+each new control domain is the sum :math:`\sum_i P_{ij} M_i` of the pieces it
+receives.  In Cartesian coordinates, the control domain of a node takes a third
+of each linear triangle around it, and a quarter of each linear tetrahedron, as
+much as the integral of the shape function of the node.  The coarsening of such
+a mesh meets the condition exactly.  Finite-volume codes with adaptive meshes,
+such as AMReX and Chombo, restrict a field to a coarse cell by a volume-weighted
+mean of the same kind.  A refinement in the same change then interpolates the
+coarsened field, which keeps it as the same function.  The shape functions of a
+quadratic element are negative at some of the removed nodes, which would give
+the mean :eq:`adaptivity-restriction` negative weights.  DMCDM therefore carries
+values this way on linear elements only, and interpolates them on ``Tri6`` and
+``Tet10``, as FEM does.
 
 A steady adaptive loop starts each solve from the solution of the last mesh,
 carried to the new one.  A transient run of the input adapts the mesh every
@@ -321,7 +375,9 @@ fields are carried to the new mesh, and so is the velocity of a second-order
 equation, such as the balance of momentum of a solid with a density.  Under
 refinement alone both stay the same functions, so the momentum
 :math:`\int_\Omega \rho\,\mathbf{v}\,\mathrm{d}V` is unchanged, with :math:`\rho`
-the density and :math:`\mathbf{v}` the velocity.
+the density and :math:`\mathbf{v}` the velocity.  Under DMCDM, the coarsening of
+linear triangles or tetrahedra in Cartesian coordinates keeps the content
+:math:`\sum_i M_i u_i` of each of them as well.
 
 Element types
 -------------

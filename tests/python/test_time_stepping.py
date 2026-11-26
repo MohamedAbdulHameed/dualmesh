@@ -15,6 +15,7 @@ from __future__ import annotations
 import dualmesh
 import numpy
 import pytest
+from dualmesh.input import units
 
 
 def slab(num_elements=40, method="dmcdm"):
@@ -59,13 +60,17 @@ def test_time_schemes_converge_at_their_order(time_scheme, order):
     is refined and would flatten the measured rate.
     """
     reference = slab(num_elements=100)
-    reference.solve_transient(end_time=0.02, time_step=1.0e-5, time_scheme=time_scheme)
+    reference.solve_transient(
+        end_time=0.02, time_step=1.0e-5, time_scheme=time_scheme, time_stepper="fixed"
+    )
     exact_in_time = reference.values("temperature")
 
     errors = []
     for dt in (0.002, 0.001, 0.0005):
         problem = slab(num_elements=100)
-        problem.solve_transient(end_time=0.02, time_step=dt, time_scheme=time_scheme)
+        problem.solve_transient(
+            end_time=0.02, time_step=dt, time_scheme=time_scheme, time_stepper="fixed"
+        )
         errors.append(float(numpy.abs(problem.values("temperature") - exact_in_time).max()))
     rates = [numpy.log2(errors[i] / errors[i + 1]) for i in range(2)]
     assert min(rates) > order - 0.2
@@ -76,19 +81,31 @@ def test_forward_Euler_is_stable_below_the_critical_step_and_unstable_above():
     """With theta = 0 the steady terms are evaluated at the old state, which
     makes the scheme explicit and therefore only conditionally stable.
 
-    The critical step is set by the largest eigenvalue of the capacity-scaled
-    conduction operator.  For this discretisation it sits between 0.2 and 0.3
-    times the square of the element size, so a step a quarter of that is
-    comfortably stable and one twice it diverges.
+    The capacity of time_derivative is lumped on these linear elements, so each
+    of the N - 1 interior nodes holds the capacity h, with h = 1/N the element
+    size, and the conduction operator is (1/h) tridiag(-1, 2, -1).  The
+    eigenvalues of the capacity-scaled operator are then
+    lambda_k = (4/h^2) sin^2(k pi / (2N)), k = 1, ..., N - 1, and forward Euler
+    is stable when dt lambda_{N-1} <= 2, below the critical step
+    dt_c = h^2 / (2 sin^2((N - 1) pi / (2N))), about 0.503 h^2 for N = 20.  A
+    step a tenth of it is comfortably stable, and one twice it diverges: the
+    mode k = N - 1, which the initial state holds at round-off, about 1e-17,
+    grows by |1 - 4| = 3 per step, past 1e3 within the 80 steps to t = 0.2.
     """
-    h = 1.0 / 20
-    stable = slab(num_elements=20)
-    stable.solve_transient(end_time=0.1, time_step=0.05 * h * h, time_scheme="forward_Euler")
+    N = 20
+    h = 1.0 / N
+    critical = h * h / (2.0 * numpy.sin((N - 1) * numpy.pi / (2 * N)) ** 2)
+    stable = slab(num_elements=N)
+    stable.solve_transient(
+        end_time=0.1, time_step=0.1 * critical, time_scheme="forward_Euler", time_stepper="fixed"
+    )
     assert numpy.isfinite(stable.values("temperature")).all()
     assert error(stable, 0.1) < 1e-2
 
-    unstable = slab(num_elements=20)
-    unstable.solve_transient(end_time=0.1, time_step=0.5 * h * h, time_scheme="forward_Euler")
+    unstable = slab(num_elements=N)
+    unstable.solve_transient(
+        end_time=0.2, time_step=2.0 * critical, time_scheme="forward_Euler", time_stepper="fixed"
+    )
     assert numpy.abs(unstable.values("temperature")).max() > 1.0e3
 
 
@@ -101,7 +118,11 @@ def test_the_error_of_a_theta_step_is_estimated_from_one_solve(time_scheme):
     of 1e-4."""
     reference = slab(num_elements=80)
     reference.solve_transient(
-        end_time=0.1, time_step=1e-4, time_scheme="Crank-Nicolson", report="none"
+        end_time=0.1,
+        time_step=1e-4,
+        time_scheme="Crank-Nicolson",
+        time_stepper="fixed",
+        report="none",
     )
     errors = []
     for tolerance in (1e-4, 1e-5):
@@ -176,20 +197,20 @@ def test_a_nonlinear_step_that_will_not_converge_is_rejected_and_retried():
     problem = dualmesh.Problem(mesh)
     problem.add_variable("temperature")
     problem.set_values("temperature", numpy.full(mesh.num_nodes, 300.0))
-    problem.add_kernel("heat_conduction", variable="temperature", thermal_conductivity=20.0)
+    problem.add_kernel("diffusion", variable="temperature", diffusivity=20.0)
     problem.add_kernel(
-        "heat_conduction_time_derivative",
+        "time_derivative",
         variable="temperature",
-        density=7800.0,
-        specific_heat=460.0,
+        coefficient=7800.0 * 460.0,
     )
     problem.add_boundary_condition("Dirichlet", "left", variable="temperature", value=3000.0)
+    # Grey-body radiation, e sigma (T^4 - T_a^4) leaving the body, with the emissivity e = 0.9.
+    sigma = units.standard_names()["Stefan_Boltzmann_constant"].value
     problem.add_boundary_condition(
-        "radiative_heat_flux",
+        "Neumann",
         "right",
         variable="temperature",
-        emissivity=0.9,
-        ambient_temperature=300.0,
+        flux=f"-{sigma!r}*0.9*(temperature^4 - 300^4)",
     )
     result = problem.solve_transient(
         end_time=400.0,

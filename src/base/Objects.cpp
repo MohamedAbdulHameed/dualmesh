@@ -6,6 +6,7 @@
 #include "dualmesh/base/Kernel.h"
 #include "dualmesh/base/Problem.h"
 #include "dualmesh/base/Property.h"
+#include "dualmesh/fe/Assembly.h"
 
 #include <algorithm>
 #include <cctype>
@@ -313,56 +314,29 @@ NodalLoad::initialSetup(Problem & problem)
 {
   ResidualObject::initialSetup(problem);
   _value = getFunction(problem, "value");
+  const auto boundaries = _params.getStringList("boundary");
+  const auto pts = _params.getRealList("points");
+  if (boundaries.empty() && pts.empty())
+    throw InputError("NodalLoad '" + _name + "' has no nodes: give 'boundary' or 'points'.");
   std::set<Index> ids;
-  for (const auto & b : _params.getStringList("boundary"))
+  for (const auto & b : boundaries)
     for (Index n : problem.mesh().boundaryNodes(b))
       ids.insert(n);
-  _boundary_nodes.assign(ids.begin(), ids.end());
-  _point_nodes.clear();
-  const auto pts = _params.getRealList("points");
   const int dim = problem.mesh().spaceDimension();
   const std::size_t stride = static_cast<std::size_t>(dim);
   if (pts.size() % stride)
     throw InputError("NodalLoad '" + _name + "': 'points' must hold " + std::to_string(stride) +
                      " numbers per point, one per dimension of the mesh.");
+  // A process that does not hold the node nearest a point leaves the point to the one that does.
   for (std::size_t i = 0; i < pts.size(); i += stride)
   {
     Point p{0.0, 0.0, 0.0};
     for (std::size_t c = 0; c < stride; ++c)
       p[c] = pts[i + c];
-    Index best = -1;
-    double bd = std::numeric_limits<double>::infinity();
-    for (Index n = 0; n < problem.mesh().numNodes(); ++n)
-    {
-      const double d = norm(problem.mesh().node(n) - p);
-      if (d < bd)
-      {
-        bd = d;
-        best = n;
-      }
-    }
-    ids.insert(best);
-    _point_nodes.emplace_back(best, bd);
+    const Index nearest = problem.nearestNode(p, [](Index) { return true; });
+    if (nearest >= 0)
+      ids.insert(nearest);
   }
-  if (ids.empty())
-    throw InputError("NodalLoad '" + _name + "' has no nodes: give 'boundary' or 'points'.");
-  _nodes.assign(ids.begin(), ids.end());
-}
-
-void
-NodalLoad::keepPoints(const std::vector<char> & keep)
-{
-  if (keep.size() != _point_nodes.size())
-    throw InputError("NodalLoad '" + _name + "': keepPoints needs one flag per requested point.");
-  std::set<Index> ids(_boundary_nodes.begin(), _boundary_nodes.end());
-  std::vector<std::pair<Index, double>> kept;
-  for (std::size_t i = 0; i < keep.size(); ++i)
-    if (keep[i])
-    {
-      ids.insert(_point_nodes[i].first);
-      kept.push_back(_point_nodes[i]);
-    }
-  _point_nodes = kept;
   _nodes.assign(ids.begin(), ids.end());
 }
 
@@ -511,6 +485,7 @@ Factory::Factory()
   registerSolidMechanicsObjects(*this);
   registerFluidObjects(*this);
   registerParsedObjects(*this);
+  registerParsedStateObjects(*this);
 }
 
 const Factory::Entry &
@@ -642,12 +617,18 @@ advectingVelocity(const QpContext & ctx, const Kernel * mass, const std::vector<
   return w;
 }
 
+bool
+isFaceAdvectionScheme(const std::string & text)
+{
+  return text == "upwind" || text == "linear_upwind" || text == "limited";
+}
+
 AdvectionScheme
 advectionScheme(const Problem & problem, const std::string & text, const std::string & owner)
 {
   if (text == "central")
     return AdvectionScheme::Central;
-  const bool face = text == "upwind" || text == "linear_upwind" || text == "limited";
+  const bool face = isFaceAdvectionScheme(text);
   if (!face && text != "SUPG" && text != "supg")
     throw InputError("'" + owner + "': unknown advection scheme '" + text +
                      "'. The schemes are central, upwind, linear_upwind and limited.");
@@ -657,13 +638,102 @@ advectionScheme(const Problem & problem, const std::string & text, const std::st
         (problem.isDual()
              ? std::string("which takes central, upwind, linear_upwind or limited.")
              : std::string("which takes central. The streamline stabilisation is the kernel "
-                           "heat_streamline_stabilization, which heat_transfer adds with "
+                           "heat_streamline_stabilization, which heat_conduction adds with "
                            "advection_scheme 'SUPG', and momentum_stabilization for a flow. The "
                            "face fluxes upwind, linear_upwind and limited are those of "
                            "method='DMCDM'.")));
   return text == "upwind"    ? AdvectionScheme::Upwind
          : text == "limited" ? AdvectionScheme::Limited
                              : AdvectionScheme::LinearUpwind;
+}
+
+// ---- StrongResidual -------------------------------------------------------------------
+void
+StrongResidual::setup(const Problem & problem,
+                      const std::string & variable,
+                      const std::string & owner)
+{
+  _owner = owner;
+  _terms.clear();
+  for (const auto & k : problem.kernels())
+  {
+    if (k->variableName() != variable || k->isStabilization())
+      continue;
+    if (k->inStrongResidual())
+      _terms.push_back(k.get());
+    else if (k->hasFlux())
+      throw InputError("'" + owner + "': the term '" + k->name() + "' of '" + variable +
+                       "' is written as a flux whose divergence the strong residual of the "
+                       "stabilisation does not hold. Give it as a source, give an advection "
+                       "advection_form 'non_conservative', or leave the stabilisation out.");
+  }
+  const auto & mesh = problem.mesh();
+  _h.resize(static_cast<std::size_t>(mesh.numElements()));
+  for (Index e = 0; e < mesh.numElements(); ++e)
+    _h[static_cast<std::size_t>(e)] = dualmesh::elementSize(mesh, e);
+}
+
+bool
+StrongResidual::hasTimeTerm() const
+{
+  return std::any_of(
+      _terms.begin(), _terms.end(), [](const Kernel * k) { return k->isTimeKernel(); });
+}
+
+bool
+StrongResidual::threadSafe() const
+{
+  return std::all_of(
+      _terms.begin(), _terms.end(), [](const Kernel * k) { return k->threadSafe(); });
+}
+
+ADReal
+StrongResidual::value(const QpContext & ctx, double time_weight, bool whole_step) const
+{
+  const bool average = whole_step && ctx.dt > 0.0 && ctx.theta < 1.0;
+  ADReal r(0.0);
+  for (const Kernel * k : _terms)
+  {
+    if (!k->activeOnBlock(ctx.block))
+      continue;
+    if (k->isTimeKernel())
+    {
+      if (ctx.dt > 0.0 && time_weight != 0.0)
+        r += time_weight * k->strongResidual(ctx);
+      continue;
+    }
+    const double load = k->isLoad() ? ctx.data_fraction : 1.0;
+    const double weight = average && !k->atNewTime() ? ctx.theta * load : load;
+    if (weight != 0.0)
+      r += weight * k->strongResidual(ctx);
+  }
+  if (!average)
+    return r;
+  // The steady terms at the old state: the fields at their old values and the time t - dt.
+  QpContext old = ctx;
+  for (std::size_t v = 0; v < old.u.size(); ++v)
+  {
+    old.u[v] = ADReal(ctx.u_old[v]);
+    for (int d = 0; d < 3; ++d)
+      old.grad_u[v][d] = ADReal(ctx.grad_u_old[v][d]);
+  }
+  old.u_lag = old.u;
+  old.grad_u_lag = old.grad_u;
+  old.laplacian.assign(ctx.laplacian_old.begin(), ctx.laplacian_old.end());
+  old.time = ctx.time - ctx.dt;
+  old.old_level = true;
+  for (const Kernel * k : _terms)
+  {
+    if (!k->activeOnBlock(ctx.block) || k->isTimeKernel() || k->atNewTime())
+      continue;
+    if (!k->oldStateFromFields())
+      throw InputError("'" + _owner + "': the term '" + k->name() +
+                       "' enters the stabilized residual at the new time only, so the step "
+                       "takes the backward_Euler scheme, whose residual holds no old state.");
+    const double load = k->isLoad() ? ctx.data_fraction : 1.0;
+    r += (1.0 - ctx.theta) * load * k->strongResidual(old).value();
+  }
+  return r;
 }
 
 } // namespace dualmesh

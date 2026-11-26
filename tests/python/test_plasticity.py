@@ -136,7 +136,7 @@ def cyclic_stresses(time_step, moduli, recovery):
         stresses.append(problem.boundary_flux("uz", "front") * -1.0 / area)
 
     problem.set_time_step_callback(record)
-    problem.solve_transient(end_time=3.0, time_step=time_step, report="none")
+    problem.solve_transient(end_time=3.0, time_step=time_step, time_stepper="fixed", report="none")
     return numpy.array(times), numpy.array(stresses)
 
 
@@ -246,11 +246,13 @@ def test_a_neo_hookean_bar_has_the_nominal_stress_of_its_stretch():
 
 def test_the_physics_level_refuses_what_it_does_not_have():
     mesh = dualmesh.generate_rectangle_mesh(0, 1, 0, 1, 2, 2)
-    with pytest.raises(InputError, match="elasticity is linear or neo-Hookean"):
+    with pytest.raises(
+        InputError, match="elasticity is linear, neo-Hookean or Saint_Venant_Kirchhoff"
+    ):
         dualmesh.Problem(mesh).add_physics(
             "solid_mechanics", formulation="plane_strain", elasticity="rubber"
         )
-    with pytest.raises(InputError, match="the neo-Hookean law has neither"):
+    with pytest.raises(InputError, match="a hyperelastic law has neither"):
         dualmesh.Problem(mesh).add_physics(
             "solid_mechanics",
             formulation="plane_strain",

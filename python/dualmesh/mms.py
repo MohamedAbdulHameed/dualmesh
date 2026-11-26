@@ -106,8 +106,11 @@ def _expr(value):
 
 
 def _text(expression) -> str:
-    """SymPy's printed form, which the C++ expression compiler accepts as is."""
-    return str(expression)
+    """A SymPy expression in the engine's expression language, written by the one printer."""
+    from .input.lower import write_expression
+    from .model.sympy_form import from_sympy
+
+    return write_expression(from_sympy(expression), "the manufactured solution")
 
 
 def _gradient(u):

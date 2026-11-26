@@ -10,7 +10,9 @@ zero.
 
 The derivative of $|a|$ is $-a'$ where $a < 0$ and $a'$ elsewhere. The
 derivative of $\\max(a, b)$ is $a'$ where $a > b$ and $b'$ elsewhere, and the
-derivative of $\\min(a, b)$ is $a'$ where $a < b$ and $b'$ elsewhere.
+derivative of $\\min(a, b)$ is $a'$ where $a < b$ and $b'$ elsewhere. A
+comparison, `floor`, `ceil` and `sign` are constant between their jumps, so
+their derivative is zero, as in the automatic differentiation of the engine.
 
 The derivative of a table, an `interpolation` node, follows the chain rule
 through its inputs. Each partial derivative is the `interpolation` node of the
@@ -21,24 +23,53 @@ The derivative of an `antiderivative` $H(u) = \\int^{u} f(u')\\,\\mathrm{d}u'$ b
 its variable $u$ is the integrand $f$. Its derivative by a leaf that $f$ does
 not read is zero. Any other derivative, by time included, stops with an
 `input_error`, since $H$ is never evaluated.
+
+`derivative_along` applies the chain rule over every leaf, for a derivative
+along a path on which each leaf changes at a given rate, such as the
+derivative along a direction of space.
 """
 
+import math
+
 from dualmesh.input.units import input_error
-from dualmesh.model.dimensions import is_zero
+from dualmesh.model.dimensions import comparisons, is_zero
 from dualmesh.model.expression import (
     conditional,
     cos,
+    cosh,
     exp,
     expression,
     greater,
     interpolation_partial,
+    leaves,
     less,
     log,
     number,
     sin,
+    sinh,
     sqrt,
     tanh,
 )
+
+# The derivative of each function of one scalar a by its argument, from a and the node f(a).
+outer_derivatives = {
+    "exp": lambda a, node: node,
+    "log": lambda a, node: 1.0 / a,
+    "log10": lambda a, node: 1.0 / (math.log(10.0) * a),
+    "sqrt": lambda a, node: 1.0 / (2.0 * node),
+    "sin": lambda a, node: cos(a),
+    "cos": lambda a, node: -sin(a),
+    "tan": lambda a, node: 1.0 / cos(a) ** 2,
+    "asin": lambda a, node: 1.0 / sqrt(1.0 - a**2),
+    "acos": lambda a, node: -1.0 / sqrt(1.0 - a**2),
+    "atan": lambda a, node: 1.0 / (1.0 + a**2),
+    "sinh": lambda a, node: cosh(a),
+    "cosh": lambda a, node: sinh(a),
+    "tanh": lambda a, node: 1.0 - tanh(a) ** 2,
+    "erf": lambda a, node: 2.0 / math.sqrt(math.pi) * exp(-(a**2)),
+}
+# Kinds that are constant between their jumps.
+piecewise_constant = frozenset({"floor", "ceil", "sign", *comparisons})
 
 
 def differentiate(node: expression, variable: expression) -> expression:
@@ -80,8 +111,8 @@ def differentiate(node: expression, variable: expression) -> expression:
         if kind == "conditional":
             condition, if_true, if_false = operands
             return conditional(condition, derivative(if_true), derivative(if_false))
-        if kind in ("less", "greater"):
-            raise input_error(f"a condition has no derivative, got '{current}'")
+        if kind in piecewise_constant:
+            return zero(current)
         if kind == "interpolation":
             result = zero(current)
             for index, table_input in enumerate(operands):
@@ -99,46 +130,50 @@ def differentiate(node: expression, variable: expression) -> expression:
             )
         first = operands[0]
         first_derivative = derivative(first)
+        if kind in outer_derivatives:
+            return outer_derivatives[kind](first, current) * first_derivative
         if kind == "negate":
             return -first_derivative
-        if kind == "add":
-            return first_derivative + derivative(operands[1])
-        if kind == "multiply":
-            second = operands[1]
-            return first_derivative * second + first * derivative(second)
-        if kind == "divide":
-            second = operands[1]
-            return first_derivative / second - first * derivative(second) / second**2
-        if kind == "power":
-            exponent = operands[1]
-            if exponent.kind == "number":
-                return exponent * first ** (exponent.value - 1.0) * first_derivative
-            # Here the base is dimensionless, so log(base) exists.
-            return current * (
-                derivative(exponent) * log(first) + exponent * first_derivative / first
-            )
-        if kind == "maximum":
-            return conditional(
-                greater(first, operands[1]), first_derivative, derivative(operands[1])
-            )
-        if kind == "minimum":
-            return conditional(less(first, operands[1]), first_derivative, derivative(operands[1]))
-        if kind == "exp":
-            return exp(first) * first_derivative
-        if kind == "log":
-            return first_derivative / first
-        if kind == "sqrt":
-            return first_derivative / (2.0 * sqrt(first))
-        if kind == "sin":
-            return cos(first) * first_derivative
-        if kind == "cos":
-            return -sin(first) * first_derivative
-        if kind == "tanh":
-            return (1.0 - tanh(first) ** 2) * first_derivative
         if kind == "abs":
             return conditional(less(first, 0.0), -first_derivative, first_derivative)
+        second = operands[1]
+        second_derivative = derivative(second)
+        if kind == "add":
+            return first_derivative + second_derivative
+        if kind == "multiply":
+            return first_derivative * second + first * second_derivative
+        if kind == "divide":
+            return first_derivative / second - first * second_derivative / second**2
+        if kind == "power":
+            if second.kind == "number":
+                return second * first ** (second.value - 1.0) * first_derivative
+            # Here the base is dimensionless, so log(base) exists.
+            return current * (second_derivative * log(first) + second * first_derivative / first)
+        if kind == "maximum":
+            return conditional(greater(first, second), first_derivative, second_derivative)
+        if kind == "minimum":
+            return conditional(less(first, second), first_derivative, second_derivative)
+        if kind == "atan2":
+            return (second * first_derivative - first * second_derivative) / (first**2 + second**2)
+        if kind == "hypot":
+            return (first * first_derivative + second * second_derivative) / current
         raise input_error(
             f"differentiate does not know the kind '{kind}' of '{current}'. Expand it first"
         )
 
     return derivative(node)
+
+
+def derivative_along(node: expression, rate_of) -> expression:
+    """Return the derivative of the scalar node along a path, by the chain rule over its leaves.
+
+    rate_of(leaf) returns the rate of change of a scalar leaf along the path, or None for a leaf
+    that does not change. The leaves are taken in the order of their text, so the result does
+    not depend on the order of a set.
+    """
+    result = number(0.0)
+    for leaf in sorted(leaves(node), key=str):
+        leaf_rate = rate_of(leaf)
+        if leaf_rate is not None:
+            result = result + differentiate(node, leaf) * leaf_rate
+    return result

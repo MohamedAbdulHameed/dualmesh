@@ -4,7 +4,6 @@
 // The extensive verification suite against Reddy's book lives in tests/python.
 #include "dualmesh/base/Problem.h"
 #include "dualmesh/core/ADReal.h"
-#include "dualmesh/core/Equation.h"
 #include "dualmesh/core/ParsedFunction.h"
 #include "dualmesh/fe/Assembly.h"
 #include "dualmesh/linalg/LinearSolverChoice.h"
@@ -154,24 +153,62 @@ TEST(the_size_of_terms_that_cancel_is_kept)
   CHECK_NEAR(exponential.termSize(ten), 1.0 + 20.0, 1e-12);
 }
 
-TEST(equations_that_cannot_be_sorted_are_refused)
+TEST(the_second_derivatives_of_every_function_match_differences_of_the_first)
 {
-  EquationScope scope;
-  scope.dimension = 2;
-  scope.fields = {{"u", 0}};
-  for (const std::string bad :
-       {"x*laplacian(u) = 1", "sin(laplacian(u)) = 1", "laplacian(u) +", "du/dt = laplacian(w)"})
+  // The gradient of secondOrder equals the exact first derivatives of the ADReal evaluation, and
+  // its Hessian equals their central differences, for every function and operator.
+  std::vector<std::string> texts;
+  for (const char * f : {"sin",
+                         "cos",
+                         "tan",
+                         "asin",
+                         "acos",
+                         "atan",
+                         "sinh",
+                         "cosh",
+                         "tanh",
+                         "exp",
+                         "log",
+                         "log10",
+                         "sqrt",
+                         "abs",
+                         "floor",
+                         "ceil",
+                         "erf",
+                         "sign"})
+    texts.push_back(std::string(f) + "(0.7*x + 0.3*y*y)");
+  for (const char * f : {"atan2", "pow", "hypot", "min", "max"})
+    texts.push_back(std::string(f) + "(x*y + 0.5, x - 0.2*y)");
+  texts.push_back("x^3/y - 2^x + x*y^-2 - -x + x^y");
+  const double point[2] = {0.4, 0.5};
+  const auto first = [](const ParsedExpression & e, double x, double y)
   {
-    bool refused = false;
-    try
+    const ADReal a[2] = {ADReal::independent(x, 0, 2), ADReal::independent(y, 1, 2)};
+    const ADReal v = e.value(a);
+    return std::array<double, 2>{v.derivative(0), v.derivative(1)};
+  };
+  const double h = 1e-5;
+  for (const auto & text : texts)
+  {
+    const ParsedExpression e(text, {"x", "y"});
+    double value = 0.0, gradient[2], hessian[4];
+    e.secondOrder(point, value, gradient, hessian);
+    CHECK_NEAR(value, e.value(point), 1e-14 * (1.0 + std::abs(value)));
+    const auto exact = first(e, point[0], point[1]);
+    for (int i = 0; i < 2; ++i)
+      CHECK_NEAR(gradient[i], exact[i], 1e-13 * (1.0 + std::abs(exact[i])));
+    for (int j = 0; j < 2; ++j)
     {
-      reduceEquations(scope, {bad});
+      double up[2] = {point[0], point[1]}, down[2] = {point[0], point[1]};
+      up[j] += h;
+      down[j] -= h;
+      const auto above = first(e, up[0], up[1]), below = first(e, down[0], down[1]);
+      for (int i = 0; i < 2; ++i)
+      {
+        const double difference = (above[i] - below[i]) / (2.0 * h);
+        CHECK_NEAR(hessian[2 * i + j], difference, 1e-6 * (1.0 + std::abs(difference)));
+      }
     }
-    catch (const InputError &)
-    {
-      refused = true;
-    }
-    CHECK(refused);
   }
 }
 
@@ -827,7 +864,7 @@ TEST(newest_vertex_bisection_refines_and_coarsens_conformingly)
   }
   CHECK(hierarchy.mesh().numElements() == initial.numElements());
   CHECK_NEAR(sideLength(hierarchy.mesh(), "top"), 2.0, 1e-12);
-  for (int g : hierarchy.generations())
+  for (int g : hierarchy.levels())
     CHECK(g == 0);
   // Refinement transfers a linear field exactly too.
   Eigen::VectorXd values(hierarchy.mesh().numNodes());
@@ -1096,6 +1133,80 @@ TEST(subdivision_with_hanging_nodes_refines_and_coarsens_quadrilaterals_and_hexa
     }
     CHECK(hierarchy.mesh().numElements() == initial.numElements());
     CHECK(hierarchy.hanging().empty());
+  }
+}
+
+namespace
+{
+/// The integral of the shape function of each node: |e| / n from each of the n corners of a
+/// triangle or a parallelogram e.
+Eigen::VectorXd
+shapeIntegrals(const Mesh & mesh)
+{
+  Eigen::VectorXd measures = Eigen::VectorXd::Zero(mesh.numNodes());
+  for (Index e = 0; e < mesh.numElements(); ++e)
+  {
+    const Element & el = mesh.element(e);
+    for (int k = 0; k < el.numNodes(); ++k)
+      measures[el.nodes[k]] += elementMeasure(mesh, e) / el.numNodes();
+  }
+  return measures;
+}
+} // namespace
+
+TEST(restriction_keeps_the_content_of_a_field_through_coarsening)
+{
+  // A field that the elements do not represent, so that the restriction differs from injection.
+  const auto field = [](const Point & x)
+  { return 1.0 + x[0] * x[0] + 3.0 * x[0] * x[1] - std::sin(2.0 * x[1]); };
+  // The content sum_i M_i u_i of the field before a coarsening, with M_i the integral of the
+  // shape function of node i, equals that of the restricted field on the coarsened mesh, whose
+  // shape functions are sums of those before.  A constant stays the same constant.
+  const auto checkRestriction = [&](const Mesh & before, const auto & hierarchy)
+  {
+    const Mesh & after = hierarchy.mesh();
+    CHECK(after.numNodes() < before.numNodes());
+    const Eigen::VectorXd measures = shapeIntegrals(before);
+    Eigen::VectorXd values(before.numNodes());
+    for (Index n = 0; n < before.numNodes(); ++n)
+      values[n] = field(before.node(n));
+    const double content = measures.dot(values);
+    const Eigen::VectorXd restricted = hierarchy.restrictValues(values, 1, measures);
+    CHECK_NEAR(shapeIntegrals(after).dot(restricted), content, 1e-12 * std::abs(content));
+    const Eigen::VectorXd constant =
+        hierarchy.restrictValues(Eigen::VectorXd::Constant(before.numNodes(), 2.5), 1, measures);
+    for (Index n = 0; n < after.numNodes(); ++n)
+      CHECK_NEAR(constant[n], 2.5, 1e-14);
+  };
+
+  // Triangles bisected twice, then coarsened once everywhere.
+  {
+    const Mesh initial = generateRectangleMesh(linspace(0, 2, 4), linspace(0, 1, 2), "Tri3");
+    Bisection hierarchy(initial);
+    for (int cycle = 0; cycle < 2; ++cycle)
+      CHECK(hierarchy.refine(std::vector<char>(hierarchy.mesh().numElements(), 1), 100));
+    const Mesh before = hierarchy.mesh();
+    CHECK(hierarchy.coarsen(std::vector<char>(static_cast<std::size_t>(before.numElements()), 1)));
+    checkRestriction(before, hierarchy);
+  }
+
+  // Quadrilaterals whose cell at the origin is split twice, which leaves nodes hanging on its
+  // neighbours under the 2:1 balance, then coarsened everywhere: the family at the origin merges.
+  {
+    const Mesh initial = generateRectangleMesh(linspace(0, 1, 4), linspace(0, 1, 4), "Quad4");
+    Subdivision hierarchy(initial);
+    for (int cycle = 0; cycle < 2; ++cycle)
+    {
+      const Mesh & mesh = hierarchy.mesh();
+      std::vector<char> marked(static_cast<std::size_t>(mesh.numElements()), 0);
+      for (Index e = 0; e < mesh.numElements(); ++e)
+        marked[static_cast<std::size_t>(e)] = norm(mesh.node(mesh.element(e).nodes[0])) < 1e-12;
+      CHECK(hierarchy.refine(marked, 10));
+    }
+    CHECK(!hierarchy.hanging().empty());
+    const Mesh before = hierarchy.mesh();
+    CHECK(hierarchy.coarsen(std::vector<char>(static_cast<std::size_t>(before.numElements()), 1)));
+    checkRestriction(before, hierarchy);
   }
 }
 

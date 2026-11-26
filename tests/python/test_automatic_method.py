@@ -31,7 +31,7 @@ def test_another_method_name_is_refused(name):
 def test_a_flow_added_after_a_solve_on_FEM_is_refused():
     """The automatic method is chosen at the first solve; a flow added later cannot change it."""
     problem = dualmesh.Problem(square())
-    heat = problem.add_physics("heat_transfer", thermal_conductivity=1.0, heat_source=1.0)
+    heat = problem.add_physics("heat_conduction", thermal_conductivity=1.0, heat_source=1.0)
     heat.add_boundary_condition("temperature = 0", boundary="left")
     problem.solve(report="none")
     cavity(problem)

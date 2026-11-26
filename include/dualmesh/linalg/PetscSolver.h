@@ -39,6 +39,19 @@ namespace petsc
 using Vector = Eigen::VectorXd;
 using SparseMatrix = Eigen::SparseMatrix<double>;
 
+/// The orthogonalization of the GMRES methods that the code chooses: classical Gram-Schmidt with a
+/// second pass wherever the first loses orthogonality.  A single pass loses it as the residual
+/// nears the tolerance 1e-12, and the iteration then stalls on rounding errors.
+inline constexpr const char * gmresOrthogonalization =
+    "-ksp_gmres_cgs_refinement_type refine_ifneeded";
+
+/// The options of GMRES with one V-cycle of algebraic multigrid, preconditioned from the right so
+/// that it measures the true residual (the equations of a coupled problem differ in scale by many
+/// orders of magnitude, and a preconditioner that fails without an error would otherwise report
+/// convergence): smoothed aggregation (GAMG), which takes the rigid body modes of a solid, when
+/// @p smoothed_aggregation, and otherwise hypre's BoomerAMG with the options of the field splits.
+std::string multigridOptions(bool smoothed_aggregation);
+
 /// PETSc's version, "major.minor.subminor".
 std::string version();
 
@@ -88,6 +101,10 @@ struct SchurBlocks
   std::vector<GlobalEntry> convection_diffusion;
   /// The lumped masses, as entries (row, row, value).
   std::vector<GlobalEntry> lumped_mass;
+  /// The factor that each owned row of the matrix is multiplied by, in the order of the rows: the
+  /// matrix holds the equations scaled row by row, and the operators above belong to the unscaled
+  /// equations.  The solver scales them to the matrix.
+  Vector row_scale;
 };
 
 /// The blocks of a problem in the global numbering of its system: unknown i of

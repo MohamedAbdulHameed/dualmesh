@@ -66,10 +66,17 @@ def test_the_defaults_are_filled_and_the_quantities_converted_to_SI():
     validated = schema.validate(plate())
     assert "method" not in validated
     assert validated["mesh"] == {
-        "rectangle": {"size": [0.2, 0.1], "cells": [4, 2], "cell_type": "quadrilateral"},
+        "rectangle": {
+            "size": [0.2, 0.1],
+            "cells": [4, 2],
+            "cell_type": "quadrilateral",
+            "origin": [0.0, 0.0],
+            "grading": [1.0, 1.0],
+        },
         "coordinate_system": "cartesian",
     }
-    assert validated["time"]["step_control"] == {"by": "error", "relative_tolerance": 1.0e-3}
+    # The step control is the engine's choice when the input leaves it out.
+    assert "step_control" not in validated["time"]
     assert validated["boundary_conditions"]["right"]["convection"] == {
         "heat_transfer_coefficient": 25.0,
         "ambient_temperature": 293.0,
@@ -160,6 +167,91 @@ def test_an_inline_table_sorts_its_rows_and_converts_to_SI():
     assert table["values"] == pytest.approx([7.6, 5.0, 3.6])
 
 
+steady_adaptivity = {
+    "field": "temperature",
+    "refine_fraction": 0.5,
+    "coarsen_fraction": 0.0,
+    "maximum_refinement_level": 2,
+}
+
+
+@pytest.mark.parametrize(
+    "path, value, key, message",
+    [
+        (
+            ("properties", "thermal_conductivity"),
+            {
+                "table": {
+                    "temperature": {"unit": "K", "values": [300, 600]},
+                    "time": {"unit": "s", "values": [0, 1]},
+                    "thermal_conductivity": {"unit": "W/(m*K)", "values": [7.6, 5.0]},
+                }
+            },
+            "properties.thermal_conductivity.table",
+            "one column besides 'thermal_conductivity'",
+        ),
+        (
+            ("boundary_conditions", "left", "temperature"),
+            {
+                "table": {
+                    "time": {"unit": "s", "values": [0, 1]},
+                    "temperature": {"unit": "K", "values": [300, 400]},
+                }
+            },
+            "boundary_conditions.left.temperature",
+            "takes no table",
+        ),
+        (
+            ("postprocessors", "peak"),
+            {"maximum": "temperature", "region": "domain"},
+            "postprocessors.peak.region",
+            "takes no region",
+        ),
+        (
+            ("physics", "heat_conduction"),
+            {"method": "FEM"},
+            "physics.heat_conduction.method",
+            "one problem takes one method, and the input gives FEM and DMCDM",
+        ),
+        (
+            ("physics", "solid_mechanics"),
+            {"formulation": "plane_strain", "strain_energy": "neo-Hookean"},
+            "physics.solid_mechanics.strain_energy",
+            "with kinematics small takes no strain_energy",
+        ),
+    ],
+)
+def test_an_input_that_the_engine_does_not_run_is_refused_at_its_key(path, value, key, message):
+    tree = changed(changed(plate(), ("method",), "DMCDM"), path, value)
+    with raises_naming(key, message):
+        schema.validate(tree)
+
+
+def test_mesh_adaptivity_takes_an_interval_in_a_transient_run_only():
+    steady = changed(changed(plate(), ("time",), deleted), ("mesh_adaptivity",), steady_adaptivity)
+    assert "interval" not in schema.validate(steady)["mesh_adaptivity"]
+    with raises_naming("mesh_adaptivity.interval", "takes no interval"):
+        schema.validate(changed(steady, ("mesh_adaptivity", "interval"), 2))
+    transient = changed(plate(), ("mesh_adaptivity",), steady_adaptivity)
+    with raises_naming("mesh_adaptivity", "the key 'interval' is missing"):
+        schema.validate(transient)
+    with raises_naming("mesh_adaptivity", "unknown key 'indicator'"):
+        schema.validate(changed(steady, ("mesh_adaptivity", "indicator"), "gradient_recovery"))
+
+
+def test_the_output_takes_an_interval_in_a_transient_run_only():
+    """The interval counts accepted steps: a transient run writes every step without one, and a
+    steady run, which writes once, refuses one."""
+    files = {"file": "plate", "fields": ["temperature"]}
+    transient = changed(plate(), ("output",), files)
+    assert schema.validate(transient)["output"]["interval"] == 1
+    assert schema.validate(changed(transient, ("output", "interval"), 5))["output"]["interval"] == 5
+    steady = changed(transient, ("time",), deleted)
+    assert "interval" not in schema.validate(steady)["output"]
+    with raises_naming("output.interval", "takes no interval"):
+        schema.validate(changed(steady, ("output", "interval"), 1))
+
+
 def test_a_property_per_region_names_the_regions_of_the_mesh():
     assert property_of({"domain": "45 W/(m*K)"}) == {
         "unit": "W/(m*K)",
@@ -179,6 +271,7 @@ def test_a_physics_takes_its_options_with_their_values():
     assert schema.validate(tree)["physics"]["solid_mechanics"] == {
         "formulation": "plane_stress",
         "kinematics": "finite",
+        "strain_energy": "neo-Hookean",
     }
     with raises_naming("physics.solid_mechanics.kinematics", "'finite'"):
         schema.validate(changed(plate(), ("physics", "solid_mechanics"), {"kinematics": "finit"}))
@@ -191,14 +284,17 @@ def test_a_physics_takes_its_options_with_their_values():
 @pytest.mark.parametrize(
     "step_control, expected",
     [
-        ({"by": "iterations"}, {"by": "iterations", "target_iterations": 5}),
-        ({"by": "Courant"}, {"by": "Courant", "Courant_number": 0.5}),
+        ({"by": "iterations"}, {"by": "iterations"}),
+        ({"by": "error", "relative_tolerance": 1e-4}, {"by": "error", "relative_tolerance": 1e-4}),
         ({"by": "fixed"}, {"by": "fixed"}),
     ],
 )
 def test_each_step_control_takes_its_own_setting(step_control, expected):
     validated = schema.validate(changed(plate(), ("time", "step_control"), step_control))
     assert validated["time"]["step_control"] == expected
+    # The input selects no projection of a flow, which the Courant controller needs.
+    with raises_naming("time.step_control.by", "unknown value 'Courant'"):
+        schema.validate(changed(plate(), ("time", "step_control"), {"by": "Courant"}))
     with raises_naming("time.step_control", "unknown key 'relative_tolerance'"):
         schema.validate(
             changed(
@@ -211,7 +307,6 @@ def test_each_step_control_takes_its_own_setting(step_control, expected):
     "definition, message",
     [
         ({"average": "temperature", "maximum": "temperature"}, "expects exactly one of"),
-        ({"average": "temperature", "region": "domian"}, "'domain'"),
         ({"point_value": "temperature", "point": ["0.2 m"]}, "expects a list of 2 entries"),
         ({"boundary_flux": "heat_flux", "boundary": "rigth"}, "'right'"),
     ],
@@ -226,9 +321,11 @@ def test_the_solver_takes_PETSc_options_without_their_dash():
         "relative_tolerance": "1e-8",
         "PETSc_options": {"ksp_type": "gmres", "snes_monitor": True},
     }
+    # The validated solver section holds the keywords of the engine's solve, and a true option
+    # is a flag without a value, as in the Python interface.
     assert schema.validate(changed(plate(), ("solver",), solver))["solver"] == {
         "relative_tolerance": 1.0e-8,
-        "PETSc_options": {"ksp_type": "gmres", "snes_monitor": "true"},
+        "petsc_options": {"ksp_type": "gmres", "snes_monitor": True},
     }
     with raises_naming("solver", "without the leading dash"):
         schema.validate(changed(plate(), ("solver",), {"PETSc_options": {"-ksp_type": "gmres"}}))

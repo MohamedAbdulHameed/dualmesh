@@ -369,6 +369,9 @@ public:
     const auto & registry = problem.propertyRegistry();
     _stress = registry.id(_params.getString("stress_property"));
     _full = registry.components(_params.getString("stress_property")) == 9;
+    const std::string size_name = _params.getString("stress_property") + "_term_size";
+    if (registry.has(size_name))
+      _stress_size = registry.id(size_name);
     _axisymmetric = problem.coordinateSystem() == CoordinateSystem::Axisymmetric;
   }
 
@@ -404,6 +407,29 @@ public:
     return ctx.property(_stress, _full ? 8 : 2) / ctx.x[0];
   }
 
+  /// The size of the terms of the stress, when its object declares them as the property
+  /// '<stress_property>_term_size' (a hyperelastic stress at a small strain is the sum of terms of
+  /// the size of the modulus), and otherwise the magnitude of the flux.
+  void fluxTermSize(const QpContext & ctx, const ADVector3 & F, double size[3]) const override
+  {
+    if (_stress_size < 0)
+    {
+      Kernel::fluxTermSize(ctx, F, size);
+      return;
+    }
+    for (int d = 0; d < 3; ++d)
+      size[d] = d < ctx.dim
+                    ? std::abs(_thickness) * ctx.property(_stress_size, 3 * _component + d).value()
+                    : 0.0;
+  }
+
+  double sourceTermSize(const QpContext & ctx, const ADReal & S) const override
+  {
+    if (_stress_size < 0 || !hasSource() || ctx.x[0] == 0.0)
+      return Kernel::sourceTermSize(ctx, S);
+    return ctx.property(_stress_size, 8).value() / std::abs(ctx.x[0]);
+  }
+
 private:
   int _component;
   double _thickness;
@@ -411,6 +437,7 @@ private:
   bool _full = false;
   bool _axisymmetric = false;
   int _stress = -1;
+  int _stress_size = -1;
 };
 
 /// The damage equation of phase-field fracture (AT2): -Gc l div grad d + (Gc / l + 2 H) d = 2 H,
@@ -586,6 +613,16 @@ public:
       throw InputError("'" + name() +
                        "': the axisymmetric_1d formulation takes no stiffness "
                        "damping.");
+    if (_formulation == Formulation::GeneralizedPlaneStrain)
+      throw InputError("'" + name() +
+                       "': stiffness damping is available in plane stress, plane strain, "
+                       "axisymmetric and three-dimensional problems, not in generalized plane "
+                       "strain.");
+    if (_thickness != 1.0 && _formulation != Formulation::PlaneStress &&
+        _formulation != Formulation::PlaneStrain)
+      throw InputError("'" + name() +
+                       "': thickness is the out-of-plane thickness of a plane problem. A "
+                       "three-dimensional or axisymmetric problem has none, so leave it at 1.");
     const auto stiffness = p.getRealList("stiffness");
     if (!stiffness.empty())
     {
@@ -2271,37 +2308,80 @@ public:
         "measured in a frame that rotates with the material (the midpoint rule of Hughes and "
         "Winget), so that rigid rotations produce no stress. This update suits materials whose "
         "elastic strains stay small while their total strains are large, such as metals and "
-        "ceramics. stress_update = neo-Hookean is the compressible neo-Hookean hyperelastic law P "
-        "= G (F_d - F_d^-T) + lambda ln(J) F_d^-T, with G the shear modulus and lambda the first "
-        "Lame parameter, applied to the elastic part F_e of F_d = F_e F_eig left after the "
-        "eigenstrains. 'volumetric_strain' is J - 1, the change of volume per unit volume, and "
-        "'strain' is the Green-Lagrange strain. Also declares 'deformation_gradient' (nine "
-        "components) and 'green_lagrange_strain' (Voigt order, engineering shears). Available in "
-        "plane_strain, axisymmetric, axisymmetric_1d and three_dimensional, without "
+        "ceramics. The other stress updates are hyperelastic: P derives from a strain energy psi "
+        "per unit volume of the stress-free state (J/m^3), a function of the invariants I_C = "
+        "tr(C_e) and trace_C_squared = tr(C_e^2) of C_e = F_e^T F_e and of J_e = det(F_e), with "
+        "F_e the elastic part of F_d = F_e F_eig left after the eigenstrains, F_eig = diag(1 + "
+        "eps_eig). Then P_e = 2 psi_1 F_e + 4 psi_2 F_e C_e + psi_J J_e F_e^-T, with psi_1, psi_2 "
+        "and psi_J the derivatives of psi by I_C, trace_C_squared and J_e, and P = det(F_eig) P_e "
+        "F_eig^-T. neo-Hookean is the compressible neo-Hookean law psi = G/2 (I_C - 3) - G ln(J_e) "
+        "+ lambda/2 ln(J_e)^2, with G the shear modulus and lambda the first Lame parameter (Pa). "
+        "Saint_Venant_Kirchhoff is psi = lambda/2 tr(E_e)^2 + G tr(E_e^2), with E_e = (C_e - I)/2. "
+        "strain_energy takes psi as an expression, whose first and second derivatives the code "
+        "takes by forward automatic differentiation, so the Jacobian is exact. In plane stress the "
+        "stretch of the thickness F_33 is the root of P_33 = 0, which the code finds at each point "
+        "by Newton's method from the last state, and whose derivatives by the unknowns follow "
+        "from the implicit function theorem. 'volumetric_strain' is J - 1, the change of volume "
+        "per unit volume, and 'strain' is the Green-Lagrange strain. Also declares "
+        "'deformation_gradient' (nine components), 'green_lagrange_strain' (Voigt order, "
+        "engineering shears) and 'first_piola_kirchhoff_stress_term_size', the size of the terms "
+        "whose sum is each component of P, which sets the round-off floor of Newton's test. "
+        "Available in plane_strain, axisymmetric, axisymmetric_1d and "
+        "three_dimensional, and in plane_stress with a hyperelastic stress update, without "
         "viscoelasticity or phase-field fracture.");
     p.addOptional("stress_update",
                   ParameterKind::String,
                   std::string("rotated_small_strain"),
-                  "The finite-strain law: rotated_small_strain or neo-Hookean. neo-Hookean takes "
-                  "no creep or plasticity. Default rotated_small_strain, because it carries every "
-                  "law of small_strain_stress, creep and plasticity included, to finite rotation "
-                  "and strain.");
+                  "The finite-strain law: rotated_small_strain, or the hyperelastic neo-Hookean, "
+                  "Saint_Venant_Kirchhoff or strain_energy. A hyperelastic law takes no creep or "
+                  "plasticity. Default rotated_small_strain, because it carries every law of "
+                  "small_strain_stress, creep and plasticity included, to finite rotation and "
+                  "strain.");
+    p.addOptional("strain_energy",
+                  ParameterKind::String,
+                  std::string(""),
+                  "The strain energy psi (J/m^3) of stress_update = strain_energy, as an "
+                  "expression of I_C, trace_C_squared, J (that is J_e), shear_modulus and "
+                  "first_Lame_parameter (Pa), the last two from youngs_modulus and "
+                  "poissons_ratio. For example, the neo-Hookean energy is "
+                  "'shear_modulus/2*(I_C - 3) - shear_modulus*log(J) + "
+                  "first_Lame_parameter/2*log(J)^2'. Default: none, for the other stress updates.");
     return p;
   }
   explicit FiniteStrainStress(const InputParameters & p) : SmallStrainStress(p)
   {
     const auto u = p.getString("stress_update");
-    if (u != "rotated_small_strain" && u != "neo-Hookean")
+    if (u == "rotated_small_strain")
+      _law = Law::RotatedSmallStrain;
+    else if (u == "neo-Hookean")
+      _law = Law::NeoHookean;
+    else if (u == "Saint_Venant_Kirchhoff")
+      _law = Law::SaintVenantKirchhoff;
+    else if (u == "strain_energy")
+      _law = Law::StrainEnergy;
+    else
       throw InputError("'" + name() +
-                       "': stress_update must be rotated_small_strain or "
-                       "neo-Hookean, not '" +
+                       "': stress_update must be rotated_small_strain, neo-Hookean, "
+                       "Saint_Venant_Kirchhoff or strain_energy, not '" +
                        u + "'.");
-    _neo_hookean = u == "neo-Hookean";
-    if (_formulation == Formulation::PlaneStress ||
-        _formulation == Formulation::GeneralizedPlaneStrain)
+    const std::string energy = p.getString("strain_energy");
+    if ((_law == Law::StrainEnergy) == energy.empty())
+      throw InputError("'" + name() +
+                       "': stress_update = strain_energy takes the expression 'strain_energy', "
+                       "and the other stress updates take none.");
+    if (_law == Law::StrainEnergy)
+      _energy = std::make_shared<ParsedExpression>(
+          energy,
+          std::vector<std::string>{
+              "I_C", "trace_C_squared", "J", "shear_modulus", "first_Lame_parameter"});
+    const bool hyperelastic = _law != Law::RotatedSmallStrain;
+    if (_formulation == Formulation::GeneralizedPlaneStrain ||
+        (_formulation == Formulation::PlaneStress && !hyperelastic))
       throw InputError("'" + name() +
                        "': finite strain is available in plane_strain, axisymmetric, "
-                       "axisymmetric_1d and three_dimensional problems.");
+                       "axisymmetric_1d and three_dimensional problems, and in plane_stress with "
+                       "a hyperelastic stress_update (neo-Hookean, Saint_Venant_Kirchhoff or "
+                       "strain_energy).");
     if (!_viscous.empty())
       throw InputError("'" + name() + "': viscoelasticity at finite strain is not available.");
     if (_cracking)
@@ -2310,11 +2390,11 @@ public:
     if (_anisotropic)
       throw InputError("'" + name() +
                        "': an anisotropic stiffness is available at small strain only.");
-    if (_neo_hookean && _plastic)
+    if (hyperelastic && _plastic)
       throw InputError("'" + name() +
                        "': plasticity is available with stress_update = rotated_small_strain "
                        "only.");
-    if (_neo_hookean && _creep != Creep::None)
+    if (hyperelastic && _creep != Creep::None)
       throw InputError("'" + name() +
                        "': creep is available with stress_update = "
                        "rotated_small_strain only.");
@@ -2330,6 +2410,7 @@ public:
   {
     SmallStrainStress::declareProperties(r);
     _pk1 = r.declare("first_piola_kirchhoff_stress", 9);
+    _pk1_size = r.declare("first_piola_kirchhoff_stress_term_size", 9);
     _green = r.declare("green_lagrange_strain", 6);
   }
 
@@ -2364,11 +2445,6 @@ public:
         F[2][2] = 1.0 + gw[2];
       }
     }
-    const ADReal J = determinant3(F);
-    if (!(J.value() > 0.0))
-      throw InadmissibleStateError("'" + name() +
-                                   "': the deformation turned an element inside out (det F <= 0).");
-    const Mat3<ADReal> Finv = inverse3(F, J);
 
     // ---- the eigenstrains, in Voigt order ----
     std::array<ADReal, 6> eigen;
@@ -2376,6 +2452,10 @@ public:
     for (int id : _eigen)
       for (int i = 0; i < 6; ++i)
         eigen[i] = eigen[i] + ctx.property(id, i);
+    // F = F_e F_eig with F_eig = diag(1 + eps_eig): the eigenstrains here have no shear.
+    std::array<ADReal, 3> stretch;
+    for (int i = 0; i < 3; ++i)
+      stretch[i] = 1.0 + eigen[i];
 
     const ADReal E = _E.value(ctx);
     const ADReal nu = _nu.value(ctx);
@@ -2385,6 +2465,15 @@ public:
     // The slice of the point's history record that belongs to this object.
     const double * old = ctx.state_old ? ctx.state_old + stateOffset() : nullptr;
     double * next = ctx.state_new ? ctx.state_new + stateOffset() : nullptr;
+    if (_formulation == Formulation::PlaneStress)
+      F[2][2] = thicknessStretch(ctx, F, stretch, mu, lambda, old);
+
+    const ADReal J = determinant3(F);
+    if (!(J.value() > 0.0))
+      throw InadmissibleStateError("'" + name() +
+                                   "': the deformation turned an element inside out (det F <= 0).");
+    const Mat3<ADReal> Finv = inverse3(F, J);
+
     std::array<ADReal, 6> sigma;
     std::array<ADReal, 6> elastic;
     std::array<double, 6> creep_increment{0, 0, 0, 0, 0, 0};
@@ -2392,36 +2481,19 @@ public:
     inelastic_step.back.assign(6 * _hardening.size(), 0.0);
     double equivalent_increment = 0.0;
     Mat3<ADReal> P;
+    // The size of the terms of each component of P, the scale of its round-off.
+    Mat3<double> P_size;
 
-    if (_neo_hookean)
+    if (_law != Law::RotatedSmallStrain)
     {
-      // F = F_e F_eig with F_eig = diag(1 + eps_eig) (the eigenstrains here
-      // have no shear): psi_0 = J_eig psi(F_e), so P = J_eig P_e F_eig^-T.
-      Mat3<ADReal> Fe = F;
-      ADReal Jeig(1.0);
-      std::array<ADReal, 3> stretch;
-      for (int i = 0; i < 3; ++i)
-      {
-        stretch[i] = 1.0 + eigen[i];
-        Jeig = Jeig * stretch[i];
-      }
-      for (int i = 0; i < 3; ++i)
-        for (int j = 0; j < 3; ++j)
-          Fe[i][j] = F[i][j] / stretch[j];
-      const ADReal Je = determinant3(Fe);
-      const Mat3<ADReal> FeinvT = transpose3(inverse3(Fe, Je));
-      for (int i = 0; i < 3; ++i)
-        for (int j = 0; j < 3; ++j)
-        {
-          const ADReal Pe = mu * (Fe[i][j] - FeinvT[i][j]) + lambda * log(Je) * FeinvT[i][j];
-          P[i][j] = Jeig * Pe / stretch[j];
-        }
+      P = hyperelasticStress(F, stretch, mu, lambda, &P_size);
       // Cauchy stress sigma = P F^T / J.
       const Mat3<ADReal> S = multiply3(P, transpose3(F));
       for (int i = 0; i < 3; ++i)
         for (int j = i; j < 3; ++j)
           sigma[kVoigt[i][j]] = S[i][j] / J;
       // The elastic strain: the Green-Lagrange strain of F_e, with engineering shears.
+      const Mat3<ADReal> Fe = elasticPart(F, stretch);
       const Mat3<ADReal> Ce = multiply3(transpose3(Fe), Fe);
       for (int i = 0; i < 3; ++i)
         for (int j = i; j < 3; ++j)
@@ -2520,9 +2592,12 @@ public:
         for (int j = 0; j < 3; ++j)
           S[i][j] = sigma[kVoigt[i][j]];
       P = multiply3(S, transpose3(Finv));
-      for (auto & row : P)
-        for (auto & v : row)
-          v = J * v;
+      for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j)
+        {
+          P[i][j] = J * P[i][j];
+          P_size[i][j] = std::abs(P[i][j].value());
+        }
     }
 
     // ---- the new state and the declared properties ----
@@ -2587,6 +2662,7 @@ public:
       for (int j = 0; j < 3; ++j)
       {
         ctx.property(_pk1, 3 * i + j) = P[i][j];
+        ctx.property(_pk1_size, 3 * i + j) = ADReal(P_size[i][j]);
         ctx.property(_F_prop, 3 * i + j) = F[i][j];
       }
     const auto s = [&](int i) -> const ADReal & { return ctx.property(_stress, i); };
@@ -2598,8 +2674,158 @@ public:
   }
 
 private:
-  bool _neo_hookean = false;
-  int _pk1 = -1, _green = -1;
+  /// The most iterations of the Newton method for the stretch of the thickness.
+  static constexpr int kMaxIterations = 50;
+
+  /// The elastic part F_e = F F_eig^-1 of @p F, with F_eig = diag(@p stretch).
+  static Mat3<ADReal> elasticPart(const Mat3<ADReal> & F, const std::array<ADReal, 3> & stretch)
+  {
+    Mat3<ADReal> Fe;
+    for (int i = 0; i < 3; ++i)
+      for (int j = 0; j < 3; ++j)
+        Fe[i][j] = F[i][j] / stretch[j];
+    return Fe;
+  }
+
+  /// The derivatives psi_1, psi_2 and psi_J of the strain energy by I_C, trace_C_squared and J_e.
+  std::array<ADReal, 3> energyDerivatives(const ADReal & I1,
+                                          const ADReal & I2,
+                                          const ADReal & Je,
+                                          const ADReal & mu,
+                                          const ADReal & lambda) const
+  {
+    if (_law == Law::NeoHookean)
+      return {0.5 * mu, ADReal(0.0), (lambda * log(Je) - mu) / Je};
+    if (_law == Law::SaintVenantKirchhoff)
+      return {0.25 * lambda * (I1 - 3.0) - 0.5 * mu, 0.25 * mu, ADReal(0.0)};
+    // The expression: its gradient g and Hessian H at the values a_0 of its arguments a, and the
+    // first derivatives as functions of the unknowns, g_k + sum_m H_km (a_m - a_0m), which are
+    // exact to first order, as the Jacobian needs.
+    const std::array<const ADReal *, 5> a{&I1, &I2, &Je, &mu, &lambda};
+    double values[5], value = 0.0, g[5], H[25];
+    for (int m = 0; m < 5; ++m)
+      values[m] = a[m]->value();
+    _energy->secondOrder(values, value, g, H);
+    std::array<ADReal, 3> d;
+    for (int k = 0; k < 3; ++k)
+    {
+      d[k] = ADReal(g[k]);
+      for (int m = 0; m < 5; ++m)
+        if (H[5 * k + m] != 0.0)
+          d[k] = d[k] + H[5 * k + m] * (*a[m] - values[m]);
+    }
+    return d;
+  }
+
+  /// The first Piola-Kirchhoff stress P = det(F_eig) P_e F_eig^-T of a hyperelastic law, with
+  /// F_eig = diag(@p stretch).  @p sizes, when given, receives the size of the terms of each
+  /// component of P, the scale of its round-off: at a small strain the terms are of the size of
+  /// the modulus and cancel to a far smaller stress.
+  Mat3<ADReal> hyperelasticStress(const Mat3<ADReal> & F,
+                                  const std::array<ADReal, 3> & stretch,
+                                  const ADReal & mu,
+                                  const ADReal & lambda,
+                                  Mat3<double> * sizes = nullptr) const
+  {
+    const Mat3<ADReal> Fe = elasticPart(F, stretch);
+    const Mat3<ADReal> Ce = multiply3(transpose3(Fe), Fe);
+    const Mat3<ADReal> FeCe = multiply3(Fe, Ce);
+    ADReal I1(0.0), I2(0.0);
+    for (int i = 0; i < 3; ++i)
+    {
+      I1 = I1 + Ce[i][i];
+      for (int j = 0; j < 3; ++j)
+        I2 = I2 + Ce[i][j] * Ce[i][j];
+    }
+    const ADReal Je = determinant3(Fe);
+    const Mat3<ADReal> FeinvT = transpose3(inverse3(Fe, Je));
+    const auto [psi1, psi2, psiJ] = energyDerivatives(I1, I2, Je, mu, lambda);
+    const ADReal Jeig = stretch[0] * stretch[1] * stretch[2];
+    Mat3<ADReal> P;
+    for (int i = 0; i < 3; ++i)
+      for (int j = 0; j < 3; ++j)
+        P[i][j] = Jeig *
+                  (2.0 * psi1 * Fe[i][j] + 4.0 * psi2 * FeCe[i][j] + psiJ * Je * FeinvT[i][j]) /
+                  stretch[j];
+    if (sizes)
+      for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j)
+          (*sizes)[i][j] = std::abs(Jeig.value() / stretch[j].value()) *
+                           (std::abs(2.0 * psi1.value() * Fe[i][j].value()) +
+                            std::abs(4.0 * psi2.value() * FeCe[i][j].value()) +
+                            std::abs(psiJ.value() * Je.value() * FeinvT[i][j].value()));
+    return P;
+  }
+
+  /// The stretch of the thickness F_33 of plane stress, the root of P_33 = 0.  Newton's method
+  /// finds it from the values of the other inputs, starting from the last state, and the root
+  /// as a function of the unknowns follows from the implicit function theorem: one more Newton
+  /// step from the root, t - P_33(U, t) / (dP_33/dF_33), whose derivative by the unknowns U is
+  /// -(dP_33/dU) / (dP_33/dF_33).
+  ADReal thicknessStretch(const QpContext & ctx,
+                          const Mat3<ADReal> & F,
+                          const std::array<ADReal, 3> & stretch,
+                          const ADReal & mu,
+                          const ADReal & lambda,
+                          const double * old) const
+  {
+    Mat3<ADReal> plain;
+    for (int i = 0; i < 3; ++i)
+      for (int j = 0; j < 3; ++j)
+        plain[i][j] = ADReal(F[i][j].value());
+    const std::array<ADReal, 3> plain_stretch{
+        ADReal(stretch[0].value()), ADReal(stretch[1].value()), ADReal(stretch[2].value())};
+    const ADReal plain_mu(mu.value()), plain_lambda(lambda.value());
+    const double tolerance = 64.0 * std::numeric_limits<double>::epsilon();
+    // The F_33 of the last state, stored as F - I.
+    double t = old ? 1.0 + old[14] : 1.0;
+    double slope = 0.0;
+    for (int iteration = 0;; ++iteration)
+    {
+      plain[2][2] = ADReal::independent(t, 0, 1);
+      Mat3<double> sizes;
+      const ADReal r =
+          hyperelasticStress(plain, plain_stretch, plain_mu, plain_lambda, &sizes)[2][2];
+      const double size = sizes[2][2];
+      slope = r.derivative(0);
+      if (!std::isfinite(r.value()) || !std::isfinite(slope) || !(slope > 0.0))
+        thicknessFailure(ctx,
+                         "P_33 or its derivative is not finite, or the derivative is not positive");
+      if (std::abs(r.value()) <= tolerance * size)
+        break;
+      if (iteration == kMaxIterations)
+        thicknessFailure(ctx, std::to_string(kMaxIterations) + " iterations did not reach it");
+      double step = -r.value() / slope;
+      if (!std::isfinite(step))
+        thicknessFailure(ctx, "the Newton step is not finite");
+      while (!(t + step > 0.0))
+        step *= 0.5;
+      t += step;
+    }
+    Mat3<ADReal> at = F;
+    at[2][2] = ADReal(t);
+    return t - hyperelasticStress(at, stretch, mu, lambda)[2][2] / slope;
+  }
+
+  [[noreturn]] void thicknessFailure(const QpContext & ctx, const std::string & why) const
+  {
+    throw InadmissibleStateError("'" + name() +
+                                 "': no stretch of the thickness gives a zero out-of-plane "
+                                 "stress at the point (" +
+                                 std::to_string(ctx.x[0]) + ", " + std::to_string(ctx.x[1]) + ", " +
+                                 std::to_string(ctx.x[2]) + "): " + why + ".");
+  }
+
+  enum class Law
+  {
+    RotatedSmallStrain,
+    NeoHookean,
+    SaintVenantKirchhoff,
+    StrainEnergy
+  };
+  Law _law = Law::RotatedSmallStrain;
+  std::shared_ptr<ParsedExpression> _energy;
+  int _pk1 = -1, _pk1_size = -1, _green = -1;
 };
 
 /// Isotropic thermal expansion with a constant coefficient, as an eigenstrain.

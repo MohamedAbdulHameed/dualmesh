@@ -18,6 +18,9 @@
 //     nu (grad v, grad u^n) + (beta_0 / dt) (v, u^n) = (v, u*) / dt - (v, dP/dx) .
 //
 // The equations are written with test functions: the shape functions of the finite element method, or the indicator of the control domain of each node for the methods of the dual mesh (DMCDM), for which (v, f) is an integral over the control domain and (grad q, F) the flux of F out of it.
+// On a mesh with hanging nodes each method treats them as its monolithic assembly does.
+// FEM makes a hanging value the weighted sum of independent ones: every matrix A becomes C^T A C and every right-hand side b becomes C^T b, with C the map from the independent values to all of them, and the hanging values follow each solve.
+// DMCDM keeps a hanging node as an unknown with a control domain of its own: a cell with hanging nodes on its sides is a polygon (PolygonCell), whose control domains and interfaces carry the integrals and the fluxes, and whose fields come from its corners.
 // The pressure equation is a Poisson equation, solved with algebraic multigrid (hypre BoomerAMG), and each Helmholtz equation is diagonally dominant, solved with a Jacobi preconditioner: inside the conjugate gradient method for the finite element method, whose matrices are symmetric, and inside GMRES for the methods of the dual mesh, whose matrices are not in general.
 // The matrices are assembled once and kept, with their preconditioners, as long as the step size is unchanged.
 // The coefficients beta_j and alpha_j are those of a variable step, so a step shortened to land on an output time keeps the order.
@@ -36,6 +39,73 @@ namespace dualmesh
 {
 
 class DistributedProblem;
+
+/// The operators of a flow on a scalar field of one value per node, built with the test functions of the method (the equations above): the mass matrix (v, phi), the stiffness matrix (grad v, grad phi) and the gradient matrices (v, d phi / dx_d), each with the coordinate factor of the problem (2 pi r in axisymmetric coordinates).
+/// They are assembled over the elements on which the first velocity lives.
+/// The layout places the field in the global systems across hanging nodes, periodic boundaries and processes.
+struct FlowOperators
+{
+  struct Layout;
+  struct Geometry;
+  FlowOperators(Problem & problem,
+                DistributedProblem * distributed,
+                const std::vector<int> & velocities);
+  ~FlowOperators();
+
+  /// The prescribed rows of @p variable: those of its nodal boundary conditions and, with @p inactive, of its inactive degrees of freedom.
+  /// A copy of an entity is prescribed when any copy is, and a hanging node has no row.
+  std::vector<char> prescribed(int variable, bool inactive = true) const;
+  /// The entries of a scalar system in the global numbering: those of @p local (one row per local entity), with the rows and columns of @p fixed replaced by the identity.
+  std::vector<petsc::GlobalEntry> globalEntries(const std::vector<Eigen::Triplet<double>> & local,
+                                                const std::vector<char> & fixed) const;
+  /// One scalar system: the matrix @p local (one row per local entity), with the rows and columns of @p fixed replaced by the identity.
+  std::unique_ptr<petsc::LinearSolver> makeSolver(const std::vector<Eigen::Triplet<double>> & local,
+                                                  const std::vector<char> & fixed,
+                                                  const std::string & options,
+                                                  double tolerance,
+                                                  int projection_vectors = 0) const;
+  /// Solve the system of @p solver for one value per local entity: @p rhs is this process's part of the right-hand side, @p values holds the prescribed values on the rows of @p fixed and a first guess elsewhere, and receives the solution.
+  int solve(const petsc::LinearSolver & solver,
+            const SparseMatrix & matrix,
+            const std::vector<char> & fixed,
+            Vector rhs,
+            Vector & values,
+            bool remove_mean) const;
+  /// The sum of @p value over the processes.
+  double sum(double value) const;
+  /// The largest of @p value over the processes.
+  double maximum(double value) const;
+
+  Problem & problem;
+  DistributedProblem * distributed;
+  std::unique_ptr<Layout> layout;
+  std::unique_ptr<Geometry> geometry;
+  /// Whether the method tests with the control volumes of the dual mesh (DMCDM) rather than with the shape functions (FEM).
+  bool dual = false;
+  int dim = 0;
+  std::vector<int> velocities;
+  /// Whether each integrated element carries the flow.
+  std::vector<char> in_flow;
+  std::vector<Eigen::Triplet<double>> mass_entries, stiffness_entries;
+  SparseMatrix mass, stiffness;
+  std::vector<SparseMatrix> gradient;
+  /// The size of every integrated element, for the stabilization parameter.
+  std::vector<double> element_size;
+  /// The prescribed rows of each velocity component.
+  std::vector<std::vector<char>> velocity_fixed;
+  /// The sides of the side sets on elements of the flow.
+  std::vector<Side> boundary_sides;
+};
+
+/// Project the velocity of an incompressible flow in @p solution onto a field without divergence that keeps the prescribed values: the field u = u_0 + du nearest to u_0 in the norm of the mass matrix M with D u = 0, for the discrete divergence D of the mass balance of the flow without its stabilization.
+/// The correction is du = - M^-1 D^T lambda, and the multiplier lambda solves the Poisson problem D M^-1 D^T lambda = D u_0, which is solved in its saddle point form with the mass matrix.
+/// @p pressure is the pressure variable, whose prescribed values replace the mass balance of their nodes, or -1 for a flow without one (the penalty formulation).
+/// Returns the largest change of the velocity over the largest speed after the projection, on every process alike.
+double projectInitialVelocity(Problem & problem,
+                              DistributedProblem * distributed,
+                              const std::vector<int> & velocities,
+                              int pressure,
+                              Vector & solution);
 
 struct ProjectionSettings
 {
@@ -71,11 +141,16 @@ public:
   ~ProjectionSolver() override;
 
   void start(const Vector & solution, double time) override;
-  SolveResult step(Vector & solution, const Vector & old, double time, double dt) override;
+  SolveResult
+  step(Vector & solution, const Vector & old, double time, double dt, bool continues) override;
   void accept(const Vector & solution, double time) override;
   /// The velocity converges at the order k of the backward difference up to two, the order of
   /// the splitting of the pressure (docs/verification.rst, the stagnation flow).
   int order() const override { return std::min(_settings.order, 2); }
+  /// The polynomial through the last order() + 1 accepted states, extrapolated to the end of the
+  /// step, and the factor of Milne's device for the backward difference of order order().
+  bool predict(double dt, Vector & predicted, double & factor) const override;
+  bool measuresCourantNumber() const override { return true; }
   /// dt times the largest speed over the size of its element, over the nodes of every element of every process.
   double courantNumber(const Vector & solution, double dt) const override;
 
@@ -90,46 +165,17 @@ public:
   int lastVelocityIterations() const { return _velocity_iterations; }
 
 private:
-  struct Layout;
-  struct Geometry;
   void setUp();
-  /// The entries of a scalar system in the global numbering: those of @p local (one row per local entity), with the rows and columns of @p fixed replaced by the identity.
-  std::vector<petsc::GlobalEntry> globalEntries(const std::vector<Eigen::Triplet<double>> & local,
-                                                const std::vector<char> & fixed) const;
-  /// One scalar system: the matrix @p local (one row per local entity), with the rows and columns of @p fixed replaced by the identity.
-  std::unique_ptr<petsc::LinearSolver> makeSolver(const std::vector<Eigen::Triplet<double>> & local,
-                                                  const std::vector<char> & fixed,
-                                                  const std::string & options,
-                                                  double tolerance,
-                                                  int projection_vectors = 0) const;
-  /// Solve the system of @p solver for one value per local entity: @p rhs is this process's part of the right-hand side, @p values holds the prescribed values on the rows of @p fixed and a first guess elsewhere, and receives the solution.
-  int solve(const petsc::LinearSolver & solver,
-            const SparseMatrix & matrix,
-            const std::vector<char> & fixed,
-            Vector rhs,
-            Vector & values,
-            bool remove_mean) const;
 
   Problem & _problem;
   DistributedProblem * _distributed;
   ProjectionSettings _settings;
-  std::unique_ptr<Layout> _layout;
-  std::unique_ptr<Geometry> _geometry;
+  std::unique_ptr<FlowOperators> _operators;
   bool _ready = false;
-  /// Whether the method tests with the control volumes of the dual mesh (DMCDM) rather than with the shape functions (FEM).
-  bool _dual = false;
   std::string _pressure_options, _velocity_options;
-  int _dim = 0;
   std::vector<int> _velocity;
   int _pressure = -1;
-  /// The mass and stiffness matrices of one value per local entity, and the gradient matrices (v, d phi / dx_d).
-  SparseMatrix _mass, _stiffness;
-  std::vector<SparseMatrix> _gradient;
-  /// The size of every integrated element, for the stabilization parameter.
-  std::vector<double> _element_size;
-  std::vector<Eigen::Triplet<double>> _mass_entries, _stiffness_entries;
-  /// The prescribed rows of each velocity component and of the pressure.
-  std::vector<std::vector<char>> _velocity_fixed;
+  /// The prescribed rows of the pressure.
   std::vector<char> _pressure_fixed;
   bool _pressure_pinned = false;
   std::unique_ptr<petsc::LinearSolver> _pressure_solver;
@@ -141,10 +187,11 @@ private:
   std::vector<std::vector<double>> _helmholtz_stiffness_values, _helmholtz_mass_values;
   std::vector<std::size_t> _helmholtz_identity_rows;
   double _helmholtz_c = -1.0;
-  /// The sides of the boundary, on which the pressure equation takes its boundary terms.
-  std::vector<Side> _boundary_sides;
   /// The accepted solutions and their times, the latest first.
   std::deque<std::pair<double, Vector>> _history;
+  /// The time and the solution of the last step taken since the last accepted one, from which
+  /// the second half of a doubled step continues.
+  std::pair<double, Vector> _trial;
   Vector _kinematic_pressure;
   /// The volume of every entity, the integral of its shape function, for the mean of the pressure.
   Vector _volume;

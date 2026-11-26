@@ -138,6 +138,8 @@ projection(int n, int steps, int order, int vectors, const std::string & method_
   TransientOptions transient;
   transient.dt = 0.5 * h;
   transient.end_time = steps * transient.dt;
+  // Fixed steps: the run times the given number of steps of the given size.
+  transient.time_stepper = "fixed";
   // The wall time after every step: the first ten steps (the setup of the solvers, the steps of lower order) are left out of the time per step.
   const int warmup = 10;
   std::vector<double> stamps;

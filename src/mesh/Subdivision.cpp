@@ -10,27 +10,11 @@
 namespace dualmesh
 {
 
-namespace
-{
-/// The face of @p corners, sorted, as the key of a side.
-std::vector<Index>
-sortedFace(std::vector<Index> corners)
-{
-  std::sort(corners.begin(), corners.end());
-  return corners;
-}
-} // namespace
-
 Subdivision::Subdivision(const Mesh & initial)
-    : _dimension(initial.dimension()), _space_dimension(initial.spaceDimension()),
-      _type(initial.dimension() == 3 ? ElementType::Hex8 : ElementType::Quad4),
-      _block_names(initial.blockNames()), _mesh(initial.dimension())
+    : MeshHierarchy(initial,
+                    initial.dimension() == 3 ? ElementType::Hex8 : ElementType::Quad4,
+                    {ElementType::Quad4, ElementType::Hex8})
 {
-  for (const auto & el : initial.elements())
-    if (el.type != _type || (_dimension != 2 && _dimension != 3))
-      throw InputError(
-          "Local refinement and coarsening need a mesh of one element type: Tri3, Tri6, Tet4 or "
-          "Tet10, refined by bisection, or Quad4 or Hex8, refined by subdivision.");
   const ReferenceElement & reference = ReferenceElement::get(_type);
   const int corners = 1 << _dimension;
   for (int k = 0; k < corners; ++k)
@@ -59,8 +43,6 @@ Subdivision::Subdivision(const Mesh & initial)
             face.push_back(k);
         _faces.push_back(face);
       }
-
-  _points = initial.nodes();
   for (const auto & el : initial.elements())
   {
     Cell cell;
@@ -75,31 +57,7 @@ Subdivision::Subdivision(const Mesh & initial)
     _origin_reference.push_back(std::move(xi));
     _cells.push_back(cell);
   }
-  for (const auto & [name, sides] : initial.sidesets())
-    for (const Side & side : sides)
-    {
-      std::vector<Index> nodes = initial.sideNodes(side);
-      nodes.resize(static_cast<std::size_t>(1 << (_dimension - 1)));
-      _face_sets[sortedFace(nodes)].push_back({name, initial.element(side.first).block});
-    }
-  _initial_nodes = initial.numNodes();
-  const std::vector<char> & on_boundary = initial.boundaryNodeMarkers();
-  for (const auto & [name, members] : initial.nodesets())
-  {
-    _node_set_names.push_back(name);
-    std::vector<char> in(_points.size(), 0);
-    bool boundary = !members.empty();
-    for (Index n : members)
-    {
-      in[static_cast<std::size_t>(n)] = 1;
-      boundary = boundary && on_boundary[static_cast<std::size_t>(n)];
-    }
-    _in_node_set.push_back(std::move(in));
-    _boundary_node_set.push_back(boundary);
-  }
-  build();
-  _numbers_before = _numbers;
-  _leaves_before = _leaves;
+  start();
 }
 
 Point
@@ -120,11 +78,7 @@ Subdivision::middle(const Edge & edge, const Point & position)
   const auto found = _middles.find(edge);
   if (found != _middles.end())
     return found->second;
-  const Index m = static_cast<Index>(_points.size());
-  _points.push_back(position);
-  for (auto & in : _in_node_set)
-    in.push_back(in[static_cast<std::size_t>(edge.first)] &&
-                 in[static_cast<std::size_t>(edge.second)]);
+  const Index m = addNode(position, {edge.first, edge.second});
   _middles[edge] = m;
   return m;
 }
@@ -135,15 +89,7 @@ Subdivision::centre(const Face & face, const Point & position)
   const auto found = _centres.find(face);
   if (found != _centres.end())
     return found->second;
-  const Index c = static_cast<Index>(_points.size());
-  _points.push_back(position);
-  for (auto & in : _in_node_set)
-  {
-    bool all = true;
-    for (Index n : face)
-      all = all && in[static_cast<std::size_t>(n)];
-    in.push_back(all);
-  }
+  const Index c = addNode(position, face);
   _centres[face] = c;
   return c;
 }
@@ -186,19 +132,9 @@ Subdivision::split(Index c)
     else if (spanned.size() == 2)
       node = middle(key(spanned[0], spanned[1]), place(parent, eta));
     else if (spanned.size() == 4 && d == 3)
-      node = centre(sortedFace(spanned), place(parent, eta));
+      node = centre(sideKey(spanned), place(parent, eta));
     else
-    {
-      node = static_cast<Index>(_points.size());
-      _points.push_back(place(parent, eta));
-      for (auto & in : _in_node_set)
-      {
-        bool all = true;
-        for (Index n : spanned)
-          all = all && in[static_cast<std::size_t>(n)];
-        in.push_back(all);
-      }
-    }
+      node = addNode(place(parent, eta), spanned);
     lattice[static_cast<std::size_t>(p)] = node;
     _origin_reference[static_cast<std::size_t>(parent.origin)].emplace(node, xi);
   }
@@ -238,11 +174,11 @@ Subdivision::split(Index c)
     std::vector<Index> nodes;
     for (int k : _faces[f])
       nodes.push_back(parent.n[static_cast<std::size_t>(k)]);
-    const auto found = _face_sets.find(sortedFace(nodes));
-    if (found == _face_sets.end())
+    const auto found = _side_sets.find(sideKey(nodes));
+    if (found == _side_sets.end())
       continue;
     const auto sets = found->second;
-    _face_sets.erase(found);
+    _side_sets.erase(found);
     // The axis and the side of the face.
     int axis = 0;
     for (int a = 0; a < d; ++a)
@@ -262,7 +198,7 @@ Subdivision::split(Index c)
           child_nodes.push_back(
               _cells[static_cast<std::size_t>(children[static_cast<std::size_t>(child)])]
                   .n[static_cast<std::size_t>(k)]);
-        _face_sets[sortedFace(child_nodes)] = sets;
+        _side_sets[sideKey(child_nodes)] = sets;
       }
   }
   Cell & stored = _cells[static_cast<std::size_t>(c)];
@@ -319,7 +255,7 @@ Subdivision::unbalanced() const
         std::vector<Index> nodes;
         for (int k : face)
           nodes.push_back(cell.n[static_cast<std::size_t>(k)]);
-        const auto found = _centres.find(sortedFace(nodes));
+        const auto found = _centres.find(sideKey(nodes));
         if (found == _centres.end())
           continue;
         for (const auto & e : _edges)
@@ -374,7 +310,7 @@ Subdivision::coarsenCells(const std::vector<char> & marked_cells)
     const auto found = _middles.find(key(a, b));
     return found != _middles.end() && used[static_cast<std::size_t>(found->second)];
   };
-  bool changed = false;
+  std::vector<Index> merged;
   const Index count = static_cast<Index>(_cells.size());
   for (Index p = 0; p < count; ++p)
   {
@@ -405,7 +341,7 @@ Subdivision::coarsenCells(const std::vector<char> & marked_cells)
         std::vector<Index> nodes;
         for (int k : face)
           nodes.push_back(parent.n[static_cast<std::size_t>(k)]);
-        const Index centre_node = _centres.at(sortedFace(nodes));
+        const Index centre_node = _centres.at(sideKey(nodes));
         for (const auto & e : _edges)
           if (std::find(face.begin(), face.end(), e[0]) != face.end() &&
               std::find(face.begin(), face.end(), e[1]) != face.end() &&
@@ -429,192 +365,124 @@ Subdivision::coarsenCells(const std::vector<char> & marked_cells)
         for (int k : face)
           child_nodes.push_back(
               _cells[static_cast<std::size_t>(child)].n[static_cast<std::size_t>(k)]);
-        const auto found = _face_sets.find(sortedFace(child_nodes));
-        if (found == _face_sets.end())
+        const auto found = _side_sets.find(sideKey(child_nodes));
+        if (found == _side_sets.end())
           continue;
         sets = found->second;
-        _face_sets.erase(found);
+        _side_sets.erase(found);
       }
       if (!sets.empty())
-        _face_sets[sortedFace(nodes)] = sets;
+        _side_sets[sideKey(nodes)] = sets;
     }
     for (Index child : parent.children)
       _cells[static_cast<std::size_t>(child)].alive = false;
     parent.leaf = true;
-    changed = true;
+    merged.push_back(p);
   }
-  return changed;
-}
-
-bool
-Subdivision::unchanged()
-{
-  // The mesh before the call is the current one, so transfer() carries values unchanged.
-  _numbers_before = _numbers;
-  _leaves_before = _leaves;
-  return false;
-}
-
-bool
-Subdivision::refine(const std::vector<char> & marked, int max_level)
-{
-  if (marked.size() != _leaves.size())
-    throw InputError("The refinement marker must have one entry per element.");
-  std::vector<char> cells(_cells.size(), 0);
-  for (std::size_t e = 0; e < _leaves.size(); ++e)
-    cells[static_cast<std::size_t>(_leaves[e])] = marked[e];
-  if (!refineCells(cells, max_level))
-    return unchanged();
-  build();
-  return true;
-}
-
-bool
-Subdivision::coarsen(const std::vector<char> & marked)
-{
-  if (marked.size() != _leaves.size())
-    throw InputError("The coarsening marker must have one entry per element.");
-  std::vector<char> cells(_cells.size(), 0);
-  for (std::size_t e = 0; e < _leaves.size(); ++e)
-    cells[static_cast<std::size_t>(_leaves[e])] = marked[e];
-  if (!coarsenCells(cells))
-    return unchanged();
-  build();
-  return true;
-}
-
-bool
-Subdivision::adapt(const std::vector<char> & refine,
-                   const std::vector<char> & coarsen,
-                   int max_level)
-{
-  if (refine.size() != _leaves.size() || coarsen.size() != _leaves.size())
-    throw InputError("The refinement and coarsening markers must have one entry per element.");
-  // A leaf marked for both is refined.
-  std::vector<char> to_refine(_cells.size(), 0), to_coarsen(_cells.size(), 0);
-  for (std::size_t e = 0; e < _leaves.size(); ++e)
+  // The corners of the children that no leaf uses any more are removed.  Each is recorded with
+  // the shape functions at it of one merged parent that holds it: parents that share it share
+  // the edge or face it lies on, where their shape functions agree.
+  const std::vector<char> kept = usedNodes();
+  std::vector<char> seen(_points.size(), 0);
+  std::array<double, 8> N{};
+  std::array<Point, 8> dN{};
+  for (Index p : merged)
   {
-    to_refine[static_cast<std::size_t>(_leaves[e])] = refine[e];
-    to_coarsen[static_cast<std::size_t>(_leaves[e])] = coarsen[e] && !refine[e];
+    const Cell & parent = _cells[static_cast<std::size_t>(p)];
+    for (Index child : parent.children)
+      for (Index n : _cells[static_cast<std::size_t>(child)].n)
+      {
+        if (kept[static_cast<std::size_t>(n)] || seen[static_cast<std::size_t>(n)])
+          continue;
+        seen[static_cast<std::size_t>(n)] = 1;
+        const Point & x = _origin_reference[static_cast<std::size_t>(parent.origin)].at(n);
+        Point eta{0, 0, 0};
+        for (int a = 0; a < _dimension; ++a)
+          eta[a] = 2.0 * (x[a] - parent.low[a]) / (parent.high[a] - parent.low[a]) - 1.0;
+        ReferenceElement::get(_type).shape(eta, N.data(), dN.data());
+        std::vector<std::pair<Index, double>> weights;
+        for (std::size_t k = 0; k < parent.n.size(); ++k)
+          if (N[k] != 0.0)
+            weights.push_back({parent.n[k], N[k]});
+        _removed.push_back({n, std::move(weights)});
+      }
   }
-  const bool coarsened = coarsenCells(to_coarsen);
-  to_refine.resize(_cells.size(), 0);
-  const bool refined = refineCells(to_refine, max_level);
-  if (!coarsened && !refined)
-    return unchanged();
-  build();
-  return true;
-}
-
-void
-Subdivision::project(const std::string & name,
-                     const std::function<Point(const Point &)> & projection)
-{
-  const auto found = _mesh.sidesets().find(name);
-  if (found == _mesh.sidesets().end())
-    throw InputError("There is no side set '" + name + "' to move onto its boundary.");
-  // A hanging node stays on the straight side of its large neighbour, where the constraint of its
-  // value puts it.  It moves onto the curve at the projection after that side is split.
-  std::vector<char> done(static_cast<std::size_t>(_mesh.numNodes()), 0);
-  for (const Hanging & h : _hanging)
-    done[static_cast<std::size_t>(h.node)] = 1;
-  for (const Side & side : found->second)
-    for (Index i : _mesh.sideNodes(side))
-    {
-      if (done[static_cast<std::size_t>(i)])
-        continue;
-      done[static_cast<std::size_t>(i)] = 1;
-      Point & x = _points[static_cast<std::size_t>(_numbers[static_cast<std::size_t>(i)])];
-      x = projection(x);
-    }
-  // The same mesh with the moved positions, and the same mesh before the last change.
-  const std::vector<Index> numbers_before = _numbers_before, leaves_before = _leaves_before;
-  build();
-  _numbers_before = numbers_before;
-  _leaves_before = leaves_before;
-}
-
-std::vector<int>
-Subdivision::levels() const
-{
-  std::vector<int> out;
-  for (Index c : _leaves)
-    out.push_back(_cells[static_cast<std::size_t>(c)].level);
-  return out;
+  return !merged.empty();
 }
 
 std::vector<Index>
-Subdivision::origins() const
+Subdivision::leaves() const
 {
   std::vector<Index> out;
-  for (Index c : _leaves)
-    out.push_back(_cells[static_cast<std::size_t>(c)].origin);
+  for (Index c = 0; c < static_cast<Index>(_cells.size()); ++c)
+    if (_cells[static_cast<std::size_t>(c)].alive && _cells[static_cast<std::size_t>(c)].leaf)
+      out.push_back(c);
   return out;
 }
 
-void
-Subdivision::build()
+std::vector<MeshHierarchy::Placed>
+Subdivision::currentElements()
 {
-  _numbers_before = _numbers;
-  _leaves_before = _leaves;
-  _leaves.clear();
-  for (Index c = 0; c < static_cast<Index>(_cells.size()); ++c)
-    if (_cells[static_cast<std::size_t>(c)].alive && _cells[static_cast<std::size_t>(c)].leaf)
-      _leaves.push_back(c);
-  const std::vector<char> used = usedNodes();
-  _numbers.clear();
-  std::vector<Index> index(_points.size(), -1);
-  Mesh out(_dimension);
-  out.setSpaceDimension(_space_dimension);
-  for (const auto & [block, name] : _block_names)
-    out.setBlockName(block, name);
-  for (Index n = 0; n < static_cast<Index>(_points.size()); ++n)
-    if (used[static_cast<std::size_t>(n)])
-    {
-      index[static_cast<std::size_t>(n)] = static_cast<Index>(_numbers.size());
-      _numbers.push_back(n);
-      out.addNode(_points[static_cast<std::size_t>(n)]);
-    }
-  for (Index c : _leaves)
+  std::vector<Placed> out;
+  for (Index c : leaves())
   {
     const Cell & cell = _cells[static_cast<std::size_t>(c)];
-    std::vector<Index> nodes;
-    for (Index n : cell.n)
-      nodes.push_back(index[static_cast<std::size_t>(n)]);
-    out.addElement(_type, nodes, cell.block);
+    out.push_back({cell.origin, cell.block, cell.level, c, cell.n});
   }
-  // The sides of the sets, the side of the element of its block where a side is between two.
-  std::map<Face, std::vector<Side>> sides;
-  for (Index e = 0; e < out.numElements(); ++e)
-    for (std::size_t f = 0; f < _faces.size(); ++f)
-    {
-      std::vector<Index> nodes = out.sideNodes({e, static_cast<int>(f)});
-      nodes.resize(static_cast<std::size_t>(1 << (_dimension - 1)));
-      for (Index & n : nodes)
-        n = _numbers[static_cast<std::size_t>(n)];
-      sides[sortedFace(nodes)].push_back({e, static_cast<int>(f)});
-    }
-  std::map<std::string, std::vector<Side>> sets;
-  for (const auto & [face, names] : _face_sets)
+  return out;
+}
+
+bool
+Subdivision::coarsenElements(const std::vector<char> & coarsen, std::vector<char> & refine)
+{
+  std::vector<char> merge(_cells.size(), 0), split(_cells.size(), 0);
+  const std::vector<Index> before = leaves();
+  for (std::size_t e = 0; e < before.size(); ++e)
   {
-    const auto found = sides.find(face);
-    if (found == sides.end())
-      continue;
-    for (const auto & [name, block] : names)
-    {
-      Side chosen = found->second.front();
-      for (const Side & side : found->second)
-        if (out.element(side.first).block == block)
-          chosen = side;
-      sets[name].push_back(chosen);
-    }
+    merge[static_cast<std::size_t>(before[e])] = coarsen[e];
+    split[static_cast<std::size_t>(before[e])] = refine[e];
   }
-  for (const auto & [name, list] : sets)
-    out.addSideset(name, list);
-  // The hanging nodes: a used middle of an edge of a leaf, and in 3D a used centre of a face of a
-  // leaf, take the mean of the ends of the edge or the corners of the face.
+  const bool merged = coarsenCells(merge);
+  refine.clear();
+  for (Index c : leaves())
+    refine.push_back(split[static_cast<std::size_t>(c)]);
+  return merged;
+}
+
+bool
+Subdivision::refineElements(const std::vector<char> & refine, int max_level)
+{
+  std::vector<char> split(_cells.size(), 0);
+  const std::vector<Index> current = leaves();
+  for (std::size_t e = 0; e < current.size(); ++e)
+    split[static_cast<std::size_t>(current[e])] = refine[e];
+  return refineCells(split, max_level);
+}
+
+bool
+Subdivision::locate(const Placed & element, Index node, Point & xi) const
+{
+  // The box of the cell, in the reference coordinates of its initial cell.
+  const Cell & cell = _cells[static_cast<std::size_t>(element.record)];
+  const Point & x = _origin_reference[static_cast<std::size_t>(element.origin)].at(node);
+  xi = Point{0, 0, 0};
+  for (int a = 0; a < _dimension; ++a)
+  {
+    xi[a] = 2.0 * (x[a] - cell.low[a]) / (cell.high[a] - cell.low[a]) - 1.0;
+    if (std::abs(xi[a]) > 1.0 + 1e-10)
+      return false;
+  }
+  return true;
+}
+
+std::vector<Mesh::NodeConstraint>
+Subdivision::hangingConstraints(const std::vector<Index> & index)
+{
+  // A used middle of an edge of a leaf, and in 3D a used centre of a face of a leaf, hangs: it
+  // takes the mean of the ends of the edge or of the corners of the face.
+  const auto used = [&](Index n) { return index[static_cast<std::size_t>(n)] >= 0; };
   std::map<Index, Hanging> hanging;
-  for (Index c : _leaves)
+  for (Index c : leaves())
   {
     const Cell & cell = _cells[static_cast<std::size_t>(c)];
     for (const auto & e : _edges)
@@ -622,7 +490,7 @@ Subdivision::build()
       const Index a = cell.n[static_cast<std::size_t>(e[0])],
                   b = cell.n[static_cast<std::size_t>(e[1])];
       const auto found = _middles.find(key(a, b));
-      if (found == _middles.end() || !used[static_cast<std::size_t>(found->second)])
+      if (found == _middles.end() || !used(found->second))
         continue;
       Hanging h;
       h.node = index[static_cast<std::size_t>(found->second)];
@@ -635,8 +503,8 @@ Subdivision::build()
         std::vector<Index> nodes;
         for (int k : face)
           nodes.push_back(cell.n[static_cast<std::size_t>(k)]);
-        const auto found = _centres.find(sortedFace(nodes));
-        if (found == _centres.end() || !used[static_cast<std::size_t>(found->second)])
+        const auto found = _centres.find(sideKey(nodes));
+        if (found == _centres.end() || !used(found->second))
           continue;
         Hanging h;
         h.node = index[static_cast<std::size_t>(found->second)];
@@ -652,97 +520,7 @@ Subdivision::build()
     _hanging.push_back(h);
     constraints.push_back({h.node, h.on});
   }
-  out.setNodeConstraints(std::move(constraints));
-  // After the constraints, which decide which sides are on the boundary.
-  addNodeSets(out);
-  _mesh = std::move(out);
-}
-
-void
-Subdivision::addNodeSets(Mesh & out) const
-{
-  // A new node joins a node set on the boundary only where it lies on the boundary too, as
-  // Mesh::refined grows its sets: the middle of an edge between two members may lie inside, on a
-  // chord across a corner.
-  const std::vector<char> & boundary = out.boundaryNodeMarkers();
-  for (std::size_t k = 0; k < _node_set_names.size(); ++k)
-  {
-    std::vector<Index> members;
-    for (std::size_t i = 0; i < _numbers.size(); ++i)
-    {
-      const Index n = _numbers[i];
-      if (!_in_node_set[k][static_cast<std::size_t>(n)])
-        continue;
-      if (_boundary_node_set[k] && n >= _initial_nodes && !boundary[i])
-        continue;
-      members.push_back(static_cast<Index>(i));
-    }
-    out.addNodeset(_node_set_names[k], members);
-  }
-}
-
-Eigen::VectorXd
-Subdivision::transfer(const Eigen::VectorXd & before, int width) const
-{
-  if (before.size() != static_cast<Index>(_numbers_before.size()) * width)
-    throw InputError("The values to transfer have " + std::to_string(before.size()) +
-                     " entries, and the mesh before the change has " +
-                     std::to_string(_numbers_before.size()) + " nodes of " + std::to_string(width) +
-                     " values.");
-  std::vector<Index> position_before(_points.size(), -1);
-  for (std::size_t i = 0; i < _numbers_before.size(); ++i)
-    position_before[static_cast<std::size_t>(_numbers_before[i])] = static_cast<Index>(i);
-  std::map<Index, std::vector<Index>> old_of_origin;
-  for (Index c : _leaves_before)
-    old_of_origin[_cells[static_cast<std::size_t>(c)].origin].push_back(c);
-  std::vector<Index> origin_of(_points.size(), -1);
-  for (Index c : _leaves)
-    for (Index n : _cells[static_cast<std::size_t>(c)].n)
-      origin_of[static_cast<std::size_t>(n)] = _cells[static_cast<std::size_t>(c)].origin;
-  const ReferenceElement & reference = ReferenceElement::get(_type);
-  Eigen::VectorXd after(static_cast<Index>(_numbers.size()) * width);
-  for (std::size_t i = 0; i < _numbers.size(); ++i)
-  {
-    const Index n = _numbers[i];
-    if (position_before[static_cast<std::size_t>(n)] >= 0)
-    {
-      after.segment(static_cast<Index>(i) * width, width) =
-          before.segment(position_before[static_cast<std::size_t>(n)] * width, width);
-      continue;
-    }
-    // The old leaf of the same initial cell whose box holds the node, in the reference
-    // coordinates of the initial cell, and the value of its interpolant there.
-    const Index origin = origin_of[static_cast<std::size_t>(n)];
-    const Point & x = _origin_reference[static_cast<std::size_t>(origin)].at(n);
-    bool found = false;
-    for (Index c : old_of_origin[origin])
-    {
-      const Cell & old = _cells[static_cast<std::size_t>(c)];
-      Point xi{0, 0, 0};
-      bool inside = true;
-      for (int a = 0; a < _dimension; ++a)
-      {
-        const double width_a = old.high[a] - old.low[a];
-        xi[a] = 2.0 * (x[a] - old.low[a]) / width_a - 1.0;
-        inside = inside && std::abs(xi[a]) <= 1.0 + 1e-10;
-      }
-      if (!inside)
-        continue;
-      std::array<double, 8> N{};
-      std::array<Point, 8> dN{};
-      reference.shape(xi, N.data(), dN.data());
-      Eigen::VectorXd value = Eigen::VectorXd::Zero(width);
-      for (std::size_t k = 0; k < old.n.size(); ++k)
-        value += N[k] *
-                 before.segment(position_before[static_cast<std::size_t>(old.n[k])] * width, width);
-      after.segment(static_cast<Index>(i) * width, width) = value;
-      found = true;
-      break;
-    }
-    if (!found)
-      throw std::logic_error("dualmesh: a new node lies in no cell of the mesh before.");
-  }
-  return after;
+  return constraints;
 }
 
 } // namespace dualmesh

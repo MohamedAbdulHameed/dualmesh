@@ -105,7 +105,7 @@ reaction, the flow out of the body through the part of :math:`\partial V_I` on
 
 :meth:`dualmesh.Problem.boundary_flux` adds :math:`Q_I` over the nodes of a
 boundary.  The physics name this flow:
-:meth:`~dualmesh.physics.HeatTransfer.heat_flow` gives the heat that leaves
+:meth:`~dualmesh.physics.HeatConduction.heat_flow` gives the heat that leaves
 through a boundary, and :meth:`~dualmesh.physics.SolidMechanics.reaction_force`
 the force of the body on its support.
 
@@ -154,9 +154,9 @@ the velocity (m/s), enters DMCDM in one of two ways.
   ``central`` and its default ``advection_form``.
 * As a sum over the faces :math:`f` of the control volume, with a face value
   :math:`u_f` that the scheme chooses.  The schemes ``upwind``,
-  ``linear_upwind`` and ``limited`` always take this form.  The kernels
-  ``heat_convection`` and ``convective_inertia`` take it with ``central`` as
-  well when the problem solves a mass equation of the order of the field.
+  ``linear_upwind`` and ``limited`` always take this form.  The kernel
+  ``advection`` takes it with ``central`` as well when it carries the velocity
+  of a flow whose mass equation the problem solves at the order of the field.
 
 FEM takes ``central`` only.  Its streamline upwind Petrov-Galerkin (SUPG)
 stabilization is a kernel of its own, which :doc:`heat_transfer` and
@@ -186,10 +186,11 @@ divergence free, so the conservative form adds a source
 The computed temperature then changes when a constant is added to every
 temperature, as in a change from degrees Celsius to kelvin.
 
-When the problem solves a mass equation of the order of the field, the kernels
-``heat_convection`` and ``convective_inertia`` therefore take the
-non-conservative face form with every scheme.  Through the interfaces they
-carry the velocity :math:`\mathbf{w}` whose flux the mass equation conserves
+When the problem solves a mass equation of the order of the field, the kernel
+``advection`` of the velocity of that flow, which carries the heat and the
+momentum, therefore takes the non-conservative face form with every scheme.
+Through the interfaces it carries the velocity :math:`\mathbf{w}` whose flux the
+mass equation conserves
 (:ref:`the conserved velocity <conserved-advection>`), and through
 :math:`\partial\Omega` the velocity :math:`\mathbf{v}`, as the mass equation
 takes them, with :math:`\dot{V}_f = \mathbf{w} \cdot \mathbf{A}_f`.  The volume
@@ -229,7 +230,8 @@ point on the face.  The schemes take these face values [Jasak1996]_.
 ``limited``
    :math:`u_f = u_\mathrm{up} + \psi \, (\bar{u}_f - u_\mathrm{up})`, the upwind
    value blended towards the mean :math:`\bar{u}_f = (u_\mathrm{up} +
-   u_\mathrm{dn}) / 2` by the van Albada limiter :math:`\psi`.  With
+   u_\mathrm{dn}) / 2` by the van Albada limiter :math:`\psi`
+   [VanAlbadaVanLeerRoberts1982]_.  With
    :math:`a = (\mathbf{x}_\mathrm{dn} - \mathbf{x}_\mathrm{up}) \cdot \nabla
    u_\mathrm{up}` and :math:`b = u_\mathrm{dn} - u_\mathrm{up}`, the ratio of
    consecutive differences is :math:`\chi = 2a/b - 1` [Jasak1996]_, and

@@ -18,7 +18,6 @@
 #include <cmath>
 #include <deque>
 #include <exception>
-#include <iomanip>
 #include <iostream>
 #include <limits>
 #include <numeric>
@@ -169,91 +168,11 @@ Problem::assemble(const Vector & U, const AssemblyOptions & opts, Vector & R, Sp
       s.triplets.reserve(static_cast<std::size_t>(_mesh->numElements()) * 16 * nv * nv * 4 /
                          nthreads);
   }
-  const bool use_lag = opts.mode == LinearizationMode::Picard && opts.lagged;
-
-  // The local degrees of freedom of an element, in the compact layout of
-  // localDofIndex: every variable at every node, except that a first-order
-  // variable on a quadratic element has only its corner nodes.
   const bool mixed = _mixed_order;
-  const auto gatherLocal = [&](ThreadScratch & s, const Element & el)
-  {
-    const int nn = el.numNodes();
-    const int ld = numLocalDofs(el);
-    s.cur.resize(ld);
-    s.dofs.resize(ld);
-    for (int k = 0; k < nn; ++k)
-      for (int v = 0; v < nv; ++v)
-      {
-        const int i = localDofIndex(el, k, v);
-        if (i < 0)
-          continue;
-        const Index d = dof(el.nodes[k], v);
-        s.dofs[i] = d;
-        s.cur[i] = U[d];
-      }
-    if (use_lag)
-    {
-      s.lag.resize(ld);
-      for (int i = 0; i < ld; ++i)
-        s.lag[i] = (*opts.lagged)[s.dofs[i]];
-    }
-    if (opts.old)
-    {
-      s.old.resize(ld);
-      for (int i = 0; i < ld; ++i)
-        s.old[i] = (*opts.old)[s.dofs[i]];
-    }
-    if (opts.rate_shift)
-    {
-      s.rate_shift.resize(ld);
-      s.accel_shift.resize(ld);
-      for (int i = 0; i < ld; ++i)
-      {
-        s.rate_shift[i] = (*opts.rate_shift)[s.dofs[i]];
-        s.accel_shift[i] = (*opts.accel_shift)[s.dofs[i]];
-      }
-    }
-    s.Rloc.assign(ld, ADReal(0.0));
-    s.touched.assign(ld, 0);
-    if (term_size)
-      s.sizes.assign(static_cast<std::size_t>(ld), 0.0);
-    return ld;
-  };
-
-  // A cell of the dual mesh method with nodes hanging on its sides (PolygonCell) takes them as
-  // further slots after its own: they own control domain and interfaces in the cell, and the
-  // fields of the cell, which come from its own nodes, do not depend on them.
-  const auto addPolygonSlots = [&](ThreadScratch & s, const PolygonCell & polygon, int nn)
-  {
-    for (std::size_t k = static_cast<std::size_t>(nn); k < polygon.nodes.size(); ++k)
-      for (int v = 0; v < nv; ++v)
-      {
-        const Index d = dof(polygon.nodes[k], v);
-        s.dofs.push_back(d);
-        s.cur.push_back(U[d]);
-        if (use_lag)
-          s.lag.push_back((*opts.lagged)[d]);
-        if (opts.old)
-          s.old.push_back((*opts.old)[d]);
-        if (opts.rate_shift)
-        {
-          s.rate_shift.push_back((*opts.rate_shift)[d]);
-          s.accel_shift.push_back((*opts.accel_shift)[d]);
-        }
-      }
-    const int all = static_cast<int>(s.dofs.size());
-    s.Rloc.resize(static_cast<std::size_t>(all), ADReal(0.0));
-    s.touched.resize(static_cast<std::size_t>(all), 0);
-    if (term_size)
-      s.sizes.resize(static_cast<std::size_t>(all), 0.0);
-    return all;
-  };
 
   const auto assembleElement = [&](ThreadScratch & s, Index e)
   {
     auto & cur = s.cur;
-    auto & lag = s.lag;
-    auto & old = s.old;
     auto & dofs = s.dofs;
     auto & Rloc = s.Rloc;
     auto & touched = s.touched;
@@ -261,17 +180,12 @@ Problem::assemble(const Vector & U, const AssemblyOptions & opts, Vector & R, Sp
     auto & pts = s.pts;
     // The mapped point of the current integration point: the one built with
     // the points when there is one (no copy), otherwise s.geo.
-    MappedPoint * gp = &s.geo;
-    auto & fld = s.fld;
+    const MappedPoint * gp = &s.geo;
     auto & ctx = s.ctx;
     const Element & el = _mesh->element(e);
     const int nn = el.numNodes();
-    const int ld = gatherLocal(s, el);
-    const PolygonCell * polygon =
-        dual && !_polygon_of.empty() && _polygon_of[static_cast<std::size_t>(e)] >= 0
-            ? &_polygon_cells[static_cast<std::size_t>(_polygon_of[static_cast<std::size_t>(e)])]
-            : nullptr;
-    const int all = polygon ? addPolygonSlots(s, *polygon, nn) : ld;
+    const PolygonCell * polygon = polygonCell(e);
+    const int all = gatherLocal(s, el, U, opts, polygon);
     const int nd = want_jac ? all : 0;
     const auto nodeOf = [&](int slot)
     { return slot < nn ? el.nodes[slot] : polygon->nodes[static_cast<std::size_t>(slot)]; };
@@ -315,41 +229,22 @@ Problem::assemble(const Vector & U, const AssemblyOptions & opts, Vector & R, Sp
       // The points were mapped when they were built; reuse those maps.
       const auto evaluateAt = [&](const IntegrationPoint & ip, std::size_t q)
       {
-        if (q < s.mapped.size())
-          gp = &s.mapped[q];
-        else
-        {
-          mapPoint(*_mesh, el, ip.xi, s.geo);
-          gp = &s.geo;
-        }
-        MappedPoint & geo = *gp;
-        if (mixed)
-          mapCornerShape(el, geo);
-        const MappedPoint * fp = &geo;
-        if (group.spec.reduced)
-        {
-          mapPoint(*_mesh, el, ip.xi_field, fld);
-          if (mixed)
-            mapCornerShape(el, fld);
-          fp = &fld;
-        }
-        fillContext(ctx, el, *fp, cur, use_lag ? &lag : nullptr, opts.old ? &old : nullptr, nd);
-        if (opts.rate_shift)
-          fillShifts(ctx, el, *fp, s.rate_shift, s.accel_shift);
-        ctx.x = geo.x;
-        ctx.state_owner = e;
-        ctx.state_key = stateKey(point_set, group_index, 0, static_cast<unsigned>(q));
-        evaluateProperties(ctx);
-        return coordFactor(geo.x);
+        gp = &evaluatePoint(s,
+                            el,
+                            ip,
+                            q < s.mapped.size() ? &s.mapped[q] : nullptr,
+                            group.spec.reduced,
+                            opts,
+                            nd,
+                            e,
+                            stateKey(point_set, group_index, 0, static_cast<unsigned>(q)));
+        return coordFactor(gp->x);
       };
 
       // Volume integrals (DMCDM: control volumes; FEM: element interior).
       if (has_source || (!dual && has_flux))
       {
-        if (polygon)
-          buildPolygonPoints(*_mesh, e, *polygon, PointSet::Volume, group.spec, pts, &s.mapped);
-        else
-          buildElementPoints(*_mesh, e, dual, PointSet::Volume, group.spec, pts, &s.mapped);
+        buildElementPoints(*_mesh, e, dual, PointSet::Volume, group.spec, pts, &s.mapped, polygon);
         point_set = 0;
         for (std::size_t q = 0; q < pts.size(); ++q)
         {
@@ -417,11 +312,52 @@ Problem::assemble(const Vector & U, const AssemblyOptions & opts, Vector & R, Sp
       // Interfaces between control volumes (DMCDM only).
       if (dual && has_flux)
       {
-        if (polygon)
-          buildPolygonPoints(*_mesh, e, *polygon, PointSet::Faces, group.spec, pts, &s.mapped);
-        else
-          buildElementPoints(*_mesh, e, dual, PointSet::Faces, group.spec, pts, &s.mapped);
+        buildElementPoints(*_mesh, e, dual, PointSet::Faces, group.spec, pts, &s.mapped, polygon);
         point_set = 1;
+        // The flux of kernel k through interface ip, times scale: out of the control domain of the
+        // owner (-F.n) and into that of the neighbour, with the sizes of the two terms.  A
+        // non-conservative face flux of an advective kernel differs between the two sides
+        // (Kernel::nonConservativeFaceFlux): FN is that of the neighbour's equation.
+        const auto faceFlux = [&](const Kernel * k,
+                                  const IntegrationPoint & ip,
+                                  double scale,
+                                  bool advective,
+                                  ADReal & ro,
+                                  ADReal & rn,
+                                  double & ro_size,
+                                  double & rn_size)
+        {
+          const bool per_side = advective && k->nonConservativeFaceFlux();
+          ADVector3 F{ADReal(0.0), ADReal(0.0), ADReal(0.0)};
+          if (per_side)
+            ctx.reference_side = 0;
+          k->computeFlux(ctx, F);
+          ADVector3 FN = F;
+          if (per_side)
+          {
+            ctx.reference_side = 1;
+            FN = {ADReal(0.0), ADReal(0.0), ADReal(0.0)};
+            k->computeFlux(ctx, FN);
+            ctx.reference_side = -1;
+          }
+          double F_size[3] = {0.0, 0.0, 0.0}, FN_size[3] = {0.0, 0.0, 0.0};
+          if (term_size)
+          {
+            k->fluxTermSize(ctx, F, F_size);
+            if (per_side)
+              k->fluxTermSize(ctx, FN, FN_size);
+            else
+              std::copy(F_size, F_size + 3, FN_size);
+          }
+          for (int d = 0; d < dim; ++d)
+            if (ip.area[d] != 0.0)
+            {
+              ro.addScaledBy(F[d], -scale * ip.area[d]);
+              rn.addScaledBy(FN[d], scale * ip.area[d]);
+              ro_size += std::abs(scale * ip.area[d]) * F_size[d];
+              rn_size += std::abs(scale * ip.area[d]) * FN_size[d];
+            }
+        };
         const bool sides =
             std::any_of(ks.begin(), ks.end(), [](const Kernel * k) { return k->usesFaceSides(); });
         for (std::size_t q = 0; q < pts.size(); ++q)
@@ -505,41 +441,11 @@ Problem::assemble(const Vector & U, const AssemblyOptions & opts, Vector & R, Sp
                     g[c].addScaledBy(difference, w[c]);
                 }
               }
-              const bool per_side = k->nonConservativeFaceFlux();
-              ADVector3 F{ADReal(0.0), ADReal(0.0), ADReal(0.0)};
-              if (per_side)
-                ctx.reference_side = 0;
-              k->computeFlux(ctx, F);
-              ADVector3 FN = F;
-              if (per_side)
-              {
-                ctx.reference_side = 1;
-                FN = {ADReal(0.0), ADReal(0.0), ADReal(0.0)};
-                k->computeFlux(ctx, FN);
-                ctx.reference_side = -1;
-              }
-              double F_size[3] = {0.0, 0.0, 0.0}, FN_size[3] = {0.0, 0.0, 0.0};
-              if (term_size)
-              {
-                k->fluxTermSize(ctx, F, F_size);
-                if (per_side)
-                  k->fluxTermSize(ctx, FN, FN_size);
-                else
-                  std::copy(F_size, F_size + 3, FN_size);
-              }
-              ctx.side_grad[0].clear();
-              ctx.side_grad[1].clear();
-              const double scale = cf * weightOf(k);
               ADReal ro(0.0), rn(0.0);
               double ro_size = 0.0, rn_size = 0.0;
-              for (int d = 0; d < dim; ++d)
-                if (ip.area[d] != 0.0)
-                {
-                  ro.addScaledBy(F[d], -scale * ip.area[d]);
-                  rn.addScaledBy(FN[d], scale * ip.area[d]);
-                  ro_size += std::abs(scale * ip.area[d]) * F_size[d];
-                  rn_size += std::abs(scale * ip.area[d]) * FN_size[d];
-                }
+              faceFlux(k, ip, cf * weightOf(k), true, ro, rn, ro_size, rn_size);
+              ctx.side_grad[0].clear();
+              ctx.side_grad[1].clear();
               for (const auto & [row, r, size] : {std::tuple<Index, const ADReal *, double>{
                                                       dofs[ip.owner * nv + v], &ro, ro_size},
                                                   std::tuple<Index, const ADReal *, double>{
@@ -556,46 +462,20 @@ Problem::assemble(const Vector & U, const AssemblyOptions & opts, Vector & R, Sp
               }
               continue;
             }
-            ADVector3 F{ADReal(0.0), ADReal(0.0), ADReal(0.0)};
-            // A non-conservative face flux differs between the two sides (Kernel::
-            // nonConservativeFaceFlux): FN is that of the neighbour's equation.
-            const bool per_side = sides && k->nonConservativeFaceFlux();
-            if (per_side)
-              ctx.reference_side = 0;
-            k->computeFlux(ctx, F);
-            ADVector3 FN = F;
-            if (per_side)
-            {
-              ctx.reference_side = 1;
-              FN = {ADReal(0.0), ADReal(0.0), ADReal(0.0)};
-              k->computeFlux(ctx, FN);
-              ctx.reference_side = -1;
-            }
-            // -\oint F.n over the boundary of CD_a; the same interface
-            // enters CD_b with the opposite normal.
-            const double scale = cf * weightOf(k);
-            ADReal & ro = Rloc[ip.owner * nv + v];
-            ADReal & rn = Rloc[ip.neighbor * nv + v];
-            double F_size[3] = {0.0, 0.0, 0.0}, FN_size[3] = {0.0, 0.0, 0.0};
+            double ro_size = 0.0, rn_size = 0.0;
+            faceFlux(k,
+                     ip,
+                     cf * weightOf(k),
+                     sides,
+                     Rloc[ip.owner * nv + v],
+                     Rloc[ip.neighbor * nv + v],
+                     ro_size,
+                     rn_size);
             if (term_size)
             {
-              k->fluxTermSize(ctx, F, F_size);
-              if (per_side)
-                k->fluxTermSize(ctx, FN, FN_size);
-              else
-                std::copy(F_size, F_size + 3, FN_size);
+              sizes[ip.owner * nv + v] += ro_size;
+              sizes[ip.neighbor * nv + v] += rn_size;
             }
-            for (int d = 0; d < dim; ++d)
-              if (ip.area[d] != 0.0)
-              {
-                ro.addScaledBy(F[d], -scale * ip.area[d]);
-                rn.addScaledBy(FN[d], scale * ip.area[d]);
-                if (term_size)
-                {
-                  sizes[ip.owner * nv + v] += std::abs(scale * ip.area[d]) * F_size[d];
-                  sizes[ip.neighbor * nv + v] += std::abs(scale * ip.area[d]) * FN_size[d];
-                }
-              }
             touched[ip.owner * nv + v] = 1;
             touched[ip.neighbor * nv + v] = 1;
           }
@@ -653,14 +533,10 @@ Problem::assemble(const Vector & U, const AssemblyOptions & opts, Vector & R, Sp
   // serially, in the first thread's scratch space.
   ThreadScratch & s0 = scratch[0];
   auto & cur = s0.cur;
-  auto & lag = s0.lag;
-  auto & old = s0.old;
   auto & dofs = s0.dofs;
   auto & Rloc = s0.Rloc;
   auto & touched = s0.touched;
   auto & pts = s0.pts;
-  auto & geo = s0.geo;
-  auto & fld = s0.fld;
   auto & ctx = s0.ctx;
 
   // ---- integrated boundary conditions ------------------------------------
@@ -675,8 +551,7 @@ Problem::assemble(const Vector & U, const AssemblyOptions & opts, Vector & R, Sp
               *this, U, opts.old, R, opts.reference, want_jac ? &s0.triplets : nullptr);
         continue;
       }
-      const int v = bc->variable();
-      double wfac = steadyWeight(*bc, opts);
+      const double wfac = steadyWeight(*bc, opts);
       if (const auto * ib = dynamic_cast<const InterfaceBC *>(bc.get()))
       {
         assembleInterface(*ib, U, opts, wfac, R, want_jac ? &s0.triplets : nullptr, s0);
@@ -687,58 +562,17 @@ Problem::assemble(const Vector & U, const AssemblyOptions & opts, Vector & R, Sp
         const Element & el = _mesh->element(side.first);
         if (!bc->activeOnBlock(el.block))
           continue;
-        const int nn = el.numNodes();
-        const int ld = gatherLocal(s0, el);
-        const int nd = want_jac ? ld : 0;
-        ctx.element = side.first;
-        ctx.block = el.block;
-        ctx.on_boundary = true;
-        buildSidePoints(*_mesh, side, dual, bc->quadrature(), pts);
-        const bool corner = usesCornerShape(el, v);
-        for (const auto & ip : pts)
-        {
-          mapPoint(*_mesh, el, ip.xi, geo);
-          if (mixed)
-            mapCornerShape(el, geo);
-          const MappedPoint * fp = &geo;
-          if (bc->quadrature().reduced)
-          {
-            mapPoint(*_mesh, el, ip.xi_field, fld);
-            if (mixed)
-              mapCornerShape(el, fld);
-            fp = &fld;
-          }
-          fillContext(ctx, el, *fp, cur, use_lag ? &lag : nullptr, opts.old ? &old : nullptr, nd);
-          ctx.x = geo.x;
-          ctx.normal = (1.0 / ip.weight) * ip.area;
-          ctx.state_owner = side.first;
-          ctx.state_key = stateKey(2,
-                                   static_cast<unsigned>(&bc - _ibcs.data()),
-                                   static_cast<unsigned>(side.second),
-                                   static_cast<unsigned>(&ip - pts.data()));
-          evaluateProperties(ctx);
-          const double w = ip.weight * coordFactor(geo.x) * wfac;
-          const ADReal q = bc->computeBoundaryFlux(ctx) * w;
-          if (ip.owner >= 0)
-          {
-            Rloc[ip.owner * nv + v] -= q;
-            touched[ip.owner * nv + v] = 1;
-          }
-          else
-          {
-            const double * testN = corner ? geo.corner_shape : geo.N;
-            const int ntest = corner ? geo.num_corners : nn;
-            for (int a = 0; a < ntest; ++a)
-            {
-              const int i = localDofIndex(el, a, v);
-              Rloc[i] -= q * testN[a];
-              touched[i] = 1;
-            }
-          }
-        }
-        scatter(Rloc,
-                dofs,
-                touched,
+        const int ld = gatherLocal(s0, el, U, opts);
+        conditionResidual(*bc,
+                          static_cast<unsigned>(&bc - _ibcs.data()),
+                          side,
+                          wfac,
+                          opts,
+                          want_jac ? ld : 0,
+                          s0);
+        scatter(s0.Rloc,
+                s0.dofs,
+                s0.touched,
                 R,
                 opts.reference,
                 term_size,
@@ -785,7 +619,7 @@ Problem::assemble(const Vector & U, const AssemblyOptions & opts, Vector & R, Sp
           if (!vb.empty() && !vb.count(el.block))
             continue;
           const double wfac = steadyWeight(*k, opts);
-          const int ld = gatherLocal(s0, el);
+          const int ld = gatherLocal(s0, el, U, opts);
           const int nd = want_jac ? ld : 0;
           ctx.element = side.first;
           ctx.block = el.block;
@@ -793,10 +627,9 @@ Problem::assemble(const Vector & U, const AssemblyOptions & opts, Vector & R, Sp
           buildSidePoints(*_mesh, side, dual, k->quadrature(), pts);
           for (const auto & ip : pts)
           {
-            mapPoint(*_mesh, el, ip.xi, geo);
-            fillContext(ctx, el, geo, cur, use_lag ? &lag : nullptr, opts.old ? &old : nullptr, nd);
-            ctx.x = geo.x;
             ctx.normal = (1.0 / ip.weight) * ip.area;
+            const MappedPoint & geo =
+                evaluatePoint(s0, el, ip, nullptr, k->quadrature().reduced, opts, nd, -1, 0);
             // Both sides are the owner node, so that every scheme takes its value.
             ctx.on_face = true;
             ctx.side_u[0].resize(nv);
@@ -812,9 +645,7 @@ Problem::assemble(const Vector & U, const AssemblyOptions & opts, Vector & R, Sp
             ctx.side_grad[1].clear();
             ctx.side_x[0] = ctx.side_x[1] = _mesh->node(el.nodes[ip.owner]);
             ctx.side_weight = 0.5;
-            ctx.state_owner = -1;
             ctx.reference_side = k->nonConservativeFaceFlux() ? 0 : -1;
-            evaluateProperties(ctx);
             ADVector3 F{ADReal(0.0), ADReal(0.0), ADReal(0.0)};
             k->computeFlux(ctx, F);
             ctx.reference_side = -1;
@@ -869,6 +700,138 @@ Problem::assemble(const Vector & U, const AssemblyOptions & opts, Vector & R, Sp
       trip.insert(trip.end(), s.triplets.begin(), s.triplets.end());
     J->resize(ndof, ndof);
     J->setFromTriplets(trip.begin(), trip.end());
+  }
+}
+
+int
+Problem::gatherLocal(ThreadScratch & s,
+                     const Element & el,
+                     const Vector & U,
+                     const AssemblyOptions & opts,
+                     const PolygonCell * polygon) const
+{
+  // Every variable at every node, except that a first-order variable on a quadratic element has
+  // only its corner nodes.  A cell of the dual mesh method with nodes hanging on its sides
+  // (PolygonCell) takes them as further slots after its own: they own control domain and
+  // interfaces in the cell, and the fields of the cell, which come from its own nodes, do not
+  // depend on them.
+  const int nv = numVariables();
+  s.dofs.resize(static_cast<std::size_t>(numLocalDofs(el)));
+  for (int k = 0; k < el.numNodes(); ++k)
+    for (int v = 0; v < nv; ++v)
+    {
+      const int i = localDofIndex(el, k, v);
+      if (i >= 0)
+        s.dofs[i] = dof(el.nodes[k], v);
+    }
+  if (polygon)
+    for (std::size_t k = static_cast<std::size_t>(el.numNodes()); k < polygon->nodes.size(); ++k)
+      for (int v = 0; v < nv; ++v)
+        s.dofs.push_back(dof(polygon->nodes[k], v));
+  const int ld = static_cast<int>(s.dofs.size());
+  const auto take = [&](const Vector * from, std::vector<double> & to)
+  {
+    if (!from)
+      return;
+    to.resize(ld);
+    for (int i = 0; i < ld; ++i)
+      to[i] = (*from)[s.dofs[i]];
+  };
+  take(&U, s.cur);
+  take(opts.mode == LinearizationMode::Picard ? opts.lagged : nullptr, s.lag);
+  take(opts.old, s.old);
+  take(opts.rate_shift, s.rate_shift);
+  take(opts.rate_shift ? opts.accel_shift : nullptr, s.accel_shift);
+  s.Rloc.assign(ld, ADReal(0.0));
+  s.touched.assign(ld, 0);
+  if (opts.term_size)
+    s.sizes.assign(static_cast<std::size_t>(ld), 0.0);
+  return ld;
+}
+
+const MappedPoint &
+Problem::evaluatePoint(ThreadScratch & s,
+                       const Element & el,
+                       const IntegrationPoint & ip,
+                       MappedPoint * mapped,
+                       bool reduced,
+                       const AssemblyOptions & opts,
+                       int nd,
+                       Index owner,
+                       std::uint64_t key) const
+{
+  MappedPoint & geo = mapped ? *mapped : s.geo;
+  if (!mapped)
+    mapPoint(*_mesh, el, ip.xi, geo);
+  if (_mixed_order)
+    mapCornerShape(el, geo);
+  const MappedPoint * fp = &geo;
+  if (reduced)
+  {
+    mapPoint(*_mesh, el, ip.xi_field, s.fld);
+    if (_mixed_order)
+      mapCornerShape(el, s.fld);
+    fp = &s.fld;
+  }
+  const bool lagged = opts.mode == LinearizationMode::Picard && opts.lagged;
+  fillContext(
+      s.ctx, el, *fp, s.cur, lagged ? &s.lag : nullptr, opts.old ? &s.old : nullptr, nd);
+  if (opts.rate_shift)
+    fillShifts(s.ctx, el, *fp, s.rate_shift, s.accel_shift);
+  s.ctx.x = geo.x;
+  s.ctx.state_owner = owner;
+  s.ctx.state_key = key;
+  evaluateProperties(s.ctx);
+  return geo;
+}
+
+void
+Problem::conditionResidual(const IntegratedBC & bc,
+                           unsigned index,
+                           const Side & side,
+                           double wfac,
+                           const AssemblyOptions & opts,
+                           int nd,
+                           ThreadScratch & s) const
+{
+  const Element & el = _mesh->element(side.first);
+  const int v = bc.variable();
+  const int nv = numVariables();
+  s.ctx.element = side.first;
+  s.ctx.block = el.block;
+  s.ctx.on_boundary = true;
+  buildSidePoints(*_mesh, side, isDual(), bc.quadrature(), s.pts);
+  const bool corner = usesCornerShape(el, v);
+  for (std::size_t q = 0; q < s.pts.size(); ++q)
+  {
+    const IntegrationPoint & ip = s.pts[q];
+    s.ctx.normal = (1.0 / ip.weight) * ip.area;
+    const MappedPoint & geo = evaluatePoint(
+        s,
+        el,
+        ip,
+        nullptr,
+        bc.quadrature().reduced,
+        opts,
+        nd,
+        side.first,
+        stateKey(2, index, static_cast<unsigned>(side.second), static_cast<unsigned>(q)));
+    // The flux of the condition enters the body.
+    const ADReal flux = bc.computeBoundaryFlux(s.ctx) * (ip.weight * coordFactor(geo.x) * wfac);
+    if (ip.owner >= 0)
+    {
+      s.Rloc[ip.owner * nv + v] -= flux;
+      s.touched[ip.owner * nv + v] = 1;
+      continue;
+    }
+    const double * testN = corner ? geo.corner_shape : geo.N;
+    const int ntest = corner ? geo.num_corners : el.numNodes();
+    for (int a = 0; a < ntest; ++a)
+    {
+      const int i = localDofIndex(el, a, v);
+      s.Rloc[i] -= flux * testN[a];
+      s.touched[i] = 1;
+    }
   }
 }
 
@@ -1119,23 +1082,25 @@ Problem::applyDirichlet(Vector & U, double data_fraction) const
   // A condition on a first-order variable also wrote the unused slots of the
   // non-corner boundary nodes; restore the linear interpolant there.
   updateDependentDofs(U);
+  parallel().shareDirichlet(U);
+}
+
+std::vector<char>
+Problem::prescribedDofs() const
+{
+  std::vector<char> prescribed(static_cast<std::size_t>(numDofs()), 0);
+  for (const auto & bc : _nbcs)
+    for (Index n : bc->nodes())
+      prescribed[static_cast<std::size_t>(dof(n, bc->variable()))] = 1;
+  return prescribed;
 }
 
 std::vector<char>
 Problem::constrainedDofs() const
 {
-  std::vector<char> fixed(numDofs(), 0);
-  for (const auto & bc : _nbcs)
-    for (Index n : bc->nodes())
-      fixed[dof(n, bc->variable())] = 1;
+  std::vector<char> fixed = prescribedDofs();
   for (Index i = 0; i < numDofs(); ++i)
-    if (!_active_dof[i])
-      fixed[i] = 1;
-  for (std::size_t i = 0; i < _primary_of.size(); ++i)
-    if (_primary_of[i] >= 0)
-      fixed[i] = 1;
-  for (std::size_t i = 0; i < _hanging_of.size(); ++i)
-    if (!_hanging_of[i].empty())
+    if (!_active_dof[i] || isDependent(i))
       fixed[i] = 1;
   for (std::size_t i = 0; i < _extra_constrained.size() && i < fixed.size(); ++i)
     if (_extra_constrained[i])
@@ -1149,62 +1114,42 @@ Problem::constrainedDofs() const
 void
 Problem::foldDependents(Vector & R, SparseMatrix * J) const
 {
-  // A periodic copy is its primary: its equation is added to the primary's, and its column too
-  // (the Jacobian becomes P^T J P).  Its own row and column are then empty, and the caller gives
-  // them the identity, like a prescribed value.
-  if (!_primary_of.empty())
-  {
-    const auto primary = [&](Index i) { return _primary_of[i] >= 0 ? _primary_of[i] : i; };
-    for (Index i = 0; i < numDofs(); ++i)
-      if (_primary_of[i] >= 0)
-        R[_primary_of[i]] += R[i];
-    if (J)
+  if (!_fold_dependents)
+    return;
+  // u_d = sum_j w_j u_j: the equation of d goes to those of the j with the weights.
+  for (std::size_t d = 0; d < _dependent_of.size(); ++d)
+    if (!_dependent_of[d].empty())
     {
-      std::vector<Triplet> folded;
-      folded.reserve(static_cast<std::size_t>(J->nonZeros()));
-      for (Index col = 0; col < J->outerSize(); ++col)
-        for (SparseMatrix::InnerIterator it(*J, col); it; ++it)
-          folded.emplace_back(primary(it.row()), primary(it.col()), it.value());
-      J->setFromTriplets(folded.begin(), folded.end());
+      for (const auto & [p, w] : _dependent_of[d])
+        R[p] += w * R[static_cast<Index>(d)];
+      R[static_cast<Index>(d)] = 0.0;
     }
-  }
-  // A hanging degree of freedom is the weighted sum of its primaries, u_h = sum_j w_j u_j: its
-  // equation goes to theirs with the weights (R_j += w_j R_h), and the Jacobian becomes C^T J C,
-  // with C the map from the independent degrees of freedom to all of them.
-  if (!_hanging_of.empty())
+  if (!J)
+    return;
+  const auto expand = [&](Index i, auto && add)
   {
-    for (Index i = 0; i < numDofs(); ++i)
-      for (const auto & [p, w] : _hanging_of[static_cast<std::size_t>(i)])
-        R[p] += w * R[i];
-    if (J)
-    {
-      std::vector<Triplet> folded;
-      folded.reserve(static_cast<std::size_t>(J->nonZeros()));
-      const auto expand = [&](Index i, auto && add)
-      {
-        const auto & on = _hanging_of[static_cast<std::size_t>(i)];
-        if (on.empty())
-          add(i, 1.0);
-        else
-          for (const auto & [p, w] : on)
-            add(p, w);
-      };
-      for (Index col = 0; col < J->outerSize(); ++col)
-        for (SparseMatrix::InnerIterator it(*J, col); it; ++it)
-          expand(it.row(),
-                 [&](Index r, double wr)
-                 {
-                   expand(it.col(),
-                          [&](Index c, double wc)
-                          { folded.emplace_back(r, c, wr * wc * it.value()); });
-                 });
-      J->setFromTriplets(folded.begin(), folded.end());
-    }
-  }
+    const auto & on = _dependent_of[static_cast<std::size_t>(i)];
+    if (on.empty())
+      add(i, 1.0);
+    else
+      for (const auto & [p, w] : on)
+        add(p, w);
+  };
+  std::vector<Triplet> folded;
+  folded.reserve(static_cast<std::size_t>(J->nonZeros()));
+  for (Index col = 0; col < J->outerSize(); ++col)
+    for (SparseMatrix::InnerIterator it(*J, col); it; ++it)
+      expand(it.row(),
+             [&](Index r, double wr)
+             {
+               expand(it.col(),
+                      [&](Index c, double wc) { folded.emplace_back(r, c, wr * wc * it.value()); });
+             });
+  J->setFromTriplets(folded.begin(), folded.end());
 }
 
 void
-Problem::dirichletRows(const Vector & /*U*/, double /*lf*/, Vector & R, SparseMatrix * J) const
+Problem::dirichletRows(Vector & R, SparseMatrix * J) const
 {
   foldDependents(R, J);
   const std::vector<char> fixed = constrainedDofs();
@@ -1882,7 +1827,7 @@ Problem::holdPressureLevels(const SparseMatrix & J)
     Vector image = J * e, scale = size * e;
     Vector rows = J.transpose() * e, row_scale = size.transpose() * e;
     for (Vector * v : {&image, &scale, &rows, &row_scale})
-      par.addShared(*v);
+      par.addAtNodes(v->data(), numVariables());
     // Each equation is compared with itself, in its own units: the heat that a flow carries
     // depends on the pressure through the conserved velocity, in numbers that would hide the
     // momentum equations.
@@ -1910,30 +1855,23 @@ Problem::holdPressureLevels(const SparseMatrix & J)
       continue;
     }
     // Hold the unknown nearest the centre of the free unknowns: one in a corner slows the Krylov
-    // solvers by about 40 % (the cavity with the pressure mass and pcd preconditioners).  A tie
-    // goes to the smaller global number, so that every process holds the same unknown.
+    // solvers by about 40 % (the cavity with the pressure mass and pcd preconditioners).
     Point centre{0, 0, 0};
     for (Index n : free)
       centre = centre + _mesh->node(n);
     const double count = par.sum(static_cast<double>(free.size()));
     for (int c = 0; c < 3; ++c)
       centre[c] = par.sum(centre[c]) / std::max(count, 1.0);
-    const auto distance = [&](Index n) { return norm(_mesh->node(n) - centre); };
-    double nearest = std::numeric_limits<double>::infinity();
+    std::vector<char> candidate(static_cast<std::size_t>(_mesh->numNodes()), 0);
     for (Index n : free)
-      if (par.globalDof(dof(n, p)) >= 0)
-        nearest = std::min(nearest, distance(n));
-    nearest = par.minimum(nearest);
-    double first = std::numeric_limits<double>::infinity();
-    for (Index n : free)
-      if (par.globalDof(dof(n, p)) >= 0 && distance(n) <= nearest * (1.0 + 1e-12) + 1e-14)
-        first = std::min(first, static_cast<double>(par.globalDof(dof(n, p))));
-    first = par.minimum(first);
-    if (!std::isfinite(first))
+      candidate[static_cast<std::size_t>(n)] = par.globalDof(dof(n, p)) >= 0 ? 1 : 0;
+    double distance = 0.0;
+    const Index held = nearestNode(
+        centre, [&](Index n) { return candidate[static_cast<std::size_t>(n)] != 0; }, &distance);
+    if (!std::isfinite(distance))
       continue;
-    for (Index n : free)
-      if (static_cast<double>(par.globalDof(dof(n, p))) == first)
-        level.dof = dof(n, p);
+    if (held >= 0)
+      level.dof = dof(held, p);
     level.weight = nodeWeights(p);
     _levels.push_back(std::move(level));
   }
@@ -1941,33 +1879,70 @@ Problem::holdPressureLevels(const SparseMatrix & J)
   return !_levels.empty();
 }
 
+Index
+Problem::nearestNode(const Point & x,
+                     const std::function<bool(Index)> & accept,
+                     double * distance) const
+{
+  const Parallel & par = parallel();
+  double nearest = std::numeric_limits<double>::infinity();
+  for (Index n = 0; n < _mesh->numNodes(); ++n)
+    if (accept(n))
+      nearest = std::min(nearest, norm(_mesh->node(n) - x));
+  nearest = par.minimum(nearest);
+  if (distance)
+    *distance = nearest;
+  double first = std::numeric_limits<double>::infinity();
+  for (Index n = 0; n < _mesh->numNodes(); ++n)
+    if (accept(n) && norm(_mesh->node(n) - x) <= nearest * (1.0 + 1e-12) + 1e-14)
+      first = std::min(first, static_cast<double>(par.globalNode(n)));
+  first = par.minimum(first);
+  for (Index n = 0; n < _mesh->numNodes(); ++n)
+    if (accept(n) && static_cast<double>(par.globalNode(n)) == first)
+      return n;
+  return -1;
+}
+
 Vector
 Problem::nodeWeights(int v) const
 {
+  // The points of the nodal rule: one per node of each element, weighted by the measure of the
+  // control domain of the node in the element (DMCDM) or the integral of its shape function (FEM).
+  QuadratureSpec nodal;
+  nodal.kind = QuadratureSpec::Kind::Nodal;
+  const bool dual = isDual();
+  const auto * blocks = v >= 0 ? &_vars[static_cast<std::size_t>(v)].blocks : nullptr;
   Vector weight = Vector::Zero(_mesh->numNodes());
-  QuadratureSpec g;
-  g.points = 3;
-  MappedPoint mp;
   std::vector<IntegrationPoint> points;
-  const auto & blocks = _vars[v].blocks;
+  MappedPoint mp;
   for (Index e = 0; e < numIntegratedElements(); ++e)
   {
     const Element & el = _mesh->element(e);
-    if (!blocks.empty() && !blocks.count(el.block))
+    if (blocks && !blocks->empty() && !blocks->count(el.block))
       continue;
-    buildElementPoints(*_mesh, e, false, PointSet::Volume, g, points);
-    const bool corner = usesCornerShape(el, v);
+    const PolygonCell * polygon = polygonCell(e);
+    buildElementPoints(*_mesh, e, dual, PointSet::Volume, nodal, points, nullptr, polygon);
     for (const auto & ip : points)
     {
       mapPoint(*_mesh, el, ip.xi, mp);
-      if (corner)
-        mapCornerShape(el, mp);
-      const double w = ip.weight * coordFactor(mp.x);
-      for (int a = 0; a < numLocalNodes(el, v); ++a)
-        weight[el.nodes[a]] += w * (corner ? mp.corner_shape[a] : mp.N[a]);
+      const Index node = polygon ? polygon->nodes[static_cast<std::size_t>(ip.owner)]
+                                 : el.nodes[static_cast<std::size_t>(ip.owner)];
+      weight[node] += ip.weight * coordFactor(mp.x);
     }
   }
   return weight;
+}
+
+std::vector<double>
+Problem::nodeMeasures() const
+{
+  if (!_initialized)
+    throw InputError(
+        "The node measures need the problem set up. Solve it, or initialize it, first.");
+  Vector measure = nodeWeights(-1);
+  // A node shared by several processes takes the elements of all of them.
+  parallel().addAtNodes(measure.data(), 1);
+  return {measure.data(), measure.data() + measure.size()};
 }
 
 std::vector<double>
@@ -2054,36 +2029,50 @@ Problem::equationNorms(const Vector & v) const
   return norms;
 }
 
-double
-Problem::relativeStep(const Vector & after,
-                      const Vector & before,
-                      const std::vector<char> * variables) const
+Problem::VariableSizes
+Problem::variableSizes(const Vector & state, const Vector & reference) const
 {
   const Parallel & par = parallel();
-  double largest = 0.0;
-  for (int var = 0; var < numVariables(); ++var)
+  const std::size_t nv = static_cast<std::size_t>(numVariables());
+  VariableSizes sizes;
+  sizes.range.assign(nv, 0.0);
+  sizes.change.assign(nv, 0.0);
+  sizes.magnitude.assign(nv, 0.0);
+  for (std::size_t var = 0; var < nv; ++var)
   {
-    if (variables && !(*variables)[static_cast<std::size_t>(var)])
-      continue;
-    double low = std::numeric_limits<double>::infinity(), high = -low, size = 0.0, step = 0.0;
+    double low = std::numeric_limits<double>::infinity(), high = -low;
     for (Index n = 0; n < _mesh->numNodes(); ++n)
     {
-      const Index d = dof(n, var);
+      const Index d = dof(n, static_cast<int>(var));
       if (!_active_dof[d])
         continue;
-      low = std::min(low, after[d]);
-      high = std::max(high, after[d]);
-      size = std::max(size, std::abs(after[d]));
-      step = std::max(step, std::abs(after[d] - before[d]));
+      low = std::min(low, state[d]);
+      high = std::max(high, state[d]);
+      sizes.magnitude[var] = std::max(sizes.magnitude[var], std::abs(state[d]));
+      sizes.change[var] = std::max(sizes.change[var], std::abs(state[d] - reference[d]));
     }
-    step = par.maximum(step);
-    if (!(step > 0.0))
+    high = par.maximum(high);
+    low = par.minimum(low);
+    sizes.range[var] = high > low ? high - low : 0.0;
+    sizes.magnitude[var] = par.maximum(sizes.magnitude[var]);
+    sizes.change[var] = par.maximum(sizes.change[var]);
+  }
+  return sizes;
+}
+
+double
+Problem::relativeStep(const Vector & after, const Vector & before) const
+{
+  const VariableSizes sizes = variableSizes(after, before);
+  double largest = 0.0;
+  for (std::size_t var = 0; var < sizes.change.size(); ++var)
+  {
+    if (!(sizes.change[var] > 0.0))
       continue;
-    double range = par.maximum(high) - par.minimum(low);
-    if (!(range > 0.0))
-      range = par.maximum(size);
-    largest =
-        std::max(largest, range > 0.0 ? step / range : std::numeric_limits<double>::infinity());
+    const double range = sizes.range[var] > 0.0 ? sizes.range[var] : sizes.magnitude[var];
+    largest = std::max(largest,
+                       range > 0.0 ? sizes.change[var] / range
+                                   : std::numeric_limits<double>::infinity());
   }
   return largest;
 }
@@ -2144,14 +2133,6 @@ Parallel::checkpointLayout(const Problem & problem) const
   return layout;
 }
 
-void
-Parallel::writeFields(Problem & problem,
-                      const std::string & base,
-                      const std::vector<std::string> & fields) const
-{
-  problem.writeVTU(base + ".vtu", {}, fields);
-}
-
 const Parallel &
 Problem::parallel() const
 {
@@ -2207,651 +2188,6 @@ Problem::solveSteady(const SolverOptions & options)
   if (result.converged)
     commitState();
   return result;
-}
-
-SolveResult
-Problem::takeTimeStep(const Vector & old,
-                      double dt,
-                      const TransientOptions & tr,
-                      const SolverOptions & options)
-{
-  // The theta family weights the steady part of the residual between the old
-  // and the new state:  R_time(U^{n+1}) + theta R_ss(U^{n+1})
-  //                                     + (1 - theta) R_ss(U^n) = 0.
-  // The old contribution is evaluated once, before the nonlinear iteration,
-  // and it is evaluated at the old time t^n: a source, a coefficient or a
-  // boundary flux that depends on time explicitly has to be taken at t^n in
-  // this term and at t^{n+1} in the other, which keeps the Crank-Nicolson method second order.
-  // An equation with a second time derivative takes the generalized-alpha method: its steady
-  // terms at the level 1 - alpha_f between the two states, as the theta method weights them, and
-  // its time derivatives by the Newmark relations from the velocity and the acceleration of the
-  // old state, at the levels 1 - alpha_f (velocity) and 1 - alpha_m (acceleration).
-  const bool dynamic = std::any_of(_second_order_variables.begin(),
-                                   _second_order_variables.end(),
-                                   [](char c) { return c != 0; });
-  double theta = tr.theta;
-  double alpha_m = 0.0, alpha_f = 0.0, beta = 0.25, gamma = 0.5;
-  Vector rate_shift, accel_shift, predicted, predicted_rate;
-  if (dynamic)
-  {
-    if (tr.second_order_scheme == "generalized_alpha")
-    {
-      const double rho = tr.spectral_radius;
-      if (!(rho >= 0.0 && rho <= 1.0))
-        throw InputError("The spectral radius of the generalized-alpha method is between 0 and 1.");
-      alpha_m = (2.0 * rho - 1.0) / (rho + 1.0);
-      alpha_f = rho / (rho + 1.0);
-      gamma = 0.5 - alpha_m + alpha_f;
-      beta = 0.25 * (1.0 - alpha_m + alpha_f) * (1.0 - alpha_m + alpha_f);
-    }
-    else if (tr.second_order_scheme != "Newmark")
-      throw InputError("Unknown scheme '" + tr.second_order_scheme +
-                       "' of a second-order equation (generalized_alpha or Newmark).");
-    theta = 1.0 - alpha_f;
-    // The velocity and the acceleration of the old state: those a step reached, or those of the
-    // start of the run.
-    const DynamicState * state = nullptr;
-    for (const auto & record : _dynamic_states)
-      if (record.u.size() == old.size() && record.u == old)
-        state = &record;
-    if (parallel().minimum(state ? 1.0 : 0.0) <= 0.0)
-    {
-      DynamicState start;
-      start.u = old;
-      start.v = _initial_velocity.size() == old.size() ? _initial_velocity
-                                                       : Vector(Vector::Zero(old.size()));
-      start.a = initialAcceleration(old, start.v, dt, options);
-      _dynamic_states.push_back(std::move(start));
-      state = &_dynamic_states.back();
-    }
-    // The predictors: u~ = u_n + dt v_n + dt^2 (1/2 - beta) a_n, v~ = v_n + dt (1 - gamma) a_n,
-    // with a_{n+1} = (u - u~) / (beta dt^2) and v_{n+1} = v~ + gamma dt a_{n+1}.
-    predicted = state->u + dt * state->v + dt * dt * (0.5 - beta) * state->a;
-    predicted_rate = state->v + dt * (1.0 - gamma) * state->a;
-    const double accel_scale = (1.0 - alpha_m) / (beta * dt * dt);
-    const double rate_scale = (1.0 - alpha_f) * gamma / (beta * dt);
-    accel_shift = accel_scale * predicted - alpha_m * state->a;
-    rate_shift = rate_scale * predicted - (1.0 - alpha_f) * predicted_rate - alpha_f * state->v;
-  }
-  if (theta <= 0.0)
-    for (const auto & k : _kernels)
-      if (k->residualHasTimeDerivative())
-        throw InputError("'" + k->name() +
-                         "' is a stabilisation whose residual holds the time derivative, which "
-                         "the forward_Euler time scheme cannot weight. Use backward_Euler or "
-                         "Crank-Nicolson.");
-  OldResidual old_residual;
-  if (theta < 1.0)
-  {
-    AssemblyOptions ao;
-    ao.include_time_kernels = false;
-    ao.theta = 1.0 - theta;
-    ao.old_level = true;
-    ao.dt = dt;
-    // The step that reached the old state, on every process or on none.
-    const StepRecord * previous = nullptr;
-    for (const auto & record : _step_records)
-      if (record.reached.size() == old.size() && record.reached == old)
-        previous = &record;
-    if (parallel().minimum(previous ? 1.0 : 0.0) > 0.0)
-    {
-      ao.old = &previous->start;
-      ao.dt = previous->dt;
-      ao.previous_step = true;
-      ao.previous_theta = previous->theta;
-    }
-    const double new_time = _time;
-    _time = new_time - dt;
-    try
-    {
-      ao.reference = &old_residual.reference;
-      ao.term_size = &old_residual.term_size;
-      assemble(old, ao, old_residual.residual, nullptr);
-    }
-    catch (...)
-    {
-      _time = new_time;
-      throw;
-    }
-    _time = new_time;
-  }
-  AssemblyOptions base;
-  base.old = &old;
-  base.dt = dt;
-  base.theta = theta;
-  base.include_time_kernels = true;
-  if (dynamic)
-  {
-    base.second_order = true;
-    base.rate_scale = (1.0 - alpha_f) * gamma / (beta * dt);
-    base.accel_scale = (1.0 - alpha_m) / (beta * dt * dt);
-    base.rate_shift = &rate_shift;
-    base.accel_shift = &accel_shift;
-  }
-  // An explicit step still takes the equations without a time derivative at the new time.
-  base.include_steady_terms =
-      theta > 0 ||
-      std::any_of(_new_time_only.begin(), _new_time_only.end(), [](char c) { return c != 0; });
-  SolveResult result = nonlinearSolve(options, base, theta < 1.0 ? &old_residual : nullptr);
-  if (result.converged)
-  {
-    if (_step_records.size() >= 3)
-      _step_records.erase(_step_records.begin());
-    _step_records.push_back({old, _U, dt, theta});
-    if (dynamic)
-    {
-      DynamicState reached;
-      reached.u = _U;
-      reached.a = (_U - predicted) / (beta * dt * dt);
-      reached.v = predicted_rate + gamma * dt * reached.a;
-      if (_dynamic_states.size() >= 4)
-        _dynamic_states.erase(_dynamic_states.begin());
-      _dynamic_states.push_back(std::move(reached));
-    }
-  }
-  return result;
-}
-
-Vector
-Problem::initialAcceleration(const Vector & u, Vector & v, double dt, const SolverOptions & options)
-{
-  const Parallel & par = parallel();
-  const Index n = numDofs();
-  const int nv = numVariables();
-  const std::vector<char> fixed = constrainedDofs();
-  // The prescribed values set the velocity and the acceleration of their unknowns, by central
-  // differences in time over a thousandth of the step.
-  const double h = 1e-3 * dt;
-  const double now = _time;
-  Vector before = u, after = u;
-  _time = now - h;
-  applyDirichlet(before, 1.0);
-  _time = now + h;
-  applyDirichlet(after, 1.0);
-  _time = now;
-  Vector a = Vector::Zero(n);
-  for (Index d = 0; d < n; ++d)
-    if (fixed[d] && _second_order_variables[static_cast<std::size_t>(d % nv)])
-    {
-      v[d] = (after[d] - before[d]) / (2.0 * h);
-      a[d] = (after[d] - 2.0 * u[d] + before[d]) / (h * h);
-    }
-  // A periodic copy and a hanging node move with their primaries.  The differences above hold
-  // them still, which would drop the velocity carried from the last mesh.
-  updateDependentDofs(v);
-  // M a = -R(u, v): the residual with the velocity v and no acceleration, and the Jacobian of
-  // the second time derivatives alone, which is M.
-  AssemblyOptions ao;
-  ao.old = &u;
-  ao.dt = dt;
-  ao.second_order = true;
-  ao.rate_scale = 0.0;
-  ao.accel_scale = 1.0;
-  const Vector rate_shift = -v;
-  ao.rate_shift = &rate_shift;
-  ao.accel_shift = &u;
-  Vector R, unused;
-  assemble(u, ao, R, nullptr);
-  par.addShared(R);
-  AssemblyOptions mass = ao;
-  mass.include_steady_terms = false;
-  SparseMatrix M;
-  assemble(u, mass, unused, &M);
-  // The equations of periodic copies and hanging nodes belong to their primaries.
-  foldDependents(R, &M);
-  // The other unknowns keep their acceleration: identity rows and columns.
-  std::vector<char> keep(static_cast<std::size_t>(n), 0);
-  for (Index d = 0; d < n; ++d)
-    keep[d] = !fixed[d] && _second_order_variables[static_cast<std::size_t>(d % nv)];
-  Vector rhs = -R;
-  std::vector<Eigen::Triplet<double>> entries;
-  for (int k = 0; k < M.outerSize(); ++k)
-    for (SparseMatrix::InnerIterator it(M, k); it; ++it)
-    {
-      if (keep[it.row()] && keep[it.col()])
-        entries.emplace_back(it.row(), it.col(), it.value());
-      else if (keep[it.row()])
-        rhs[it.row()] -= it.value() * a[it.col()];
-    }
-  for (Index d = 0; d < n; ++d)
-    if (!keep[d])
-    {
-      entries.emplace_back(d, d, 1.0);
-      rhs[d] = a[d];
-    }
-  SparseMatrix system(n, n);
-  system.setFromTriplets(entries.begin(), entries.end());
-  int iterations = 0;
-  Vector acceleration = linearSolve(system, rhs, options, &iterations);
-  // A periodic copy and a hanging node take the acceleration of their primaries.
-  updateDependentDofs(acceleration);
-  return acceleration;
-}
-
-Vector
-Problem::velocity() const
-{
-  for (const auto & record : _dynamic_states)
-    if (record.u.size() == _U.size() && record.u == _U)
-      return record.v;
-  return Vector();
-}
-
-SolveResult
-runTransient(const TransientOptions & tr,
-             const SolverOptions & options,
-             Vector & solution,
-             double & current_time,
-             const std::function<SolveResult(const Vector &, double, bool)> & take_step,
-             const std::function<void(int, double)> & on_accept,
-             const std::function<void(int)> & write_output,
-             bool verbose_root,
-             const std::function<void(int, double)> & after_step,
-             const std::function<double(double)> & courant,
-             const std::function<double(const Vector &, const Vector &)> & relative_difference,
-             bool error_by_extrapolation,
-             int order_of_step)
-{
-  const auto difference = [&](const Vector & a, const Vector & b)
-  {
-    return relative_difference ? relative_difference(a, b)
-                               : (a - b).norm() / std::max(a.norm(), 1.0);
-  };
-  if (tr.dt <= 0)
-    throw InputError("Transient: the time step must be positive.");
-  if (tr.theta < 0 || tr.theta > 1)
-    throw InputError("Transient: theta must be in [0, 1].");
-  const bool error_control = tr.time_stepper == "error";
-  const bool iteration_control = tr.time_stepper == "iteration";
-  const bool courant_control = tr.time_stepper == "cfl";
-  if (!error_control && !iteration_control && !courant_control && tr.time_stepper != "fixed")
-    throw InputError("Transient: unknown time stepper '" + tr.time_stepper +
-                     "' (use fixed, error, iteration or cfl).");
-  if (courant_control && !courant)
-    throw InputError("Transient: the cfl stepper needs a time integration that measures the "
-                     "Courant number, the projection integration of a flow.");
-  if (courant_control && !(tr.courant_number > 0))
-    throw InputError("Transient: the Courant number of the cfl stepper must be positive.");
-  if (tr.growth_factor < 1.0)
-    throw InputError("Transient: growth_factor must be at least one.");
-  if (tr.cutback_factor <= 0.0 || tr.cutback_factor >= 1.0)
-    throw InputError("Transient: cutback_factor must lie strictly between zero and one.");
-
-  const double span = tr.end_time - tr.start_time;
-  const double dt_min = tr.dt_min > 0 ? tr.dt_min : tr.dt * 1.0e-6;
-  const double dt_max = tr.dt_max > 0 ? tr.dt_max : std::abs(span);
-  // The order of accuracy of a step: that given, or that of the theta method, whose trapezoidal
-  // rule (theta = 1/2, Crank-Nicolson) is second order and every other member first.
-  const double order = order_of_step > 0                  ? static_cast<double>(order_of_step)
-                       : std::abs(tr.theta - 0.5) < 1e-12 ? 2.0
-                                                          : 1.0;
-
-  SolveResult total;
-  current_time = tr.start_time;
-  int step = 0;
-  const auto record = [&](const SolveResult & r)
-  {
-    total.total_iterations += r.total_iterations;
-    total.linear_iterations += r.linear_iterations;
-    total.history.insert(total.history.end(), r.history.begin(), r.history.end());
-  };
-
-  double dt = std::min(std::max(tr.dt, dt_min), dt_max);
-  int rejected_in_a_row = 0;
-  // The last accepted states before the current one, newest first, each with the step that left
-  // it: the nodes of the predictor of the error estimate by extrapolation.
-  std::deque<std::pair<Vector, double>> earlier;
-
-  // The output times: the solution is written at each of them, and the steps
-  // land on them.  The times at the start are written before the first step.
-  const double time_tolerance = 1e-10 * std::max(std::abs(span), 1e-300);
-  for (std::size_t k = 1; k < tr.output_times.size(); ++k)
-    if (!(tr.output_times[k] > tr.output_times[k - 1]))
-      throw InputError("Transient: the output times must increase.");
-  std::size_t next_output = 0;
-  // An output time before the start belongs to an earlier run (a restart continues one), so only the times at the start are written.
-  while (next_output < tr.output_times.size() &&
-         tr.output_times[next_output] <= current_time + time_tolerance)
-  {
-    if (write_output && tr.output_times[next_output] >= current_time - time_tolerance)
-      write_output(static_cast<int>(next_output));
-    ++next_output;
-  }
-
-  while (current_time < tr.end_time - 1e-12 * std::abs(span))
-  {
-    // Land exactly on the next output time or on the end time, and do not
-    // leave a sliver behind: if one step would nearly reach the target, reach
-    // it.
-    const double target = next_output < tr.output_times.size()
-                              ? std::min(tr.output_times[next_output], tr.end_time)
-                              : tr.end_time;
-    const double remaining = target - current_time;
-    double step_size = std::min(dt, remaining);
-    if (remaining - step_size < 1e-8 * std::abs(span))
-      step_size = remaining;
-    // A step that is shortened to land on an output time is not the choice of
-    // the step controller, so the step after it starts from the size that the
-    // controller chose.
-    const bool shortened = step_size < dt;
-
-    const Vector old = solution;
-    const double oldcurrent_time = current_time;
-    bool accepted = true;
-    double next_dt = dt;
-    int iterations = 0;
-
-    // The decision of the error controller on the estimate of the local error of the step.
-    const auto control = [&](double estimate)
-    {
-      const double ratio = estimate > 0
-                               ? 0.9 * std::pow(tr.error_tolerance / estimate, 1.0 / (order + 1.0))
-                               : tr.growth_factor;
-      if (estimate > tr.error_tolerance)
-      {
-        accepted = false;
-        next_dt = step_size * std::max(tr.cutback_factor, ratio);
-      }
-      else
-        next_dt = step_size * std::min(tr.growth_factor, std::max(1.0, ratio));
-    };
-    const std::size_t nodes = order >= 2.0 ? 2 : 1;
-    if (error_control && error_by_extrapolation && earlier.size() >= nodes)
-    {
-      // One step, and the polynomial through the last states extrapolated to its end, whose
-      // difference from the step is in proportion to the local error of the step (Milne's
-      // device).  With h the step,
-      // h1 and h2 the steps before it, u2 and u3 the second and third time derivatives:
-      //   theta method of order one: error (theta - 1/2) h^2 u2, linear predictor of error
-      //   -u2 h (h + h1) / 2, so e = |U - U_p| |2 c h / (2 c h + h + h1)| with c = theta - 1/2;
-      //   Crank-Nicolson: error h^3 u3 / 12, quadratic predictor of error -u3 P / 6 with
-      //   P = h (h + h1) (h + h1 + h2), so e = |U - U_p| h^3 / (2 P + h^3).
-      // Each error is that of the step or the predictor minus the exact solution.
-      current_time = oldcurrent_time + step_size;
-      SolveResult r = take_step(old, step_size, true);
-      record(r);
-      iterations = r.total_iterations;
-      if (!r.converged)
-      {
-        accepted = false;
-        next_dt = step_size * tr.cutback_factor;
-      }
-      else
-      {
-        const double h = step_size, h1 = earlier[0].second;
-        Vector predicted;
-        double factor = 0.0;
-        if (nodes == 2)
-        {
-          const double h2 = earlier[1].second;
-          const Vector & u1 = earlier[0].first;
-          const Vector & u2 = earlier[1].first;
-          // The Lagrange polynomial through (-h1 - h2, u2), (-h1, u1) and (0, old), at h.
-          predicted = old * ((h + h1) * (h + h1 + h2) / (h1 * (h1 + h2))) -
-                      u1 * (h * (h + h1 + h2) / (h1 * h2)) + u2 * (h * (h + h1) / ((h1 + h2) * h2));
-          const double product = h * (h + h1) * (h + h1 + h2);
-          factor = h * h * h / (2.0 * product + h * h * h);
-        }
-        else
-        {
-          predicted = old + (h / h1) * (old - earlier[0].first);
-          const double c = tr.theta - 0.5;
-          factor = std::abs(2.0 * c * h / (2.0 * c * h + h + h1));
-        }
-        control(factor * difference(solution, predicted));
-      }
-    }
-    else if (error_control)
-    {
-      // One coarse step.
-      current_time = oldcurrent_time + step_size;
-      SolveResult coarse = take_step(old, step_size, true);
-      record(coarse);
-      const Vector coarse_solution = solution;
-      SolveResult fine_a, fine_b;
-      if (coarse.converged)
-      {
-        // Two half steps from the same starting state.
-        solution = old;
-        current_time = oldcurrent_time + 0.5 * step_size;
-        fine_a = take_step(old, 0.5 * step_size, true);
-        record(fine_a);
-        if (fine_a.converged)
-        {
-          const Vector half = solution;
-          current_time = oldcurrent_time + step_size;
-          fine_b = take_step(half, 0.5 * step_size, false);
-          record(fine_b);
-        }
-      }
-      iterations =
-          std::max({coarse.total_iterations, fine_a.total_iterations, fine_b.total_iterations});
-      if (!coarse.converged || !fine_a.converged || !fine_b.converged)
-      {
-        accepted = false;
-        next_dt = step_size * tr.cutback_factor;
-      }
-      else
-      {
-        // Richardson estimate of the error of the two half steps, which are the more accurate
-        // answer and the one kept.
-        control(difference(solution, coarse_solution) / (std::pow(2.0, order) - 1.0));
-      }
-    }
-    else
-    {
-      current_time = oldcurrent_time + step_size;
-      SolveResult r = take_step(old, step_size, true);
-      record(r);
-      iterations = r.total_iterations;
-      accepted = r.converged;
-      if (!accepted)
-        next_dt = step_size * tr.cutback_factor;
-      else if (courant_control)
-      {
-        // The step that gives the Courant number aimed at, at the velocity just reached.
-        const double reached = courant(step_size);
-        next_dt =
-            reached > 0 ? step_size * tr.courant_number / reached : step_size * tr.growth_factor;
-        next_dt = std::min(next_dt, step_size * tr.growth_factor);
-      }
-      else if (iteration_control)
-      {
-        if (iterations < tr.optimal_iterations - tr.iteration_window)
-          next_dt = step_size * tr.growth_factor;
-        else if (iterations > tr.optimal_iterations + tr.iteration_window)
-          next_dt = step_size * tr.cutback_factor;
-        else
-          next_dt = step_size;
-      }
-      else
-        // The fixed stepper grows back to the given step after a cutback.
-        next_dt = std::min(std::max(dt, step_size * tr.growth_factor), tr.dt);
-    }
-
-    if (!accepted)
-    {
-      ++total.rejected_steps;
-      ++rejected_in_a_row;
-      solution = old;
-      current_time = oldcurrent_time;
-      dt = std::max(next_dt, dt_min);
-      if (options.verbose && verbose_root)
-        std::cout << "  step rejected at t = " << oldcurrent_time << "; retrying with dt = " << dt
-                  << "\n";
-      if (next_dt < dt_min || rejected_in_a_row > tr.max_rejected_steps)
-      {
-        if (options.error_on_divergence)
-        {
-          std::ostringstream os;
-          os << "dualmesh: the transient solve failed at t = " << oldcurrent_time
-             << ". The step was rejected " << rejected_in_a_row << " times in a row";
-          if (next_dt < dt_min)
-            os << " and the step size reached " << next_dt << ", below the minimum " << dt_min
-               << ".";
-          else
-            os << ", more than max_rejected_steps = " << tr.max_rejected_steps << ".";
-          throw std::runtime_error(os.str());
-        }
-        return total;
-      }
-      continue;
-    }
-
-    rejected_in_a_row = 0;
-    earlier.emplace_front(old, step_size);
-    if (earlier.size() > 2)
-      earlier.pop_back();
-    ++step;
-    ++total.time_steps;
-    total.step_history.emplace_back(current_time, step_size);
-    if (options.verbose && verbose_root)
-      std::cout << "  step " << step << ": t = " << current_time << ", dt = " << step_size
-                << ", iterations " << iterations << "\n";
-    on_accept(step, step_size);
-    while (next_output < tr.output_times.size() &&
-           tr.output_times[next_output] <= current_time + time_tolerance)
-    {
-      if (write_output)
-        write_output(static_cast<int>(next_output));
-      ++next_output;
-    }
-    if (shortened)
-      next_dt = std::max(next_dt, dt);
-    dt = std::min(std::max(next_dt, dt_min), dt_max);
-    if (after_step)
-      after_step(step, dt);
-    total.next_time_step = dt;
-    if (tr.max_steps > 0 && step >= tr.max_steps)
-      break;
-  }
-  total.converged = true;
-  return total;
-}
-
-SolveResult
-Problem::solveTransient(const TransientOptions & transient, const SolverOptions & options)
-{
-  initialize();
-  if (transient.dt <= 0)
-    throw InputError("Transient: the time step must be positive.");
-  const Parallel & par = parallel();
-  // The step is retried on failure, so the nonlinear solver must report a
-  // failure rather than throw.
-  SolverOptions attempt = options;
-  attempt.error_on_divergence = false;
-  const CheckpointLayout layout = par.checkpointLayout(*this);
-  // A restart continues from the time, the step size and the state of its checkpoint.
-  TransientOptions tr = transient;
-  int first_step = 0;
-  if (!tr.restart_file.empty())
-  {
-    const CheckpointTime point = readCheckpoint(tr.restart_file, *this, layout);
-    tr.start_time = point.time;
-    tr.dt = point.dt > 0 ? point.dt : tr.dt;
-    first_step = point.step;
-  }
-  _time = tr.start_time;
-  applyDirichlet(_U, 1.0);
-  par.shareDirichlet(_U);
-  // A run that continues another starts from the velocity and acceleration that it reached.
-  {
-    std::vector<DynamicState> kept;
-    for (auto & record : _dynamic_states)
-      if (record.u.size() == _U.size() && record.u == _U)
-        kept.push_back(std::move(record));
-    _dynamic_states = std::move(kept);
-  }
-  if (!tr.restart_file.empty() && std::any_of(_second_order_variables.begin(),
-                                              _second_order_variables.end(),
-                                              [](char c) { return c != 0; }))
-    throw InputError("A run with inertia does not restart from a checkpoint: the checkpoint "
-                     "holds no velocity and acceleration.");
-  const auto write = [&](int index)
-  {
-    if (!tr.output_file_base.empty())
-    {
-      std::ostringstream os;
-      os << tr.output_file_base << "_" << std::setw(5) << std::setfill('0') << index;
-      par.writeFields(*this, os.str(), tr.output_fields);
-    }
-    if (_output_callback)
-      _output_callback(index);
-  };
-  if (_time_integrator)
-    _time_integrator->start(_U, _time);
-  // The variables with a time derivative, of the first or the second order.
-  std::vector<char> differential(_new_time_only.size(), 0);
-  for (std::size_t v = 0; v < differential.size(); ++v)
-    differential[v] = !_new_time_only[v] || _second_order_variables[v];
-  if (std::none_of(differential.begin(), differential.end(), [](char c) { return c != 0; }))
-    differential.clear();
-  const bool second_order = std::any_of(_second_order_variables.begin(),
-                                        _second_order_variables.end(),
-                                        [](char c) { return c != 0; });
-  // Every process runs the same controller on the same numbers, so they all take the same steps
-  // and accept or reject together: the residual norms that the decision rests on and the error
-  // estimate are global.
-  return runTransient(
-      tr,
-      options,
-      _U,
-      _time,
-      [&](const Vector & old, double dt, bool from_committed)
-      {
-        if (_time_integrator)
-          return _time_integrator->step(_U, old, _time, dt);
-        // The history of stateful property objects follows the solution: a step starts from the
-        // committed history when it starts from the last accepted solution, and from the state
-        // its predecessor reached when it continues that predecessor.
-        if (from_committed)
-          startStateFromCommitted();
-        else
-          startStateFromTrial();
-        return takeTimeStep(old, dt, tr, attempt);
-      },
-      [&](int, double)
-      {
-        // A step whose solver reports success can still hold NaN or infinite values (an
-        // unstable explicit term): the run stops there, before the values reach the output.
-        if (par.any(!_U.allFinite()))
-        {
-          std::ostringstream os;
-          os << "dualmesh: the solution has NaN or infinite values after the step to t = " << _time
-             << ". Either the time step is too large for the explicit terms (lower time_step or "
-                "courant_number), or a property is not finite at the solution.";
-          throw std::runtime_error(os.str());
-        }
-        if (_time_integrator)
-          _time_integrator->accept(_U, _time);
-        commitState();
-        notifyStepAccepted();
-      },
-      write,
-      par.isRoot(),
-      [&](int step, double next_dt)
-      {
-        if (tr.checkpoint_file.empty())
-          return;
-        const bool last = _time >= tr.end_time - 1e-12 * std::abs(tr.end_time - tr.start_time);
-        if ((tr.checkpoint_interval > 0 && step % tr.checkpoint_interval == 0) || last)
-          writeCheckpoint(tr.checkpoint_file, *this, layout, {_time, next_dt, first_step + step});
-      },
-      _time_integrator ? std::function<double(double)>(
-                             [&](double dt) { return _time_integrator->courantNumber(_U, dt); })
-                       : std::function<double(double)>(),
-      // The error of a step is that of the variables with a time derivative.  A variable without
-      // one (the pressure of an incompressible flow) is algebraic: it has no truncation error of
-      // its own, and the theta method leaves its value at the new time with oscillations that are
-      // no error of the step, so it is left out of the test (as the error test of IDA can leave
-      // out the algebraic variables).  A problem without a time derivative measures every variable.
-      [&, differential](const Vector & a, const Vector & b)
-      { return relativeStep(a, b, differential.empty() ? nullptr : &differential); },
-      // The error of the theta method is estimated by extrapolation.  A second-order equation
-      // and a time integration of its own keep step doubling, which needs no error constant.
-      !_time_integrator && !second_order,
-      // The generalized-alpha and Newmark (average acceleration) methods are second order.
-      _time_integrator ? _time_integrator->order() : (second_order ? 2 : 0));
 }
 
 } // namespace dualmesh

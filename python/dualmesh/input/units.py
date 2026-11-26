@@ -36,6 +36,11 @@ class input_error(ValueError):
     """Every input and unit error of the Python side."""
 
 
+def fail(path: str, message: str):
+    """Raises input_error with the path of the key in front of the message."""
+    raise input_error(f"{path}: {message}" if path else message)
+
+
 @dataclasses.dataclass(frozen=True)
 class dimension:
     """The exponents of the seven SI base units, in `base_dimension_names` order."""

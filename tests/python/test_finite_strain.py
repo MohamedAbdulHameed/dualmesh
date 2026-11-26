@@ -12,7 +12,10 @@ Each test checks one property against something known independently:
   the body (objectivity);
 * a thick tube inflated by a follower pressure to large strain matches an
   independent solution of the same boundary value problem (SciPy's
-  collocation solver).
+  collocation solver);
+* a strain energy given as a formula gives the stress of the closed form of
+  the same law, and an exact Jacobian;
+* a plane-stress strip thins by the closed-form stretch of its law.
 """
 
 from __future__ import annotations
@@ -276,3 +279,133 @@ def test_the_neo_hookean_elastic_strain_is_the_green_Lagrange_strain_of_the_stre
     assert numpy.allclose(elastic, expected, rtol=1e-8, atol=1e-12)
     volumetric = p.property_at_centroids("volumetric_strain")
     assert numpy.allclose(volumetric, stretch * s * s - 1, rtol=1e-8)
+
+
+# ---------------------------------------------------------------------------
+# Strain energies given as formulas, and plane stress
+# ---------------------------------------------------------------------------
+neo_Hookean_energy = (
+    "shear_modulus/2*(I_C - 3) - shear_modulus*log(J) + first_Lame_parameter/2*log(J)^2"
+)
+Saint_Venant_Kirchhoff_energy = (
+    "first_Lame_parameter/8*(I_C - 3)^2 + shear_modulus/4*(trace_C_squared - 2*I_C + 3)"
+)
+# A Demiray energy with a chain-stretch term and the volumetric energy of Simo and Taylor, which
+# reads exp, sqrt, log and powers. It is free of stress at F = I.
+stiffening_energy = (
+    "shear_modulus*(exp(0.5*(I_C - 3)) - 1) + shear_modulus*(sqrt(I_C/3) - 1)^2"
+    " - shear_modulus*log(J) + first_Lame_parameter/4*(J^2 - 1 - 2*log(J))"
+)
+
+
+def _distort(p, names):
+    """Sets a smooth displacement of up to about 10 per cent strain on the problem."""
+    p.initialize()
+    points = numpy.asarray(p.node_coordinates())
+    x, y = points[:, 0], points[:, 1]
+    z = points[:, 2] if points.shape[1] > 2 else numpy.zeros_like(x)
+    shapes = (
+        0.08 * numpy.sin(x + 2 * y) + 0.05 * x * y + 0.02 * z,
+        0.06 * numpy.cos(2 * x - y) - 0.04 * x + 0.03 * y * z,
+        0.05 * numpy.sin(x - z) + 0.04 * y,
+    )
+    for name, shape in zip(names, shapes):
+        p.set_values(name, shape)
+
+
+@pytest.mark.parametrize(
+    "law, energy",
+    [
+        ("neo-Hookean", neo_Hookean_energy),
+        ("Saint_Venant_Kirchhoff", Saint_Venant_Kirchhoff_energy),
+    ],
+)
+def test_an_energy_given_as_a_formula_gives_the_stress_of_its_closed_form(law, energy):
+    """At a distorted state, the stress of the energy differentiated by the code equals that of
+    the closed form of the same law to round-off."""
+    names = ["ux", "uy", "uz"]
+    stresses = []
+    for update in (
+        {"stress_update": law},
+        {"stress_update": "strain_energy", "strain_energy": energy},
+    ):
+        mesh = dualmesh.generate_box_mesh(0, 1, 0, 1, 0, 1, 2, 2, 2)
+        p = _stress_problem(mesh, "finite_strain_stress", names, **update)
+        _distort(p, names)
+        stresses.append(numpy.asarray(p.property_at_centroids("first_piola_kirchhoff_stress")))
+    closed, formula = stresses
+    assert abs(closed).max() > 1e-2 * E
+    assert abs(formula - closed).max() < 1e-10 * abs(closed).max()
+
+
+def test_a_plane_stress_strip_of_Saint_Venant_Kirchhoff_thins_by_the_closed_form():
+    """A strip stretched by a = 1.3 with free lateral faces: F = diag(a, s, s), with the lateral
+    Green strain E_22 = -lambda E_11 / (2 (lambda + mu)) and s = sqrt(1 + 2 E_22).  The stretch of
+    the thickness, the root of P_33 = 0, is s as well."""
+    stretch = 1.3
+    axial_strain = (stretch**2 - 1) / 2
+    lateral = numpy.sqrt(1 - Lame_lambda * axial_strain / (Lame_lambda + shear_modulus))
+    mesh = dualmesh.generate_rectangle_mesh(0, 2, 0, 1, 4, 2)
+    problem = dualmesh.Problem(mesh)
+    body = problem.add_physics(
+        "solid_mechanics",
+        formulation="plane_stress",
+        youngs_modulus=E,
+        poissons_ratio=nu,
+        elasticity="Saint_Venant_Kirchhoff",
+    )
+    body.add_boundary_condition("disp_x = 0", boundary="left")
+    body.add_boundary_condition("disp_y = 0", boundary="bottom")
+    body.add_boundary_condition(f"disp_x = {2 * (stretch - 1)!r}", boundary="right")
+    problem.solve(report="none")
+    y = numpy.asarray(problem.node_coordinates())[:, 1]
+    assert problem.values("disp_y") == pytest.approx((lateral - 1) * y, rel=1e-8, abs=1e-12)
+    thickness = numpy.asarray(problem.property_at_centroids("deformation_gradient"))[:, 8]
+    assert thickness == pytest.approx(lateral, rel=1e-8)
+
+
+@pytest.mark.parametrize("formulation", ["plane_stress", "three_dimensional"])
+def test_the_Jacobian_of_an_energy_given_as_a_formula_is_exact(formulation):
+    """At a distorted state, under a follower pressure, the Jacobian of an energy that reads exp,
+    sqrt, log and powers agrees with central differences of the residual.  It holds the second
+    derivatives of the energy and, in plane stress, the derivative of the stretch of the
+    thickness by the implicit function theorem."""
+    from test_Jacobian import compare, finite_difference_Jacobian
+
+    if formulation == "plane_stress":
+        mesh = dualmesh.generate_rectangle_mesh(0, 2, 0, 1, 3, 2)
+        names = ["ux", "uy"]
+    else:
+        mesh = dualmesh.generate_box_mesh(0, 1, 0, 1, 0, 1, 2, 2, 2)
+        names = ["ux", "uy", "uz"]
+    p = dualmesh.Problem(mesh)
+    for name in names:
+        p.add_variable(name)
+    p.add_property(
+        "finite_strain_stress",
+        displacements=names,
+        formulation=formulation,
+        youngs_modulus=E,
+        poissons_ratio=nu,
+        stress_update="strain_energy",
+        strain_energy=stiffening_energy,
+    )
+    for name in names:
+        p.add_kernel(
+            "stress_divergence",
+            variable=name,
+            displacements=names,
+            stress_property="first_piola_kirchhoff_stress",
+        )
+    p.add_boundary_condition("Dirichlet", "left", variable="ux", value=0.0)
+    p.add_boundary_condition("Dirichlet", "bottom", variable="uy", value=0.0)
+    p.add_boundary_condition(
+        "pressure",
+        "right",
+        displacements=names,
+        pressure=0.01 * E,
+        deformation_gradient_property="deformation_gradient",
+    )
+    _distort(p, names)
+    _, Jacobian = p.linear_system()
+    assert compare(Jacobian.toarray(), finite_difference_Jacobian(p)) < 1e-6

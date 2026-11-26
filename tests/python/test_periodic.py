@@ -100,3 +100,51 @@ def test_a_value_prescribed_on_the_secondary_boundary_only_is_refused():
     problem.add_boundary_condition("periodic", primary="left", secondary="right")
     with pytest.raises(ValueError, match="prescribed value that its primary node does not"):
         problem.solve(report="none")
+
+
+def _box_hanging_on_its_periodic_sides():
+    """The unit cube of 4 by 4 by 4 hexahedra whose cells centred at (0.125, 0.375, 0.375) and
+    (0.875, 0.375, 0.375), at the faces x = 0 and x = 1, are split: nodes hang on the edges of both
+    faces, alike, so that the periodic copies of a node hang as the node does."""
+    from dualmesh import _core
+
+    mesh = dualmesh.generate_box_mesh(0, 1, 0, 1, 0, 1, 4, 4, 4, element_type="Hex8")
+    hierarchy = _core.Subdivision(mesh)
+    points = numpy.asarray(mesh.points())
+    centres = [points[list(cell)].mean(axis=0) for _type, cell, _block in mesh.cells()]
+    marked = [
+        int(any(numpy.allclose(c, (x, 0.375, 0.375)) for x in (0.125, 0.875))) for c in centres
+    ]
+    hierarchy.refine(marked, 5)
+    refined = hierarchy.mesh()
+    x = numpy.asarray(refined.points())[[node for node, _on in hierarchy.hanging()], 0]
+    assert numpy.any(x < 1e-12) and numpy.any(x > 1 - 1e-12)
+    return refined
+
+
+@pytest.mark.parametrize("method", methods)
+def test_a_node_hanging_on_a_periodic_boundary_conserves_the_source(method):
+    """-div grad u = 1 in the box, periodic in x, with u = 0 on the faces y = 0 and y = 1: the
+    copies of a node on x = 1 hang on the same side as the node on x = 0, and the equations of the
+    copy and of the hanging node reach the independent nodes once each, so the reactions on the
+    two faces balance the whole source, 1."""
+    mesh = _box_hanging_on_its_periodic_sides()
+    problem = dualmesh.Problem(mesh, method=method, distributed=False)
+    problem.add_variable("u")
+    problem.add_kernel("diffusion", variable="u")
+    problem.add_kernel("body_force", variable="u", value=1.0)
+    problem.add_boundary_condition("Dirichlet", ["bottom", "top"], variable="u", value=0.0)
+    problem.add_boundary_condition("periodic", primary="left", secondary="right")
+    problem.solve(report="none")
+    outflow = problem.boundary_flux("u", "bottom") + problem.boundary_flux("u", "top")
+    assert outflow == pytest.approx(1.0, rel=1e-10)
+
+
+def test_a_distributed_run_refuses_a_node_hanging_on_a_periodic_boundary():
+    problem = dualmesh.Problem(_box_hanging_on_its_periodic_sides(), method="fem", distributed=True)
+    problem.add_variable("u")
+    problem.add_kernel("diffusion", variable="u")
+    problem.add_boundary_condition("Dirichlet", ["bottom", "top"], variable="u", value=0.0)
+    problem.add_boundary_condition("periodic", primary="left", secondary="right")
+    with pytest.raises(ValueError, match="takes no node that hangs on a periodic"):
+        problem.solve(report="none")

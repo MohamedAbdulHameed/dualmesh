@@ -108,3 +108,13 @@ def test_phase_field_fracture_at_finite_strain_is_refused():
         )
         solid.add_boundary_condition("fixed", boundary="left")
         problem.solve(report="none")
+
+
+def test_the_tolerances_of_PETSc_nonlinear_solver_are_refused():
+    """Newton's method is tested equation by equation, so snes_rtol would have no effect."""
+    problem = dualmesh.Problem(dualmesh.generate_line_mesh(start=0.0, end=1.0, num_elements=4))
+    problem.add_variable("u")
+    problem.add_kernel("diffusion", variable="u")
+    problem.add_boundary_condition("Dirichlet", "left", variable="u", value=0.0)
+    with pytest.raises(InputError, match="has no effect"):
+        problem.solve(petsc_options="-snes_rtol 1e-6", report="none")

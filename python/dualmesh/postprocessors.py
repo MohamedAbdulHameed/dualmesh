@@ -10,18 +10,18 @@ accepted time step of a transient one::
     problem.add_postprocessor("average", "mean_temperature", variable="temperature")
     problem.add_postprocessor("heat_flow", "heat_out", boundary="left")
     problem.solve()
-    problem.postprocessor_table()  # the history, as aligned text
+    print(problem.postprocessor_table())  # the history, a table that prints aligned
     problem.write_postprocessor_csv("out.csv")
 
 Every name says what the post-processor computes (``point_value``,
 ``maximum``).  A post-processor of the flow through a boundary takes its
 physics as ``physics``, which may be left out when the problem has one
-physics of that type.
+physics of that type.  Every post-processor takes a ``unit``, which heads its
+column of the history.
 """
 
 from __future__ import annotations
 
-import csv
 from dataclasses import dataclass
 
 import numpy
@@ -29,9 +29,11 @@ import numpy
 
 @dataclass
 class Postprocessor:
-    """Base class: a named scalar computed from a problem."""
+    """Base class: a named scalar computed from a problem, with the unit of its value, which
+    heads its column of the history (empty when it is not given)."""
 
     name: str
+    unit: str = ""
 
     def compute(self, problem) -> float:  # pragma: no cover - abstract
         raise NotImplementedError
@@ -105,6 +107,101 @@ class BoundaryFlux(Postprocessor):
         return float(problem.boundary_flux(self.variable, self.boundary))
 
 
+def _cell_values(problem, property_name: str):
+    """The average of a scalar property over the points of each cell of this process, and the
+    measure of each cell with the coordinate factor of the problem.  A property with a history,
+    such as a state of a model, takes its value at the last accepted step."""
+    values = numpy.asarray(problem.property_at_centroids(property_name), dtype=float)
+    values = values[:, 0] if values.size else numpy.zeros(0)
+    return values, numpy.asarray(problem.element_volumes())[: values.size]
+
+
+@dataclass
+class PropertyIntegral(Postprocessor):
+    """The integral of a scalar property over the domain: the sum over the cells of the average
+    of the property at the points of each cell times the measure of the cell."""
+
+    property: str = ""
+
+    def compute(self, problem) -> float:
+        values, volumes = _cell_values(problem, self.property)
+        return problem._sum(float(values @ volumes))
+
+
+@dataclass
+class PropertyAverage(Postprocessor):
+    """The average of a scalar property over the domain: its integral (PropertyIntegral) divided
+    by the measure of the domain."""
+
+    property: str = ""
+
+    def compute(self, problem) -> float:
+        values, volumes = _cell_values(problem, self.property)
+        return problem._sum(float(values @ volumes)) / problem._sum(float(volumes.sum()))
+
+
+@dataclass
+class PropertyMaximum(Postprocessor):
+    """The largest average of a scalar property over the points of a cell."""
+
+    property: str = ""
+
+    def compute(self, problem) -> float:
+        from . import _core
+
+        values, _ = _cell_values(problem, self.property)
+        local = float(values.max()) if values.size else -numpy.inf
+        return _core.mpi_max(local) if problem._distributed is not None else local
+
+
+@dataclass
+class PropertyMinimum(Postprocessor):
+    """The smallest average of a scalar property over the points of a cell."""
+
+    property: str = ""
+
+    def compute(self, problem) -> float:
+        from . import _core
+
+        values, _ = _cell_values(problem, self.property)
+        local = float(values.min()) if values.size else numpy.inf
+        return _core.mpi_min(local) if problem._distributed is not None else local
+
+
+@dataclass
+class PropertyPointValue(Postprocessor):
+    """One component of a property at a point, evaluated in the element that holds the point (NaN
+    outside the mesh), such as the component ``component`` of the stress.  A property with a
+    history takes the average history of that element at the last accepted step."""
+
+    property: str = ""
+    component: int = 0
+    point: tuple = (0.0, 0.0, 0.0)
+
+    def compute(self, problem) -> float:
+        return float(problem.property_at_points(self.property, [self.point])[0, self.component])
+
+
+def von_Mises_stress(stress) -> numpy.ndarray:
+    """The von Mises equivalent stress of rows of the stress in the Voigt order of the engine:
+    xx, yy, zz, yz, xz and xy, or rr, zz, the hoop component and rz in its last place in
+    axisymmetric coordinates."""
+    s = numpy.atleast_2d(numpy.asarray(stress, dtype=float))
+    normal = (s[:, 0] - s[:, 1]) ** 2 + (s[:, 1] - s[:, 2]) ** 2 + (s[:, 2] - s[:, 0]) ** 2
+    return numpy.sqrt(0.5 * normal + 3.0 * (s[:, 3] ** 2 + s[:, 4] ** 2 + s[:, 5] ** 2))
+
+
+@dataclass
+class VonMisesStressPointValue(Postprocessor):
+    """The von Mises stress of a solid at a point, from its stress in the element that holds the
+    point (NaN outside the mesh)."""
+
+    point: tuple = (0.0, 0.0, 0.0)
+
+    def compute(self, problem) -> float:
+        return float(von_Mises_stress(problem.property_at_points("stress", [self.point]))[0])
+
+
 def _physics_of(problem, physics, type_name: str, where: str):
     """The physics named or given by ``physics``, or the only one of its type."""
     if physics is not None and not isinstance(physics, str):
@@ -126,13 +223,13 @@ _DIRECTIONS = {"x": 0, "y": 1, "z": 2}
 @dataclass
 class HeatFlow(Postprocessor):
     """The heat leaving the body through a boundary (W):
-    :meth:`~dualmesh.physics.HeatTransfer.heat_flow`."""
+    :meth:`~dualmesh.physics.HeatConduction.heat_flow`."""
 
     boundary: str = ""
     physics: object = None
 
     def compute(self, problem) -> float:
-        heat = _physics_of(problem, self.physics, "heat_transfer", self.name)
+        heat = _physics_of(problem, self.physics, "heat_conduction", self.name)
         return float(heat.heat_flow(self.boundary))
 
 
@@ -197,6 +294,12 @@ TYPES = {
     "maximum": Maximum,
     "minimum": Minimum,
     "boundary_flux": BoundaryFlux,
+    "property_integral": PropertyIntegral,
+    "property_average": PropertyAverage,
+    "property_maximum": PropertyMaximum,
+    "property_minimum": PropertyMinimum,
+    "property_point_value": PropertyPointValue,
+    "von_mises_stress_point_value": VonMisesStressPointValue,
     "heat_flow": HeatFlow,
     "reaction_force": ReactionForce,
     "force": Force,
@@ -210,12 +313,10 @@ like every object type."""
 def create(type_name: str, name: str, **parameters) -> Postprocessor:
     """A post-processor of the registered type ``type_name``."""
     if type_name not in TYPES:
-        import difflib
+        from .console import suggestion
 
-        close = difflib.get_close_matches(type_name, sorted(TYPES), n=1)
-        hint = f" Did you mean '{close[0]}'?" if close else ""
         raise ValueError(
-            f"Unknown post-processor type '{type_name}'.{hint} Use one of: {', '.join(sorted(TYPES))}."
+            f"Unknown post-processor type '{type_name}'." + suggestion(type_name, TYPES)
         )
     cls = TYPES[type_name]
     allowed = {f for f in cls.__dataclass_fields__ if f != "name"}
@@ -259,12 +360,14 @@ class PostprocessorHistory:
         out.update({name: numpy.asarray(v) for name, v in self.values.items()})
         return out
 
-    def table(self) -> str:
-        from .console import table
+    def as_table(self):
+        """The history as a :class:`~dualmesh.Table`: the time in s, then one column for each
+        post-processor, with its unit."""
+        from .tables import Table
 
         names = [pp.name for pp in self.postprocessors]
         rows = [[t] + [self.values[n][i] for n in names] for i, t in enumerate(self.time)]
-        return table(rows, ["time"] + names)
+        return Table(["time", *names], ["s", *(pp.unit for pp in self.postprocessors)], rows)
 
     def write_json(self, filename: str) -> None:
         """The history as JSON, which load_json reads back when a run restarts from a checkpoint."""
@@ -287,13 +390,3 @@ class PostprocessorHistory:
                 if values is not None
                 else [float("nan")] * len(self.time)
             )
-
-    def write_csv(self, filename: str) -> None:
-        """One row per evaluation, headed by the column names and, on a second
-        comment line, the post-processor types."""
-        names = [pp.name for pp in self.postprocessors]
-        with open(filename, "w", newline="") as f:
-            writer = csv.writer(f, lineterminator="\n")
-            writer.writerow(["time"] + names)
-            for i, t in enumerate(self.time):
-                writer.writerow([repr(t)] + [repr(self.values[n][i]) for n in names])

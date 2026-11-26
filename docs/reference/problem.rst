@@ -73,7 +73,7 @@ Flows through boundaries and integrals
 --------------------------------------
 
 Each physics also gives the flows through a boundary by their physical
-names: ``heat_flow`` of :class:`~dualmesh.physics.HeatTransfer`,
+names: ``heat_flow`` of :class:`~dualmesh.physics.HeatConduction`,
 ``reaction_force`` of :class:`~dualmesh.physics.SolidMechanics`, ``force``
 and ``flow_rate`` of :class:`~dualmesh.physics.FluidDynamics`, and
 ``boundary_flux`` of :class:`~dualmesh.physics.GeneralFormPDE`.
@@ -133,7 +133,6 @@ Writing files
 
    Problem.write_vtu
    Problem.write_csv
-   Problem.write_mesh_file
    Problem.summary
 
 Mesh entities and variables

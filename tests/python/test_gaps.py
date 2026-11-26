@@ -109,15 +109,15 @@ def conduction_problem(mesh, method, coordinates="cartesian", distributed=False)
     )
     problem.add_variable("temperature", initial_condition=t_cool)
     problem.add_kernel(
-        "heat_conduction",
+        "diffusion",
         variable="temperature",
-        thermal_conductivity=k_inner,
+        diffusivity=k_inner,
         block=["inner"],
     )
     problem.add_kernel(
-        "heat_conduction",
+        "diffusion",
         variable="temperature",
-        thermal_conductivity=k_outer,
+        diffusivity=k_outer,
         block=["outer"],
     )
     problem.add_kernel("body_force", variable="temperature", value=source, block=["inner"])

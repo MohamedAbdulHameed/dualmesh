@@ -87,10 +87,7 @@ The script is ``examples/transient_slab.py``.
    * ``{"by": "error"}``, the default, keeps the estimated error of each step
      below ``relative_tolerance``, :math:`10^{-3}` by default.
    * ``{"by": "iterations"}`` aims at ``target_iterations`` Newton iterations
-     per step, 5 by default.
-   * ``{"by": "Courant"}`` keeps the Courant number :math:`C` of a flow,
-     the distance that the flow travels in a step divided by the element
-     size, at ``Courant_number``, 0.5 by default.
+     per step, 4 by default.
 
    Each step is a backward Euler step.
 
@@ -121,8 +118,8 @@ in ``tests/python/test_front_end.py`` adds both to a heated slab:
    slab.postprocessor("peak", maximum="temperature")
    slab.output(file="slab", interval=2, fields=["temperature"])
 
-The solve then writes the temperature every second step and at the end, as
-``slab_0000.vtu``, ``slab_0001.vtu`` and so on, with the collection
+The solve then writes the temperature at the start, every second step and at
+the end, as ``slab_00000.vtu``, ``slab_00001.vtu`` and so on, with the collection
 ``slab.pvd`` that ParaView opens as one time series.  The file ``slab.csv``
 holds the time and the post-processor ``peak`` in columns headed by their
 units, ``time [s]`` and ``peak [K]``.  ``solution.times`` lists the times of the accepted

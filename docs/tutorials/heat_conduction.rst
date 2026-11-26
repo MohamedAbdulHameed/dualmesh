@@ -145,9 +145,9 @@ The script is ``examples/bus_bar.py``.
       :end-at: bar.output(
       :dedent: 4
 
-   The solve writes ``bus_bar_0000.vtu``, a ``bus_bar.pvd`` collection that
-   ParaView opens, and ``bus_bar.csv`` with the post-processors, each column
-   headed by its name and its unit.
+   The steady solve writes ``bus_bar.vtu``, which ParaView opens, and
+   ``bus_bar.csv`` with the post-processors, each column headed by its name
+   and its unit.
 
 4. Solve, and print each post-processor with its unit:
 

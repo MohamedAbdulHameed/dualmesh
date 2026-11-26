@@ -51,10 +51,10 @@ def heat_problem(n, method):
     problem.set_num_threads(1)
     problem.add_variable("temperature")
     problem.add_kernel(
-        "heat_conduction",
+        "diffusion",
         variable="temperature",
-        thermal_conductivity=2.0,
-        temperature_polynomial=[1.0, 0.01],
+        diffusivity=2.0,
+        solution_polynomial=[1.0, 0.01],
     )
     problem.add_kernel("body_force", variable="temperature", value=10.0)
     problem.add_boundary_condition("Dirichlet", "left", variable="temperature", value=0.0)

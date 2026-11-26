@@ -64,6 +64,13 @@ public:
   /// ctx.state_old + stateOffset() and writes the state reached at the current
   /// iterate through ctx.state_new + stateOffset().
   virtual int stateSize() const { return 0; }
+  /// For a property of this object that has a history: its value at the start of the step at
+  /// the point of @p ctx, in @p value, given the place @p property of the property in the
+  /// registry.  False for any other property.
+  virtual bool startValue(const QpContext & /*ctx*/, int /*property*/, double & /*value*/) const
+  {
+    return false;
+  }
   int stateOffset() const { return _state_offset; }
   void setStateOffset(int offset) { _state_offset = offset; }
 

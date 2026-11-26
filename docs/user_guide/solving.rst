@@ -67,8 +67,9 @@ In a case file, the same ``solver`` section reads:
 ``relative_tolerance`` is the tolerance of `Set the convergence test`_.
 ``PETSc_options`` maps PETSc option names, written without the leading dash,
 to their values as text or numbers, and takes every option of
-`Choose the linear solver`_.  The input refuses ``PETSc_options.snes_rtol``
-together with ``relative_tolerance``.
+`Choose the linear solver`_.  ``true`` gives a flag without a value, as the
+``petsc_options`` of Python do.  The solve refuses ``snes_rtol``, ``snes_atol``
+and ``snes_stol``, which the convergence test does not read.
 
 The ``solve`` of the input prints one line that names the solve and then the
 result (``report="summary"``, the default).  ``report="full"`` also prints the
@@ -240,14 +241,20 @@ direct solve that you choose with ``-pc_type lu`` also takes MUMPS, unless
 When an iterative choice does not converge in 500 iterations, the solve goes
 on with the direct factorisation from the last nonlinear iterate.  GMRES with
 GAMG or BoomerAMG is preconditioned from the right, so it measures the true
-residual of the system.
+residual of the system.  BoomerAMG takes the HMIS coarsening and the
+extended+i interpolation of the splits of `Split a flow or a coupled problem`_,
+and GAMG takes its place when PETSc has no hypre.  The GMRES methods that the code chooses repeat the
+Gram-Schmidt orthogonalization of a new basis vector wherever one pass loses
+orthogonality, which keeps a solve to :math:`10^{-12}` from stalling on rounding
+errors.
 
 Within a nonlinear iteration, the automatic iterative solvers take the tolerance of
 Eisenstat and Walker [EisenstatWalker1996]_, which is loose while the
 residual is large and tightens as it falls.  A direct solve, a solver you
 choose with ``petsc_options`` and the solve of ``nonlinear_solver="linear"``
 take ``linear_tolerance`` instead (default :math:`10^{-12}`, relative to the
-norm of the right-hand side).
+norm of the right-hand side).  Both norms take each equation over the size of its
+terms, so the test has no unit (:doc:`/theory/nonlinear_and_time`).
 
 Give PETSc options
 ~~~~~~~~~~~~~~~~~~
@@ -291,7 +298,7 @@ Schur complement split with algebraic multigrid on both blocks is:
 Split a flow or a coupled problem
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Two options of dualmesh-multiphysics, which PETSc reads among its own, choose
+Two options of dualmesh, which PETSc reads among its own, choose
 a split that PETSc cannot name.  A split you choose must converge within 5000
 iterations.
 
@@ -348,7 +355,7 @@ GAMG builds its coarse problems by smoothed aggregation
 represents the near null space of the operator exactly: the constant for a
 diffusion equation, and the rigid translations and rotations of a body for
 elasticity (three and three in three dimensions, two and one in two).
-dualmesh-multiphysics builds the near null space from the displacement
+dualmesh builds the near null space from the displacement
 variables of the solids and the constant of every other variable.  It gives
 the near null space to PETSc whenever the problem has the displacements of a
 solid, also when your options choose GAMG.
@@ -416,19 +423,18 @@ The ``time`` section takes three keys:
    The first time step, a positive quantity in seconds.
 
 ``step_control``
-   How the step changes, by ``by`` and the key that goes with it:
+   How the step changes, by ``by`` and the optional key that goes with it:
 
    - ``{by: error, relative_tolerance: 1.0e-3}``, the default: the step keeps
      the estimated error of a step at the tolerance, a number above 0 and at
-     most 1.
-   - ``{by: iterations, target_iterations: 5}``: the step follows the number
-     of nonlinear iterations of a step.  The default target is 5.
-   - ``{by: Courant, Courant_number: 0.5}``: the step keeps the Courant number
-     of a flow advanced by the projection.  The default is 0.5.
-   - ``{by: fixed}``: the step stays at ``initial_time_step``, apart from
-     the retries of a step that fails to converge.
+     most 1.  The default tolerance is :math:`10^{-3}`.
+   - ``{by: fixed}``: the step stays at ``initial_time_step``, apart from the
+     retries of a step that fails to converge.
+   - ``{by: iterations, target_iterations: 4}``: the step follows the number
+     of nonlinear iterations of a step.  The default target is 4.
 
-   `Control the time step`_ describes each of them.
+   The defaults are those of ``solve_transient``, which the input leaves to
+   it.  `Control the time step`_ describes each of them.
 
 The input takes the default time scheme of the problem (see
 `Choose the time scheme`_).
@@ -441,8 +447,8 @@ From Python
    result = problem.solve_transient(end_time=100.0, time_step=1.0, time_scheme="Crank-Nicolson")
 
 :meth:`~dualmesh.Problem.solve_transient` marches the solution from
-``start_time`` (default 0) to ``end_time``, with ``time_step`` the step, or
-the first step for a step control that changes it.  It also takes every
+``start_time`` (default 0) to ``end_time``, with ``time_step`` the first
+step, which the ``"fixed"`` stepper keeps.  It also takes every
 setting of the steady solve, which applies to the nonlinear solve of each
 step.  A step does not take continuation.
 
@@ -543,48 +549,60 @@ Control the time step
 ``time_stepper`` selects how the step :math:`\Delta t` changes after the
 first one.  The input names of ``step_control.by`` are in brackets.
 
-``"fixed"`` (``fixed``)
-   The default of ``solve_transient``.  The step stays at ``time_step``.  The
-   last step shortens to end exactly at ``end_time``, and a step shortens to
-   land on an output time.  A step that fails to converge is retried at
-   ``cutback_factor`` times its size, and the steps after it grow by
-   ``growth_factor`` each until they reach ``time_step`` again.
-
 ``"error"`` (``error``)
-   The default of the input.  The step keeps an estimate of the local
+   The default of ``solve_transient`` and of the input.  The step keeps an
+   estimate of the local
    truncation error of a step at ``error_tolerance`` (default
    :math:`10^{-3}`).  For the :math:`\theta` method, the estimate compares the
    step with the polynomial through the last accepted states, extrapolated to
    the end of the step: linear for an order-one member, quadratic for
-   Crank-Nicolson.  This costs one solve per step.  The first steps, which
-   have no earlier states, a problem with inertia and the projection of a
-   flow take step doubling instead: the step is taken once with
-   :math:`\Delta t` and again as two steps of :math:`\Delta t / 2`, and the
-   difference of the two answers estimates the error [RichardsonGaunt1927]_.
-   This costs three solves per step and keeps the answer of the half steps.
+   Crank-Nicolson.  The projection of a flow compares its step with the
+   polynomial of its own order through the last accepted states.  This costs
+   one solve per step.  The first steps, which have too few earlier states,
+   and a problem with inertia take step doubling instead: the step is taken
+   once with :math:`\Delta t` and again as two steps of :math:`\Delta t / 2`,
+   and the difference of the two answers estimates the error
+   [RichardsonGaunt1927]_.  This costs three solves per step and keeps the
+   answer of the half steps.
 
    Each variable with a time derivative contributes the largest difference
-   at a node between the two answers, divided by the range of the variable
-   (its largest value less its smallest), and the estimate :math:`e` is the
-   largest contribution, so it has no unit.  A step whose estimate exceeds
+   at a node between the two answers, divided by the scale of the variable,
+   and the estimate :math:`e` is the largest contribution, so it has no unit.
+   The scale is the largest of the range of the variable (its largest value
+   less its smallest), its largest change from the initial state, and
+   :math:`\sqrt{\epsilon_m}` times its largest magnitude, with
+   :math:`\epsilon_m = 2^{-52}` the machine epsilon.  Each of the three is the
+   largest it has reached in the run, and the components of a velocity or a
+   displacement share the largest scale among them.  A temperature near
+   :math:`300\ \mathrm{K}` is then measured against how far it has moved,
+   a rigid motion or a uniform flow against its change, and a field at rest
+   keeps its round-off below the tolerance.  A step whose estimate exceeds
    the tolerance :math:`\epsilon` is rejected.  After an accepted step of
    order :math:`p`, the next step is
    :math:`\Delta t \min\bigl(g, \max(1, 0.9\, (\epsilon/e)^{1/(p+1)})\bigr)`,
-   with :math:`g` the ``growth_factor`` [HairerNorsettWanner1993]_.  Use this
-   stepper when the solution must meet a stated accuracy in time.
+   with :math:`g` the ``growth_factor`` [HairerNorsettWanner1993]_.  A
+   problem without a time derivative measures the change of every variable.
+
+``"fixed"`` (``fixed``)
+   The step stays at ``time_step``.  The last step shortens to end exactly at
+   ``end_time``, and a step shortens to land on an output time.  A step that
+   fails to converge is retried at ``cutback_factor`` times its size, and the
+   steps after it grow by ``growth_factor`` each until they reach
+   ``time_step`` again.  Use this stepper when the steps themselves matter,
+   such as in a study of the convergence in the step.
 
 ``"iteration"`` (``iterations``)
    The step follows the number of nonlinear iterations of the last step.  A
    step that converged in fewer than ``optimal_iterations - iteration_window``
    iterations grows by ``growth_factor``, and a step that needed more than
    ``optimal_iterations + iteration_window`` shrinks by ``cutback_factor``.
-   ``optimal_iterations`` (default 4, and the input's ``target_iterations``
-   with the default 5) sets the target, and ``iteration_window`` (default 2)
+   ``optimal_iterations`` (default 4, the input's ``target_iterations``) sets
+   the target, and ``iteration_window`` (default 2)
    the half-width of the band.  It costs nothing beyond the solve and leaves
    the error in time uncontrolled, so it suits a problem whose difficulty is
    the nonlinearity.
 
-``"cfl"`` (``Courant``)
+``"cfl"``
    The Courant-Friedrichs-Lewy stepper keeps the Courant number
    :math:`C = \Delta t \max_e |\mathbf{v}| / h_e` at ``courant_number``
    (default 0.5), where the maximum runs over the elements :math:`e` and the
@@ -592,7 +610,8 @@ first one.  The input names of ``step_control.by`` are in brackets.
    element :math:`e`.  Each new step gives that Courant number at the
    velocity that the last step reached, and grows by at most
    ``growth_factor``.  It applies to a flow advanced by the projection (see
-   `Advance a flow by projection`_).
+   `Advance a flow by projection`_), which the input does not select, so the
+   input has no name for it.
 
 ``growth_factor`` (default 2, at least 1) bounds the growth of the step from
 one step to the next.  ``min_time_step`` (default ``time_step`` divided by
@@ -604,10 +623,11 @@ Rejected steps
 
 A step is rejected when its nonlinear solve does not converge, or, with the
 ``error`` stepper, when its estimate exceeds the tolerance.  The run restores
-the state at the start of the step and takes the step again, multiplied by
-``cutback_factor`` (default 0.5, strictly between 0 and 1) or, with the
-``error`` stepper, by the larger of that factor and the step that the
-estimate allows.
+the state at the start of the step and takes the step again.  A step whose
+solve failed is multiplied by ``cutback_factor`` (default 0.5, strictly between
+0 and 1).  A step that the ``error`` stepper rejected is multiplied by
+:math:`\max\bigl(0.1,\ 0.9\, (\epsilon/e)^{1/(p+1)}\bigr)`, the step that the
+estimate allows, at least a tenth of the rejected one.
 
 The run fails when a step would fall below ``min_time_step``, or when more
 than ``max_rejected_steps`` (default 10) steps in a row are rejected.  It then
@@ -632,13 +652,12 @@ the ``iteration`` stepper cuts it back (from
    problem = dualmesh.Problem(mesh)
    problem.add_variable("temperature")
    problem.set_values("temperature", numpy.full(mesh.num_nodes, 300.0))
-   problem.add_kernel("heat_conduction", variable="temperature", thermal_conductivity=20.0)
-   problem.add_kernel(
-       "heat_conduction_time_derivative", variable="temperature", density=7800.0, specific_heat=460.0
-   )
+   problem.add_kernel("diffusion", variable="temperature", diffusivity=20.0)
+   problem.add_kernel("time_derivative", variable="temperature", coefficient=7800.0 * 460.0)
    problem.add_boundary_condition("Dirichlet", "left", variable="temperature", value=3000.0)
+   # Grey-body radiation with the emissivity 0.9, as the inflow -e sigma (T^4 - T_a^4).
    problem.add_boundary_condition(
-       "radiative_heat_flux", "right", variable="temperature", emissivity=0.9, ambient_temperature=300.0
+       "Neumann", "right", variable="temperature", flux="-5.670374419e-8*0.9*(temperature^4 - 300^4)"
    )
    result = problem.solve_transient(
        end_time=400.0,
@@ -649,6 +668,22 @@ the ``iteration`` stepper cuts it back (from
        cutback_factor=0.25,
    )
    print(result.converged, result.rejected_steps, len(result.step_history))
+
+Start a flow
+~~~~~~~~~~~~
+
+A transient run of an incompressible flow first projects the initial velocity
+onto a field without divergence that keeps the prescribed values, with the
+discrete divergence of the flow's own method (see :doc:`../theory/fluids`).  The
+correction is a discrete gradient, so a fluid at rest behind a prescribed
+inflow starts from the irrotational flow that carries the inflow through the
+domain, and the first steps take the size that the flow needs.  A field without divergence stays as it is, and so does the state
+of a run that restarts from a checkpoint or goes on from where the last run
+of the problem stopped.  The report of the solve gives the size of the
+correction in the row ``initial velocity correction``: the largest change of
+the velocity at a node over the largest speed after the projection.
+``result.start_correction`` holds the same number, and ``None`` for a run that
+projected nothing.
 
 Advance a flow by projection
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~

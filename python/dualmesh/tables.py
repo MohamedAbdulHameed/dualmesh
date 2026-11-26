@@ -29,11 +29,12 @@ __all__ = ["Table", "column_header"]
 
 def column_header(name: str, unit: str) -> str:
     """The header of a column: the name and, when there is one, the unit in
-    parentheses, for example ``temperature (K)``."""
-    return f"{name} ({unit})" if unit and unit not in ("-", "1") else name
+    square brackets, for example ``temperature [K]``."""
+    return f"{name} [{unit}]" if unit and unit not in ("-", "1") else name
 
 
-def _is_number(value) -> bool:
+def is_number(value) -> bool:
+    """Whether value is a number: an integer or a float, of Python or NumPy, and no Boolean."""
     return isinstance(value, (int, float, numpy.integer, numpy.floating)) and not isinstance(
         value, (bool, numpy.bool_)
     )
@@ -81,18 +82,16 @@ class Table:
     def __getitem__(self, name: str) -> numpy.ndarray:
         """The values of one column, by name, as an array."""
         if name not in self.names:
-            import difflib
+            from .console import suggestion
 
-            close = difflib.get_close_matches(name, self.names, n=1)
-            hint = f" Did you mean '{close[0]}'?" if close else ""
             raise KeyError(
-                f"Table '{self.title}' has no column '{name}'.{hint} Columns: {', '.join(self.names)}"
+                f"Table '{self.title}' has no column '{name}'." + suggestion(name, self.names)
             )
         j = self.names.index(name)
         values = [row[j] for row in self.rows]
         return (
             numpy.asarray(values, dtype=float)
-            if all(_is_number(v) for v in values)
+            if all(is_number(v) for v in values)
             else numpy.asarray(values, dtype=object)
         )
 
@@ -121,7 +120,7 @@ class Table:
     def _cell(self, value) -> str:
         if isinstance(value, (bool, numpy.bool_)):
             return "yes" if value else "no"
-        if _is_number(value):
+        if is_number(value):
             value = float(value) if not isinstance(value, (int, numpy.integer)) else int(value)
             if isinstance(value, int):
                 return str(value)
@@ -137,7 +136,7 @@ class Table:
         text = [[self._cell(v) for v in row] for row in self.rows]
         widths = [max([len(h)] + [len(r[j]) for r in text]) for j, h in enumerate(headers)]
         numeric = [
-            bool(self.rows) and all(_is_number(row[j]) or row[j] is None for row in self.rows)
+            bool(self.rows) and all(is_number(row[j]) or row[j] is None for row in self.rows)
             for j in range(len(headers))
         ]
         pad = " " * indent
@@ -170,7 +169,7 @@ class Table:
         def cell(value):
             if isinstance(value, (bool, numpy.bool_)):
                 return int(value)
-            if _is_number(value):
+            if is_number(value):
                 if isinstance(value, (int, numpy.integer)):
                     return int(value)
                 return repr(float(value)) if math.isfinite(value) else ""

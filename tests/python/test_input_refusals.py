@@ -18,11 +18,7 @@ def _square():
     "kernel, parameters, message",
     [
         ("diffusion", {"diffusivity": -1.0}, "'diffusivity' must be positive, and is -1"),
-        (
-            "heat_conduction",
-            {"thermal_conductivity": 0.0},
-            "'thermal_conductivity' must be positive",
-        ),
+        ("diffusion", {"diffusivity": 0.0}, "'diffusivity' must be positive"),
     ],
 )
 def test_a_coefficient_out_of_its_range_is_refused(kernel, parameters, message):

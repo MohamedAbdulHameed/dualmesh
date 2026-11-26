@@ -61,71 +61,41 @@ Problem::boundaryOutflow(const std::string & var,
   // so a held primary carries their share of the reaction.
   Vector residual = _last_residual;
   foldDependents(residual, nullptr);
-  const auto dependent = [&](Index d)
-  {
-    return (!_primary_of.empty() && _primary_of[static_cast<std::size_t>(d)] >= 0) ||
-           (!_hanging_of.empty() && !_hanging_of[static_cast<std::size_t>(d)].empty());
-  };
   for (Index n : _mesh->boundaryNodes(boundary))
   {
     const Index d = dof(n, v);
-    out[n] = held && fixed[d] && !dependent(d) && (!owned || (*owned)[n]) ? -residual[d] : 0.0;
+    out[n] = held && fixed[d] && !isDependent(d) && (!owned || (*owned)[n]) ? -residual[d] : 0.0;
   }
-  std::vector<IntegratedBC *> conditions;
-  for (const auto & bc : _ibcs)
-  {
-    if (bc->isConstraint() || bc->variable() != v || !on(bc->boundaries()))
-      continue;
-    if (dynamic_cast<const InterfaceBC *>(bc.get()))
-      throw InputError("The flow through '" + boundary +
-                       "' is not available: an interface condition acts on it, and the flow "
-                       "across an interface is not computed.");
-    conditions.push_back(bc.get());
-  }
-  const bool dual = isDual();
-  MappedPoint mp;
-  QpContext ctx;
-  ctx.dim = _mesh->spaceDimension();
-  ctx.time = _time;
-  ctx.on_boundary = true;
-  std::vector<IntegrationPoint> pts;
+  // The flux of each integrated condition of the boundary, as the assembly adds it to the
+  // residual.
+  const int nv = numVariables();
+  const AssemblyOptions steady;
+  ThreadScratch scratch;
+  scratch.ctx.dim = _mesh->spaceDimension();
+  scratch.ctx.time = _time;
   // A node set (a support at a point) has no sides to integrate over.
   static const std::vector<Side> no_sides;
   const bool sides =
       _mesh->sidesets().count(boundary) > 0 || _mesh->nodesets().count(boundary) == 0;
-  for (const Side & side : sides ? _mesh->sideset(boundary) : no_sides)
+  for (std::size_t index = 0; index < _ibcs.size(); ++index)
   {
-    const Element & el = _mesh->element(side.first);
-    const auto loc = localValues(*this, el);
-    const bool corner = usesCornerShape(el, v);
-    for (const IntegratedBC * bc : conditions)
+    const IntegratedBC & bc = *_ibcs[index];
+    if (bc.isConstraint() || bc.variable() != v || !on(bc.boundaries()))
+      continue;
+    if (dynamic_cast<const InterfaceBC *>(&bc))
+      throw InputError("The flow through '" + boundary +
+                       "' is not available: an interface condition acts on it, and the flow "
+                       "across an interface is not computed.");
+    for (const Side & side : sides ? _mesh->sideset(boundary) : no_sides)
     {
-      if (!bc->activeOnBlock(el.block))
+      const Element & el = _mesh->element(side.first);
+      if (!bc.activeOnBlock(el.block))
         continue;
-      buildSidePoints(*_mesh, side, dual, bc->quadrature(), pts);
-      for (const auto & ip : pts)
-      {
-        mapPoint(*_mesh, el, ip.xi, mp);
-        if (_mixed_order)
-          mapCornerShape(el, mp);
-        fillContext(ctx, el, mp, loc, nullptr, nullptr, 0);
-        ctx.x = mp.x;
-        ctx.element = side.first;
-        ctx.block = el.block;
-        ctx.normal = (1.0 / ip.weight) * ip.area;
-        evaluateProperties(ctx);
-        // The flux of a condition enters the body.
-        const double q = -bc->computeBoundaryFlux(ctx).value() * ip.weight * coordFactor(mp.x);
-        if (ip.owner >= 0)
-          out[el.nodes[ip.owner]] += q;
-        else
-        {
-          const double * N = corner ? mp.corner_shape : mp.N;
-          const int count = corner ? mp.num_corners : el.numNodes();
-          for (int a = 0; a < count; ++a)
-            out[el.nodes[a]] += q * N[a];
-        }
-      }
+      gatherLocal(scratch, el, _U, steady);
+      conditionResidual(bc, static_cast<unsigned>(index), side, 1.0, steady, 0, scratch);
+      for (std::size_t i = 0; i < scratch.dofs.size(); ++i)
+        if (scratch.touched[i])
+          out[scratch.dofs[i] / nv] += scratch.Rloc[i].value();
     }
   }
   // The forces of a constraint (contact) on the boundary: what it adds to the residual of the
@@ -284,7 +254,7 @@ Problem::errorIndicator(const std::string & var) const
       sums[static_cast<std::size_t>(4 * n + i)] = recovered[n][i];
     sums[static_cast<std::size_t>(4 * n + 3)] = weight[n];
   }
-  parallel().addAtNodes(sums, 4);
+  parallel().addAtNodes(sums.data(), 4);
   for (Index n = 0; n < nn; ++n)
   {
     for (int i = 0; i < 3; ++i)
@@ -431,6 +401,49 @@ Problem::propertyAtCentroids(const std::string & property) const
     ctx.x = mp.x;
     ctx.element = e;
     ctx.block = el.block;
+    ctx.state_owner = e;
+    ctx.state_key = kCentroidStateKey;
+    evaluateProperties(ctx);
+    std::vector<double> row(nc);
+    for (int c = 0; c < nc; ++c)
+      row[c] = ctx.property(id, c).value();
+    out.push_back(row);
+  }
+  return out;
+}
+
+std::vector<std::vector<double>>
+Problem::propertyAtPoints(const std::string & property, const std::vector<Point> & points) const
+{
+  auto * self = const_cast<Problem *>(this);
+  self->initialize();
+  const int id = _props.id(property);
+  const int nc = _props.components(property);
+  PointLocator locator(*_mesh);
+  std::vector<std::vector<double>> out;
+  MappedPoint mp;
+  QpContext ctx;
+  ctx.dim = _mesh->spaceDimension();
+  ctx.time = _time;
+  for (const auto & p : points)
+  {
+    Index e;
+    Point xi;
+    if (!locator.locate(p, e, xi, 1e-8))
+    {
+      out.emplace_back(nc, std::numeric_limits<double>::quiet_NaN());
+      continue;
+    }
+    const auto & el = _mesh->element(e);
+    mapPoint(*_mesh, el, xi, mp);
+    const auto loc = localValues(*this, el);
+    if (_mixed_order)
+      mapCornerShape(el, mp);
+    fillContext(ctx, el, mp, loc, nullptr, nullptr, 0);
+    ctx.x = mp.x;
+    ctx.element = e;
+    ctx.block = el.block;
+    // A property with a history takes the average committed history of the element.
     ctx.state_owner = e;
     ctx.state_key = kCentroidStateKey;
     evaluateProperties(ctx);

@@ -20,10 +20,10 @@ def test_nonlinear_conduction(method, solver):
     problem = dualmesh.Problem(mesh, method=method)
     problem.add_variable("temperature")
     problem.add_kernel(
-        "heat_conduction",
+        "diffusion",
         variable="temperature",
-        thermal_conductivity=1.0,
-        temperature_polynomial=[1.0, 0.5],
+        diffusivity=1.0,
+        solution_polynomial=[1.0, 0.5],
     )
     problem.add_boundary_condition("Dirichlet", "left", variable="temperature", value=0.0)
     problem.add_boundary_condition("Dirichlet", "right", variable="temperature", value=1.0)
@@ -50,7 +50,10 @@ def test_transient_slab(method):
         variable="temperature",
         value=0.0,
     )
-    problem.solve_transient(end_time=0.1, time_step=0.001, time_scheme="Crank-Nicolson")
+    # The fixed step isolates the spatial error, which the bound measures.
+    problem.solve_transient(
+        end_time=0.1, time_step=0.001, time_scheme="Crank-Nicolson", time_stepper="fixed"
+    )
     x = problem.node_coordinates()[:, 0]
     exact = numpy.exp(-(numpy.pi**2) * 0.1) * numpy.sin(numpy.pi * x)
     assert problem.values("temperature") == pytest.approx(exact, abs=3e-4)
@@ -122,7 +125,7 @@ def test_a_jump_of_the_conductivity_between_blocks_is_exact_at_the_nodes(method)
     for n in (10, 20, 40):
         mesh = _two_block_line(n)
         problem = dualmesh.Problem(mesh, method=method)
-        heat = problem.add_physics("heat_transfer", heat_source=1.0, initial_condition=0.0)
+        heat = problem.add_physics("heat_conduction", heat_source=1.0, initial_condition=0.0)
         problem.add_property(
             "constant",
             block=["inner"],
@@ -153,7 +156,7 @@ def test_a_short_step_keeps_the_temperature_between_its_initial_and_boundary_val
     mesh = dualmesh.generate_rectangle_mesh(0, 1, 0, 1, 8, 8, element_type="Tri3")
     problem = dualmesh.Problem(mesh, method=method)
     heat = problem.add_physics(
-        "heat_transfer",
+        "heat_conduction",
         thermal_conductivity=1.0,
         density=1.0,
         specific_heat=1.0,

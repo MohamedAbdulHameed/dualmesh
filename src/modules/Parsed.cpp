@@ -1,23 +1,24 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 //
-// Property objects defined by expressions: parsed_property, which declares a scalar
-// property, and parsed_eigenstrain, which declares an eigenstrain for the
-// stress property objects.  The expressions are compiled once (ParsedExpression) and
-// evaluated with automatic differentiation, so a property that depends on the
-// solution contributes its exact derivatives to the Jacobian.  They are the
-// way to add a correlation (a conductivity, a swelling law) without writing
-// C++, at the speed of compiled code.
+// Objects defined by expressions: parsed, which declares a scalar property, table, which
+// declares a scalar property linear between the rows of a table of one argument expression,
+// parsed_eigenstrain, which declares an eigenstrain for the stress property objects,
+// parsed_tensor, which declares a property of several components from expressions of the fields
+// and their gradients, and parsed_kernel, a term of an equation.  The expressions are compiled
+// once (FieldExpressions) and evaluated with automatic differentiation, so a property that
+// depends on the solution contributes its exact derivatives to the Jacobian.  They are the way to
+// add a correlation (a conductivity, a swelling law) without writing C++, at the speed of
+// compiled code.
 #include "dualmesh/base/Factory.h"
 #include "dualmesh/base/FieldExpression.h"
 #include "dualmesh/base/Kernel.h"
 #include "dualmesh/base/Problem.h"
 #include "dualmesh/base/Property.h"
-#include "dualmesh/core/ParsedFunction.h"
 
 #include <algorithm>
 #include <array>
-#include <memory>
-#include <set>
+#include <map>
+#include <sstream>
 
 namespace dualmesh
 {
@@ -25,176 +26,26 @@ namespace dualmesh
 namespace
 {
 
-/// The arguments of the expressions of a property object.
-/// The expressions use names without declaring them: the variables of the problem (their values
-/// as coefficients, lagged under Picard iteration as in every property object), the registered
-/// functions, the element fields, the scalar properties of the property objects added before this
-/// one, the object's own leading arguments and its named constants.  The names are resolved when
-/// the object is set up, and only those the expressions use are evaluated.
-class ParsedArguments
+/// The parameter of the named constants of an object defined by expressions.
+void
+addConstants(InputParameters & p)
 {
-public:
-  static constexpr int kMaxArguments = 32;
+  p.addOptional("constants",
+                ParameterKind::RealMap,
+                RealMap{},
+                "Named constants that the expressions use, as name -> value pairs. Default: "
+                "none, for expressions that need no constant of their own.");
+}
 
-  static void addParams(InputParameters & p)
-  {
-    p.addOptional("constants",
-                  ParameterKind::RealMap,
-                  RealMap{},
-                  "Named constants that the expression uses, as name -> value pairs. Default: "
-                  "none, for an expression that needs no constant of its own.");
-  }
-
-  explicit ParsedArguments(const InputParameters & p) : _constants(p.getRealMap("constants")) {}
-
-  /// Compile @p texts, with the object's own @p leading names first in the argument array.
-  void compile(Problem & problem,
-               const std::vector<std::string> & texts,
-               const std::vector<std::string> & leading,
-               const std::string & owner)
-  {
-    struct Candidate
-    {
-      int kind; // 0 leading, 1 variable, 2 function, 3 element field, 4 property, 5 constant
-      int index;
-      double constant;
-      std::string what;
-    };
-    std::vector<std::string> names;
-    std::vector<std::vector<Candidate>> found;
-    const auto add = [&](const std::string & n, Candidate c)
-    {
-      const auto it = std::find(names.begin(), names.end(), n);
-      if (it == names.end())
-      {
-        names.push_back(n);
-        found.push_back({c});
-      }
-      else
-        found[static_cast<std::size_t>(it - names.begin())].push_back(c);
-    };
-    for (std::size_t k = 0; k < leading.size(); ++k)
-      add(leading[k], {0, static_cast<int>(k), 0.0, "an argument of the object"});
-    for (int v = 0; v < problem.numVariables(); ++v)
-      add(problem.variable(v).name, {1, v, 0.0, "a field"});
-    const auto functions = problem.functionNames();
-    for (std::size_t k = 0; k < functions.size(); ++k)
-      add(functions[k], {2, static_cast<int>(k), 0.0, "a function"});
-    const auto fields = problem.elementFieldNames();
-    for (std::size_t k = 0; k < fields.size(); ++k)
-      add(fields[k], {3, static_cast<int>(k), 0.0, "an element field"});
-    for (const auto & [n, slot] : problem.propertyRegistry().all())
-      if (slot.second == 1)
-        add(n, {4, slot.first, 0.0, "a property"});
-    for (const auto & [n, value] : _constants)
-      add(n, {5, 0, value, "a constant"});
-
-    std::set<int> used;
-    for (const auto & text : texts)
-    {
-      std::unique_ptr<ParsedExpression> all;
-      try
-      {
-        all = std::make_unique<ParsedExpression>(text, names);
-      }
-      catch (const InputError & error)
-      {
-        throw InputError("'" + owner + "': " + error.what() +
-                         " An expression may use the fields, the registered functions, the "
-                         "element fields, the properties of the property objects added before "
-                         "this one, and the named constants.");
-      }
-      for (std::size_t k = 0; k < names.size(); ++k)
-        if (all->uses(static_cast<int>(k)))
-          used.insert(static_cast<int>(k));
-    }
-    // The leading arguments keep their places, so that the object can fill them itself.
-    for (std::size_t k = 0; k < leading.size(); ++k)
-      used.insert(static_cast<int>(k));
-    if (static_cast<int>(used.size()) > kMaxArguments)
-      throw InputError("'" + owner + "': a parsed expression takes at most " +
-                       std::to_string(kMaxArguments) + " arguments.");
-    _names.clear();
-    _slots.clear();
-    for (int k : used)
-    {
-      if (found[k].size() > 1)
-      {
-        std::string what;
-        for (std::size_t i = 0; i < found[k].size(); ++i)
-          what += (i ? (i + 1 == found[k].size() ? " and " : ", ") : "") + found[k][i].what;
-        throw InputError("'" + owner + "': the name '" + names[k] + "' is " + what +
-                         ", so the expression is ambiguous. Rename one of them.");
-      }
-      const auto & c = found[k].front();
-      Slot s;
-      s.kind = c.kind;
-      s.index = c.index;
-      s.constant = c.constant;
-      if (c.kind == 2)
-        s.function = problem.function(functions[c.index]);
-      else if (c.kind == 3)
-        s.field = &problem.elementField(fields[c.index]);
-      else if (c.kind == 4)
-        problem.propertyRegistry().markRead(names[k]);
-      _names.push_back(names[k]);
-      _slots.push_back(s);
-    }
-  }
-
-  /// The names in the order of the argument array, the leading names first.
-  const std::vector<std::string> & names() const { return _names; }
-
-  /// Fill @p out with every argument but the leading ones.
-  template <typename T> void fill(const QpContext & ctx, T * out) const
-  {
-    for (std::size_t k = 0; k < _slots.size(); ++k)
-    {
-      const Slot & s = _slots[k];
-      switch (s.kind)
-      {
-      case 1:
-        out[k] = value<T>(ctx.coefficientValue(s.index));
-        break;
-      case 2:
-        out[k] = T(s.function->value(ctx.x, ctx.time));
-        break;
-      case 3:
-        out[k] = T(ctx.element >= 0 ? (*s.field)[ctx.element] : 0.0);
-        break;
-      case 4:
-        out[k] = value<T>(ctx.property(s.index));
-        break;
-      case 5:
-        out[k] = T(s.constant);
-        break;
-      default:
-        break;
-      }
-    }
-  }
-
-private:
-  template <typename T> static T value(const ADReal & a)
-  {
-    if constexpr (std::is_same_v<T, double>)
-      return a.value();
-    else
-      return a;
-  }
-
-  struct Slot
-  {
-    int kind = 0;
-    int index = 0;
-    double constant = 0.0;
-    FunctionPtr function;
-    const std::vector<double> * field = nullptr;
-  };
-  RealMap _constants;
-  std::vector<std::string> _names;
-  std::vector<Slot> _slots;
-};
+/// The named constants of @p p, as names in scope of FieldExpressions.
+FieldExpressions::Names
+constantNames(const InputParameters & p)
+{
+  FieldExpressions::Names names;
+  for (const auto & [n, value] : p.getRealMap("constants"))
+    names.constants.emplace_back(n, value);
+  return names;
+}
 
 const char * kExpressionHelp =
     "The expression language: numbers, the arguments by name, the constants pi and e, "
@@ -213,28 +64,31 @@ public:
   {
     InputParameters p = Property::validParams();
     p.setClassDescription(
-        std::string("A scalar property given by an expression of the values of the fields, the "
-                    "registered functions, the element fields, the properties of the property "
-                    "objects added before it and named constants, each used by its name. The "
-                    "code compiles the expression once and differentiates it automatically. "
-                    "It adds a correlation, for example a thermal conductivity k(T, x), without "
-                    "C++ code. Picard iteration takes the fields at the previous iterate. ") +
+        std::string(
+            "A scalar property given by an expression of the fields, the components of their "
+            "gradients as grad_x(u), grad_y(u) and grad_z(u), the coordinates x, y and z, the "
+            "time t, the registered functions, the element fields, the scalar properties of the "
+            "property objects added before it and named constants, each used by its name. The "
+            "code compiles the expression once and differentiates it automatically. It adds a "
+            "correlation, for example a thermal conductivity k(T, x), without C++ code, and a "
+            "property that varies through the body only, such as a graded conductivity '20 + "
+            "5*x' or the name of a registered function of x, y, z and t. The "
+            "fields take their values at the current iterate, with their derivatives, under "
+            "Newton's method and Picard iteration alike, as in every expression of the code. ") +
         kExpressionHelp);
     p.addRequired("property_name", ParameterKind::String, "Name of the declared property.");
     p.addRequired("expression",
                   ParameterKind::String,
                   "The expression of the property, in the units that the objects reading it "
                   "expect.");
-    ParsedArguments::addParams(p);
+    addConstants(p);
     return p;
   }
-  explicit ParsedProperty(const InputParameters & p) : Property(p), _arguments(p) {}
+  explicit ParsedProperty(const InputParameters & p) : Property(p) {}
   void initialSetup(Problem & problem) override
   {
     Property::initialSetup(problem);
-    const auto text = _params.getString("expression");
-    _arguments.compile(problem, {text}, {}, name());
-    _expression = std::make_unique<ParsedExpression>(text, _arguments.names());
+    _expression.compile(problem, {_params.getString("expression")}, constantNames(_params), name());
   }
   void declareProperties(PropertyRegistry & r) override
   {
@@ -242,14 +96,97 @@ public:
   }
   void computeProperties(QpContext & ctx) const override
   {
-    std::array<ADReal, ParsedArguments::kMaxArguments> args;
-    _arguments.fill(ctx, args.data());
-    ctx.property(_prop) = _expression->value(args.data());
+    ctx.property(_prop) = _expression.value(0, ctx);
   }
 
 private:
-  ParsedArguments _arguments;
-  std::unique_ptr<ParsedExpression> _expression;
+  FieldExpressions _expression;
+  int _prop = -1;
+};
+
+// ---------------------------------------------------------------------------
+/// A scalar property given by a table of one argument, linear between its rows.
+class TableProperty : public Property
+{
+public:
+  static InputParameters validParams()
+  {
+    InputParameters p = Property::validParams();
+    p.setClassDescription(
+        "A scalar property given by a table of one argument, linear between its rows. The "
+        "argument is an expression of the fields, the coordinates x, y and z and the time t, "
+        "such as temperature. The property takes the derivatives of the argument, so a table of "
+        "a field contributes its exact derivative to the Jacobian. A state whose argument lies "
+        "outside the range of the table is inadmissible: the solve rejects it and tries a "
+        "smaller step, and stops with a message that names the property, the region and the "
+        "value when no smaller step keeps the argument in the range.");
+    p.addRequired("property_name", ParameterKind::String, "Name of the declared property.");
+    p.addRequired("argument",
+                  ParameterKind::String,
+                  "The expression of the argument of the table, such as temperature.");
+    p.addRequired("points",
+                  ParameterKind::RealList,
+                  "The values of the argument at the rows of the table, in increasing order.");
+    p.addRequired("values",
+                  ParameterKind::RealList,
+                  "The values of the property at the rows of the table, in the units that the "
+                  "objects reading it expect.");
+    return p;
+  }
+  explicit TableProperty(const InputParameters & p)
+    : Property(p), _points(p.getRealList("points")), _values(p.getRealList("values"))
+  {
+    if (_points.size() < 2 || _points.size() != _values.size())
+      throw InputError("'" + name() + "': a table takes at least two points and one value per " +
+                       "point, and it has " + std::to_string(_points.size()) + " points and " +
+                       std::to_string(_values.size()) + " values.");
+    for (std::size_t k = 1; k < _points.size(); ++k)
+      if (!(_points[k] > _points[k - 1]))
+        throw InputError("'" + name() + "': the points of a table increase.");
+  }
+  void initialSetup(Problem & problem) override
+  {
+    Property::initialSetup(problem);
+    _argument.compile(problem, {_params.getString("argument")}, {}, name());
+    _block_names = problem.mesh().blockNames();
+  }
+  void declareProperties(PropertyRegistry & r) override
+  {
+    _prop = r.declare(_params.getString("property_name"), 1);
+  }
+  void computeProperties(QpContext & ctx) const override
+  {
+    const ADReal argument = _argument.value(0, ctx);
+    const double a = argument.value();
+    // The ends hold to round-off of the range, so that a state on an end of the table is read.
+    const double tolerance = 1e-12 * (_points.back() - _points.front());
+    if (!(a >= _points.front() - tolerance && a <= _points.back() + tolerance))
+      throw InadmissibleStateError(outside(ctx, a));
+    // The interval of the argument: the last one holds its upper end.
+    const std::size_t k =
+        std::upper_bound(_points.begin() + 1, _points.end() - 1, a) - _points.begin() - 1;
+    const double slope = (_values[k + 1] - _values[k]) / (_points[k + 1] - _points[k]);
+    ctx.property(_prop) = _values[k] + slope * (argument - _points[k]);
+  }
+
+private:
+  std::string outside(const QpContext & ctx, double a) const
+  {
+    std::ostringstream os;
+    os << "the table of the property " << _params.getString("property_name");
+    const auto region = _block_names.find(ctx.block);
+    if (region != _block_names.end())
+      os << " in the region " << region->second;
+    os << " reads " << _params.getString("argument") << " = " << a
+       << ", outside the range of the table, from " << _points.front() << " to "
+       << _points.back() << ".";
+    return os.str();
+  }
+
+  std::vector<double> _points;
+  std::vector<double> _values;
+  FieldExpressions _argument;
+  std::map<int, std::string> _block_names;
   int _prop = -1;
 };
 
@@ -270,7 +207,12 @@ public:
             "directions, only along the axis, or only across it ('direction'). With "
             "'stress_free_state' the code shifts the strain to zero in a given state: for a "
             "thermal strain f(T) of the temperature T, give the stress-free temperature T_sf, and "
-            "the stored strain is f(T) - f(T_sf). ") +
+            "the stored strain is f(T) - f(T_sf). The expression may use the fields, the components "
+            "of their gradients as grad_x(u), grad_y(u) and grad_z(u), the coordinates x, y and "
+            "z, the time t, the registered functions, the element fields, the scalar properties "
+            "of the property objects added before it and named constants, each by its name. The "
+            "fields take their values at the current iterate, with their derivatives, under "
+            "Newton's method and Picard iteration alike, as in every expression of the code. ") +
         kExpressionHelp);
     p.addRequired("expression", ParameterKind::String, "The expression of the strain.");
     p.addRequired("eigenstrain_name", ParameterKind::String, "Name of the declared property.");
@@ -301,10 +243,10 @@ public:
                   "The state in which the strain is zero, as name -> value pairs, with each name "
                   "an argument of the expression, for example {temperature: 293.15}. Default: "
                   "none, which stores the expression as it is.");
-    ParsedArguments::addParams(p);
+    addConstants(p);
     return p;
   }
-  explicit ParsedEigenstrain(const InputParameters & p) : Property(p), _arguments(p)
+  explicit ParsedEigenstrain(const InputParameters & p) : Property(p)
   {
     const auto type = p.getString("strain_type");
     if (type != "linear" && type != "volumetric")
@@ -317,8 +259,8 @@ public:
                        direction + "'.");
     if (type == "volumetric" && direction != "isotropic")
       throw InputError("'" + name() +
-                       "': a volumetric strain acts equally in every direction; "
-                       "use strain_type = 'linear' for an axial or transverse "
+                       "': a volumetric strain acts equally in every direction. "
+                       "Use strain_type = 'linear' for an axial or transverse "
                        "strain.");
     _direction = direction == "isotropic" ? 0 : direction == "axial" ? 1 : 2;
     const auto formulation = p.getString("formulation");
@@ -332,14 +274,12 @@ public:
   void initialSetup(Problem & problem) override
   {
     Property::initialSetup(problem);
-    const auto text = _params.getString("expression");
-    _arguments.compile(problem, {text}, {}, name());
-    _expression = std::make_unique<ParsedExpression>(text, _arguments.names());
+    _expression.compile(problem, {_params.getString("expression")}, constantNames(_params), name());
     _free_slots.clear();
     _free_values.clear();
     for (const auto & [n, value] : _params.getRealMap("stress_free_state"))
     {
-      const int k = _expression->index(n);
+      const int k = _expression.argumentIndex(n);
       if (k < 0)
         throw InputError("'" + name() + "': 'stress_free_state' names '" + n +
                          "', which the expression does not use.");
@@ -353,14 +293,14 @@ public:
   }
   void computeProperties(QpContext & ctx) const override
   {
-    std::array<ADReal, ParsedArguments::kMaxArguments> args;
-    _arguments.fill(ctx, args.data());
-    ADReal e = _expression->value(args.data());
+    std::array<ADReal, FieldExpressions::kMaxArguments> args;
+    _expression.arguments(ctx, args.data());
+    ADReal e = _expression.value(0, args.data());
     if (!_free_slots.empty())
     {
       for (std::size_t k = 0; k < _free_slots.size(); ++k)
         args[_free_slots[k]] = ADReal(_free_values[k]);
-      e = e - _expression->value(args.data());
+      e = e - _expression.value(0, args.data());
     }
     e = e * _scale;
     for (int i = 0; i < 6; ++i)
@@ -374,12 +314,73 @@ public:
   }
 
 private:
-  ParsedArguments _arguments;
-  std::unique_ptr<ParsedExpression> _expression;
+  FieldExpressions _expression;
   double _scale = 1.0;
   int _direction = 0, _axial = 2, _prop = -1;
   std::vector<int> _free_slots;
   std::vector<double> _free_values;
+};
+
+// ---------------------------------------------------------------------------
+/// A property of several components, each an expression of the fields, their gradients, the
+/// position and the time.
+class ParsedTensor : public Property
+{
+public:
+  static InputParameters validParams()
+  {
+    InputParameters p = Property::validParams();
+    p.setClassDescription(
+        std::string(
+            "A property of several components, each given by an expression, such as the nine "
+            "components of a tensor, row by row. The expressions may use every field of the "
+            "problem by its name, the components of its gradient as grad_x(u), grad_y(u) and "
+            "grad_z(u), the coordinates x, y and z, the time t, the registered functions, the "
+            "element fields, the scalar properties of the property objects added before it and "
+            "named constants, each by its name. The code compiles them once and differentiates "
+            "them automatically, so an object that reads the property receives its exact "
+            "derivatives. ") +
+        kExpressionHelp);
+    p.addRequired("property_name", ParameterKind::String, "Name of the declared property.");
+    p.addRequired("components",
+                  ParameterKind::StringList,
+                  "The expressions of the components, one per component of the declared "
+                  "property, in the order that the objects reading it expect: row by row for a "
+                  "tensor.");
+    addConstants(p);
+    return p;
+  }
+
+  explicit ParsedTensor(const InputParameters & p)
+      : Property(p), _components(p.getStringList("components"))
+  {
+    if (_components.empty())
+      throw InputError("'" + name() + "': give one expression per component in 'components'.");
+  }
+
+  void initialSetup(Problem & problem) override
+  {
+    Property::initialSetup(problem);
+    _expressions.compile(problem, _components, constantNames(_params), name());
+  }
+
+  void declareProperties(PropertyRegistry & r) override
+  {
+    _prop = r.declare(_params.getString("property_name"), static_cast<int>(_components.size()));
+  }
+
+  void computeProperties(QpContext & ctx) const override
+  {
+    std::array<ADReal, FieldExpressions::kMaxArguments> args;
+    _expressions.arguments(ctx, args.data());
+    for (std::size_t c = 0; c < _components.size(); ++c)
+      ctx.property(_prop, static_cast<int>(c)) = _expressions.value(c, args.data());
+  }
+
+private:
+  std::vector<std::string> _components;
+  FieldExpressions _expressions;
+  int _prop = -1;
 };
 
 // ---------------------------------------------------------------------------
@@ -414,15 +415,19 @@ public:
                   ParameterKind::String,
                   std::string(""),
                   "The source s, an expression. Default: none, for a term with a flux only.");
-    p.addOptional("constants",
-                  ParameterKind::RealMap,
-                  RealMap{},
-                  "Named constants that the expressions use, as name -> value pairs. Default: "
-                  "none, for expressions that need no constant of their own.");
+    p.addOptional("advective",
+                  ParameterKind::Boolean,
+                  false,
+                  "Whether the term carries the variable, as an advection does: a flux that does "
+                  "not vanish with the gradient of the variable, or a source that reads that "
+                  "gradient. The automatic quadrature of the storage of the variable "
+                  "(time_derivative) then takes the Gauss rule, since a lumped storage loses phase "
+                  "accuracy in a transport. Default false, a diffusion or a reaction.");
+    addConstants(p);
     return p;
   }
 
-  explicit ParsedKernel(const InputParameters & p) : Kernel(p)
+  explicit ParsedKernel(const InputParameters & p) : Kernel(p), _advective(p.getBool("advective"))
   {
     _flux_text = p.getStringList("flux");
     _source_text = p.getString("source");
@@ -432,6 +437,7 @@ public:
 
   bool hasFlux() const override { return !_flux_text.empty(); }
   bool hasSource() const override { return !_source_text.empty(); }
+  bool transportsVariable() const override { return _advective; }
 
   void initialSetup(Problem & problem) override
   {
@@ -441,9 +447,7 @@ public:
       throw InputError("'" + name() + "': the flux has " + std::to_string(_flux_text.size()) +
                        " component(s), and the mesh has " + std::to_string(dim) +
                        " dimension(s). Give one expression for each dimension.");
-    FieldExpressions::Names names;
-    for (const auto & [n, value] : _params.getRealMap("constants"))
-      names.constants.emplace_back(n, value);
+    const FieldExpressions::Names names = constantNames(_params);
     std::vector<std::string> texts = _flux_text;
     if (!_source_text.empty())
       texts.push_back(_source_text);
@@ -484,6 +488,7 @@ public:
 private:
   std::vector<std::string> _flux_text;
   std::string _source_text;
+  bool _advective;
   FieldExpressions _expressions;
   std::size_t _num_flux = 0;
 };
@@ -492,7 +497,9 @@ void
 registerParsedObjects(Factory & f)
 {
   f.add<ParsedProperty>("parsed", ObjectCategory::Property, "framework");
+  f.add<TableProperty>("table", ObjectCategory::Property, "framework");
   f.add<ParsedEigenstrain>("parsed_eigenstrain", ObjectCategory::Property, "solid_mechanics");
+  f.add<ParsedTensor>("parsed_tensor", ObjectCategory::Property, "framework");
   f.add<ParsedKernel>("parsed_kernel", ObjectCategory::Kernel, "framework");
 }
 

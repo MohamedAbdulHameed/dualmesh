@@ -20,7 +20,7 @@ def conduction_problem(problem):
     """Heat conduction with a source, a prescribed temperature on two sides and
     convection on the other two."""
     problem.add_variable("temperature")
-    problem.add_kernel("heat_conduction", variable="temperature", thermal_conductivity=2.5)
+    problem.add_kernel("diffusion", variable="temperature", diffusivity=2.5)
     problem.add_kernel("body_force", variable="temperature", value=40.0)
     problem.add_boundary_condition(
         "Dirichlet",
@@ -367,17 +367,22 @@ def test_a_restarted_creep_run_ends_where_an_uninterrupted_one_ends(distributed)
         return numpy.asarray(problem.values("uz"))
 
     whole = _creep_block(distributed)
-    whole.solve_transient(end_time=1e6, time_step=1e5, report="none")
+    whole.solve_transient(end_time=1e6, time_step=1e5, time_stepper="fixed", report="none")
     stopped = _creep_block(distributed)
     stopped.solve_transient(
         end_time=5e5,
         time_step=1e5,
+        time_stepper="fixed",
         report="none",
         output=dualmesh.Output(directory=str(directory), file_base="creep", checkpoint_interval=2),
     )
     restarted = _creep_block(distributed)
     result = restarted.solve_transient(
-        end_time=1e6, time_step=1e5, report="none", restart=str(directory / "creep.chk")
+        end_time=1e6,
+        time_step=1e5,
+        time_stepper="fixed",
+        report="none",
+        restart=str(directory / "creep.chk"),
     )
     assert result.time_steps == 5
     assert values(restarted) == pytest.approx(values(whole), rel=1e-10, abs=1e-18)
@@ -446,7 +451,7 @@ def test_a_distributed_error_controlled_transient_reproduces_the_serial_answer()
         mesh = dualmesh.generate_rectangle_mesh(0.0, 1.0, 0.0, 1.0, num_elements=[8, 8])
         problem = dualmesh.Problem(mesh, method="fem", distributed=distributed)
         heat = problem.add_physics(
-            "heat_transfer",
+            "heat_conduction",
             thermal_conductivity=1.0,
             density=1.0,
             specific_heat=1.0,
@@ -555,7 +560,7 @@ def test_a_wrong_option_of_dualmesh_names_the_right_values(distributed, options,
 
 
 def _thermoelastic_plate(problem):
-    heat = problem.add_physics("heat_transfer", thermal_conductivity=20.0, heat_source=1.0e6)
+    heat = problem.add_physics("heat_conduction", thermal_conductivity=20.0, heat_source=1.0e6)
     heat.add_boundary_condition("temperature = 300", boundary="left")
     solid = problem.add_physics(
         "solid_mechanics",
@@ -567,7 +572,7 @@ def _thermoelastic_plate(problem):
     solid.add_boundary_condition("fixed", boundary="left")
     problem.add_coupling(
         "thermal_expansion",
-        heat_transfer=heat,
+        heat_conduction=heat,
         solid_mechanics=solid,
         linear_expansion_coefficient=1.2e-5,
         stress_free_temperature=293.0,
@@ -631,11 +636,9 @@ def test_the_adaptive_loop_of_the_input_runs_on_every_process():
     plate.boundary_conditions("left", temperature="400 K")
     plate.boundary_conditions("bottom", temperature="300 K")
     plate.mesh_adaptivity(
-        indicator="gradient_recovery",
         field="temperature",
         refine_fraction=0.5,
         coarsen_fraction=0.05,
-        interval=1,
         maximum_refinement_level=3,
     )
     solution = plate.solve(report="none")

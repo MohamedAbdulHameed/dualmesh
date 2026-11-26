@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import difflib
 import os
 import time
 from collections.abc import Sequence
@@ -13,8 +12,8 @@ import numpy
 
 from . import _core
 from ._core import InputError
-from .console import report_level
-from .output import Output
+from .console import report_level, suggestion
+from .output import Series
 from .tables import ResultTables
 
 SolveResult = _core.SolveResult
@@ -57,6 +56,7 @@ def _solve_result_to_dict(self) -> dict:
         "linear_iterations": int(self.linear_iterations),
         "time_steps": int(self.time_steps),
         "rejected_steps": int(self.rejected_steps),
+        "start_correction": self.start_correction,
         "history": history,
     }
 
@@ -124,7 +124,8 @@ def petsc_option_string(options) -> str:
 
     ``options`` may already be a string (``"-ksp_type cg -pc_type gamg"``), a
     dictionary (``{"ksp_type": "cg", "pc_type": "gamg"}``, where a value of
-    ``None`` or ``True`` gives a flag without a value), or ``None``."""
+    ``None`` or ``True`` gives a flag without a value and ``False`` gives the
+    value ``false``), or ``None``."""
     if options is None:
         return ""
     if isinstance(options, str):
@@ -135,7 +136,7 @@ def petsc_option_string(options) -> str:
         if value is None or value is True:
             parts.append(name)
         elif value is False:
-            continue
+            parts.append(f"{name} false")
         else:
             parts.append(f"{name} {value}")
     return " ".join(parts)
@@ -163,11 +164,7 @@ def _solver_options(**kwargs) -> _core.SolverOptions:
             options.verbose = bool(value)
             continue
         if key not in known:
-            close = difflib.get_close_matches(key, known, n=1)
-            hint = f" Did you mean '{close[0]}'?" if close else ""
-            raise TypeError(
-                f"Unknown solver option '{key}'.{hint} Known options: {', '.join(sorted(known))}."
-            )
+            raise TypeError(f"Unknown solver option '{key}'." + suggestion(key, known))
         if key == "petsc_options":
             value = petsc_option_string(value)
         if key == "nonlinear_solver" and isinstance(value, str):
@@ -352,7 +349,7 @@ class Problem:
 
         self._postprocessors = PostprocessorHistory()
         self._user_step_callback = None
-        self._extra_step_callback = None
+        self._step_actions = []
         self._domain_volume = None
 
     def node_coordinates(self) -> numpy.ndarray:
@@ -518,10 +515,8 @@ class Problem:
             known = set(self._mesh.sideset_names()) | set(self._mesh.nodeset_names())
             for name in parameters["boundary"]:
                 if name not in known:
-                    close = difflib.get_close_matches(name, sorted(known), n=1)
-                    hint = f" Did you mean '{close[0]}'?" if close else ""
                     raise ValueError(
-                        f"{condition}: the mesh has no boundary '{name}'.{hint} Its boundaries are: {', '.join(sorted(known)) or 'none'}."
+                        f"{condition}: the mesh has no boundary '{name}'." + suggestion(name, known)
                     )
         if isinstance(condition, str):
             category = _core.object_category(condition)
@@ -566,7 +561,7 @@ class Problem:
         to its equations, and which a coupling takes to name it::
 
             heat = problem.add_physics(
-                "heat_transfer", thermal_conductivity=20.0, heat_source=1.0e6
+                "heat_conduction", thermal_conductivity=20.0, heat_source=1.0e6
             )
             heat.add_boundary_condition("temperature = 40", boundary="left")
         """
@@ -586,13 +581,13 @@ class Problem:
         """Couple two physics of the problem, e.g., ``thermal_expansion`` or
         ``nonisothermal_flow`` (``dualmesh list --category coupling``)::
 
-            heat = problem.add_physics("heat_transfer", thermal_conductivity=20.0)
+            heat = problem.add_physics("heat_conduction", thermal_conductivity=20.0)
             solid = problem.add_physics(
                 "solid_mechanics", youngs_modulus=200.0e9, poissons_ratio=0.3
             )
             problem.add_coupling(
                 "thermal_expansion",
-                heat_transfer=heat,
+                heat_conduction=heat,
                 solid_mechanics=solid,
                 linear_expansion_coefficient=1.2e-5,
                 stress_free_temperature=293.15,
@@ -644,18 +639,18 @@ class Problem:
         # The advection scheme of a heat transfer physics applies to the heat a flow carries, which
         # only a nonisothermal_flow coupling adds.
         carried = {
-            id(c.heat_transfer)
+            id(c.heat_conduction)
             for c in self._couplings.values()
             if getattr(c, "type_name", "") == "nonisothermal_flow"
         }
         for physics in new:
             if (
-                getattr(physics, "type_name", "") == "heat_transfer"
+                getattr(physics, "type_name", "") == "heat_conduction"
                 and physics.advection_scheme is not None
                 and id(physics) not in carried
             ):
                 raise InputError(
-                    f"heat_transfer: advection_scheme '{physics.advection_scheme}' discretises the heat that a flow carries, and no nonisothermal_flow coupling makes a flow carry this heat."
+                    f"heat_conduction: advection_scheme '{physics.advection_scheme}' discretises the heat that a flow carries, and no nonisothermal_flow coupling makes a flow carry this heat."
                 )
 
     def initialize(self) -> None:
@@ -712,7 +707,7 @@ class Problem:
         Options that start with ``-snes_`` go to SNES, and the others replace
         this choice with PETSc's own options of the linear solver, for
         example ``petsc_options="-ksp_type preonly -pc_type lu"``.  Two options of
-        dualmesh-multiphysics choose a split that PETSc cannot name:
+        dualmesh choose a split that PETSc cannot name:
         ``-dualmesh_schur lsc``, ``pcd`` or ``pressure_mass`` splits a flow
         with that approximation of the Schur complement, and
         ``-dualmesh_split physics`` splits the system by physics.
@@ -733,7 +728,7 @@ class Problem:
         if self._postprocessors.postprocessors:
             self._postprocessors.evaluate(self, self.time)
         files = self._write_fields(output) if output is not None else []
-        self._report_end(level, result, time.perf_counter() - start, files)
+        self._report_end(level, self._solve_summary(result, time.perf_counter() - start), files)
         return result
 
     # ---- adjoint sensitivities ----------------------------------------------
@@ -803,23 +798,18 @@ class Problem:
                 "sensitivities: parameters is the list of the names given to add_parameter, "
                 f"not {parameters!r}."
             )
+        self._report_start(level, "sensitivity study")
         start = time.perf_counter()
         values = self._problem.sensitivities(
             variable, boundary, list(parameters), _solver_options(**options)
         )
         result = SensitivityResult(objective=(boundary, variable), values=dict(values))
-        if level != "none":
-            from .console import header
-
-            if level == "full":
-                print(header("sensitivity study"))
-                print(self.summary(), flush=True)
-            print(result.summary())
-            print(f"  ({time.perf_counter() - start:.2f} s)")
+        self._report_end(level, f"{result.summary()}\n  ({time.perf_counter() - start:.2f} s)")
         return result
 
     # ---- reports and files of the solves ------------------------------------
-    def _report_start(self, level: str, study: str) -> None:
+    def _report_start(self, level: str, study: str, detail: str = "") -> None:
+        """The start of the report of a study: the problem in full, or one line that names it."""
         if level == "full":
             from .console import header
 
@@ -827,68 +817,76 @@ class Problem:
             print(self.summary(), flush=True)
         elif level == "summary":
             print(
-                f"dualmesh {study}: {self.num_global_dofs} unknowns, method {self.method}",
+                f"dualmesh {study}: {self.num_global_dofs} unknowns, method {self.method}{detail}",
                 flush=True,
             )
 
-    def _report_end(self, level: str, result, wall_time: float, files: Sequence[str] = ()) -> None:
+    def _report_end(self, level: str, summary: str, files: Sequence[str] = ()) -> None:
+        """The end of the report of a study: its result, and the files it wrote in full."""
         if level == "none":
             return
-        from .console import solve_report
-
         # The progress lines of the library come before the result.
         _core.flush_output()
-
-        print(solve_report(result, wall_time))
-        if self._postprocessors.postprocessors:
-            print("Post-processors\n" + self.postprocessor_table())
+        print(summary)
         if level == "full":
             for path in files:
                 print(f"  wrote {path}")
 
+    def _solve_summary(self, result, wall_time: float) -> str:
+        """The outcome of a steady or transient solve, with the table of the post-processors."""
+        from .console import solve_report
+
+        text = solve_report(result, wall_time)
+        if self._postprocessors.postprocessors:
+            text += f"\nPost-processors\n{self.postprocessor_table()}"
+        return text
+
     def _check_output(self, output, steady: bool):
-        """Check an Output group of a solve."""
+        """Check an Output group of a solve, or the Series of a transient run that goes on."""
         if output is None:
             return None
         from .output import Output
 
-        if not isinstance(output, Output):
+        group = output.output if isinstance(output, Series) else output
+        if not isinstance(group, Output):
             raise InputError(
                 f"The output of a solve is a dualmesh.Output group, not {type(output).__name__}."
             )
-        if steady and (output.times is not None or output.interval is not None):
+        if steady and any(
+            value is not None for value in (group.times, group.interval, group.step_interval)
+        ):
             raise InputError(
-                "Output: a steady solve writes the fields once, at the end. Remove times and interval."
+                "Output: a steady solve writes the fields once, at the end. Remove times, interval and step_interval."
             )
-        if output.fields is not None:
+        if group.fields is not None:
             names = [self._problem.variable_name(i) for i in range(self._problem.num_variables)]
-            for name in output.fields:
+            for name in group.fields:
                 if name not in names:
-                    close = difflib.get_close_matches(name, names, n=1)
-                    hint = f" Did you mean '{close[0]}'?" if close else ""
                     raise InputError(
-                        f"Output: the field '{name}' is not a variable.{hint} The variables are: {', '.join(names)}."
+                        f"Output: the field '{name}' is not a variable." + suggestion(name, names)
                     )
-        if self._distributed is not None and "csv" in output.formats:
+        if self._distributed is not None and "csv" in group.formats:
             raise InputError(
                 "Output: a distributed problem writes the vtu format only. Remove csv from formats."
             )
         return output
 
+    @property
+    def _vtu_extension(self) -> str:
+        """The extension of the file that holds the fields: the .pvtu index of the pieces of a
+        problem split among several processes, or .vtu."""
+        return "pvtu" if self._distributed is not None and self.num_ranks > 1 else "vtu"
+
     def _write_fields(self, output, index: int | None = None) -> list[str]:
         """Write the fields of the Output group in its formats.  ``index`` is
-        the number of the output time of a transient study."""
+        the number of the file of a transient study."""
         suffix = "" if index is None else f"_{index:05d}"
         fields = list(output.fields or ())
         files = []
         if "vtu" in output.formats:
             path = output.path(suffix + ".vtu")
             self.write_vtu(path, fields=fields)
-            files.append(
-                path[:-4] + ".pvtu"
-                if self._distributed is not None and self.num_ranks > 1
-                else path
-            )
+            files.append(path[:-3] + self._vtu_extension)
         if "csv" in output.formats:
             path = output.path(suffix + ".csv")
             self.write_csv(path, variables=fields)
@@ -905,7 +903,7 @@ class Problem:
         spectral_radius: float | None = None,
         output=None,
         report: str = "full",
-        time_stepper: str = "fixed",
+        time_stepper: str = "error",
         courant_number: float = 0.5,
         min_time_step: float = 0.0,
         max_time_step: float = 0.0,
@@ -945,8 +943,8 @@ class Problem:
         Parameters
         ----------
         end_time, time_step, start_time:
-            The interval to cover and the step to take.  With an adaptive
-            stepper ``time_step`` is the first step.
+            The interval to cover and the first step.  The ``"fixed"``
+            stepper keeps ``time_step`` throughout.
         time_scheme:
             ``"backward_Euler"`` (the default, stable for every step),
             ``"Crank-Nicolson"`` or ``"forward_Euler"``.  A problem with
@@ -964,7 +962,8 @@ class Problem:
         output:
             An :class:`~dualmesh.Output` group: the files, the output times,
             the fields and the formats.  The time steps land on the output
-            times.  A transient study also writes a ParaView collection
+            times of ``times`` and ``interval``, and ``step_interval`` writes
+            every that many accepted steps.  A transient study also writes a ParaView collection
             (``.pvd``) of its ``.vtu`` files, which ParaView opens as one time
             series.  Default None: the study writes no file.
         report:
@@ -973,24 +972,27 @@ class Problem:
             and the result), ``"summary"`` (one line that names the study,
             then the result) or ``"none"``.
         time_stepper:
+            ``"error"`` (the default) chooses the step from an estimate of the
+            local truncation error of the variables with a time derivative.  A
+            step of a theta method or of the projection integration of a flow
+            is compared with the extrapolation of the last accepted states, at
+            one nonlinear solve per step.  The first steps, which have too few
+            accepted states, and an equation with a second time derivative
+            advance each interval twice instead, once with one step and once
+            with two half steps, at three solves per step, and keep the answer
+            of the half steps.  A step whose relative
+            error exceeds ``error_tolerance`` is discarded and retried with the
+            step that the estimate allows, at least a tenth of the discarded
+            one, and an accepted step is followed by the largest step the
+            estimate allows.  A problem without a time derivative measures the
+            change of every variable.
+
             ``"fixed"`` keeps the step, shortening only the last one so that
             the run lands exactly on ``end_time``.  A step that fails to
             converge is retried at ``cutback_factor`` times its size, and the
             accepted steps after it grow back by ``growth_factor`` each until
-            they reach ``time_step``.
-
-            ``"error"`` chooses the step from an estimate of the local
-            truncation error of the variables with a time derivative.  A step
-            of a theta method is compared with the extrapolation of the last
-            accepted states, at one nonlinear solve per step.  The first steps,
-            an equation with a second time derivative and the projection
-            integration of a flow advance each interval twice instead, once
-            with one step and once with two half steps, at three solves per
-            step, and keep the answer of the half steps.  A step whose relative
-            error exceeds ``error_tolerance`` is discarded and retried with a
-            smaller step, and an accepted step is followed by the largest step
-            the estimate allows.  Use this when accuracy in time is what
-            matters.
+            they reach ``time_step``.  Use it when the steps themselves matter,
+            such as a study of the convergence in the step.
 
             ``"iteration"`` chooses the step from how hard the nonlinear solver
             worked.  A step that converged in fewer than
@@ -1017,10 +1019,15 @@ class Problem:
             million, and the whole interval, respectively.
         growth_factor, cutback_factor:
             The most the step may grow between accepted steps, and the factor
-            applied after a rejected one.
+            applied after a step whose nonlinear solve failed.
         error_tolerance:
-            The target for the local error of one step, each variable
-            against its range.
+            The target for the relative local error of one step.  Each
+            variable is measured against the largest of its range, its change
+            from the initial state and :math:`\sqrt{\epsilon_m}` times its
+            magnitude, with :math:`\epsilon_m` the machine epsilon, each the
+            largest it has reached in the run, and the components of a
+            velocity or a displacement share one scale.  Default
+            :math:`10^{-3}`.
         optimal_iterations, iteration_window:
             The iteration count the ``"iteration"`` stepper aims for, and the
             half-width of the band around it inside which the step is left
@@ -1043,7 +1050,13 @@ class Problem:
         SolveResult
             Besides the usual fields, ``time_steps`` counts the accepted steps,
             ``rejected_steps`` the discarded ones, and ``step_history`` holds
-            the time reached and the step taken for each accepted step.
+            the time reached and the step taken for each accepted step.  A run
+            of an incompressible flow first projects the initial velocity onto
+            a field without divergence that keeps the prescribed values, and
+            ``start_correction`` is the largest change of the velocity over the
+            largest speed after it.  It is None for a run that restarts from a
+            checkpoint or goes on from the state that the last run reached,
+            which start from that state as it is.
         """
         transient = _core.TransientOptions()
         transient.start_time = start_time
@@ -1080,27 +1093,11 @@ class Problem:
         transient.max_rejected_steps = max_rejected_steps
         transient.max_steps = int(max_steps)
         level = report_level(report, "Problem.solve_transient")
-        self._build_physics()
         output = self._check_output(output, steady=False)
-        files: list[str] = []
-        csv_output = None
-        if output is not None:
-            transient.output_times = [float(t) for t in output.output_times(start_time, end_time)]
-            if "vtu" in output.formats:
-                transient.output_file_base = output.path("")
-                transient.output_fields = list(output.fields or ())
-            if "csv" in output.formats:
-                # The library calls this writer at each output time, after
-                # the boundary values of the start are applied.
-                csv_output = Output(
-                    directory=output.directory,
-                    file_base=output.file_base,
-                    fields=output.fields,
-                    formats=("csv",),
-                )
-                self._problem.set_output_callback(
-                    lambda index: files.extend(self._write_fields(csv_output, index))
-                )
+        series = (
+            None if output is None else output if isinstance(output, Series) else Series(output)
+        )
+        group = None if series is None else series.output
         # A restart continues the run of its checkpoint: its time, its state and the history of its post-processors.
         first_step = 0
         if restart is not None:
@@ -1108,21 +1105,52 @@ class Problem:
                 raise InputError(
                     "A restart reads a checkpoint, which needs a build with PETSc (MPI, or -DDUALMESH_ENABLE_PETSC=ON)."
                 )
+            if group is not None and group.step_interval is not None:
+                raise InputError(
+                    "Output: a restart numbers its files by the output times of the original run, so it takes times or interval, and no step_interval."
+                )
             restart = str(restart)
-            _, _, first_step = _core.checkpoint_time(restart, self._distributed is not None)
+            restart_time, _, first_step = _core.checkpoint_time(
+                restart, self._distributed is not None
+            )
             transient.restart_file = restart
             history = restart + ".postprocessors.json"
             if self._postprocessors.postprocessors and os.path.exists(history):
                 self._postprocessors.load_json(history)
+        files: list[str] = []
+        tolerance = 1e-12 * abs(end_time - start_time)
+        actions = []  # Called after every accepted step, after the post-processors
+        if group is not None:
+            times = group.output_times(start_time, end_time)
+            if times is None:
+                # By steps: the first run of a series writes its start, and every run its steps.
+                times = [] if series.times else [start_time]
+
+                def write_every(t, _core_problem):
+                    series.steps += 1
+                    if series.steps % group.step_interval == 0:
+                        files.extend(series.write(self, t))
+
+                actions.append(write_every)
+            elif restart is not None:
+                series.times = {
+                    index: float(t) for index, t in enumerate(times) if t < restart_time - tolerance
+                }
+            # The library calls the writer at each output time, after it applies the boundary
+            # values of the start, and the steps land on these times.
+            transient.output_times = [float(t) for t in times]
+            self._problem.set_output_callback(
+                lambda index: files.extend(series.write(self, times[index], index))
+            )
         checkpoint = None
-        if output is not None and output.checkpoint_interval:
+        if group is not None and group.checkpoint_interval:
             if not _core.have_checkpoints():
                 raise InputError(
                     "Output: checkpoints need a build with PETSc (MPI, or -DDUALMESH_ENABLE_PETSC=ON)."
                 )
-            checkpoint = output.path(".chk")
+            checkpoint = group.path(".chk")
             transient.checkpoint_file = checkpoint
-            transient.checkpoint_interval = int(output.checkpoint_interval)
+            transient.checkpoint_interval = int(group.checkpoint_interval)
         self._report_start(level, "transient solve")
         start = time.perf_counter()
         if self._postprocessors.postprocessors and restart is None:
@@ -1131,16 +1159,16 @@ class Problem:
         if checkpoint is not None and self._postprocessors.postprocessors:
             # The history of the post-processors goes beside each checkpoint, at the same steps.
             steps = [first_step]
-            interval = int(output.checkpoint_interval)
-            tolerance = 1e-12 * abs(end_time - start_time)
+            interval = int(group.checkpoint_interval)
 
-            def save_history(t, core_problem):
+            def save_history(t, _core_problem):
                 steps[0] += 1
                 if (steps[0] % interval == 0 or t >= end_time - tolerance) and self.rank == 0:
                     self._postprocessors.write_json(checkpoint + ".postprocessors.json")
 
-            self._extra_step_callback = save_history
-            self._install_step_callback()
+            actions.append(save_history)
+        self._step_actions = actions
+        self._install_step_callback()
         options["_progress"] = level == "full"
         try:
             if self._distributed is not None:
@@ -1149,15 +1177,21 @@ class Problem:
             else:
                 result = self._problem.solve_transient(transient, _solver_options(**options))
         finally:
-            if csv_output is not None:
-                self._problem.set_output_callback(None)
-            if self._extra_step_callback is not None:
-                self._extra_step_callback = None
-                self._install_step_callback()
-        if output is not None and "vtu" in output.formats:
-            extension = "pvtu" if self._distributed is not None and self.num_ranks > 1 else "vtu"
-            files.append(output.write_collection(transient.output_times, extension))
-        self._report_end(level, result, time.perf_counter() - start, files)
+            self._problem.set_output_callback(None)
+            self._step_actions = []
+            self._install_step_callback()
+        if group is not None:
+            # A run of output by steps writes its last step, unless it stopped before the end.
+            last = series.times[max(series.times)] if series.times else None
+            if (
+                group.step_interval is not None
+                and self.time >= end_time - tolerance
+                and last != self.time
+            ):
+                files.extend(series.write(self, self.time))
+            if "vtu" in group.formats:
+                files.append(series.write_collection(self._vtu_extension))
+        self._report_end(level, self._solve_summary(result, time.perf_counter() - start), files)
         return result
 
     @_changes_model
@@ -1183,22 +1217,10 @@ class Problem:
         level = report_level(report, "Problem.solve_eigenvalue")
         output = self._check_output(output, steady=True)
         self._build_physics()
-        if level == "full":
-            from .console import header
-
-            print(header("eigenvalue study"))
-            print(self.summary())
-        elif level == "summary":
-            print(
-                f"dualmesh eigenvalue study: {self.num_global_dofs} unknowns, method {self.method}, shift-invert Arnoldi near {near:g}"
-            )
+        self._report_start(level, "eigenvalue study", f", shift-invert Arnoldi near {near:g}")
         result = solve_modes(self, num_modes=num_modes, near=near, tolerance=tolerance)
         files = self._write_fields(output) if output is not None else []
-        if level != "none":
-            print(result.summary())
-        if level == "full":
-            for path in files:
-                print(f"  wrote {path}")
+        self._report_end(level, result.summary(), files)
         return result
 
     def solve_buckling(self, num_modes: int = 1, report: str = "full"):
@@ -1213,9 +1235,9 @@ class Problem:
 
         level = report_level(report, "Problem.solve_buckling")
         self._build_physics()
+        self._report_start(level, "buckling study")
         result = solve_buckling(self, num_modes=num_modes)
-        if level != "none":
-            print(result.summary())
+        self._report_end(level, result.summary())
         return result
 
     def set_time_step_callback(self, callback) -> None:
@@ -1225,19 +1247,19 @@ class Problem:
         self._install_step_callback()
 
     def _install_step_callback(self) -> None:
-        user = self._user_step_callback
-        extra = self._extra_step_callback
-        if not self._postprocessors.postprocessors:
-            if user is not None:
-                self._problem.set_time_step_callback(user)
-            return
+        """After every accepted step: the post-processors, the actions of the transient study
+        (its files by steps, the history beside its checkpoints) and the callback of the user."""
+        evaluate = bool(self._postprocessors.postprocessors)
+        actions = [
+            *self._step_actions,
+            *([self._user_step_callback] if self._user_step_callback else []),
+        ]
 
         def step(time, core_problem):
-            self._postprocessors.evaluate(self, time)
-            if extra is not None:
-                extra(time, core_problem)
-            if user is not None:
-                user(time, core_problem)
+            if evaluate:
+                self._postprocessors.evaluate(self, time)
+            for action in actions:
+                action(time, core_problem)
 
         self._problem.set_time_step_callback(step)
 
@@ -1245,7 +1267,8 @@ class Problem:
     def add_postprocessor(self, postprocessor_type: str, name: str, **parameters):
         """Add a post-processor, a scalar computed from the solution after every
         steady solve and every accepted time step: ``integral``, ``average``,
-        ``point_value``, ``maximum``, ``minimum``, the flows through a
+        ``point_value``, ``maximum``, ``minimum``, the von Mises stress at a point
+        ``von_mises_stress_point_value``, the flows through a
         boundary ``heat_flow``, ``reaction_force``, ``force``, ``flow_rate``
         and ``boundary_flux``, or ``kernel_boundary_flux`` (see
         :mod:`dualmesh.postprocessors`)."""
@@ -1260,15 +1283,18 @@ class Problem:
         """The post-processors' history: ``{"time": array, name: array, ...}``."""
         return self._postprocessors.as_arrays()
 
-    def postprocessor_table(self) -> str:
-        """The post-processors' history as aligned text."""
-        return self._postprocessors.table()
+    def postprocessor_table(self):
+        """The post-processors' history as a :class:`~dualmesh.Table`, which prints as aligned
+        text: the time in s, then one column for each post-processor, with its unit when it was
+        given one."""
+        return self._postprocessors.as_table()
 
     def write_postprocessor_csv(self, filename: str) -> None:
-        """Write the post-processors' history to a CSV file, one row per
-        evaluation, with a header row of names.  In a distributed problem the first process writes it."""
+        """Write the post-processors' history to a CSV file, one row per evaluation, under a
+        header that names each column with its unit.  In a distributed problem the first process
+        writes it."""
         if self.rank == 0:
-            self._postprocessors.write_csv(filename)
+            self.postprocessor_table().write_csv(filename)
 
     def domain_volume(self) -> float:
         """The volume (area, length) of the domain, with the coordinate factor
@@ -1356,7 +1382,7 @@ class Problem:
         """The flow of the flux of the equation of ``variable`` out of the body
         through ``boundary``: the heat leaving, the force of the body on its
         support, the volume flow leaving.  The physics name it:
-        :meth:`~dualmesh.physics.HeatTransfer.heat_flow`,
+        :meth:`~dualmesh.physics.HeatConduction.heat_flow`,
         :meth:`~dualmesh.physics.SolidMechanics.reaction_force`,
         :meth:`~dualmesh.physics.FluidDynamics.force` and
         :meth:`~dualmesh.physics.FluidDynamics.flow_rate`.
@@ -1423,19 +1449,34 @@ class Problem:
         gradients = numpy.asarray(
             self._problem.sample_gradient(variable, [list(p) for p in points])
         )
+        return self._from_first_holder(gradients)
+
+    def property_at_points(self, property_name: str, points) -> numpy.ndarray:
+        """The components of a property at arbitrary points, one row each, in the element that
+        holds the point (NaN outside the mesh).  A property with a history, such as a plastic
+        strain, takes the average history of that element at the last accepted step.  Collective
+        in a distributed problem."""
+        points = numpy.atleast_2d(numpy.asarray(points, dtype=float))
+        if points.shape[1] < 3:
+            points = numpy.hstack([points, numpy.zeros((points.shape[0], 3 - points.shape[1]))])
+        rows = numpy.asarray(
+            self._problem.property_at_points(property_name, [list(p) for p in points])
+        )
+        return self._from_first_holder(rows)
+
+    def _from_first_holder(self, rows: numpy.ndarray) -> numpy.ndarray:
+        """Rows found at points, NaN where this process holds no element at the point.  A point on
+        a partition boundary lies in elements of several processes: the first that holds it, in
+        rank order, gives the row, so that every process returns the same one."""
         if self._distributed is None:
-            return gradients
-        # A point on a partition boundary lies in elements of several processes: the first that holds
-        # it, in rank order, gives the gradient, so that every process returns the same one.
-        found = ~numpy.isnan(gradients[:, 0])
+            return rows
+        found = ~numpy.isnan(rows[:, 0])
         owner = numpy.asarray(
             [_core.mpi_min(float(self.rank) if held else numpy.inf) for held in found]
         )
         mine = found & (owner == self.rank)
-        totals = numpy.asarray(
-            _core.mpi_sum(list(numpy.where(mine[:, None], gradients, 0.0).ravel()))
-        )
-        totals = totals.reshape(gradients.shape)
+        totals = numpy.asarray(_core.mpi_sum(list(numpy.where(mine[:, None], rows, 0.0).ravel())))
+        totals = totals.reshape(rows.shape)
         return numpy.where(numpy.isfinite(owner)[:, None], totals, numpy.nan)
 
     def nodes_where(self, predicate) -> list[int]:
@@ -1572,6 +1613,18 @@ class Problem:
         problem (e.g., :math:`2 \\pi r` in axisymmetric coordinates)."""
         return numpy.asarray(self._problem.element_integrals(""), dtype=float)
 
+    def node_measures(self) -> numpy.ndarray:
+        r"""The measure of each node, in the order of :meth:`values`, as the lumped (nodal) rule
+        weighs it.  Under DMCDM it is the measure of the control domain of the node, and under
+        FEM the integral of its shape function, each times the coordinate factor of the problem
+        at the node, such as :math:`2 \pi r` in axisymmetric coordinates.  A lumped heat capacity
+        stores the heat :math:`\sum_i \rho c_p T_i M_i`, with :math:`M_i` these measures.
+        Collective in a distributed problem: every process calls it (see :doc:`/theory/parallel`),
+        after a solve, which sets the distributed problem up."""
+        if self._distributed is None:
+            self.initialize()
+        return numpy.asarray(self._problem.node_measures(), dtype=float)
+
     def kernel_boundary_flux(self, kernel, boundary: str) -> float:
         """The integral of the normal flux of one kernel over a side set.  Collective in a distributed problem: every process calls it (see :doc:`/theory/parallel`)."""
         return self._sum(float(self._problem.kernel_boundary_flux(_object_name(kernel), boundary)))
@@ -1650,6 +1703,15 @@ class Problem:
             return numpy.asarray(self._distributed.gathered_element_values(local))
         return numpy.asarray(local)
 
+    def gathered_node_measures(self) -> numpy.ndarray:
+        """:meth:`node_measures` at every node of the whole mesh, in the order of
+        :meth:`gathered_values`, on every process.  Collective in a distributed problem; in a
+        serial one it equals :meth:`node_measures`."""
+        local = self.node_measures()
+        if self._distributed is not None:
+            return numpy.asarray(self._distributed.gathered_node_values(list(local), 1))
+        return local
+
     def set_gathered_values(self, variable: str, values) -> None:
         """Set a variable from its values at every node of the whole mesh, in its numbering, on
         every process; in a serial problem it equals :meth:`set_values`."""
@@ -1666,16 +1728,6 @@ class Problem:
             if self._distributed is not None
             else "serial problem (one process)"
         )
-
-    def write_mesh_file(self, filename: str, file_format: str | None = None) -> None:
-        """Write the mesh and all nodal fields through meshio (Exodus, VTU, ...)."""
-        from .meshing import write_mesh
-
-        fields = {}
-        for index in range(self._problem.num_variables):
-            name = self._problem.variable_name(index)
-            fields[name] = self.values(name)
-        write_mesh(self._mesh, filename, file_format=file_format, **fields)
 
     def write_csv(self, filename: str, variables: Sequence[str] = ()) -> None:
         """Write the values of the variables as comma-separated values: one

@@ -37,7 +37,7 @@ def test_a_held_shear_relaxes_as_the_Prony_series():
             shear.append(problem.property_at_centroids("stress")[0][5]),
         )
     )
-    problem.solve_transient(end_time=1.0, time_step=dt, report="none")
+    problem.solve_transient(end_time=1.0, time_step=dt, time_stepper="fixed", report="none")
     for t, s in zip(times, shear):
         expected = g_long * gamma
         for G, tau in branches:
@@ -76,7 +76,7 @@ def test_a_bulk_branch_relaxes_the_pressure():
             mean.append(numpy.mean(problem.property_at_centroids("stress")[0][:3])),
         )
     )
-    problem.solve_transient(end_time=1.0, time_step=dt, report="none")
+    problem.solve_transient(end_time=1.0, time_step=dt, time_stepper="fixed", report="none")
     K_long = E / (3 * (1 - 2 * nu))
     for t, m in zip(times, mean):
         expected = K_long * theta + k1 * theta * (tau / dt) * (-numpy.expm1(-dt / tau)) * numpy.exp(

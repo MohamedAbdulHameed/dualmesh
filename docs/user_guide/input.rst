@@ -72,19 +72,23 @@ results.
    * - ``gravity``
      - ``gravity([...])``
    * - ``models``
-     - no method
+     - ``model(name, **entry)``, once per model
    * - ``initial_conditions``
      - ``initial_conditions(**values)``
    * - ``boundary_conditions``
-     - ``boundary_conditions(boundary, **values)``, once per boundary
+     - ``boundary_conditions(boundary, **values)``, once per boundary, or
+       ``boundary_conditions(boundary, "symmetry")``
    * - ``time``
      - ``time(end_time=..., initial_time_step=..., step_control={...})``
+   * - ``eigenvalues``
+     - ``eigenvalues(count=..., near=...)``
    * - ``mesh_adaptivity``
      - ``mesh_adaptivity(**values)``
    * - ``postprocessors``
-     - ``postprocessor(name, **definition)``, once per postprocessor
+     - ``postprocessor(name, **definition)``, once per postprocessor. The key
+       ``from`` of a line is ``from_``, since ``from`` is a word of Python.
    * - ``output``
-     - ``output(file, interval, fields)``
+     - ``output(file, fields, interval)``
    * - ``solver``
      - ``solver(**values)``
 
@@ -92,8 +96,8 @@ A second call of ``physics``, ``properties``, ``initial_conditions``,
 ``postprocessor`` or ``solver`` adds its keys to those of the first, and a key
 given again replaces its earlier value. A second call of
 ``boundary_conditions`` for the same boundary adds its keys to that boundary.
-A second call of ``gravity``, ``time``, ``mesh_adaptivity`` or ``output``
-replaces the whole section.
+A second call of ``gravity``, ``time``, ``eigenvalues``, ``mesh_adaptivity``
+or ``output`` replaces the whole section.
 
 Each call checks its own section at once, so a wrong key stops the script at
 the line that gives it, and the problem keeps its earlier state. The checks
@@ -447,15 +451,25 @@ material that falls with the temperature reads:
    properties:
      thermal_conductivity: "1/([0.0375 m*K/W] + [2.165e-4 m/W]*temperature)"
 
-A formula holds these parts:
+You write formulas in one language everywhere: in the input, in the models of
+your own and in the equations of ``general_form_PDE``
+(:doc:`/user_guide/equations`). A formula holds these parts:
 
-- A quantity in square brackets, such as ``[0.0375 m*K/W]`` or
-  ``[2.77 eV]``, is a number with its unit, converted to SI.
+- A quantity in square brackets, a number and its unit such as
+  ``[0.0375 m*K/W]`` or ``[2.77 eV]``, is a number converted to SI. Every
+  quantity of a formula takes its brackets, so a constant plus a term reads
+  ``[300 K] + [50 K/m]*x``.
 - A bare number, such as ``2`` or ``1.5e-3``, is dimensionless.
-- The operators are ``+``, ``-``, ``*``, ``/`` and ``^``. A product needs
-  ``*``. The power ``^`` binds tightest and groups from the right, so
-  ``2^3^2`` is :math:`2^9`, and a unary minus binds less tightly than ``^``,
-  so ``-a^2`` is :math:`-(a^2)`. Parentheses group as usual.
+- Square brackets around anything else, such as ``[1, 0]``, hold the items of
+  a vector, one per direction of space. A list of vectors holds the rows of a
+  tensor.
+- The operators are ``+``, ``-``, ``*``, ``/`` and ``^``, or ``**`` for the
+  power. A product needs ``*``. The power binds tightest and groups from the
+  right, so ``2^3^2`` is :math:`2^9`, and a unary minus binds less tightly than
+  the power, so ``-a^2`` is :math:`-(a^2)`. Parentheses group as usual.
+- The comparisons ``<``, ``>``, ``<=``, ``>=``, ``==`` and ``!=`` give 1 where
+  they hold and 0 elsewhere. ``and`` and ``or`` join two conditions, each of
+  which holds where it is not 0.
 - A field by its standard name, such as ``temperature`` or ``pressure``, or a
   component of one, such as ``displacement_x``.
 - The position in m: ``x``, ``y`` and ``z`` in Cartesian coordinates, and
@@ -471,27 +485,37 @@ A formula of a property or of a boundary value calls these functions:
 
    * - Function
      - Value
-   * - ``exp(a)``, ``log(a)``, ``sin(a)``, ``cos(a)``, ``tanh(a)``
-     - the function of a dimensionless argument, with ``log`` the natural
-       logarithm
-   * - ``sqrt(a)``, ``abs(a)``
-     - the square root and the absolute value
-   * - ``max(a, b)``, ``min(a, b)``
-     - the larger and the smaller of two values of the same dimension
+   * - ``exp``, ``log``, ``log10``, ``sin``, ``cos``, ``tan``, ``asin``,
+       ``acos``, ``atan``, ``sinh``, ``cosh``, ``tanh``, ``erf``, ``floor``,
+       ``ceil``
+     - the function of one dimensionless argument, with ``log`` the natural
+       logarithm and ``log10`` the logarithm to base 10
+   * - ``sqrt(a)``, ``abs(a)``, ``sign(a)``
+     - the square root, the absolute value, and 1, 0 or -1 by the sign of
+       ``a``
+   * - ``max(a, b)``, ``min(a, b)``, ``hypot(a, b)``
+     - the larger and the smaller of two values of the same dimension, and
+       :math:`\sqrt{a^2 + b^2}`
+   * - ``atan2(a, b)``, ``pow(a, b)``
+     - the angle of the point :math:`(b, a)` in rad, and :math:`a^b`
    * - ``less(a, b)``, ``greater(a, b)``
      - the conditions :math:`a < b` and :math:`a > b`, for two values of
        the same dimension
-   * - ``conditional(c, a, b)``
-     - ``a`` where the condition ``c`` holds and ``b`` elsewhere, with ``c``
-       made by ``less`` or ``greater`` and ``a`` and ``b`` of the same
-       dimension
+   * - ``conditional(c, a, b)``, or ``if(c, a, b)``
+     - ``a`` where the condition ``c`` holds and ``b`` elsewhere, with ``a``
+       and ``b`` of the same dimension
+
+``if`` is the short spelling of ``conditional``. The tensor functions have short
+spellings too: ``sym`` for ``symmetric``, ``dev`` for ``deviatoric``, ``det``
+for ``determinant`` and ``ddot`` for ``inner``. Each short spelling means the
+same function as its long one.
 
 The input checks the dimension of every formula against the unit of its key.
-A sum, ``max``, ``min``, ``less``, ``greater`` and the two branches of
-``conditional`` need operands of the same dimension. A power of a quantity
-with a dimension needs a number as its exponent. The number ``0`` matches
-every dimension. The message of a formula of the wrong dimension names the
-unit that the formula gives.
+A sum, ``max``, ``min``, ``hypot``, ``atan2``, a comparison and the two
+branches of ``conditional`` need operands of the same dimension. A power of a
+quantity with a dimension needs a number as its exponent. The number ``0``
+matches every dimension. The message of a formula of the wrong dimension names
+the unit that the formula gives.
 
 The formula language also parses ``time_step``, ``cell_size``, ``grad`` and
 the tensor functions. The solve refuses them in a property or a boundary
@@ -502,9 +526,10 @@ value, which is a function of the fields, the position and the time.
 Tables
 ~~~~~~
 
-A table gives a property as values on a grid of one to three inputs, such as
-the temperature. It is a mapping with the one key ``table``, which holds the
-columns inline or names a file of comma-separated values (CSV):
+A table gives a property as its values at the rows of one input, such as the
+temperature, and the solve interpolates linearly between the rows. It is a
+mapping with the one key ``table``, which holds the columns inline or names a
+file of comma-separated values (CSV):
 
 .. code-block:: yaml
 
@@ -539,18 +564,32 @@ builds both forms:
 
 The input checks a table against these rules:
 
-- The output column has the name of the property. Every other column is an
-  input, whose name is a scalar that a formula reads, such as
-  ``temperature``, ``time`` or ``x``.
-- The table has one to three inputs.
+- The output column has the name of the property. The other column is the
+  input, a field, the time or a coordinate, such as ``temperature``, ``time``
+  or ``x``.
+- The table has one input.
 - Every column holds the same number of values.
 - The unit of each column has the dimension of its name.
-- Each input holds at least two distinct values.
-- The rows fill the full grid of the inputs, and no two rows hold the same
-  inputs.
+- The input holds at least two values, and no value twice. The rows may come
+  in any order.
 
-The solve refuses a table. Give a constant or a formula for a property that
-the solve reads.
+Between two rows, the property is the straight line through them. The solve
+takes the derivative of that line with respect to the input, so Newton's
+method converges on a table of a field as on a formula. A table read outside
+its range stops the run with a message that names the property, the region and
+the value, for example:
+
+.. code-block:: text
+
+   the table of the property thermal_conductivity in the region cladding reads
+   temperature = 1300, outside the range of the table, from 300 to 1200.
+
+The solve first tries smaller steps, since a Newton iterate can leave the range
+on the way to a solution inside it. The properties that a physics reads as a
+field, such as ``thermal_conductivity`` and ``Young_modulus``, take a table.
+The properties that a physics takes as one number, such as the
+``dynamic_viscosity`` of a flow, take a constant, and a boundary condition
+takes a constant or a formula.
 
 .. _input-regions:
 
@@ -580,8 +619,8 @@ The sections
 
 The tree holds these top-level sections, in this order: ``mesh``, ``method``,
 ``physics``, ``properties``, ``gravity``, ``models``, ``initial_conditions``,
-``boundary_conditions``, ``time``, ``mesh_adaptivity``, ``postprocessors``,
-``output`` and ``solver``. Only ``mesh`` is required by the check of the
+``boundary_conditions``, ``time``, ``eigenvalues``, ``mesh_adaptivity``,
+``postprocessors``, ``output`` and ``solver``. Only ``mesh`` is required by the check of the
 tree, and the solve also needs ``physics``.
 
 .. _input-mesh:
@@ -592,8 +631,23 @@ mesh
 The section ``mesh`` holds exactly one of ``segment``, ``rectangle``, ``box``
 and ``file``, and the optional key ``coordinate_system``.
 
-A generated mesh starts at the origin and has linear cells. Its one region is
-``domain``.
+A generated mesh has linear cells. Its one region is ``domain``. Each form
+takes two optional keys besides those of the table:
+
+``origin``
+   The corner with the smallest coordinates: one length for a segment, and
+   one length per axis for a rectangle or a box. Default :math:`0\,\mathrm{m}`
+   on every axis. In axisymmetric coordinates the first coordinate is the
+   radius, so it is :math:`0\,\mathrm{m}` or more.
+
+``grading``
+   The ratio of the length of each cell to the one before it, along each axis:
+   one number for a segment, and one per axis for a rectangle or a box.
+   Positive numbers. Default 1 on every axis, a uniform mesh. A ratio
+   :math:`g` above 1 makes the cells grow from the start of the axis to its
+   end, and a ratio below 1 makes them shrink. Along an axis of length
+   :math:`\ell` with :math:`n` cells, cell :math:`i` (from 0) has the length
+   :math:`\ell\, g^{i} (g - 1)/(g^{n} - 1)`.
 
 .. list-table:: The keys of a generated mesh
    :header-rows: 1
@@ -604,8 +658,8 @@ A generated mesh starts at the origin and has linear cells. Its one region is
      - Value
    * - ``segment``
      - ``length``
-     - The length of the interval :math:`[0, \ell]` along :math:`x`, with
-       :math:`\ell` the length in m. A positive length. Required.
+     - The length :math:`\ell` of the interval along :math:`x`, in m. A
+       positive length. Required.
    * -
      - ``cells``
      - The number of cells. An integer of at least 1. Required.
@@ -646,6 +700,15 @@ and ``top``, and a box has all six.
        cells: [10, 5]
        cell_type: triangle
 
+A tube of inner radius :math:`0.1\,\mathrm{m}` in axisymmetric coordinates,
+with rows that shrink towards its top:
+
+.. code-block:: yaml
+
+   mesh:
+     rectangle: {origin: [0.1 m, 0 m], size: [0.05 m, 0.3 m], cells: [10, 60], grading: [1, 0.98]}
+     coordinate_system: axisymmetric
+
 A mesh file takes these keys:
 
 ``file``
@@ -684,8 +747,8 @@ method
 
 The section ``method`` names the discretisation of the problem: ``FEM``, the
 finite element method, or ``DMCDM``, the dual mesh control domain method.
-A physics can also name it with its own key ``method``. A problem takes one
-method, so the solve refuses two different methods.
+A physics or a model can also name it with its own key ``method``. A problem
+takes one method, so the input refuses two different methods at the second.
 
 Without a method, a problem with a ``fluid_dynamics`` of the ``equal_order``
 formulation takes DMCDM, and every other problem takes FEM.
@@ -791,19 +854,43 @@ The two named energies are
    \psi_\text{Saint Venant-Kirchhoff} = \frac{\lambda}{8}(I_C - 3)^2
    + \frac{G}{4}\left(\operatorname{tr}(\mathbf{C}^2) - 2 I_C + 3\right),
 
-with :math:`I_C = \operatorname{tr}\mathbf{C}`. The first Piola-Kirchhoff
-stress :math:`\mathbf{P} = \partial\psi/\partial\mathbf{F}_d` is the symbolic
-derivative of the energy.
+with :math:`I_C = \operatorname{tr}\mathbf{C}`. The code differentiates the
+energy into the first Piola-Kirchhoff stress
+:math:`\mathbf{P} = \partial\psi/\partial\mathbf{F}_d` in Pa, and into the
+derivative of :math:`\mathbf{P}` that Newton's method needs.
 
-A solid at finite strain has these limits:
+At finite strain the density, the pressure and the thermal expansion take
+the meaning of a body that deforms:
 
-- It takes ``plane_strain`` or a three-dimensional mesh.
-- It takes no ``time`` section and no initial displacement.
-- It takes a ``traction`` on a boundary and refuses a ``pressure``, which
-  would follow the deformed boundary.
-- It takes no thermal expansion.
-- Its ``Young_modulus`` and ``Poisson_ratio`` are one constant in every
-  region.
+- ``density`` is the density :math:`\rho_0` in :math:`\mathrm{kg/m^3}` per
+  undeformed volume. The inertia
+  :math:`\rho_0\,\partial^2\mathbf{u}/\partial t^2` and the weight
+  :math:`\rho_0\mathbf{g}` act per undeformed volume, with :math:`t` the time
+  in s and :math:`\mathbf{g}` the gravitational acceleration in
+  :math:`\mathrm{m/s^2}`.
+- A ``pressure`` :math:`p` in Pa follows the deformed boundary. Per undeformed
+  area its traction is :math:`-p\,J\,\mathbf{F}_d^{-T}\mathbf{N}`, with
+  :math:`\mathbf{N}` the outward unit normal of the undeformed boundary.
+- A thermal expansion stretches the material by the thermal stretch
+  :math:`\vartheta = 1 + \alpha(T - T_0)` in every direction, with
+  :math:`\alpha` the ``linear_expansion_coefficient`` in
+  :math:`\mathrm{K^{-1}}`, :math:`T` the temperature in K and :math:`T_0` the
+  ``stress_free_temperature`` in K. The formula of ``strain_energy`` then
+  gives the energy :math:`\psi` per volume of the heated material free of
+  stress, as a function of the elastic part :math:`\mathbf{F}_d/\vartheta` of
+  the deformation gradient, and the energy per undeformed volume is
+  :math:`\vartheta^3\psi`.
+
+A solid at finite strain takes every formulation. In ``plane_stress`` the
+code finds, at each point, the stretch of the thickness :math:`\lambda_3`
+(dimensionless) at which the stress across the thickness is zero. The
+stretch enters :math:`\mathbf{F}_d`, so a ``pressure`` acts on the deformed
+thickness. A state without such a stretch is inadmissible: Newton's method
+shortens its step there, or the step is cut. With ``Saint_Venant_Kirchhoff``
+and no thermal expansion this happens once
+:math:`C_{11} + C_{22} \ge 3 + 2G/\lambda`, with :math:`C_{11}` and
+:math:`C_{22}` the in-plane diagonal components of :math:`\mathbf{C}`. At
+:math:`\nu = 0.3` the limit is an equibiaxial stretch of about 1.47.
 
 .. code-block:: yaml
 
@@ -813,6 +900,35 @@ A solid at finite strain has these limits:
        kinematics: finite
        strain_energy: "shear_modulus/2*(I_C - 3) - shear_modulus*log(J) + first_Lame_parameter/2*log(J)^2"
 
+A solid at small strain is plastic when the properties give a
+``yield_stress`` :math:`\sigma_y` in Pa, the von Mises equivalent stress at
+the onset of plastic flow. The plastic flow follows the J2 theory: the strain
+splits into an elastic and a plastic part, the plastic part grows along the
+deviator of the stress and keeps the volume, and the von Mises stress
+:math:`\sigma_\text{eq}` stays at most :math:`\sigma_y`. The yield stress is a
+constant or a formula of ``equivalent_plastic_strain``, the accumulated
+plastic strain :math:`\bar\varepsilon_p` (dimensionless), and of
+``temperature`` when the problem has ``heat_conduction``. The formula is the
+isotropic hardening of the material. A solid at finite strain refuses
+``yield_stress``, because the solid module updates a plastic stress at
+finite strain by a hypoelastic rate, which has no multiplicative split of the
+deformation gradient.
+
+.. code-block:: yaml
+
+   physics:
+     solid_mechanics: {formulation: plane_stress}
+   properties:
+     Young_modulus: 200 GPa
+     Poisson_ratio: 0.3
+     yield_stress: "[250 MPa] + [1 GPa]*equivalent_plastic_strain"
+
+In uniaxial tension by :math:`\sigma = 300\,\mathrm{MPa}`, this material
+reaches :math:`\bar\varepsilon_p = 0.05`, so its axial strain is
+:math:`\sigma/E + \bar\varepsilon_p`. The test
+``test_a_bar_beyond_yield_has_the_strain_of_its_hardening`` in
+``tests/python/test_input_capabilities.py`` checks it.
+
 .. rubric:: fluid_dynamics
 
 ``fluid_dynamics`` solves the balance of mass and momentum of an
@@ -820,11 +936,15 @@ incompressible Newtonian fluid for its velocity :math:`\mathbf{v}` in :math:`\ma
 its pressure :math:`p` in Pa.
 
 ``formulation``
-   ``equal_order`` or ``Taylor-Hood``. Default ``equal_order``, the velocity
-   and the pressure of the same order with a pressure stabilisation, which
-   runs with both methods and on the linear cells of a generated mesh.
-   ``Taylor-Hood`` takes a quadratic velocity and a linear pressure. It needs
-   ``method: FEM`` and a mesh file of quadratic cells.
+   ``equal_order``, ``Taylor-Hood`` or ``penalty``. ``equal_order`` takes
+   the velocity and the pressure of the same order with a pressure
+   stabilisation, and runs with both methods and on the linear cells of a
+   generated mesh. ``Taylor-Hood`` takes a quadratic velocity and a linear
+   pressure. It needs ``method: FEM`` and a mesh file of quadratic cells.
+   ``penalty`` eliminates the pressure by a penalty on the divergence of the
+   velocity. Default ``Taylor-Hood`` with ``method: FEM`` on a mesh of
+   quadratic cells, since it needs no stabilisation, and ``equal_order``
+   otherwise.
 
 .. code-block:: yaml
 
@@ -839,7 +959,7 @@ The input couples its physics from the physics and the properties it holds:
 - ``heat_conduction`` with ``solid_mechanics`` and the properties
   ``linear_expansion_coefficient`` and ``stress_free_temperature`` gives a
   thermal expansion of the solid. The solve takes the two properties
-  together, and refuses them without ``heat_conduction`` or at finite strain.
+  together, and refuses them without ``heat_conduction``.
 - ``heat_conduction`` with ``fluid_dynamics`` gives a heated flow, which
   carries the heat.
 - A heated flow under gravity takes the Boussinesq buoyancy
@@ -873,13 +993,14 @@ vocabulary, so a ``unit`` key on a standard name is refused.
      - scalar, per region
    * - ``density``
      - ``kg/m^3``
-     - ``heat_conduction`` in a transient or with a flow, ``solid_mechanics``
-       in a transient or under gravity, ``fluid_dynamics`` always
+     - ``heat_conduction`` with time terms or with a flow,
+       ``solid_mechanics`` with time terms or under gravity,
+       ``fluid_dynamics`` always
      - per region for ``heat_conduction``, one constant for
        ``solid_mechanics`` and ``fluid_dynamics``
    * - ``specific_heat_capacity``
      - ``J/(kg*K)``
-     - ``heat_conduction`` in a transient or with a flow
+     - ``heat_conduction`` with time terms or with a flow
      - per region
    * - ``volumetric_heat_source``
      - ``W/m^3``
@@ -913,8 +1034,15 @@ vocabulary, so a ``unit`` key on a standard name is refused.
      - ``K``
      - ``fluid_dynamics`` with ``heat_conduction`` under gravity
      - one constant
+   * - ``yield_stress``
+     - ``Pa``
+     - ``solid_mechanics`` at small strain, when given
+     - one constant or one formula of ``equivalent_plastic_strain`` and
+       ``temperature``
 
-"Per region" means a constant or a formula, in every region or one per region.
+A problem has time terms in a transient run and in an eigenvalue study.
+"Per region" means a constant, a formula or a table, in every region or one per
+region.
 "One constant" means the same constant in every region. The heat source can
 read the fields, as the source :math:`-\gamma k (T - T_a)` of the cooling fin
 of ``examples/cooling_fin.py`` does, with
@@ -976,46 +1104,168 @@ its radial component is 0.
 models
 ~~~~~~
 
-The section ``models`` holds balance laws of your own, one entry per law.
-The solve refuses a problem with a ``models`` section, so a problem takes its
-equations from ``physics``.
+The section ``models`` holds balance laws of your own, one entry per law. A
+problem takes its equations from ``physics``, from ``models`` or from both.
 
-An entry states the law
+Each entry states the balance law
 
 .. math::
 
-   \frac{\partial m}{\partial t} + \frac{\partial^2 a}{\partial t^2}
-   + \nabla\cdot\mathbf{F} = s
+   \frac{\partial m}{\partial t} + \nabla\cdot\mathbf{F} = s
 
-for its unknown, with :math:`m` the storage, :math:`a` the inertia,
-:math:`\mathbf{F}` the flux and :math:`s` the source. Its keys are:
+for one scalar unknown :math:`u`, at each point of the domain. Here :math:`t`
+is the time in s, :math:`m` the storage, the amount of the balanced quantity
+per volume, :math:`\mathbf{F}` its flux and :math:`s` its source per volume.
+:math:`\mathbf{F}` takes the unit of :math:`m` times m/s, and :math:`s` the
+unit of :math:`m` per s, so the three terms agree. Each internal state :math:`q` follows its own
+rate law
+
+.. math::
+
+   \frac{\mathrm{d}q}{\mathrm{d}t} = g
+
+at each point, with :math:`g` its rate. A state has no flux: it changes only
+where it is. The terms and the rates are formulas of the unknown, its gradient
+``grad(...)``, the states, the fields of the other physics and models, the
+properties, the position and the time.
+
+The model of a hydrogen concentration :math:`c` in :math:`\mathrm{mol/m^3}` that
+diffuses and fills traps of density :math:`N` in :math:`\mathrm{mol/m^3}`,
+with :math:`\theta` the dimensionless occupancy of the traps:
+
+.. code-block:: yaml
+
+   models:
+     hydrogen_trapping:
+       unknown: {hydrogen_concentration: {unit: mol/m^3}}
+       states:
+         trap_occupancy:
+           unit: "1"
+           initial: 0
+           rate: "trapping_rate*hydrogen_concentration*(1 - trap_occupancy) - release_rate*trap_occupancy"
+       storage: "hydrogen_concentration + trap_density*trap_occupancy"
+       flux: "-diffusivity*grad(hydrogen_concentration)"
+       flux_name: hydrogen_flux
+
+   properties:
+     trap_density: {unit: mol/m^3, value: 10 mol/m^3}
+     trapping_rate: {unit: m^3/(mol*s), value: "[1e3 m^3/(mol*s)]*exp(-[5.7 kJ/mol]/(molar_gas_constant*temperature))"}
+     release_rate: {unit: 1/s, value: "[1e7 1/s]*exp(-[60 kJ/mol]/(molar_gas_constant*temperature))"}
+     diffusivity: {unit: m^2/s, value: "[1e-7 m^2/s]*exp(-[5.7 kJ/mol]/(molar_gas_constant*temperature))"}
+
+   initial_conditions:
+     hydrogen_concentration: 0 mol/m^3
+
+   boundary_conditions:
+     left: {hydrogen_concentration: 1 mol/m^3}
+     right: {hydrogen_flux: 0 mol/(m^2*s)}
+
+The storage is :math:`c + N\theta`, so the traps hold part of the hydrogen.
+The occupancy rises at the rate :math:`k c (1 - \theta)` and falls at the rate
+:math:`p\theta`, with the trapping rate :math:`k` in
+:math:`\mathrm{m^3/(mol\,s)}` and the release rate :math:`p` in
+:math:`\mathrm{1/s}`. The properties read the ``temperature``, so the problem
+also needs ``heat_conduction`` or another model with the unknown
+``temperature``.
+
+The keys of an entry are:
 
 ``unknown``
-   The field the law solves for: a name, or a mapping of one name to its
-   ``unit`` and ``shape``. Required.
-
-``expressions``
-   Named formulas that the terms read. A name outside the vocabulary takes
-   the form ``{unit: ..., value: ...}``.
+   The field that the law solves for: a standard name, such as
+   ``temperature``, or a mapping of one name to its ``unit``. Required. A name
+   outside the vocabulary needs its unit.
 
 ``states``
-   Internal states, each with ``unit``, ``initial``, ``shape`` and its
-   ``rate``, the formula of its time derivative. ``rate`` is required.
+   The internal states, each a mapping of its ``unit``, its ``initial`` value
+   at every point and its ``rate``, the formula of :math:`g`. ``rate`` is
+   required, and ``initial`` is 0 when you leave it out.
 
-``storage``, ``inertia``, ``flux``, ``source``
-   The formulas of :math:`m`, :math:`a`, :math:`\mathbf{F}` and :math:`s`.
+``storage``, ``flux``, ``source``
+   The formulas of :math:`m`, :math:`\mathbf{F}` and :math:`s`. A term you
+   leave out is zero.
 
-``boundary_fluxes``
-   Named formulas of the outward normal flux :math:`\mathbf{F}\cdot\mathbf{n}`,
-   with :math:`\mathbf{n}` the outward unit normal. A positive boundary flux
-   removes the conserved quantity.
+``expressions``
+   Named formulas, each of the form ``{unit: ..., value: ...}``, that the terms,
+   the rates and the later expressions read by name. A postprocessor reads an
+   expression too.
 
 ``flux_name``
-   The standard name of :math:`\mathbf{F}`, which a ``boundary_flux``
-   postprocessor names.
+   The name of :math:`\mathbf{F}`, which ``boundary_conditions`` and a
+   ``boundary_flux`` postprocessor take. A name outside the vocabulary takes
+   the unit of :math:`\mathbf{F}`.
 
 ``method``
-   ``FEM`` or ``DMCDM``.
+   ``FEM`` or ``DMCDM``. One problem takes one method.
+
+Write the formulas of a model as the :ref:`formulas <input-formulas>` of a
+property. A model reads a property by its name, so the property section holds
+the numbers of the model, as it holds those of a physics. The check refuses a
+model whose terms disagree in unit, whose rate has a unit other than that of
+its state per s, or whose formula names a quantity that the problem does not
+hold. The message names the key, as in ``models.hydrogen_trapping: ... the
+terms disagree in dimension``.
+
+In an :ref:`eigenvalue study <input-eigenvalues>`, the source of a model may
+read the symbol ``eigenvalue``, the eigenvalue :math:`\lambda` of the study.
+Its unit follows the problem. A problem with a time derivative, the time terms
+of a physics or the storage of a model, has :math:`\lambda` in
+:math:`\mathrm{1/s}`. A problem without one has a dimensionless
+:math:`\lambda`, which the source alone defines. The fast group of a reactor
+writes its fission source this way, with :math:`\lambda = 1/k` and the
+effective multiplication factor :math:`k`:
+
+.. code-block:: yaml
+
+   models:
+     fast_group:
+       unknown: {fast_flux: {unit: 1/(m^2*s)}}
+       flux: "-fast_diffusion_coefficient*grad(fast_flux)"
+       source: "-(fast_absorption + fast_to_thermal_scattering)*fast_flux + eigenvalue*thermal_fission_production*thermal_flux"
+
+   eigenvalues: {count: 1}
+
+The fluxes :math:`\phi_1` of ``fast_flux`` and :math:`\phi_2` of
+``thermal_flux`` are in :math:`\mathrm{1/(m^2\,s)}`, and the cross sections
+in :math:`\mathrm{1/m}`, so the source holds no factor of one second.
+:doc:`/tutorials/criticality` solves the whole core.
+
+The other sections take the names of a model:
+
+- ``initial_conditions`` takes the unknown. A transient model with a storage
+  needs it. A state takes its initial value in its ``initial`` key.
+- ``boundary_conditions`` takes the unknown, whose value it holds on the
+  boundary, and the ``flux_name``, whose value is the outward normal flux
+  :math:`\mathbf{F}\cdot\mathbf{n}`, with :math:`\mathbf{n}` the outward unit
+  normal. A positive value leaves the body. Both take a constant or a
+  formula, such as a flux that grows with the concentration at the surface. A
+  boundary without a condition on the model has no flux through it.
+- ``postprocessors`` take the unknown, the states and the expressions, and
+  ``boundary_flux`` takes the ``flux_name``. A state and an expression live
+  at the integration points, so they take ``integral``, ``average``,
+  ``maximum`` and ``minimum``, each over the averages of the points of each
+  cell.
+- ``output`` writes the unknown, and ``mesh_adaptivity`` reads it.
+
+In Python, ``model(name, **entry)`` adds an entry. Give the model before the
+properties whose formulas read its unknown or its states.
+
+The solve has these limits:
+
+- The unknown and the states are scalars, and a model holds no ``inertia``.
+- Only the source reads ``eigenvalue``, and only in a problem with the
+  ``eigenvalues`` section, since every other run has no eigenvalue.
+- A model reads constants and formulas, so a property that it reads takes no
+  table.
+- A flux through a boundary goes in ``boundary_conditions`` under the
+  ``flux_name``, so the solve refuses the key ``boundary_fluxes``.
+- A steady problem holds each state at the root of its rate, where the state
+  stops changing, so it refuses a rate that reads no state.
+- A transient problem with states takes no ``mesh_adaptivity``, since a new
+  mesh does not keep the history of the integration points.
+- The step control of a transient run measures the change of the unknowns,
+  and not that of the states.
+
+:ref:`theory-user-models` describes how the solve discretises a model.
 
 .. _input-initial-conditions:
 
@@ -1023,21 +1273,45 @@ initial_conditions
 ~~~~~~~~~~~~~~~~~~
 
 The section ``initial_conditions`` gives the value of each field at the start
-of a transient run, by its standard name. A scalar field takes one constant.
-A vector field takes a list of one constant per direction. A formula and a
-table are refused.
+of a transient run, by its standard name. A scalar field takes one constant or
+one formula of the coordinates. A vector field takes a list of them, one per
+direction. A formula reads the position, as ``x``, ``y`` and ``z``, or ``r``
+and ``z`` in axisymmetric coordinates, and constants. It refuses the fields,
+the properties and the time. A table is refused.
 
 - A transient ``heat_conduction`` needs the initial ``temperature``.
 - An initial ``displacement`` needs the ``time`` section, because it starts a
-  run with inertia. A solid at finite strain refuses it.
+  run with inertia.
 - A flow takes an initial ``velocity`` and ``pressure``.
-- A field that no physics of the problem solves for is refused, and so is a
+- A field that no physics or model of the problem solves for is refused, and so is a
   component name such as ``displacement_x``.
+
+- An eigenvalue study refuses the section, because it finds the modes of the
+  problem from no starting state.
 
 .. code-block:: yaml
 
    initial_conditions:
      temperature: 573 K
+
+A slab whose faces are at :math:`300\,\mathrm{K}` and
+:math:`305\,\mathrm{K}`, :math:`0.1\,\mathrm{m}` apart, starts at its steady
+temperature, which rises by :math:`50\,\mathrm{K/m}` along :math:`x`:
+
+.. code-block:: yaml
+
+   initial_conditions:
+     temperature: "[300 K] + [50 K/m]*x"
+
+A solid at finite strain that starts rotated by :math:`0.5\,\mathrm{rad}` as
+a rigid body, at rest and free of load, stays free of stress. The test
+``test_a_rigid_rotation_leaves_a_solid_at_finite_strain_free_of_stress`` in
+``tests/python/test_input_capabilities.py`` gives it this start:
+
+.. code-block:: yaml
+
+   initial_conditions:
+     displacement: ["(cos(0.5) - 1)*x - sin(0.5)*y", "sin(0.5)*x + (cos(0.5) - 1)*y"]
 
 .. _input-boundary-conditions:
 
@@ -1045,7 +1319,8 @@ boundary_conditions
 ~~~~~~~~~~~~~~~~~~~
 
 The section ``boundary_conditions`` maps each boundary to the conditions on
-it. Each key sets a field or a flux through the boundary. A boundary of a
+it, or to the word ``symmetry``. Each key sets a field or a flux through the
+boundary. A boundary of a
 generated mesh that does not exist is refused with the nearest valid name. A
 boundary that the input leaves out, or a physics without a condition on it,
 takes the natural condition: no heat flux for ``heat_conduction``, and no
@@ -1076,22 +1351,23 @@ traction for ``solid_mechanics`` and ``fluid_dynamics``.
        heat flux is :math:`\sigma_\mathrm{SB}\,\epsilon\,(T^4 - T_a^4)`.
    * - ``displacement``
      - ``solid_mechanics``
-     - A list of one constant per direction, in m.
+     - A list of one value per direction, in m.
    * - ``displacement_x``, ``displacement_y``, ``displacement_z``
      - ``solid_mechanics``
      - One component in m. The other components stay free.
    * - ``traction``
      - ``solid_mechanics``
-     - The force per area, a list of one constant per direction, in Pa. At
+     - The force per area, a list of one value per direction, in Pa. At
        finite strain it is :math:`\mathbf{P}\mathbf{N}` per undeformed area,
        with :math:`\mathbf{N}` the outward unit normal of the undeformed
        boundary.
    * - ``pressure``
      - ``solid_mechanics`` in a problem without a flow
-     - The pressure :math:`p` in Pa, the load :math:`-p\,\mathbf{n}`.
+     - The pressure :math:`p` in Pa, the load :math:`-p\,\mathbf{n}`. At
+       finite strain it acts on the deformed boundary.
    * - ``velocity``
      - ``fluid_dynamics``
-     - A list of one constant per direction, in :math:`\mathrm{m/s}`.
+     - A list of one value per direction, in :math:`\mathrm{m/s}`.
    * - ``velocity_x``, ``velocity_y``, ``velocity_z``
      - ``fluid_dynamics``
      - One component in :math:`\mathrm{m/s}`.
@@ -1102,12 +1378,22 @@ traction for ``solid_mechanics`` and ``fluid_dynamics``.
 In the table, :math:`h_c` is the heat transfer coefficient in
 :math:`\mathrm{W/(m^2\,K)}`, :math:`\epsilon` the dimensionless emissivity
 and :math:`\sigma_\mathrm{SB} = 5.670374419 \times 10^{-8}\,\mathrm{W/(m^2\,K^4)}`
-the Stefan-Boltzmann constant. In axisymmetric coordinates the components are
+the Stefan-Boltzmann constant, the physical constant ``Stefan_Boltzmann_constant``.
+Both conditions prescribe the heat flux of the row through the one route of a
+prescribed flux. In axisymmetric coordinates the components are
 ``displacement_r``, ``displacement_z``, ``velocity_r`` and ``velocity_z``.
 
-A scalar value, and each constant of ``convection`` and ``radiation``, is a
-constant or a formula. A list takes constants only, so give a formula per
-component with the component key, such as ``velocity_x``.
+A scalar value, each entry of a list, and each constant of ``convection`` and
+``radiation``, is a constant or a formula. The input refuses a table and a
+mapping of regions as a boundary value, since a condition holds one constant
+or formula along its boundary. The traction of a remote stress
+:math:`\sigma_\infty` along :math:`x` on an arc of radius :math:`r` reads:
+
+.. code-block:: yaml
+
+   boundary_conditions:
+     outer:
+       traction: ["[100 MPa]*x/sqrt(x^2 + y^2)", "0 Pa"]
 
 The solve refuses a key whose physics the problem does not have, such as a
 ``heat_flux`` without ``heat_conduction`` or a ``traction`` without
@@ -1138,6 +1424,26 @@ does:
        temperature: 400 K
        displacement_x: 0 m
 
+The word ``symmetry`` takes the place of the mapping of a boundary, and makes
+the boundary a plane of symmetry. Each physics of the problem applies its own
+condition there:
+
+- ``solid_mechanics``: the displacement normal to the boundary is zero, and
+  the tangential traction is zero.
+- ``fluid_dynamics``: the velocity normal to the boundary is zero, and so is
+  the tangential traction.
+- ``heat_conduction`` and a model: the flux through the boundary is zero.
+
+A plane of symmetry is normal to a coordinate axis, so the coordinate across
+it is the same at all of its nodes. The input refuses another key on a
+boundary of symmetry.
+
+.. code-block:: yaml
+
+   boundary_conditions:
+     left: symmetry
+     bottom: symmetry
+
 .. _input-time:
 
 time
@@ -1154,39 +1460,35 @@ The run starts at the time 0 s.
 
 ``step_control``
    How the run chooses each step after the first. A mapping whose key ``by``
-   names the controller, with the one key of that controller. Default
-   ``{by: error, relative_tolerance: 1e-3}``.
+   names the controller, with the optional setting of that controller.
+   Without it, the step follows the estimated error of each step with the
+   relative tolerance :math:`10^{-3}`, as ``{by: error}`` does.
 
 .. list-table:: The step controllers
    :header-rows: 1
    :widths: 16 34 50
 
    * - ``by``
-     - Key and default
+     - Setting and default
      - Step
    * - ``error``
      - ``relative_tolerance``, a number above 0 and at most 1. Default
        :math:`10^{-3}`.
      - The step that keeps the estimated local error of each variable,
-       against its range, at the tolerance. A step whose error exceeds it is
-       repeated with a smaller step.
+       against its scale (:doc:`solving`), at the tolerance. A step whose
+       error exceeds it is repeated with a smaller step.
    * - ``iterations``
-     - ``target_iterations``, an integer of at least 1. Default 5.
+     - ``target_iterations``, an integer of at least 1. Default 4.
      - A larger step after a step that took fewer nonlinear iterations than
        the target, and a smaller step after one that took more.
-   * - ``Courant``
-     - ``Courant_number``, a positive number. Default 0.5.
-     - The step that gives the Courant number of a flow.
    * - ``fixed``
-     - no key
+     - no setting
      - The initial time step throughout, with the last step shortened so
        that the run ends at ``end_time``.
 
-The default controller ``error`` sets the step by the accuracy in time. A key
-of another controller is refused, such as ``relative_tolerance`` with
-``by: fixed``. The solve refuses ``by: Courant`` for every input, because the
-Courant controller needs the projection time integration of a flow, which the
-input does not select.
+The defaults are those of :meth:`~dualmesh.Problem.solve_transient`, which the
+input leaves to it. A setting of another controller is refused, such as
+``relative_tolerance`` with ``by: fixed``.
 
 The time scheme is backward Euler, and a solid with inertia takes the
 generalised-:math:`\alpha` method [ChungHulbert1993]_.
@@ -1199,62 +1501,112 @@ generalised-:math:`\alpha` method [ChungHulbert1993]_.
      initial_time_step: 0.1 s
      step_control: {by: fixed}
 
+.. _input-eigenvalues:
+
+eigenvalues
+~~~~~~~~~~~
+
+The section ``eigenvalues`` makes the problem an eigenvalue study, in place of
+a steady or a transient run. Every field varies in time as
+:math:`\hat{u}\, e^{-\lambda t}`, with :math:`\hat{u}` the mode, :math:`t`
+the time in s and :math:`\lambda` the eigenvalue in :math:`\mathrm{1/s}`.
+The time terms of the problem then define :math:`\lambda`: a storage
+:math:`c\,\partial u/\partial t` becomes :math:`-\lambda c\,\hat{u}`, and an
+inertia :math:`\rho\,\partial^2 u/\partial t^2` becomes
+:math:`\lambda^2 \rho\,\hat{u}`. The source of a model may also read
+:math:`\lambda` as the symbol ``eigenvalue`` (see :ref:`input-models`). A
+problem without a time derivative takes :math:`\lambda` from that source
+alone, and :math:`\lambda` is then dimensionless. The prescribed values of the
+boundary conditions are zero in a mode. Both keys are optional.
+
+``count``
+   The number of eigenvalues, an integer of at least 1. Default 1.
+
+``near``
+   The value that the eigenvalues are closest to, in the unit of
+   :math:`\lambda`. Default 0, so the study finds the slowest modes, or the
+   smallest :math:`\lambda`.
+
+The eigenvalues of a cooling body, whose time term is the storage of heat,
+are its rates of decay. A vibration is a problem whose only time term is an
+inertia. Its eigenvalues are :math:`\lambda = i\omega`, with :math:`\omega`
+the angular frequency in :math:`\mathrm{rad/s}`, and the study also gives its
+natural frequencies :math:`f = |\operatorname{Im}\lambda|/(2\pi)` in Hz.
+
+A problem with ``eigenvalues`` refuses the sections ``time``,
+``mesh_adaptivity``, ``initial_conditions`` and ``postprocessors``, since a
+mode has no scale of its own. The results hold the eigenvalues, closest to
+``near`` first, and the fields of the first mode. The output writes each mode,
+with its largest value 1, as ``<file>_mode_<number>.vtu``.
+
+.. code-block:: yaml
+
+   eigenvalues: {count: 6, near: 0 1/s}
+
+A bar of steel of length :math:`L = 1\,\mathrm{m}`, fixed at one end and free
+at the other, vibrates along its axis at :math:`f_n = (2n - 1)\,c/(4L)` for
+:math:`n = 1, 2, \ldots`, with the wave speed :math:`c = \sqrt{E/\rho}` in
+:math:`\mathrm{m/s}`. The test
+``test_the_natural_frequencies_of_a_bar_are_those_of_its_axial_waves`` in
+``tests/python/test_input_capabilities.py`` checks the first two to
+:math:`10^{-3}`.
+
+A bare reactor core has no time derivative in its two-group diffusion
+equations, so its eigenvalue :math:`\lambda = 1/k` is a number, and the
+smallest :math:`\lambda` gives the largest multiplication factor :math:`k`.
+:doc:`/tutorials/criticality` computes it.
+
 .. _input-mesh-adaptivity:
 
 mesh_adaptivity
 ~~~~~~~~~~~~~~~
 
 The section ``mesh_adaptivity`` refines the mesh where the error indicator of
-a field is large, and coarsens it where the indicator is small. Every key is
-required.
-
-``indicator``
-   ``gradient_recovery``, the indicator of Zienkiewicz and Zhu
-   [ZienkiewiczZhu1987]_, from the difference between the gradient of the
-   field and its recovered gradient on each cell. For a vector field the
-   squared indicators of its components add up.
+a field is large, and coarsens it where the indicator is small. The indicator
+is that of Zienkiewicz and Zhu [ZienkiewiczZhu1987]_, from the difference
+between the gradient of the field and its recovered gradient on each cell. For
+a vector field the squared indicators of its components add up. Every key is
+required, and ``interval`` is read in a transient run only.
 
 ``field``
    The field whose indicator drives the adaptivity: a field that a physics
    of the problem solves for, such as ``temperature``.
 
 ``refine_fraction``
-   A number from 0 to 1. The cells refined are the smallest set whose squared
-   indicators add up to this fraction of their total, the largest first
-   [Dorfler1996]_.
+   A number above 0 and at most 1. The cells refined are the smallest set
+   whose squared indicators add up to this fraction of their total, the
+   largest first [Dorfler1996]_.
 
 ``coarsen_fraction``
    A number from 0 to 1. The cells coarsened are the largest set of refined
    cells, outside those marked for refining, whose squared indicators add up
    to at most this fraction of the total, the smallest first.
 
-``interval``
-   The number of accepted time steps between two adaptations of a transient
-   run. An integer of at least 1. A steady run reads no interval, and the key
-   is still required.
-
 ``maximum_refinement_level``
    The number of times a cell of the starting mesh can be refined. An
    integer of at least 0.
 
-A steady run solves, marks and adapts in cycles. Each solve starts from the
+``interval``
+   The number of accepted time steps between two adaptations of a transient
+   run. An integer of at least 1. A steady run adapts after each solve, so
+   the input refuses an interval there.
+
+A steady run solves, marks and adapts in cycles through
+:func:`~dualmesh.solve_with_adaptive_refinement`. Each solve starts from the
 solution of the last mesh. The cycles stop when no marked cell can be refined
 further, or after :math:`4 d\,n_\mathrm{max} + 1` cycles, with :math:`d` the
 dimension of the mesh and :math:`n_\mathrm{max}` the maximum refinement
-level. A transient run adapts
-the mesh after every ``interval`` accepted steps and goes on from the time
-reached, with the solution carried to the new mesh and the step that the
-controller chose. :doc:`/user_guide/adaptivity` describes adaptive
-refinement.
+level. A transient run adapts the mesh after every ``interval`` accepted steps
+and goes on from the time reached, with the solution carried to the new mesh
+and the step that the controller chose. :doc:`/user_guide/adaptivity`
+describes adaptive refinement.
 
 .. code-block:: yaml
 
    mesh_adaptivity:
-     indicator: gradient_recovery
      field: temperature
      refine_fraction: 0.5
      coarsen_fraction: 0.05
-     interval: 1
      maximum_refinement_level: 3
 
 The test ``tests/python/test_parallel.py`` runs this adaptivity on a plate
@@ -1297,24 +1649,58 @@ field. The reduction is exactly one of these keys:
      - ``boundary``, a boundary name. Required.
      - The flow of ``heat_flux`` out through the boundary, in W in three
        dimensions and in axisymmetric coordinates, :math:`\mathrm{W/m}` in a
-       plane problem and :math:`\mathrm{W/m^2}` on a segment.
+       plane problem and :math:`\mathrm{W/m^2}` on a segment. Or the
+       integral of ``traction`` over the boundary, the force on the body
+       through it, in N in three dimensions and in axisymmetric coordinates
+       and :math:`\mathrm{N/m}` in a plane problem.
+   * - ``line``
+     - ``from`` and ``to``, two points, each a list of one length per
+       direction, and ``points``, an integer of at least 2. All required.
+     - The values of the field at ``points`` evenly spaced points from
+       ``from`` to ``to``, both ends included, in the unit of the field.
 
 In axisymmetric coordinates an integral spans the body of revolution. The
 field of a reduction is a
 scalar field, such as ``temperature`` or ``pressure``, or a component, such as
-``displacement_x``. A ``boundary_flux`` is positive when the heat leaves the
-body.
+``displacement_x``. A ``boundary_flux`` of ``heat_flux`` is positive when the
+heat leaves the body.
 
-The solve has these limits:
+The reductions have these rules:
 
 - ``boundary_flux`` takes ``heat_flux`` in a problem with
-  ``heat_conduction``.
-- A stress is a ``point_value`` of one component, such as ``stress_yy``, in a
-  steady solid at small strain in Cartesian coordinates, with ``Young_modulus``
-  and ``Poisson_ratio`` one constant in every region. It includes the thermal
-  strain of a thermal expansion. A point outside the mesh is refused.
-- The check accepts a ``region`` key on ``integral``, ``average``,
-  ``maximum`` and ``minimum``, and the solve refuses it.
+  ``heat_conduction``, or the ``flux_name`` of a model, in the unit of its
+  flux times the measure of the boundary.
+- ``boundary_flux`` takes ``traction``, or one of its components
+  ``traction_x``, ``traction_y`` and ``traction_z`` (``traction_r`` and
+  ``traction_z`` in axisymmetric coordinates), in a problem with
+  ``solid_mechanics``. It is the integral of the traction
+  :math:`\boldsymbol{\sigma}\mathbf{n}` over the boundary, with
+  :math:`\boldsymbol{\sigma}` the Cauchy stress in Pa and :math:`\mathbf{n}`
+  the outward unit normal: the force of the surroundings on the body. On a
+  boundary that prescribes the displacement it is the reaction of the
+  support, the residual of the equations at the nodes of the boundary, which
+  balances the loads to the tolerance of the solve. On a loaded boundary it is
+  the load. An axisymmetric integral spans the surface of revolution, and a
+  plane one is per unit depth. ``traction`` alone gives one postprocessor per
+  component, named ``<name>_x``, ``<name>_y`` and ``<name>_z``.
+- A stress is a ``point_value`` of one component, such as ``stress_yy``, or of
+  ``von_Mises_stress``. It is the Cauchy stress in Pa that the solid computes
+  in the cell that holds the point, at small or finite strain, with the
+  thermal strain of a thermal expansion. Its value at a point outside the mesh
+  is NaN. The von Mises stress is
+  :math:`\sigma_\mathrm{v} = \sqrt{\tfrac{3}{2}\,\mathbf{s}:\mathbf{s}}`,
+  with :math:`\mathbf{s}` the deviator of :math:`\boldsymbol{\sigma}`, and it
+  holds the out-of-plane stress of a plane strain problem.
+- A reduction covers the whole domain, so the input refuses a ``region`` key.
+- A ``line`` reads a field, a component, a stress component or the von
+  Mises stress, as a ``point_value`` does. It writes ``<file>_<name>.csv``, with ``<file>`` the
+  base name of ``output``, so it needs the ``output`` section. The columns
+  are ``distance [m]``, the distance along the line from ``from``, then the
+  coordinates, such as ``x [m]`` and ``y [m]``, and the field with its unit,
+  as in ``velocity_x [m/s]``. A steady run writes the line once, at its end.
+  A transient run writes it at each output time, with the column ``time [s]``
+  first and the rows of every output time so far. The results give the same
+  table with ``solution.line(name)``.
 
 .. code-block:: yaml
 
@@ -1322,42 +1708,62 @@ The solve has these limits:
      heat_through_left: {boundary_flux: heat_flux, boundary: left}
      temperature_bottom: {point_value: temperature, point: [0.05 m, 0 m]}
      hottest: {maximum: temperature}
+     reaction: {boundary_flux: traction_y, boundary: jaws}
+     edge: {point_value: von_Mises_stress, point: [60 mm, 6 mm, 0 mm]}
+     centreline:
+       line: velocity_x
+       from: [0.5 m, 0 m]
+       to: [0.5 m, 1 m]
+       points: 101
 
 .. _input-output:
 
 output
 ~~~~~~
 
-The section ``output`` writes the fields and the postprocessors to files. All
-three keys are required.
+The section ``output`` writes the fields and the postprocessors to files. The
+keys ``file`` and ``fields`` are required, and ``interval`` belongs to a
+transient run.
 
 ``file``
    The base name of the files, relative to the folder of the case file, or
    to the working directory in Python.
 
 ``interval``
-   The fields are written every ``interval``-th accepted time step and at the
-   end of the run. An integer of at least 1. A steady run writes one file.
+   A transient run writes the fields at its start, every ``interval``-th
+   accepted time step and at its end. An integer of at least 1, and 1 when it
+   is left out. A steady run writes the fields once, at its end, and refuses an
+   ``interval``.
 
 ``fields``
    The list of fields to write: ``temperature``, ``displacement``,
-   ``velocity`` and ``pressure``, those of the problem.
+   ``velocity``, ``pressure`` and the unknowns of the models, those of the
+   problem.
 
-The run writes these files:
+The section lowers onto the :class:`~dualmesh.Output` group of the solve, with
+``interval`` as its ``step_interval``, so the input and Python write the same
+files:
 
-- ``<file>_0000.vtu``, ``<file>_0001.vtu`` and so on, one VTK (Visualization
-  Toolkit) unstructured grid file per output time,
-- ``<file>.pvd``, a collection of those files, which ParaView opens as one
-  time series,
+- ``<file>.vtu`` in a steady run, and ``<file>_00000.vtu``,
+  ``<file>_00001.vtu`` and so on in a transient run, one VTK (Visualization
+  Toolkit) unstructured grid file per output time. A run on several processes
+  writes one piece per process and a parallel VTU (PVTU) index of the pieces
+  in their place.
+- ``<file>.pvd`` in a transient run, a collection of those files, which
+  ParaView opens as one time series. The files of a transient run that adapts
+  its mesh go on in one numbering and one collection.
 - ``<file>.csv``, the postprocessors, one column per postprocessor after the
   column ``time [s]``, with the unit in each header, as in ``peak [K]``. The
-  run writes it when the input has postprocessors.
+  run writes it when the input has postprocessors other than lines.
+- ``<file>_<name>.csv`` for each ``line`` postprocessor.
+- ``<file>_mode_<number>.vtu`` for each mode of an eigenvalue study.
+
+The first process writes the collection and the table.
 
 .. code-block:: yaml
 
    output:
      file: bus_bar
-     interval: 1
      fields: [temperature]
 
 .. _input-solver:
@@ -1375,13 +1781,14 @@ The section ``solver`` sets the nonlinear solve. Both keys are optional.
 ``PETSc_options``
    A mapping of options of PETSc (the Portable, Extensible Toolkit for
    Scientific Computation), without their leading dash, to texts or numbers.
-   ``true`` and ``false`` become the texts ``true`` and ``false``. Options
-   that start with ``snes_`` go to the nonlinear solver of PETSc, and the
-   others replace the choice of the linear solver. A leading dash is refused.
+   ``true`` gives the option as a flag without a value, and ``false`` gives
+   it the value ``false``, as in Python. Options that start with ``snes_`` go
+   to the nonlinear solver of PETSc, and the others replace the choice of the
+   linear solver. A leading dash is refused.
 
-The solve refuses ``relative_tolerance`` together with
-``PETSc_options.snes_rtol``, which set the same tolerance. Keep
-``relative_tolerance``. :doc:`/user_guide/solving` describes the options and
+The solve refuses ``PETSc_options.snes_rtol``, ``snes_atol`` and
+``snes_stol``, which the convergence test does not read. Give
+``relative_tolerance`` instead. :doc:`/user_guide/solving` describes the options and
 the choice of the linear solver.
 
 .. code-block:: yaml
@@ -1441,7 +1848,6 @@ The same input as a case file reads:
      hottest: {maximum: temperature}
    output:
      file: bus_bar
-     interval: 1
      fields: [temperature]
 
 The test ``tests/python/test_front_end.py`` checks that the temperature at the

@@ -337,7 +337,12 @@ def test_transient_diffusion_in_space_and_time(method):
         square_family("Quad4"),
         [4, 8, 16, 32],
         method=method,
-        transient={"end_time": 0.25, "time_step": lambda h: h / 4, "time_scheme": "Crank-Nicolson"},
+        transient={
+            "end_time": 0.25,
+            "time_step": lambda h: h / 4,
+            "time_scheme": "Crank-Nicolson",
+            "time_stepper": "fixed",
+        },
     )
     check(result, "u", method, "Quad4", norms=("l2",))
 
@@ -349,14 +354,15 @@ def test_transient_diffusion_in_space_and_time(method):
 @pytest.mark.parametrize("method", methods)
 def test_axisymmetric_diffusion(method, element_type):
     """On r in [0.5, 1.5], so that the 1/r of the divergence is exercised
-    without the axis."""
+    without the axis.  The manufactured fields are written in x = r and y = z, and the
+    coefficient in the coordinates r and z of the equation language."""
     study = study_of(
         {"u": "sin(x)*cos(y) + x**2*y"},
         2,
         "general_form_PDE",
         variables="u",
         coordinates="axisymmetric",
-        c="1 + 0.2*x",
+        c="1 + 0.2*r",
     )
     result = study.convergence_study(
         square_family(element_type, 0.5, 1.5), [4, 8, 16, 32], method=method

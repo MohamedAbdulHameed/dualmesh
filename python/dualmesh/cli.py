@@ -10,7 +10,7 @@ them::
 
     dualmesh run case.yaml                        # solve a case file
     dualmesh list --category physics              # the registered types
-    dualmesh describe heat_conduction             # the parameters of one type
+    dualmesh describe diffusion                   # the parameters of one type
     dualmesh describe solid_mechanics             # the parameters of one physics
     dualmesh mesh wrench.msh --sidesets sides.vtu # the side sets of a mesh file
 """
@@ -40,7 +40,7 @@ def main(argv: list[str] | None = None) -> int:
         help="physics, coupling, kernel, boundary_condition, nodal_boundary_condition, nodal_load, property or constraint",
     )
     list_parser.add_argument(
-        "--module", help="framework, heat_transfer, solid_mechanics, fluids, ..."
+        "--module", help="framework, heat_conduction, solid_mechanics, fluids, ..."
     )
 
     run_parser = subparsers.add_parser("run", help="solve a case file (YAML or TOML)")

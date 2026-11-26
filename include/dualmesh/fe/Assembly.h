@@ -84,7 +84,34 @@ enum class PointSet
   Faces,  ///< DMCDM only: interfaces between control volumes
 };
 
-/// Build the integration points of element @p e.
+/// A cell of the dual mesh method with nodes hanging on its sides, split as a polygon (polyhedron)
+/// whose sides are the leaf edges (leaf faces).  Its slots are its corners and its hanging nodes,
+/// and it carries the dual mesh of a conforming cell: the control domain of every slot as patches
+/// in the reference coordinates of the element, and the interfaces between slots.  In 2D the
+/// control domain of a slot is the quadrilateral of the slot, the middles of its two leaf edges
+/// and the centre of the cell, and the interface of a leaf edge is the segment from its middle to
+/// the centre.  In 3D, on each leaf face of a slot, it is the pyramid of the slot, the middles of
+/// its two edges of the face and the centre of the face, with its apex at the centre of the cell,
+/// and the interface of an edge of a leaf face is the triangle of its middle, the centre of the
+/// face and the centre of the cell.  The control domains then tile the domain with those of the
+/// small neighbours, whose interfaces meet the side at the same middles.  The fields inside are
+/// those of the cell, so a hanging node owns control domain but adds nothing to the fields of the
+/// cell.
+struct PolygonCell
+{
+  /// The slots of the cell: its corners, then its hanging nodes, by node number and reference
+  /// coordinates in the cell.
+  std::vector<Index> nodes;
+  std::vector<Point> xi;
+  /// The patches of the control domain of every slot, and the interfaces between slots.
+  std::vector<std::vector<Patch>> control;
+  std::vector<DualFace> faces;
+};
+
+/// Build the integration points of element @p e: for the dual mesh method those of the control
+/// domains (PointSet::Volume, owned by a node) or of the interfaces between them (PointSet::Faces),
+/// of the reference element or, for a cell with hanging nodes, of @p polygon, whose slots number
+/// the owners; for the finite element method those of the element.
 ///
 /// Building a point maps it to the physical element, and a caller that needs
 /// the mapped point (the shape functions and their physical gradients) can
@@ -98,41 +125,8 @@ void buildElementPoints(const Mesh & mesh,
                         PointSet set,
                         const QuadratureSpec & spec,
                         std::vector<IntegrationPoint> & out,
-                        std::vector<MappedPoint> * mapped = nullptr);
-
-/// A cell of the dual mesh method with nodes hanging on its sides, split as a polygon (polyhedron):
-/// its control domains are those of the polygon of its corners and hanging nodes, whose sides are
-/// the leaf edges (leaf faces).  In 2D each flag (the centre of the cell, the middle of a leaf edge,
-/// an end of that edge) is a triangle of the control domain of that end, and the segment from the
-/// centre to the middle of a leaf edge is the interface between its ends.  In 3D each flag (the
-/// centre of the cell, the centre of a leaf face, the middle of an edge of it, an end of that edge)
-/// is a tetrahedron, and the triangle of the first three is the interface between the ends.  The control domains then tile the domain
-/// with those of the small neighbours, whose interfaces meet the side at the same middles.  The
-/// fields inside are those of the cell, so a hanging node owns control domain but adds nothing to
-/// the fields of the cell.
-struct PolygonCell
-{
-  /// The slots of the cell: its corners, then its hanging nodes, by node number and reference
-  /// coordinates in the cell.
-  std::vector<Index> nodes;
-  std::vector<Point> xi;
-  /// The leaf edges of the boundary, as pairs of slots (2D).
-  std::vector<std::array<int, 2>> edges;
-  /// The leaf faces of the boundary, each its slots around it, and their centres (3D).
-  std::vector<std::vector<int>> faces;
-  std::vector<Point> face_centres;
-};
-
-/// The integration points of a polygon cell (PointSet::Volume: the control domains, owned by the
-/// slots; PointSet::Faces: the interfaces between slots), as buildElementPoints gives them for the
-/// dual mesh of an ordinary cell.
-void buildPolygonPoints(const Mesh & mesh,
-                        Index e,
-                        const PolygonCell & cell,
-                        PointSet set,
-                        const QuadratureSpec & spec,
-                        std::vector<IntegrationPoint> & out,
-                        std::vector<MappedPoint> * mapped = nullptr);
+                        std::vector<MappedPoint> * mapped = nullptr,
+                        const PolygonCell * polygon = nullptr);
 
 /// Build the integration points of side @p side (boundary integrals).
 void buildSidePoints(const Mesh & mesh,

@@ -252,8 +252,14 @@ def skew(method, scheme, n=24, outflow_value=None):
     flow = problem.add_physics(
         "fluid_dynamics", density=1.0, dynamic_viscosity=1.0, formulation="equal_order"
     )
-    heat = problem.add_physics("heat_transfer", thermal_conductivity=1e-6, advection_scheme=scheme)
-    problem.add_coupling("nonisothermal_flow", heat_transfer=heat, fluid_dynamics=flow)
+    heat = problem.add_physics(
+        "heat_conduction",
+        thermal_conductivity=1e-6,
+        density=1.0,
+        specific_heat=1.0,
+        advection_scheme=scheme,
+    )
+    problem.add_coupling("nonisothermal_flow", heat_conduction=heat, fluid_dynamics=flow)
     flow.add_boundary_condition(
         [f"velocity_x = {c}", f"velocity_y = {s}"], boundary=["left", "bottom", "top"]
     )
@@ -306,10 +312,10 @@ def test_the_inertia_of_a_constant_velocity_component_vanishes(scheme):
         problem.add_variable(name)
         problem.add_kernel("diffusion", variable=name, diffusivity=0.01)
     problem.add_kernel(
-        "convective_inertia",
+        "advection",
         variable="vy",
-        velocities=["vx", "vy"],
-        density=1.0,
+        velocity=["vx", "vy"],
+        coefficient=1.0,
         advection_scheme=scheme,
     )
     problem.add_boundary_condition(
@@ -331,8 +337,14 @@ def channel(method, scheme, offset):
     flow = problem.add_physics(
         "fluid_dynamics", density=100.0, dynamic_viscosity=1.0, formulation="equal_order"
     )
-    heat = problem.add_physics("heat_transfer", thermal_conductivity=1.0, advection_scheme=scheme)
-    problem.add_coupling("nonisothermal_flow", heat_transfer=heat, fluid_dynamics=flow)
+    heat = problem.add_physics(
+        "heat_conduction",
+        thermal_conductivity=1.0,
+        density=100.0,
+        specific_heat=1.0,
+        advection_scheme=scheme,
+    )
+    problem.add_coupling("nonisothermal_flow", heat_conduction=heat, fluid_dynamics=flow)
     flow.add_boundary_condition(["velocity_x = 0", "velocity_y = 0"], boundary=["bottom", "top"])
     flow.add_boundary_condition(["velocity_x = 1", "velocity_y = 0"], boundary="left")
     heat.add_boundary_condition(f"temperature = {offset} + y", boundary="left")
@@ -375,9 +387,14 @@ def test_SUPG_resolves_a_boundary_layer_without_oscillation():
         "fluid_dynamics", density=1.0, dynamic_viscosity=1.0, formulation="equal_order"
     )
     heat = problem.add_physics(
-        "heat_transfer", thermal_conductivity=0.01, advection_scheme="SUPG", initial_condition=0.0
+        "heat_conduction",
+        thermal_conductivity=0.01,
+        density=1.0,
+        specific_heat=1.0,
+        advection_scheme="SUPG",
+        initial_condition=0.0,
     )
-    problem.add_coupling("nonisothermal_flow", heat_transfer=heat, fluid_dynamics=flow)
+    problem.add_coupling("nonisothermal_flow", heat_conduction=heat, fluid_dynamics=flow)
     flow.add_boundary_condition(
         ["velocity_x = 1", "velocity_y = 0"], boundary=["left", "bottom", "top"]
     )
@@ -407,9 +424,14 @@ def test_SUPG_is_consistent_and_keeps_second_order_on_a_smooth_solution():
             "fluid_dynamics", density=1.0, dynamic_viscosity=1.0, formulation="equal_order"
         )
         heat = problem.add_physics(
-            "heat_transfer", thermal_conductivity=0.01, heat_source=source, advection_scheme="SUPG"
+            "heat_conduction",
+            thermal_conductivity=0.01,
+            density=1.0,
+            specific_heat=1.0,
+            heat_source=source,
+            advection_scheme="SUPG",
         )
-        problem.add_coupling("nonisothermal_flow", heat_transfer=heat, fluid_dynamics=flow)
+        problem.add_coupling("nonisothermal_flow", heat_conduction=heat, fluid_dynamics=flow)
         flow.add_boundary_condition(
             [f"velocity_x = {vx}", f"velocity_y = {vy}"], boundary=["left", "bottom", "top"]
         )
@@ -440,12 +462,14 @@ def test_SUPG_of_quadratic_elements_holds_the_conduction(method, element_type):
         "fluid_dynamics", density=1.0, dynamic_viscosity=1.0, formulation="equal_order"
     )
     heat = problem.add_physics(
-        "heat_transfer",
+        "heat_conduction",
         thermal_conductivity=k,
+        density=1.0,
+        specific_heat=1.0,
         heat_source=f"2*x*{vx} + 2*y*{vy} - 4*{k}",
         advection_scheme="SUPG",
     )
-    problem.add_coupling("nonisothermal_flow", heat_transfer=heat, fluid_dynamics=flow)
+    problem.add_coupling("nonisothermal_flow", heat_conduction=heat, fluid_dynamics=flow)
     flow.add_boundary_condition(
         [f"velocity_x = {vx}", f"velocity_y = {vy}"], boundary=["left", "bottom", "top"]
     )
@@ -470,10 +494,14 @@ def test_the_SUPG_residual_holds_a_heat_source_added_as_a_kernel():
             "fluid_dynamics", density=1.0, dynamic_viscosity=1.0, formulation="equal_order"
         )
         heat = problem.add_physics(
-            "heat_transfer", thermal_conductivity=0.01, advection_scheme="SUPG"
+            "heat_conduction",
+            thermal_conductivity=0.01,
+            density=1.0,
+            specific_heat=1.0,
+            advection_scheme="SUPG",
         )
         heat.add_kernel("heat_source", heat_source=f"exp(x)*({vx}*sin(y) + {vy}*cos(y))")
-        problem.add_coupling("nonisothermal_flow", heat_transfer=heat, fluid_dynamics=flow)
+        problem.add_coupling("nonisothermal_flow", heat_conduction=heat, fluid_dynamics=flow)
         flow.add_boundary_condition(
             [f"velocity_x = {vx}", f"velocity_y = {vy}"], boundary=["left", "bottom", "top"]
         )
@@ -494,20 +522,19 @@ def SUPG_without_a_flow():
     kernel of a flow (whose own stabilisation would also hold a time derivative)."""
     mesh = dualmesh.generate_rectangle_mesh(x=[0, 1], y=[0, 1], num_elements=[2, 2])
     problem = dualmesh.Problem(mesh, method="fem")
-    for name in ("u", "v", "temperature"):
+    for name in ("u", "v"):
         problem.add_variable(name)
         problem.add_kernel("diffusion", variable=name, diffusivity=0.01)
+    problem.add_variable("temperature")
+    problem.add_kernel("diffusion", variable="temperature", diffusivity=0.01)
     walls = ["left", "right", "bottom", "top"]
     problem.add_boundary_condition("Dirichlet", walls, variable="u", value=1.0)
     problem.add_boundary_condition("Dirichlet", walls, variable="v", value=0.0)
     problem.add_boundary_condition("Dirichlet", "left", variable="temperature", value=0.0)
-    problem.add_kernel("heat_convection", variable="temperature", velocities=["u", "v"])
-    problem.add_kernel("heat_conduction_time_derivative", variable="temperature")
+    problem.add_kernel("advection", variable="temperature", velocity=["u", "v"])
+    problem.add_kernel("time_derivative", variable="temperature")
     problem.add_kernel(
-        "heat_streamline_stabilization",
-        variable="temperature",
-        velocities=["u", "v"],
-        thermal_conductivity="0.01",
+        "heat_streamline_stabilization", variable="temperature", velocities=["u", "v"]
     )
     return problem
 
@@ -539,6 +566,108 @@ def test_SUPG_with_an_advection_written_as_a_flux_is_refused():
         problem.solve(report="none")
 
 
+def SUPG_residual(conductivity, solution_polynomial):
+    """The residual of the heat kernels with SUPG at the uniform temperature T = 3, carried by
+    v = (1, 0.5) with rho c_p = 6 and a heat source of 5: the conduction is zero there, so the
+    conductivity enters through tau alone."""
+    mesh = dualmesh.generate_rectangle_mesh(x=[0, 1], y=[0, 1], num_elements=[2, 2])
+    problem = dualmesh.Problem(mesh, method="fem")
+    for name in ("u", "v"):
+        problem.add_variable(name)
+        problem.add_kernel("diffusion", variable=name)
+    problem.add_variable("temperature")
+    problem.add_kernel(
+        "diffusion",
+        variable="temperature",
+        diffusivity=conductivity,
+        solution_polynomial=solution_polynomial,
+    )
+    problem.add_kernel(
+        "advection",
+        variable="temperature",
+        velocity=["u", "v"],
+        coefficient=6.0,
+    )
+    problem.add_kernel("body_force", variable="temperature", value=5.0)
+    problem.add_kernel(
+        "heat_streamline_stabilization", variable="temperature", velocities=["u", "v"]
+    )
+    problem.initialize()
+    count = len(mesh.points())
+    for name, value in (("u", 1.0), ("v", 0.5), ("temperature", 3.0)):
+        problem.set_values(name, numpy.full(count, value))
+    residual, _ = problem.linear_system()
+    return residual
+
+
+def test_SUPG_takes_the_conductivity_of_the_temperature():
+    """k = 1 + T at T = 3 is the conductivity 4, so SUPG gives the residual of the constant
+    conductivity 4, and not that of 1, the conductivity without its temperature dependence."""
+    with_temperature = SUPG_residual(1.0, [1.0, 1.0])
+    numpy.testing.assert_allclose(with_temperature, SUPG_residual(4.0, [1.0]), rtol=1e-14, atol=0)
+    assert (
+        numpy.abs(with_temperature - SUPG_residual(1.0, [1.0])).max()
+        > 1e-3 * numpy.abs(with_temperature).max()
+    )
+
+
+def test_heat_and_momentum_SUPG_share_their_parameter():
+    """With rho c_p = rho and k = mu, the parameter tau of momentum_stabilization is that of
+    heat_streamline_stabilization divided by rho, so the two add the same flux.  A temperature
+    equal to the velocity component u, carried by (u, v), then has the residual of the momentum
+    equation of u at zero pressure, term by term and with its stabilization."""
+    rho, mu, source = 2.0, 0.05, 5.0
+    mesh = dualmesh.generate_rectangle_mesh(x=[0, 1], y=[0, 1], num_elements=[4, 4])
+    velocity = ["u", "v"]
+
+    def residual(problem, values):
+        """The residual with the fields of values: the name of each variable -> its field."""
+        problem.initialize()
+        x = problem.node_coordinates()
+        fields = {
+            "u": 1.0 + 0.5 * x[:, 0] * x[:, 1],
+            "v": 0.5 - 0.2 * x[:, 0],
+            "zero": numpy.zeros(len(x)),
+        }
+        for name, field in values.items():
+            problem.set_values(name, fields[field])
+        return problem.linear_system()[0]
+
+    heat = dualmesh.Problem(mesh, method="fem")
+    for name in velocity:
+        heat.add_variable(name)
+        heat.add_kernel("diffusion", variable=name)
+    heat.add_variable("temperature")
+    heat.add_kernel("diffusion", variable="temperature", diffusivity=mu)
+    heat.add_kernel("advection", variable="temperature", velocity=velocity, coefficient=rho)
+    heat.add_kernel("body_force", variable="temperature", value=source)
+    heat.add_kernel("heat_streamline_stabilization", variable="temperature", velocities=velocity)
+    # The rows of the temperature, the third of the variables u, v and temperature.
+    temperature = residual(heat, {"u": "u", "v": "v", "temperature": "u"})[2::3]
+
+    flow = dualmesh.Problem(mesh, method="fem")
+    for name in [*velocity, "p"]:
+        flow.add_variable(name)
+    flow.add_kernel("diffusion", variable="p")
+    for name in velocity:
+        flow.add_kernel(
+            "viscous_stress",
+            variable=name,
+            velocities=velocity,
+            dynamic_viscosity=mu,
+            form="laplacian",
+        )
+        flow.add_kernel("pressure_gradient", variable=name, velocities=velocity, pressure="p")
+        flow.add_kernel("advection", variable=name, velocity=velocity, coefficient=rho)
+        flow.add_kernel("body_force", variable=name, value=source)
+        flow.add_kernel("momentum_stabilization", variable=name, velocities=velocity)
+    # The rows of u, the first of the variables u, v and p.
+    momentum = residual(flow, {"u": "u", "v": "v", "p": "zero"})[0::3]
+
+    scale = numpy.abs(temperature).max()
+    numpy.testing.assert_allclose(temperature, momentum, rtol=1e-12, atol=1e-12 * scale)
+
+
 @pytest.mark.parametrize("time_scheme", ["backward_Euler", "Crank-Nicolson"])
 def test_SUPG_is_consistent_in_time_with_backward_Euler_and_crank_Nicolson(time_scheme):
     """T = exp(x) sin(y) (1 + t), whose time derivative varies in space, with the matching source.
@@ -559,7 +688,7 @@ def test_SUPG_is_consistent_in_time_with_backward_Euler_and_crank_Nicolson(time_
             initial_condition={"velocity": [vx, vy]},
         )
         heat = problem.add_physics(
-            "heat_transfer",
+            "heat_conduction",
             thermal_conductivity=0.01,
             density=1.0,
             specific_heat=1.0,
@@ -567,15 +696,20 @@ def test_SUPG_is_consistent_in_time_with_backward_Euler_and_crank_Nicolson(time_
             initial_condition="exp(x)*sin(y)",
             advection_scheme="SUPG",
         )
-        problem.add_coupling("nonisothermal_flow", heat_transfer=heat, fluid_dynamics=flow)
+        problem.add_coupling("nonisothermal_flow", heat_conduction=heat, fluid_dynamics=flow)
         flow.add_boundary_condition(
             [f"velocity_x = {vx}", f"velocity_y = {vy}"], boundary=["left", "bottom", "top"]
         )
         heat.add_boundary_condition(
             "temperature = exp(x)*sin(y)*(1 + t)", boundary=["left", "right", "bottom", "top"]
         )
+        # A fixed step isolates the spatial error that the test measures.
         problem.solve_transient(
-            end_time=0.2, time_step=0.05, time_scheme=time_scheme, report="none"
+            end_time=0.2,
+            time_step=0.05,
+            time_scheme=time_scheme,
+            time_stepper="fixed",
+            report="none",
         )
         x = mesh.points()
         exact = 1.2 * numpy.exp(x[:, 0]) * numpy.sin(x[:, 1])
@@ -659,7 +793,9 @@ def test_the_node_gradient_schemes_are_refused_on_a_distributed_mesh():
 def test_a_heat_scheme_without_a_flow_is_refused():
     mesh = dualmesh.generate_rectangle_mesh(x=[0, 1], y=[0, 1], num_elements=[2, 2])
     problem = dualmesh.Problem(mesh, method="DMCDM")
-    heat = problem.add_physics("heat_transfer", thermal_conductivity=1.0, advection_scheme="upwind")
+    heat = problem.add_physics(
+        "heat_conduction", thermal_conductivity=1.0, advection_scheme="upwind"
+    )
     heat.add_boundary_condition("temperature = 0", boundary="left")
     with pytest.raises(InputError, match="no nonisothermal_flow coupling"):
         problem.solve(report="none")

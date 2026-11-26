@@ -7,27 +7,29 @@ no theory of the adjoint to be trusted."""
 from __future__ import annotations
 
 import dualmesh
+import numpy
 import pytest
 from dualmesh._core import InputError
 
 methods = ("fem", "dmcdm")
 
 
-def heat_problem(method="fem", nonlinear=False):
+def heat_problem(method="fem", nonlinear=False, mesh=None):
     """Conduction on a square with a source q, conductivity k (linear in the
     temperature when nonlinear), and 0 and T0 on the walls.  Every number the
     residual depends on is a named settable parameter."""
-    mesh = dualmesh.generate_rectangle_mesh(0.0, 1.0, 0.0, 1.0, 12, 12)
+    if mesh is None:
+        mesh = dualmesh.generate_rectangle_mesh(0.0, 1.0, 0.0, 1.0, 12, 12)
     problem = dualmesh.Problem(mesh, method=method)
     problem.add_parameter("k", 2.0)
     problem.add_parameter("q", 6.0)
     problem.add_parameter("T0", 0.5)
     problem.add_variable("temperature")
     problem.add_kernel(
-        "heat_conduction",
+        "diffusion",
         variable="temperature",
-        thermal_conductivity="k",
-        **({"temperature_polynomial": [1.0, 0.05]} if nonlinear else {}),
+        diffusivity="k",
+        **({"solution_polynomial": [1.0, 0.05]} if nonlinear else {}),
     )
     problem.add_kernel("body_force", variable="temperature", value="q")
     problem.add_boundary_condition("Dirichlet", "left", variable="temperature", value=0.0)
@@ -87,6 +89,33 @@ def test_the_objective_may_be_an_integral_over_a_boundary():
     result = problem.sensitivities(objective, ["q", "T0"], report="none")
     for name in ("q", "T0"):
         assert agree(result.values[name], solved_gradient(problem, name, objective)), name
+
+
+@pytest.mark.parametrize("method", methods)
+def test_the_sensitivities_hold_across_periodic_boundaries_and_hanging_nodes(method):
+    """The conduction of heat_problem, periodic between the bottom and the top, on 8 by 8
+    quadrilaterals whose cell centred at (0.4375, 0.4375) is split.  The forward solve takes
+    C^T J C, with C the map from the independent degrees of freedom to all of them, so the
+    adjoint takes its transpose and C^T times the derivative of the objective."""
+    from dualmesh import _core
+
+    mesh = dualmesh.generate_rectangle_mesh(0.0, 1.0, 0.0, 1.0, 8, 8, element_type="Quad4")
+    hierarchy = _core.Subdivision(mesh)
+    points = numpy.asarray(mesh.points())
+    hierarchy.refine(
+        [
+            int(numpy.allclose(points[list(cell)].mean(axis=0)[:2], (0.4375, 0.4375)))
+            for _type, cell, _block in mesh.cells()
+        ],
+        5,
+    )
+    assert hierarchy.hanging()
+    problem = heat_problem(method=method, mesh=hierarchy.mesh())
+    problem.add_boundary_condition("periodic", primary="bottom", secondary="top")
+    problem.solve(report="none")
+    result = problem.sensitivities("temperature", ["k", "q", "T0"], report="none")
+    for name in ("k", "q", "T0"):
+        assert agree(result.values[name], solved_gradient(problem, name, "temperature")), name
 
 
 def test_wrong_names_are_refused_with_an_explanation():

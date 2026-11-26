@@ -14,6 +14,7 @@ from __future__ import annotations
 import dualmesh
 import numpy
 import pytest
+from dualmesh._core import InputError
 
 methods = ["FEM", "DMCDM"]
 exact = 1e-11
@@ -64,7 +65,7 @@ def test_steady_conduction(method, element_type, coordinates):
     mesh = dualmesh.generate_rectangle_mesh(0.5, 1.5, 0, 1, 6, 5, element_type=element_type)
     problem = dualmesh.Problem(mesh, method=method, coordinates=coordinates)
     heat = problem.add_physics(
-        "heat_transfer", thermal_conductivity="1 + 0.5*x", heat_source="10 + 5*x*y"
+        "heat_conduction", thermal_conductivity="1 + 0.5*x", heat_source="10 + 5*x*y"
     )
     heat.add_boundary_condition("temperature = 0", boundary="left")
     heat.add_boundary_condition("heat_flux = 3", boundary="right")
@@ -90,7 +91,7 @@ def test_transient_conduction(method, element_type, time_scheme):
     mesh = dualmesh.generate_rectangle_mesh(0, 1, 0, 1, 6, 5, element_type=element_type)
     problem = dualmesh.Problem(mesh, method=method)
     heat = problem.add_physics(
-        "heat_transfer",
+        "heat_conduction",
         thermal_conductivity=1.0,
         density=2.0,
         specific_heat=3.0,
@@ -102,11 +103,53 @@ def test_transient_conduction(method, element_type, time_scheme):
     problem.initialize()
     start = problem.integrate("temperature")
     problem.solve_transient(
-        end_time=0.05, time_step=0.05, time_scheme=time_scheme, report="none", **to_round_off
+        end_time=0.05,
+        time_step=0.05,
+        time_scheme=time_scheme,
+        time_stepper="fixed",
+        report="none",
+        **to_round_off,
     )
     storage = 6.0 * (problem.integrate("temperature") - start) / 0.05
     balance = reaction(problem, "temperature", ["left"]) + 10.0 - 3.0 - storage
     assert abs(balance) < exact * abs(storage), balance
+
+
+@pytest.mark.parametrize("method", methods)
+def test_a_nonlinear_storage_is_conserved_exactly(method):
+    """The storage m = u + u^3 of an insulated bar, taken as (m - m_old) / dt over each step:
+    nothing crosses the boundary, so the stored amount, the sum of m(u_i) w_i over the nodes with
+    the weights w_i of the lumped storage of linear elements, stays the same to round-off.  The
+    rate form (1 + 3 u^2) du/dt of the same storage does not conserve it."""
+
+    def bar(**storage):
+        mesh = dualmesh.generate_line_mesh(start=0.0, end=1.0, num_elements=20)
+        problem = dualmesh.Problem(mesh, method=method)
+        problem.add_variable(
+            "u", initial_condition=lambda x, y, z, t: 1.0 + 0.8 * numpy.cos(numpy.pi * x)
+        )
+        problem.add_kernel("diffusion", variable="u")
+        problem.add_kernel("time_derivative", variable="u", **storage)
+        problem.initialize()
+        return problem
+
+    def stored(problem):
+        x = problem.node_coordinates()[:, 0]
+        order = numpy.argsort(x)
+        x, u = x[order], problem.values("u")[order]
+        weights = numpy.zeros_like(x)
+        weights[1:] += 0.5 * numpy.diff(x)
+        weights[:-1] += 0.5 * numpy.diff(x)
+        return float(numpy.sum(weights * (u + u**3)))
+
+    steps = {"end_time": 0.2, "time_step": 0.05, "time_scheme": "backward_Euler", "report": "none"}
+    conserving = bar(storage="u + u^3")
+    start = stored(conserving)
+    conserving.solve_transient(**steps, **to_round_off)
+    assert abs(stored(conserving) - start) < exact * start
+    rate = bar(coefficient="1 + 3*u^2")
+    rate.solve_transient(**steps, **to_round_off)
+    assert abs(stored(rate) - start) > 1e-6 * start
 
 
 # ---- solid mechanics ------------------------------------------------------------------------
@@ -226,11 +269,11 @@ def test_thermal_expansion(method):
     solid = problem.add_physics(
         "solid_mechanics", formulation="plane_stress", youngs_modulus=100.0, poissons_ratio=0.3
     )
-    heat = problem.add_physics("heat_transfer", thermal_conductivity=1.0, heat_source=5.0)
+    heat = problem.add_physics("heat_conduction", thermal_conductivity=1.0, heat_source=5.0)
     problem.add_coupling(
         "thermal_expansion",
         solid_mechanics=solid,
-        heat_transfer=heat,
+        heat_conduction=heat,
         linear_expansion_coefficient=1e-3,
         stress_free_temperature=0.0,
     )
@@ -294,7 +337,7 @@ def test_momentum(method, element_type, outlet, density):
     problem = channel(method, element_type, density=density, outlet=outlet)
     walls = ["left", "top", "bottom"]
     for component, (velocity, force) in enumerate((("velocity_x", 0.3), ("velocity_y", 0.1))):
-        kernel = f"convective_inertia_{component}"
+        kernel = f"advection_{component}"
         carried = advective_outflow(problem, kernel, velocity, density) if density else 0.0
         balance = reaction(problem, velocity, walls) + force * 3.0 - carried
         assert abs(balance) < exact * 10, (velocity, balance)
@@ -337,11 +380,21 @@ def test_momentum_of_a_flow_started_from_rest(method, time_scheme):
     problem = cavity(method)
     dt = 0.01
     problem.solve_transient(
-        end_time=dt, time_step=dt, time_scheme=time_scheme, report="none", **to_round_off
+        end_time=dt,
+        time_step=dt,
+        time_scheme=time_scheme,
+        time_stepper="fixed",
+        report="none",
+        **to_round_off,
     )
     start = {v: problem.integrate(v) for v in ("velocity_x", "velocity_y")}
     problem.solve_transient(
-        start_time=dt, end_time=2 * dt, time_step=dt, time_scheme=time_scheme, report="none"
+        start_time=dt,
+        end_time=2 * dt,
+        time_step=dt,
+        time_scheme=time_scheme,
+        time_stepper="fixed",
+        report="none",
     )
     walls = ["left", "right", "bottom", "top"]
     lid = abs(reaction(problem, "velocity_x", ["top"]))
@@ -368,11 +421,16 @@ def test_heat_in_a_closed_cavity(method, scheme):
         "fluid_dynamics", dynamic_viscosity=0.71, density=1.0, formulation="equal_order"
     )
     heat = problem.add_physics(
-        "heat_transfer", thermal_conductivity=1.0, advection_scheme=scheme, initial_condition=0.0
+        "heat_conduction",
+        thermal_conductivity=1.0,
+        density=1.0,
+        specific_heat=1.0,
+        advection_scheme=scheme,
+        initial_condition=0.0,
     )
     problem.add_coupling(
         "nonisothermal_flow",
-        heat_transfer=heat,
+        heat_conduction=heat,
         fluid_dynamics=flow,
         gravity=[0.0, -1.0],
         volumetric_expansion_coefficient=1e4 * 0.71,
@@ -401,8 +459,14 @@ def test_heat_carried_out_of_a_channel(method, scheme, outlet):
         formulation="equal_order",
         viscous_form="laplacian",
     )
-    heat = problem.add_physics("heat_transfer", thermal_conductivity=0.05, advection_scheme=scheme)
-    problem.add_coupling("nonisothermal_flow", heat_transfer=heat, fluid_dynamics=flow)
+    heat = problem.add_physics(
+        "heat_conduction",
+        thermal_conductivity=0.05,
+        density=10.0,
+        specific_heat=1.0,
+        advection_scheme=scheme,
+    )
+    problem.add_coupling("nonisothermal_flow", heat_conduction=heat, fluid_dynamics=flow)
     flow.add_boundary_condition(
         ["velocity_x = 6*y*(1 - y)*(1 + y)/1.5", "velocity_y = 0"], boundary="left"
     )
@@ -412,6 +476,28 @@ def test_heat_carried_out_of_a_channel(method, scheme, outlet):
     heat.add_boundary_condition("temperature = 0", boundary="left")
     heat.add_boundary_condition("temperature = 1 + x", boundary="bottom")
     problem.solve(report="none", **to_round_off)
-    carried = advective_outflow(problem, "heat_convection_0", "temperature", 10.0)
+    carried = advective_outflow(problem, "advection_2", "temperature", 10.0)
     balance = reaction(problem, "temperature", ["left", "bottom"]) - carried
     assert abs(balance) < exact * carried, balance
+
+
+@pytest.mark.parametrize(
+    "heat_capacity, message",
+    [
+        ({"density": 1.0, "specific_heat": 4182.0}, "the density 1.0"),
+        ({}, "needs its density and specific_heat"),
+    ],
+)
+def test_a_flow_that_carries_another_heat_capacity_than_it_stores_is_refused(
+    heat_capacity, message
+):
+    """Heat is conserved only when its storage and its convection take one density and one
+    specific heat: a heat_conduction physics of another density than the flow, or without a
+    specific heat, is refused."""
+    mesh = dualmesh.generate_rectangle_mesh(0, 1, 0, 1, 2, 2)
+    problem = dualmesh.Problem(mesh)
+    flow = problem.add_physics("fluid_dynamics", density=1000.0, dynamic_viscosity=1e-3)
+    heat = problem.add_physics("heat_conduction", thermal_conductivity=0.6, **heat_capacity)
+    problem.add_coupling("nonisothermal_flow", heat_conduction=heat, fluid_dynamics=flow)
+    with pytest.raises(InputError, match=message):
+        problem.solve(report="none")

@@ -192,19 +192,34 @@ Add a kernel in Python
 
 A subclass of :class:`dualmesh.PythonKernel` has the interface of a C++ kernel,
 with exact derivatives.  It overrides ``compute_flux``, ``compute_source`` or
-both, and it reads its keyword arguments as attributes.  The kernel of
-``examples/custom_kernel.py`` gives the flux of a bar whose stiffness depends
-on the strain:
+both, and it reads its keyword arguments as attributes.  This kernel gives the flux of a bar whose stiffness depends on the strain,
+:math:`a(u')\, u'` with :math:`a(u') = EA (1 + 1.5 u' + 0.5 u'^2)`, where
+:math:`u'` is the strain and :math:`EA` the axial stiffness:
 
-.. literalinclude:: ../examples/custom_kernel.py
-   :language: python
-   :pyobject: large_deformation_bar
+.. code-block:: python
 
-The same file adds the kernel to a problem:
+   import dualmesh
 
-.. literalinclude:: ../examples/custom_kernel.py
-   :language: python
-   :pyobject: solve
+
+   class large_deformation_bar(dualmesh.PythonKernel):
+       """Flux a(u') du/dx with a(u') = EA (1 + 1.5 u' + 0.5 u'^2)."""
+
+       def compute_flux(self, ctx):
+           strain = ctx.gradient(self.variable)[0]
+           stiffness = self.axial_stiffness * (1.0 + 1.5 * strain + 0.5 * strain * strain)
+           return [stiffness * strain]
+
+
+   mesh = dualmesh.generate_line_mesh(start=0.0, end=1.0, num_elements=8)
+   problem = dualmesh.Problem(mesh)
+   problem.add_variable("displacement")
+   problem.add_kernel(large_deformation_bar(variable="displacement", axial_stiffness=1.0))
+   problem.add_boundary_condition("Dirichlet", "left", variable="displacement", value=0.0)
+   problem.add_boundary_condition("Neumann", "right", variable="displacement", flux=0.2)
+   problem.solve(report="none")
+
+``tests/python/test_heat_transfer.py`` solves this bar and checks the tip
+displacement against Example 6.2.4 of [Reddy2024]_.
 
 Test the code
 -------------

@@ -8,6 +8,8 @@
 namespace dualmesh
 {
 
+/// The diffusion flux -k p(u) grad u, through the deformed body when a deformation gradient is
+/// given: heat conduction, with k the thermal conductivity, and any other diffusion.
 class Diffusion : public Kernel
 {
 public:
@@ -16,11 +18,18 @@ public:
   void initialSetup(Problem & problem) override;
   bool hasFlux() const override { return true; }
   void computeFlux(const QpContext & ctx, ADVector3 & F) const override;
+  /// The diffusivity k p(u), with u as a coefficient.
+  ADReal diffusivity(const QpContext & ctx) const;
+  /// The term -k p(u) Laplacian(u) of the strong residual, which quadratic elements give: the
+  /// gradient of the diffusivity is left out, and a linear element, inside which the Laplacian
+  /// vanishes, gives zero.
+  bool inStrongResidual() const override { return true; }
+  ADReal strongResidual(const QpContext & ctx) const override;
 
-protected:
-  ADReal coefficient(const QpContext & ctx) const;
+private:
   FieldCoefficient _k;
   std::vector<double> _poly;
+  int _F = -1;
 };
 
 class AnisotropicDiffusion : public Kernel
@@ -60,11 +69,14 @@ public:
   void initialSetup(Problem & problem) override;
   bool hasSource() const override { return true; }
   ADReal computeSource(const QpContext & ctx) const override;
+  bool oldStateFromFields() const override { return !_f.readsProperties(); }
 
 private:
-  FunctionPtr _f;
+  FieldCoefficient _f;
 };
 
+/// The storage term c dm/dt of a balance law, as c (m - m_old) / dt over a step, with the
+/// storage m an expression (the variable u by default) and c a coefficient (1 by default).
 class TimeDerivative : public Kernel
 {
 public:
@@ -74,9 +86,27 @@ public:
   bool hasSource() const override { return true; }
   bool isTimeKernel() const override { return true; }
   ADReal computeSource(const QpContext & ctx) const override;
+  double sourceTermSize(const QpContext & ctx, const ADReal & source) const override;
+  /// The coefficient c at the point of @p ctx.
+  ADReal coefficient(const QpContext & ctx) const { return _c.value(ctx); }
+  /// The consistent rule, which an eigenvalue study takes where time stepping lumps the term.
+  const QuadratureSpec & eigenvalueStudyQuadrature() const override { return _consistent; }
 
 private:
+  /// The arguments of the storage at the start of the step.
+  void startArguments(const QpContext & ctx, ADReal * out) const;
+  /// Whether the automatic rule of time stepping lumps the term (TimeDerivative::validParams).
+  bool lumped(const Problem & problem) const;
+
+  /// Whether the quadrature is the automatic one, which each setup resolves for the mesh.
+  bool _automatic = false;
+  /// The rule without lumping: the Gauss rule of the automatic quadrature, or the rule given.
+  QuadratureSpec _consistent;
   FieldCoefficient _c;
+  /// The storage m, or none for m = u.
+  bool _storage = false;
+  FieldExpressions _expressions;
+  std::shared_ptr<const Property> _state;
 };
 
 /// The second time derivative c d2u/dt2 (inertia), which a transient run integrates by the
@@ -96,31 +126,59 @@ private:
   FieldCoefficient _c;
 };
 
+/// The transport c v . grad u of a variable u carried by a velocity v, with a coefficient c: the
+/// heat rho c_p v . grad T that a flow carries, the inertia rho (v . grad) v_i of a flow, and any
+/// other advection.  The velocity is prescribed, or the unknown velocity of a flow, whose mass
+/// equation the transport then conserves (Hughes and Wells 2005).
 class Advection : public Kernel
 {
 public:
   explicit Advection(const InputParameters & p);
   static InputParameters validParams();
   void initialSetup(Problem & problem) override;
-  bool hasFlux() const override { return _conservative || _face_flux; }
-  bool hasSource() const override { return !hasFlux(); }
-  bool usesFaceSides() const override { return _face_flux; }
-  bool nonConservativeFaceFlux() const override { return _face_flux && !_conservative; }
+  bool hasFlux() const override { return _flux; }
+  bool hasSource() const override { return !_flux; }
+  bool usesFaceSides() const override { return _flux && (_face_scheme || !_conservative); }
+  bool nonConservativeFaceFlux() const override { return usesFaceSides() && !_conservative; }
   bool needsLineSearch() const override { return _scheme == AdvectionScheme::Limited; }
   bool needsSideGradients() const override
   {
     return _scheme == AdvectionScheme::LinearUpwind || _scheme == AdvectionScheme::Limited;
   }
+  bool transportsVariable() const override { return true; }
+  /// The inertia of a flow: a transport of a component of its own velocity.
+  bool isInertia() const override { return _inertia; }
+  /// The non-conservative term c v . grad u, with the velocity v as a coefficient, and not the
+  /// velocity that the mass equation conserves, whose residual holds this term.
+  bool inStrongResidual() const override { return !_conservative; }
+  ADReal strongResidual(const QpContext & ctx) const override;
+  bool oldStateFromFields() const override;
   bool advectingNormalVelocity(const QpContext & ctx, double & velocity) const override;
   void computeFlux(const QpContext & ctx, ADVector3 & F) const override;
   ADReal computeSource(const QpContext & ctx) const override;
+  /// The coefficient c at the point of @p ctx, with the factor QpContext::inertia of the inertia
+  /// of a flow.
+  ADReal coefficient(const QpContext & ctx) const;
+  /// The velocity v at the point of @p ctx, as a coefficient.
+  ADVector3 velocity(const QpContext & ctx) const;
 
 private:
+  /// The velocity that the term carries: v, or the velocity w that the mass equation conserves.
+  ADVector3 carryingVelocity(const QpContext & ctx) const;
+
   bool _conservative = false;
-  /// Whether an advection scheme of a control volume method chooses the face value.
-  bool _face_flux = false;
+  /// Whether the scheme is a face flux of DMCDM (upwind, linear_upwind, limited).
+  bool _face_scheme = false;
+  /// Whether the term is a flux, or the source c v . grad u.
+  bool _flux = false;
+  bool _inertia = false;
   AdvectionScheme _scheme = AdvectionScheme::Central;
+  FieldCoefficient _c;
+  /// A prescribed velocity, or the variables of the velocity of a flow.
   std::array<FieldCoefficient, 3> _v;
+  std::vector<int> _velocities;
+  /// The mass equation whose conserved velocity the term carries (conservingMassEquation).
+  const Kernel * _mass = nullptr;
 };
 
 class CoupledForce : public Kernel
@@ -158,15 +216,9 @@ public:
   static InputParameters validParams();
   void initialSetup(Problem & problem) override;
   double computeValue(const Point & x, double t) const override;
-  /// Distance from the requested point to the entity chosen on this process.
-  double distance() const { return _distance; }
-  /// Drop the entity (a distributed run keeps it only on the process whose
-  /// entity is nearest to the point).
-  void clear() { _nodes.clear(); }
 
 private:
   FunctionPtr _g;
-  double _distance = 0.0;
 };
 
 class NeumannBC : public IntegratedBC
@@ -206,21 +258,6 @@ public:
 
 private:
   RealMap _values;
-  std::vector<int> _ids;
-};
-
-class FunctionProperty : public Property
-{
-public:
-  explicit FunctionProperty(const InputParameters & p);
-  static InputParameters validParams();
-  void initialSetup(Problem & problem) override;
-  void declareProperties(PropertyRegistry & r) override;
-  void computeProperties(QpContext & ctx) const override;
-
-private:
-  StringMap _functions;
-  std::vector<FunctionPtr> _f;
   std::vector<int> _ids;
 };
 

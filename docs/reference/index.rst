@@ -6,7 +6,7 @@ This reference describes the public classes, functions and methods of the
 defaults, and what each returns.  :doc:`/user_guide/index` explains how they
 work together.  The physics, couplings, kernels, boundary conditions and
 property objects that you add by type name, as in
-``problem.add_physics("heat_transfer", ...)``, list their parameters in
+``problem.add_physics("heat_conduction", ...)``, list their parameters in
 :doc:`/objects`.
 
 .. code-block:: python

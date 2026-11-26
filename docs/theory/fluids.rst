@@ -51,7 +51,8 @@ convective term with the viscous term.
 
 The viscous term has two forms, chosen by ``viscous_form``:
 
-* ``"stress"`` (the default) takes the stress above.  Its natural boundary
+* ``"stress"`` (the default, except with the projection time integration)
+  takes the stress above.  Its natural boundary
   quantity is the traction :math:`\boldsymbol{\sigma} \mathbf{n}`, so a
   boundary without a condition is traction free.
 * ``"laplacian"`` replaces the viscous part
@@ -119,11 +120,15 @@ The kernels
 For every velocity component, ``fluid_dynamics`` adds ``viscous_stress`` (the
 viscous flux), ``pressure_gradient`` (the pressure part :math:`p \mathbf{e}_i`
 of the flux, with the hoop term in axisymmetric coordinates), and, with a
-positive density, ``convective_inertia``, ``momentum_stabilization`` and
-``time_derivative`` (the term :math:`\rho\, \partial v_i / \partial t` of a
-transient solve).  A ``body_force`` adds :math:`f_i`.  The mass equation is the
+positive density, ``advection`` (the inertia :math:`\rho (\mathbf{v} \cdot
+\nabla) v_i`, the one transport kernel of the code with the coefficient
+:math:`\rho`), ``momentum_stabilization`` and ``time_derivative`` (the term
+:math:`\rho\, \partial v_i / \partial t` of a transient solve, the one storage
+kernel with the coefficient :math:`\rho`).  A ``body_force`` adds :math:`f_i`.  The mass equation is the
 kernel ``mass_conservation`` on the pressure variable, and the boundary
-condition ``mass_flux`` on every side set closes it.
+condition ``mass_flux`` on every side set closes it.  ``mass_conservation``
+holds the pressure stabilization below unless the pressure and the velocity form
+the Taylor-Hood element, which needs none.
 
 The stabilized mass flux
 ~~~~~~~~~~~~~~~~~~~~~~~~
@@ -134,9 +139,12 @@ momentum equation in its strong form,
 .. math::
    :label: flow-residual
 
-   \mathbf{r}_m = \rho \left( \frac{\partial \mathbf{v}}{\partial t}
-   + (\mathbf{v} \cdot \nabla) \mathbf{v} \right) + \nabla p
-   - \mu \nabla^2 \mathbf{v} - \mathbf{f} .
+   \mathbf{r}_m = \rho_t \frac{\partial \mathbf{v}}{\partial t}
+   + \rho (\mathbf{v} \cdot \nabla) \mathbf{v} + \nabla p
+   - \mu \nabla^2 \mathbf{v} - \mathbf{f} ,
+
+with :math:`\rho_t` the coefficient of the ``time_derivative`` and :math:`\rho`
+that of the ``advection`` of the velocity, both the density of the flow.
 
 ``mass_conservation`` writes the mass equation as the balance law with no
 storage, no source and the flux
@@ -169,13 +177,17 @@ density so that it also covers a Stokes flow:
 .. math::
    :label: flow-tau
 
-   \tau = \left[ \left( \frac{2 \rho}{\Delta t} \right)^2
+   \tau = \left[ \left( \frac{2 \rho_t}{\Delta t} \right)^2
    + \left( \frac{2 \rho |\mathbf{v}|}{h} \right)^2
    + 9 \left( \frac{4 \mu}{h^2} \right)^2 \right]^{-1/2} .
 
 The three terms are the reciprocal time scales of the unsteadiness, of the
 convection across an element and of the diffusion across it, each times
-:math:`\rho`.  The first term enters a transient solve only.  In the steady
+:math:`\rho`.  The first term enters a transient solve only.  The code computes
+:math:`\tau` with the one function that also gives the parameter of the
+streamline stabilization of the heat that a flow carries
+(:doc:`heat_transfer`), and the cap of the pressure stabilization of the
+projection time integration below.  In the steady
 viscous limit :math:`\rho \tau = h^2 / (12 \mu / \rho)`, the limit of the optimal
 parameter :math:`(h / 2 |\mathbf{v}|)(\coth Pe_h - 1 / Pe_h)` of linear
 elements [BrooksHughes1982]_, with the cell Péclet number
@@ -220,13 +232,19 @@ positive.
 
 Every force of the momentum equations must also enter :math:`\mathbf{r}_m`,
 because a force missing there makes the stabilization act against it.
-``mass_conservation`` and ``momentum_stabilization`` read the density, the
-viscosity, the body forces and the Boussinesq buoyancy from the kernels
-``convective_inertia``, ``time_derivative``, ``viscous_stress``,
-``body_force`` and ``Boussinesq_buoyancy`` of the velocities.  They refuse
-any kernel on a velocity outside these, ``pressure_gradient``,
-``momentum_stabilization`` and ``penalty_incompressibility``, because
-:math:`\mathbf{r}_m` would miss its term.
+``mass_conservation`` and ``momentum_stabilization`` build :math:`\mathbf{r}_m`
+from the kernels of the velocities, each of which gives its term of the strong
+residual: the storage of ``time_derivative``, the inertia of ``advection`` with
+the velocity :math:`\mathbf{v}`, the pressure gradient of
+``pressure_gradient``, the viscous term of ``viscous_stress`` and the sources
+of ``body_force``, ``Boussinesq_buoyancy`` and the other kernels.  The heat
+stabilization builds its residual in the same way.  They refuse a kernel on a
+velocity with a flux whose divergence :math:`\mathbf{r}_m` does not hold.  In
+a step of the theta method with :math:`\theta < 1`, the steady terms enter
+:math:`\mathbf{r}_m` at the old state too, which the fields, the position and
+the time give.  A term that reads the properties of the material at the old
+state, which the step does not keep, makes the stabilized flow take the
+``backward_Euler`` scheme.
 
 .. _conserved-advection:
 
@@ -243,9 +261,9 @@ The flux :eq:`flow-mass-flux` of the stabilized mass equation is the velocity
 the coarse velocity plus the fine-scale velocity :math:`-\tau \mathbf{r}_m` of
 [HughesWells2005]_.  The discrete flow conserves the flux of
 :math:`\mathbf{w}`, and of :math:`\mathbf{v}` only up to
-:math:`\tau \mathbf{r}_m`.  ``convective_inertia`` and ``heat_convection``
-therefore advect with :math:`\mathbf{w}` in an equal-order flow, in the
-advective form.  FEM integrates
+:math:`\tau \mathbf{r}_m`.  ``advection`` of the momentum and of the heat
+therefore carries :math:`\mathbf{w}` in an equal-order flow, in the advective
+form.  FEM integrates
 :math:`\rho N_j\, (\mathbf{w} \cdot \nabla) v_i` for the equation of node
 :math:`j`.  DMCDM sums
 :math:`\rho (\mathbf{w} \cdot \mathbf{A}_f)(v_{i,f} - v_{i,j})` over the faces
@@ -280,8 +298,8 @@ The advection schemes of the momentum
 The ``fluid_dynamics`` physics assembles the inertia with the central value of
 the velocity, and an equal-order flow adds the streamline stabilization above,
 with no option.  The
-object ``convective_inertia`` takes the parameter ``advection_scheme`` for a
-flow assembled object by object:
+object ``advection`` takes the parameter ``advection_scheme`` for a flow
+assembled object by object:
 
 * ``"central"`` (the default): the value at the point, for both methods.
 * ``"upwind"``, ``"linear_upwind"`` and ``"limited"``: the face fluxes of
@@ -412,9 +430,13 @@ pressure :math:`\mathbf{1}_p` solves the homogeneous problem, with
 :math:`\|\mathbf{J} \mathbf{1}_p\| \le 10^{-9}\, \||\mathbf{J}|\,
 \mathbf{1}_p\|` for every equation, where :math:`|\mathbf{J}|` holds the
 absolute values of the entries.  The solver then holds the free pressure
-unknown nearest the centre of all free pressure unknowns at its value.  After each converged solve, it
-shifts the pressure to a mean of zero over the fluid and takes the reactions at
-the shifted state.  When a viscosity, a density or a source depends on the
+unknown nearest the centre of all free pressure unknowns at its value, with a
+tie to the node of the smaller number, so that a distributed run holds the node
+of a serial one.  After each converged solve, it shifts the pressure to a mean
+of zero over the fluid and takes the reactions at the shifted state.  The mean
+weighs each node as the lumped rule does: by the measure of its control domain
+under DMCDM and by the integral of its shape function under FEM, times the
+coordinate factor at the node.  When a viscosity, a density or a source depends on the
 pressure, the level changes the flow, and the solve stops with an error that
 asks for the pressure at a point,
 ``flow.add_boundary_condition("pressure = 0", point=[...])``, or for a
@@ -448,6 +470,69 @@ A transient solve keeps the inertia :math:`\rho\, \partial \mathbf{v} /
 \partial t`, which ``fluid_dynamics`` adds to every momentum equation when the
 density is positive.  The parameter ``time_integration`` chooses how the flow
 advances.
+
+The start of a transient flow
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The initial velocity of an incompressible flow must satisfy the discrete mass
+balance, with its normal component equal to the prescribed velocity on the
+boundary.  A fluid at rest behind a prescribed inflow does not.  Its first step
+then has to remove a divergence that does not shrink with the step size, and
+the error control of the time step refuses every step.  A transient solve
+therefore first projects the initial velocity onto a field without divergence.
+
+Let :math:`\mathbf{u}_0` be the vector of the initial nodal velocities, which
+holds the values prescribed at the start time, and :math:`\mathbf{M}` the mass
+matrix of each velocity component.  The discrete divergence
+:math:`\mathbf{D}` is that of the mass balance without its stabilization.  Its
+row of node :math:`i` is :math:`(\psi_i, \nabla \cdot \mathbf{v})` for FEM,
+with the shape function :math:`\psi_i` of the pressure and the coordinate
+factor, or the flux :math:`\oint_{\partial V_i} \mathbf{v} \cdot \mathbf{n}
+\,\mathrm{d}S` out of the control domain :math:`V_i` for DMCDM.  The penalty
+formulation, which has no pressure, takes the shape functions of the velocity.
+The projected velocity :math:`\mathbf{u} = \mathbf{u}_0 + \delta\mathbf{u}`
+satisfies :math:`\mathbf{D} \mathbf{u} = 0`, with :math:`\delta\mathbf{u}`
+zero at every prescribed value.  For FEM it is the field nearest to
+:math:`\mathbf{u}_0` in the norm of :math:`\mathbf{M}`.  With a multiplier
+:math:`\boldsymbol{\lambda}` of one value per node, the correction is
+:math:`\delta\mathbf{u} = -\mathbf{M}^{-1} \mathbf{D}^{\mathsf{T}}
+\boldsymbol{\lambda}`, and :math:`\boldsymbol{\lambda}` solves the Poisson
+problem :math:`\mathbf{D} \mathbf{M}^{-1} \mathbf{D}^{\mathsf{T}}
+\boldsymbol{\lambda} = \mathbf{D} \mathbf{u}_0`.  The code solves it in the
+saddle point form
+
+.. math::
+   :label: flow-start-projection
+
+   \begin{bmatrix} \mathbf{M} & \mathbf{D}^{\mathsf{T}} \\
+   \mathbf{D} & -\epsilon \mathbf{K}_\lambda \end{bmatrix}
+   \begin{bmatrix} \delta\mathbf{u} \\ \boldsymbol{\lambda} \end{bmatrix}
+   = \begin{bmatrix} \mathbf{0} \\ -\mathbf{D} \mathbf{u}_0 \end{bmatrix} ,
+
+with a direct factorization.  :math:`\mathbf{K}_\lambda` is the Laplacian
+:math:`(\nabla \psi_i, \nabla \psi_j)` of the multiplier, whose spectrum is
+that of :math:`\mathbf{D} \mathbf{M}^{-1} \mathbf{D}^{\mathsf{T}}` on smooth
+fields, and :math:`\epsilon = 10^{-4}`.  The spurious pressure modes of
+equal-order elements are multipliers that :math:`\mathbf{D}^{\mathsf{T}}` maps
+to zero or nearly to zero, so no velocity of bounded size changes their part of
+the divergence.  The regularization :math:`\epsilon \mathbf{K}_\lambda` fixes
+the multiplier on these modes.  Corrections with the residual of the system
+without it then remove its effect from the other modes, until a correction
+changes the velocity by less than :math:`10^{-13}` of the speed.  The
+multiplier is zero where the pressure is prescribed, since the boundary
+condition replaces the mass balance there.  A flow whose normal velocity is
+prescribed on the whole boundary has its multiplier fixed at one node, and a
+net flux of the prescribed velocities spreads over its volume as a uniform
+divergence.
+
+A field without divergence leaves the projection unchanged.  For a field with
+:math:`\mathbf{D} \mathbf{u} = 0`, a small step changes the velocity in
+proportion to its size, so the error control starts with the steps that the
+flow itself needs.  A run that restarts from a checkpoint, or that starts from
+the state that the last transient run of the same problem reached, keeps that
+state as it is.  The report of the solve gives the size of the correction: the
+largest change of the velocity at a node over the largest speed after the
+projection.
 
 The monolithic time integration
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -558,6 +643,21 @@ integrates with a Gauss rule of one point more per direction than the order of
 the element.  DMCDM integrates with the midpoint rule of every part of a
 control domain and of every interface on linear elements.
 
+**Hanging nodes and periodic boundaries.**  On a mesh with hanging nodes
+(:doc:`adaptivity`), each method treats them as its monolithic solve does.  FEM
+makes the value at a hanging node the weighted sum of the values on the side it
+lies on, and a periodic copy takes the value of its primary.  Every matrix
+:math:`\mathbf{A}` of the projection becomes
+:math:`\mathbf{C}^{\mathsf{T}}\mathbf{A}\,\mathbf{C}` and every right-hand
+side :math:`\mathbf{b}` becomes :math:`\mathbf{C}^{\mathsf{T}}\mathbf{b}`,
+with :math:`\mathbf{C}` the matrix that maps the independent values to all
+of them, so a node may hang on a periodic boundary.  The dependent values follow
+from the independent ones after each solve.
+DMCDM keeps a hanging node as an unknown with a control domain of its own.  A
+large cell with nodes hanging on its sides is split as a polygon, whose control
+domains carry the mass and gradient integrals and whose interfaces carry the
+fluxes.
+
 **Equal-order elements at small steps.**  Through
 :math:`(\nabla \psi, \mathbf{v}^*)`, the divergence of the earlier velocities
 enters the pressure equation with the weight :math:`\rho b_0 / \Delta t`, as
@@ -583,7 +683,13 @@ its unsteady term.  It adds
 :math:`\Delta t / b_0` exceeds :math:`\tau_P` the scheme is that of
 [Fischer2021]_, and as :math:`\Delta t \to 0` it tends to the stabilized
 discretization of the monolithic solver.  The added term multiplies a
-divergence, so it leaves the exact solution unchanged.
+divergence, so it leaves the exact solution unchanged.  For DMCDM the part
+:math:`\rho (b_0 / \Delta t)(\psi, \delta)` is the flux of
+:math:`-\sum_j (b_j / b_0) \mathbf{v}^{n-j}` out of the control domain, as
+:math:`(\nabla \psi, \mathbf{v}^*)` is.  The terms in
+:math:`\rho b_0 / \Delta t` then cancel inside the domain for every velocity
+of the earlier steps, also where the velocity jumps across the side of a cell
+with hanging nodes.
 
 **The solvers.**  The mass, stiffness and gradient matrices and the geometry of
 every integration point are computed once.  The right-hand sides are assembled
@@ -597,16 +703,21 @@ that is closest to the solution [Fischer1998]_: in the energy norm for FEM, and
 with the smallest residual for DMCDM.  The matrices and their preconditioners
 are kept as long as :math:`b_0 / \Delta t` is unchanged.
 
-**The time step.**  The ``"cfl"`` time stepper of ``solve_transient`` chooses
+**The time step.**  The default ``"error"`` time stepper of
+``solve_transient`` compares each step with the polynomial through the last
+accepted states, extrapolated to the end of the step
+(:doc:`nonlinear_and_time`).  The ``"cfl"`` time stepper chooses
 each step to keep the Courant number :math:`C = \Delta t \max_e
 |\mathbf{v}|_e / h_e` at ``courant_number`` (default 0.5), with
 :math:`|\mathbf{v}|_e` the largest speed at the nodes of element :math:`e` and
 :math:`h_e` its size.
 
 **Limits.**  The projection time integration needs the ``equal_order``
-formulation, a positive density, Cartesian coordinates and a mesh without
-hanging nodes.  The problem may hold the velocity and the pressure of the flow
-alone, and the projection refuses any kernel or integrated boundary condition
+formulation, a positive density and Cartesian coordinates.  It takes the
+``"laplacian"`` form of the viscous term, the default of a flow with this time
+integration, and refuses ``viscous_form="stress"``.  The problem may
+hold the velocity and the pressure of the flow alone, and the projection
+refuses any kernel or integrated boundary condition
 on them that the flow did not add.  A body force is the ``body_force`` of
 ``fluid_dynamics``.
 
@@ -631,7 +742,7 @@ adds it to the equation of one velocity component, with the parameters
 ``volumetric_expansion_coefficient`` and ``reference_temperature`` (default 0).
 The ``nonisothermal_flow`` coupling adds it for every component with a non-zero
 gravity when you give both ``gravity`` and ``volumetric_expansion_coefficient``,
-with the density of the flow, and ``heat_convection`` in the energy equation
+with the density of the flow, and ``advection`` of the heat in the energy equation
 (:doc:`heat_transfer`).  The pressure of this coupling excludes the
 hydrostatic part :math:`\rho_0 \mathbf{g} \cdot \mathbf{x}`.  In the input, a
 problem with ``gravity``, ``heat_conduction`` and ``fluid_dynamics`` takes the
@@ -661,8 +772,10 @@ density, the conductivity and the heat capacity 1, the viscosity :math:`Pr`
 and :math:`\rho_0 \beta g = Ra\, Pr`.  The average Nusselt number :math:`Nu`,
 the heat flow through a heated wall divided by that of conduction alone, is
 then the heat flow through the wall, the sum of the reactions of the
-temperature equation there.  ``examples/natural_convection.py`` solves the
-square cavity of [DeVahlDavis1983]_ in this form.
+temperature equation there.  The tests in
+``tests/python/test_multiphysics.py`` solve the square cavity of
+[DeVahlDavis1983]_ in this form, and ``examples/natural_convection`` solves it
+for air in SI units.
 
 The verification cases of this page, with their sources, computed values and
 errors, are on the :doc:`verification page <../verification>`.

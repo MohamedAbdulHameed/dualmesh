@@ -10,6 +10,7 @@
 #include "dualmesh/base/Problem.h"
 #include "dualmesh/base/Property.h"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <limits>
@@ -28,24 +29,33 @@ Diffusion::validParams()
   p.setClassDescription(
       "The diffusion term div F of the balance law dm/dt + div F = s, with the flux "
       "F = -k p(u) grad u. Here u is the variable, k the diffusivity and p(u) = c0 + c1 u + "
-      "c2 u^2 + ... a polynomial of u. A Neumann condition prescribes the inflow -n . F, with n "
-      "the outward unit normal, and a boundary without a condition has no inflow.");
+      "c2 u^2 + ... a polynomial of u. For heat conduction u is the temperature T in K, k the "
+      "thermal conductivity in W/(m K) and F the heat flux q in W/m^2. A Neumann condition "
+      "prescribes the inflow -n . F, with n the outward unit normal, and a boundary without a "
+      "condition has no inflow: an insulated boundary for heat conduction.");
   p.addOptional("diffusivity",
                 ParameterKind::Function,
                 1.0,
-                "Diffusivity k: a constant, a registered function of x, y, z and t, the name of a "
-                "property, or an expression of the fields, x, y, z, t, the functions and the "
-                "properties. It must be positive. Default 1, for a problem written in "
-                "dimensionless form.");
+                "Diffusivity k, the thermal conductivity in W/(m K) for heat conduction: a "
+                "constant, a registered function of x, y, z and t, the name of a property, or an "
+                "expression of the fields, x, y, z, t, the functions and the properties. It must "
+                "be positive. Default 1, for a problem written in dimensionless form.");
   p.setRange("diffusivity", ParameterRange::Positive);
   p.addOptional("solution_polynomial",
                 ParameterKind::RealList,
                 std::vector<double>{1.0},
                 "Coefficients c0, c1, c2, ... of the polynomial p(u) = c0 + c1 u + c2 u^2 + ... "
                 "that multiplies the diffusivity. A list given here must include its constant "
-                "term c0. Newton's method evaluates p at the current iterate, and direct "
+                "term c0. The argument is the variable in its own units, with no reference value "
+                "subtracted. Newton's method evaluates p at the current iterate, and direct "
                 "iteration at the previous one. Default {1}, which leaves the diffusivity "
                 "unchanged.");
+  deformation::addParameter(
+      p,
+      "the variable diffuses through the deformed body: the flux per unit undeformed area is "
+      "-J k F_d^-1 F_d^-T Grad u, with F_d the deformation gradient, J its determinant and Grad "
+      "the gradient on the undeformed mesh. A source and a storage need no such change when "
+      "they are given per unit undeformed volume.");
   return p;
 }
 
@@ -59,10 +69,11 @@ Diffusion::initialSetup(Problem & problem)
 {
   Kernel::initialSetup(problem);
   _k.setup(problem, _params, "diffusivity", name());
+  _F = deformation::propertyId(problem, _params, name());
 }
 
 ADReal
-Diffusion::coefficient(const QpContext & ctx) const
+Diffusion::diffusivity(const QpContext & ctx) const
 {
   ADReal k = _k.value(ctx);
   if (_poly.size() == 1 && _poly[0] == 1.0)
@@ -77,10 +88,23 @@ Diffusion::coefficient(const QpContext & ctx) const
 void
 Diffusion::computeFlux(const QpContext & ctx, ADVector3 & F) const
 {
-  const ADReal k = coefficient(ctx);
+  const ADReal k = diffusivity(ctx);
   const auto & g = ctx.gradient(_var);
+  if (_F >= 0)
+  {
+    deformation::pullBackFlux(ctx, _F, k, g, F);
+    return;
+  }
   for (int d = 0; d < ctx.dim; ++d)
     F[d] = k * g[d];
+}
+
+ADReal
+Diffusion::strongResidual(const QpContext & ctx) const
+{
+  if (ctx.laplacian.empty())
+    return ADReal(0.0);
+  return -diffusivity(ctx) * ctx.laplacian[_var];
 }
 
 // ---------------------------------------------------------------------------
@@ -200,13 +224,16 @@ BodyForce::validParams()
       "W/m^3 of an equation for a temperature, the body force in N/m^3 of an equation for a "
       "displacement or a velocity component, or the production rate of an equation for a "
       "concentration. A positive value drives the variable up: it adds heat, or pushes along the "
-      "positive axis. The heat_transfer physics adds this kernel for its heat_source.");
+      "positive axis. The heat_conduction physics adds this kernel for its heat_source.");
   p.addOptional("value",
                 ParameterKind::Function,
                 1.0,
                 "The source s per unit volume: a constant, a registered function of x, y, z and "
-                "t, or an expression of x, y, z and t. For a temperature it is the heat source in "
-                "W/m^3. Default 1, a unit source for a problem written in dimensionless form.");
+                "t, the name of a property, or an expression of the fields, x, y, z, t, the "
+                "functions and the properties. For a temperature it is the heat source in W/m^3. "
+                "A source that depends on the solution makes the term nonlinear, and automatic "
+                "differentiation carries its derivative into the Jacobian. Default 1, a unit "
+                "source for a problem written in dimensionless form.");
   return p;
 }
 
@@ -216,13 +243,13 @@ void
 BodyForce::initialSetup(Problem & problem)
 {
   Kernel::initialSetup(problem);
-  _f = getFunction(problem, "value");
+  _f.setup(problem, _params, "value", name());
 }
 
 ADReal
 BodyForce::computeSource(const QpContext & ctx) const
 {
-  return ADReal(-_f->value(ctx.x, ctx.time));
+  return -_f.value(ctx);
 }
 
 // ---------------------------------------------------------------------------
@@ -231,36 +258,160 @@ TimeDerivative::validParams()
 {
   InputParameters p = Kernel::validParams();
   p.setClassDescription(
-      "The storage term c du/dt of the balance law dm/dt + div F = s, which is dm/dt with "
-      "m = c u for a capacity c constant in time. A step of the theta method takes "
-      "du/dt = (u - u_old) / dt, with u_old the variable at the start of the step and dt the "
-      "time step. In an equation that also has a second_time_derivative, du/dt follows the "
-      "Newmark relations of the generalized-alpha method, and the term is the damping of a "
-      "structure. A steady solve skips the term, and the weight theta of the theta method, "
-      "which multiplies the steady terms, does not multiply it.");
+      "The storage term of the balance law dm/dt + div F = s, as c (m - m_old) / dt over a step "
+      "of the theta method. Here m is the storage, an expression of the fields, their "
+      "gradients, the position, the time and the states of a parsed_state object, m_old the "
+      "same expression at the start of the step (the fields at their old values, the time "
+      "t - dt and the states at the start of the step), c a coefficient and dt the time step. "
+      "The difference of the storage itself makes the change of the stored amount over a step "
+      "equal to what the fluxes and the sources bring, for any storage m. The default storage "
+      "is the variable u, which gives the rate form c du/dt, with c the capacity: the "
+      "volumetric heat capacity rho c_p of heat conduction, with rho the density and c_p the "
+      "specific heat capacity, or the density rho of the momentum of a flow. A capacity that "
+      "depends on the solution takes its value at the end of the step. In an equation that also "
+      "has a second_time_derivative, du/dt follows the Newmark relations of the "
+      "generalized-alpha method, and the term c du/dt is the damping of a structure. A steady "
+      "solve skips the term, and the weight theta of the theta method, which multiplies the "
+      "steady terms, does not multiply it. With the automatic quadrature, the term is lumped "
+      "(the nodal rule) on a mesh of linear elements when no kernel of the variable carries it "
+      "with a flow and the equation is of first order in time: the system of each step then "
+      "keeps the maximum principle of diffusion on a mesh without obtuse angles, for every time "
+      "step, and the amount stored is unchanged. A quadratic element, whose lumped weights are "
+      "not all positive, a variable carried by a flow, whose transport loses phase accuracy "
+      "with a lumped storage, and the damping of a structure, which is proportional to its "
+      "consistent mass, take the Gauss rule. An eigenvalue study takes the Gauss rule wherever "
+      "time stepping lumps the term, which under FEM makes each eigenvalue of a symmetric "
+      "problem an upper bound of the exact one (the Rayleigh-Ritz method). The storage uses "
+      "the fields by their names, the components of their gradients as grad_x(u), grad_y(u) "
+      "and grad_z(u), the coordinates x, y and z, the time t, the registered functions, the "
+      "element fields, the states of its state_object and the named constants.");
   p.addOptional("coefficient",
                 ParameterKind::Function,
                 1.0,
-                "Capacity c that multiplies du/dt: a constant, a registered function of x, y, z "
-                "and t, the name of a property, or an expression of the fields. For heat "
-                "conduction it is the volumetric heat capacity rho c_p, and for a mass balance "
-                "the porosity. Default 1, for a problem written in dimensionless form.");
+                "Coefficient c of the rate of the storage: a constant, a registered function of "
+                "x, y, z and t, the name of a property, or an expression of the fields. For heat "
+                "conduction it is the volumetric heat capacity rho c_p in J/(m^3 K), and for a "
+                "flow the density rho in kg/m^3. Default 1, for a storage given in 'storage' or "
+                "a problem written in dimensionless form.");
+  p.addOptional("storage",
+                ParameterKind::String,
+                std::string(""),
+                "The storage m, an expression. The code refuses it in an equation of second "
+                "order in time, whose rate follows the Newmark relations of the variable alone. "
+                "Default: the variable u, whose rate is du/dt.");
+  p.addOptional("state_object",
+                ParameterKind::String,
+                std::string(""),
+                "The name of the parsed_state object whose states the storage reads, which "
+                "gives their values at the start of the step. Default: none, for a storage "
+                "without states.");
+  p.addOptional("constants",
+                ParameterKind::RealMap,
+                RealMap{},
+                "Named constants that the storage uses, as name -> value pairs. Default: none, "
+                "for a storage that needs no constant of its own.");
   return p;
 }
 
-TimeDerivative::TimeDerivative(const InputParameters & p) : Kernel(p) {}
+TimeDerivative::TimeDerivative(const InputParameters & p)
+    : Kernel(p), _storage(!p.getString("storage").empty())
+{
+  _automatic = _quad.automatic;
+}
+
+bool
+TimeDerivative::lumped(const Problem & problem) const
+{
+  // The consistent storage has positive entries off the diagonal, so a short step undershoots
+  // ahead of a front on any mesh (Thomee and Wahlbin 2008).  The lumped storage keeps the maximum
+  // principle on a mesh without obtuse angles (Fujii 1973).
+  for (const auto & el : problem.mesh().elements())
+    if (elementIsQuadratic(el.type))
+      return false;
+  for (const auto & k : problem.kernels())
+    if (k->variableName() == variableName() && (k->transportsVariable() || k->isSecondOrder()))
+      return false;
+  return true;
+}
 
 void
 TimeDerivative::initialSetup(Problem & problem)
 {
+  // The automatic rule is resolved again at each setup, for the mesh of that setup.
+  const bool reduced = _params.getBool("reduced_integration");
+  if (_automatic)
+    _quad = QuadratureSpec::parse("automatic", reduced);
   Kernel::initialSetup(problem);
+  _consistent = _quad;
+  if (_automatic && lumped(problem))
+    _quad = QuadratureSpec::parse("nodal", reduced);
   _c.setup(problem, _params, "coefficient", name());
+  _state = nullptr;
+  const std::string state_object = _params.getString("state_object");
+  if (!_storage)
+  {
+    if (!state_object.empty())
+      throw InputError("'" + name() + "': a state_object needs a 'storage' that reads its states.");
+    return;
+  }
+  for (const auto & k : problem.kernels())
+    if (k->variableName() == variableName() && k->isSecondOrder())
+      throw InputError("'" + name() + "': the equation of '" + variableName() +
+                       "' is of second order in time, whose rate follows the Newmark relations "
+                       "of the variable alone, so its storage is the variable itself. Leave "
+                       "'storage' out.");
+  FieldExpressions::Names names;
+  for (const auto & [n, value] : _params.getRealMap("constants"))
+    names.constants.emplace_back(n, value);
+  _expressions.compile(problem, {_params.getString("storage")}, names, name());
+  if (!state_object.empty())
+  {
+    _state = std::dynamic_pointer_cast<const Property>(problem.object(state_object));
+    if (!_state)
+      throw InputError("'" + name() + "': the state_object '" + state_object +
+                       "' is not a property object.");
+  }
+}
+
+void
+TimeDerivative::startArguments(const QpContext & ctx, ADReal * out) const
+{
+  _expressions.startArguments(
+      ctx,
+      [&](int property)
+      {
+        double value = 0.0;
+        if (_state && _state->startValue(ctx, property, value))
+          return value;
+        throw InputError("'" + name() +
+                         "': the storage reads a property other than the states of its "
+                         "state_object, and only those keep their value at the start of the "
+                         "step.");
+      },
+      out);
 }
 
 ADReal
 TimeDerivative::computeSource(const QpContext & ctx) const
 {
-  return _c.value(ctx) * ctx.rate(_var);
+  if (!_storage)
+    return _c.value(ctx) * ctx.rate(_var);
+  std::array<ADReal, FieldExpressions::kMaxArguments> before;
+  startArguments(ctx, before.data());
+  return _c.value(ctx) *
+         ((_expressions.value(0, ctx) - _expressions.value(0, before.data()).value()) / ctx.dt);
+}
+
+double
+TimeDerivative::sourceTermSize(const QpContext & ctx, const ADReal & source) const
+{
+  if (!_storage)
+    return std::abs(source.value());
+  std::array<ADReal, FieldExpressions::kMaxArguments> now, before;
+  _expressions.arguments(ctx, now.data());
+  startArguments(ctx, before.data());
+  return std::abs(_c.value(ctx).value()) *
+         (_expressions.termSize(0, now.data()) + _expressions.termSize(0, before.data())) / ctx.dt;
 }
 
 // ---------------------------------------------------------------------------
@@ -304,24 +455,52 @@ Advection::validParams()
 {
   InputParameters p = Kernel::validParams();
   p.setClassDescription(
-      "Advection of the variable u by a prescribed velocity field v. The conservative form adds "
-      "the advective flux F = v u to the balance law dm/dt + div F = s. The non_conservative "
-      "form adds v . grad u to its left side. The two forms agree where div v = 0.");
+      "The transport of the variable u by a velocity v, with a coefficient c: the heat "
+      "rho c_p v . grad T that a flow carries, with rho the density, c_p the specific heat "
+      "capacity and T the temperature, the inertia rho (v . grad) v_i of the momentum equation "
+      "of the velocity component v_i, or any other advection. The non_conservative form adds "
+      "c v . grad u to the left side of the balance law dm/dt + div F = s, and the "
+      "conservative form adds the flux F = c v u. The two forms agree where div v = 0. The "
+      "velocity is prescribed, or it is the velocity of a flow that the same problem solves "
+      "for, when every component names a variable. In an equal-order flow, with the finite "
+      "element method (FEM) or the dual mesh control domain method (DMCDM) and the pressure "
+      "formulation, the term then carries the velocity w = v - tau r_m that the mass equation "
+      "conserves, with tau r_m the pressure stabilization of mass_conservation. FEM then adds "
+      "c w . grad u, and DMCDM the face flux c (w . n)(u_f - u_C) for the control volume C on "
+      "each side of a face, with u_f the face value of the advection scheme and n the unit "
+      "normal of the face. The quantity c u is then conserved exactly against the discrete mass "
+      "flux through the boundary (Hughes and Wells 2005), and the solution does not change when "
+      "a constant is added to it. Without such a mass equation, in the penalty and Taylor-Hood "
+      "formulations, the term carries v, which conserves c u only as far as the discrete "
+      "velocity is free of divergence. Picard iteration takes the velocity of a flow from the "
+      "previous iterate. A transport of a component of its own velocity is the inertia of the "
+      "flow, which the Stokes start of a steady flow at rest turns off.");
   p.addOptional("velocity",
                 ParameterKind::StringList,
                 std::vector<std::string>{"0", "0", "0"},
                 "The velocity components (v_x, v_y, v_z) in m/s, each a number, a registered "
-                "function or an expression of x, y, z, t and the fields. Missing trailing "
-                "components are zero. Default zero in every component, which advects nothing.");
+                "function, the name of a property or an expression of x, y, z, t and the fields. "
+                "For the velocity of a flow, give the names of its velocity variables, one per "
+                "dimension of the mesh and in coordinate order. Missing trailing components of a "
+                "prescribed velocity are zero. Default zero in every component, which advects "
+                "nothing.");
+  p.addOptional("coefficient",
+                ParameterKind::Function,
+                1.0,
+                "Coefficient c of the transport: the volumetric heat capacity rho c_p in "
+                "J/(m^3 K) for the heat that a flow carries, and the density rho in kg/m^3 for "
+                "the inertia of a flow. It is a constant, a registered function, the name of a "
+                "property, or an expression of the fields, x, y, z, t, the functions and the "
+                "properties. Default 1, for a problem written in dimensionless form.");
   p.addOptional("advection_form",
                 ParameterKind::String,
                 std::string("non_conservative"),
-                "The form of the advection term. 'conservative' adds the flux F = v u, which "
-                "conserves u over the control domains, for an equation written as div(v u). "
-                "'non_conservative' adds v . grad u, for an equation written in that form. With "
-                "an advection scheme other than central both forms are face fluxes, with m the "
-                "normal velocity times the face area: m u_f through each face for "
-                "'conservative', and m (u_f - u_C) for the control volume C on each side for "
+                "The form of the advection term. 'conservative' adds the flux F = c v u, which "
+                "conserves c u over the control domains, for an equation written as div(c v u). "
+                "'non_conservative' adds c v . grad u, for an equation written in that form. "
+                "With an advection scheme other than central both forms are face fluxes, with m "
+                "the normal velocity times the face area: c m u_f through each face for "
+                "'conservative', and c m (u_f - u_C) for the control volume C on each side for "
                 "'non_conservative'. Any other string is an error. Default non_conservative, "
                 "which does not see the discrete divergence of the velocity: the solution then "
                 "does not change when a constant is added to it, and upwind stays bounded.");
@@ -329,16 +508,16 @@ Advection::validParams()
   return p;
 }
 
-Advection::Advection(const InputParameters & p) : Kernel(p)
+Advection::Advection(const InputParameters & p)
+    : Kernel(p), _face_scheme(isFaceAdvectionScheme(p.getString("advection_scheme")))
 {
   const auto form = p.getString("advection_form");
-  const auto scheme = p.getString("advection_scheme");
-  _face_flux = scheme == "upwind" || scheme == "linear_upwind" || scheme == "limited";
   if (form == "conservative")
     _conservative = true;
   else if (form != "non_conservative")
     throw InputError("'" + name() +
                      "': advection_form must be 'conservative' or 'non_conservative'.");
+  _flux = _conservative || _face_scheme;
 }
 
 void
@@ -348,41 +527,115 @@ Advection::initialSetup(Problem & problem)
   auto v = _params.getStringList("velocity");
   if (v.size() > 3)
     throw InputError("'" + name() + "': the velocity has at most three components.");
-  v.resize(3, "0");
-  for (int d = 0; d < 3; ++d)
-    _v[d].setup(problem, v[d], name() + "', velocity component " + std::to_string(d) + " '");
+  _velocities.clear();
+  _inertia = false;
+  if (std::all_of(v.begin(), v.end(), [&](const auto & n) { return problem.hasVariable(n); }))
+  {
+    const int dim = problem.mesh().spaceDimension();
+    if (static_cast<int>(v.size()) != dim)
+      throw InputError("'" + name() + "': the velocity of a flow needs one variable per " +
+                       "dimension (" + std::to_string(dim) + "), got " + std::to_string(v.size()) +
+                       ".");
+    for (const auto & n : v)
+    {
+      _velocities.push_back(problem.variableIndex(n));
+      _inertia = _inertia || n == variableName();
+    }
+  }
+  else
+  {
+    v.resize(3, "0");
+    for (int d = 0; d < 3; ++d)
+      _v[d].setup(problem, v[d], name() + "', velocity component " + std::to_string(d) + " '");
+  }
+  _c.setup(problem, _params, "coefficient", name());
   _scheme = advectionScheme(problem, _params.getString("advection_scheme"), name());
+  // The velocity of an equal-order flow, whose mass equation tests with the functions of u: the
+  // term carries the velocity w that it conserves, as a face flux in DMCDM.
+  _mass = _velocities.empty() ? nullptr : conservingMassEquation(problem, variable());
+  _flux = _conservative || _face_scheme || (_mass && problem.isDual());
+}
+
+bool
+Advection::oldStateFromFields() const
+{
+  if (_c.readsProperties())
+    return false;
+  return std::none_of(_v.begin(), _v.end(), [](const auto & v) { return v.readsProperties(); });
+}
+
+ADReal
+Advection::coefficient(const QpContext & ctx) const
+{
+  return _inertia ? ctx.inertia * _c.value(ctx) : _c.value(ctx);
+}
+
+ADVector3
+Advection::velocity(const QpContext & ctx) const
+{
+  ADVector3 v{ADReal(0.0), ADReal(0.0), ADReal(0.0)};
+  if (_velocities.empty())
+    for (int d = 0; d < ctx.dim; ++d)
+      v[d] = _v[d].value(ctx);
+  else
+    for (std::size_t d = 0; d < _velocities.size(); ++d)
+      v[d] = ctx.coefficientValue(_velocities[d]);
+  return v;
+}
+
+ADVector3
+Advection::carryingVelocity(const QpContext & ctx) const
+{
+  return _velocities.empty() ? velocity(ctx) : advectingVelocity(ctx, _mass, _velocities);
 }
 
 bool
 Advection::advectingNormalVelocity(const QpContext & ctx, double & velocity) const
 {
-  if (!_face_flux)
+  if (!usesFaceSides())
     return false;
+  const ADVector3 w = carryingVelocity(ctx);
   velocity = 0.0;
   for (int d = 0; d < ctx.dim; ++d)
-    velocity += _v[d].value(ctx).value() * ctx.normal[d];
+    velocity += w[d].value() * ctx.normal[d];
   return true;
 }
 
 void
 Advection::computeFlux(const QpContext & ctx, ADVector3 & F) const
 {
-  double velocity = 0.0;
-  advectingNormalVelocity(ctx, velocity);
-  const ADReal u = ctx.advectedValue(_var, velocity, _scheme) - ctx.referenceValue(_var);
+  // The flux c (w . n) u_f through a face, less c (w . n) u_C for the control volume C of the
+  // equation in the non-conservative form (QpContext::referenceValue).
+  const ADVector3 w = carryingVelocity(ctx);
+  double normal = 0.0;
   for (int d = 0; d < ctx.dim; ++d)
-    F[d] = -_v[d].value(ctx) * u;
+    normal += w[d].value() * ctx.normal[d];
+  const ADReal u = ctx.advectedValue(_var, normal, _scheme) - ctx.referenceValue(_var);
+  const ADReal c = coefficient(ctx);
+  for (int d = 0; d < ctx.dim; ++d)
+    F[d] = -c * w[d] * u;
 }
 
 ADReal
 Advection::computeSource(const QpContext & ctx) const
 {
   const auto & g = ctx.gradient(_var);
+  const ADVector3 w = carryingVelocity(ctx);
   ADReal s(0.0);
   for (int d = 0; d < ctx.dim; ++d)
-    s += _v[d].value(ctx) * g[d];
-  return s;
+    s += w[d] * g[d];
+  return coefficient(ctx) * s;
+}
+
+ADReal
+Advection::strongResidual(const QpContext & ctx) const
+{
+  const auto & g = ctx.gradient(_var);
+  const ADVector3 v = velocity(ctx);
+  ADReal s(0.0);
+  for (int d = 0; d < ctx.dim; ++d)
+    s += v[d] * g[d];
+  return coefficient(ctx) * s;
 }
 
 // ---------------------------------------------------------------------------
@@ -503,23 +756,13 @@ PointDirichletBC::initialSetup(Problem & problem)
       for (int a = 0; a < problem.numLocalNodes(el, variable()); ++a)
         carries[el.nodes[a]] = 1;
   }
-  Index best = -1;
-  double best_distance = std::numeric_limits<double>::infinity();
-  for (Index i = 0; i < problem.mesh().numNodes(); ++i)
-  {
-    if (!carries.empty() && !carries[i])
-      continue;
-    const double d = norm(problem.mesh().node(i) - x);
-    if (d < best_distance)
-    {
-      best_distance = d;
-      best = i;
-    }
-  }
+  // Every process agrees on one node, so that exactly one is held: a flow with its pressure given
+  // at a point has one pressure level.
+  const Index nearest = problem.nearestNode(
+      x, [&](Index n) { return carries.empty() || carries[static_cast<std::size_t>(n)]; });
   _nodes.clear();
-  if (best >= 0)
-    _nodes.push_back(best);
-  _distance = best_distance;
+  if (nearest >= 0)
+    _nodes.push_back(nearest);
 }
 
 double
@@ -710,60 +953,6 @@ public:
 };
 } // namespace
 
-InputParameters
-FunctionProperty::validParams()
-{
-  InputParameters p = Property::validParams();
-  p.setClassDescription(
-      "Declares scalar properties whose values are functions of position and time, such as a "
-      "graded conductivity. A property that depends on the solution needs a parsed property, "
-      "or a property object written in Python or C++.");
-  p.addRequired("properties",
-                ParameterKind::StringMap,
-                "The declared properties, as name -> function pairs, with each function a "
-                "registered function or an expression of x, y, z and t, for example "
-                "{thermal_conductivity: '20 + 5*x'}. The code evaluates each function at every "
-                "integration point, independently of the solution.");
-  return p;
-}
-
-FunctionProperty::FunctionProperty(const InputParameters & p) : Property(p)
-{
-  _functions = p.getStringMap("properties");
-  if (_functions.empty())
-    throw InputError("'" + name() + "': give at least one property in 'properties'.");
-}
-
-void
-FunctionProperty::initialSetup(Problem & problem)
-{
-  Property::initialSetup(problem);
-  _f.clear();
-  for (const auto & [n, text] : _functions)
-  {
-    (void) n;
-    _f.push_back(problem.function(text));
-  }
-}
-
-void
-FunctionProperty::declareProperties(PropertyRegistry & r)
-{
-  _ids.clear();
-  for (const auto & [n, text] : _functions)
-  {
-    (void) text;
-    _ids.push_back(r.declare(n, 1));
-  }
-}
-
-void
-FunctionProperty::computeProperties(QpContext & ctx) const
-{
-  for (std::size_t i = 0; i < _ids.size(); ++i)
-    ctx.property(_ids[i]) = ADReal(_f[i]->value(ctx.x, ctx.time));
-}
-
 // ---------------------------------------------------------------------------
 // ---- periodic boundary condition --------------------------------------------------------
 InputParameters
@@ -932,7 +1121,6 @@ registerFrameworkObjects(Factory & f)
   f.add<PeriodicBC>("periodic", ObjectCategory::Constraint, m);
   f.add<ConstantProperty>("constant", ObjectCategory::Property, m);
   f.add<PropertyScaling>("property_scaling", ObjectCategory::Property, m);
-  f.add<FunctionProperty>("function", ObjectCategory::Property, m);
 }
 
 } // namespace dualmesh

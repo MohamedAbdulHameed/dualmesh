@@ -36,11 +36,9 @@ coarser than its cell of the initial mesh.
 Adapt the mesh from the input
 -----------------------------
 
-The ``mesh_adaptivity`` section takes six keys, all required:
-
-``indicator``
-   The error indicator.  ``gradient_recovery``, the indicator of Zienkiewicz
-   and Zhu [ZienkiewiczZhu1987]_, is the only value.
+The ``mesh_adaptivity`` section takes four keys, all required, and in a
+transient run a fifth, ``interval``.  The error indicator is that of
+Zienkiewicz and Zhu [ZienkiewiczZhu1987]_.
 
 ``field``
    The field whose indicator drives the marking, the name of a field that
@@ -49,7 +47,7 @@ The ``mesh_adaptivity`` section takes six keys, all required:
    squares.
 
 ``refine_fraction``
-   A number from 0 to 1.  The run refines the smallest set of cells whose
+   A number above 0 and at most 1.  The run refines the smallest set of cells whose
    squared indicators sum to this fraction of the total, the cells with the
    largest indicators first.  This is bulk marking [Dorfler1996]_.
 
@@ -60,13 +58,14 @@ The ``mesh_adaptivity`` section takes six keys, all required:
    refinement is undone where every cell it made is marked.  With 0, the run
    does not coarsen.
 
-``interval``
-   An integer of at least 1: the number of accepted time steps between two
-   changes of the mesh in a transient run.  A steady run does not use it.
-
 ``maximum_refinement_level``
    An integer of at least 0: the most refinement levels a cell may have
    above its cell of the initial mesh.
+
+``interval``
+   An integer of at least 1: the number of accepted time steps between two
+   changes of the mesh in a transient run.  A steady run changes the mesh
+   after each solve, so the input refuses ``interval`` there.
 
 This plate of quadrilaterals is held at :math:`400\ \mathrm{K}` on its left
 side and at :math:`300\ \mathrm{K}` on its bottom side, so the temperature
@@ -85,11 +84,9 @@ jumps at the corner between them, where the run refines (from
    plate.boundary_conditions("left", temperature="400 K")
    plate.boundary_conditions("bottom", temperature="300 K")
    plate.mesh_adaptivity(
-       indicator="gradient_recovery",
        field="temperature",
        refine_fraction=0.5,
        coarsen_fraction=0.05,
-       interval=1,
        maximum_refinement_level=3,
    )
    solution = plate.solve()
@@ -99,11 +96,9 @@ In a case file, the same section reads:
 .. code-block:: yaml
 
    mesh_adaptivity:
-     indicator: gradient_recovery
      field: temperature
      refine_fraction: 0.5
      coarsen_fraction: 0.05
-     interval: 1
      maximum_refinement_level: 3
 
 The input refines the sides of the mesh as straight lines.  To follow a
@@ -113,7 +108,9 @@ curved side, use :func:`~dualmesh.solve_with_adaptive_refinement` with its
 The steady loop
 ~~~~~~~~~~~~~~~
 
-Without a ``time`` section, the run repeats these steps:
+Without a ``time`` section, the run calls
+:func:`~dualmesh.solve_with_adaptive_refinement` (see `Run the loop`_) with
+the problem of the input on each mesh, and repeats these steps:
 
 #. It solves the problem on the current mesh, with the settings of the
    ``solver`` section, starting from the solution of the last mesh carried to
@@ -126,9 +123,11 @@ Without a ``time`` section, the run repeats these steps:
    mesh does not change.
 
 Refinement and coarsening can undo each other, so the loop runs at most
-:math:`4 d L + 1` cycles, with :math:`L` the ``maximum_refinement_level``.
-Unless the report is ``"none"``, each cycle prints its number of cells and
-the estimated error, the square root of the sum of the squared indicators.
+:math:`4 d L + 1` cycles, with :math:`d` the dimension of the mesh and
+:math:`L` the ``maximum_refinement_level``.  With the report ``"full"``, each
+cycle prints its number of cells and the estimated error, the square root of
+the sum of the squared indicators, and the loop then prints the table of its
+cycles, which the report ``"summary"`` prints alone.
 
 The transient loop
 ~~~~~~~~~~~~~~~~~~
@@ -146,7 +145,9 @@ end time:
    control chose before the change.
 
 The history of the post-processors and the output files run on across the
-meshes.  This steel plate at :math:`300\ \mathrm{K}` has its left side held
+meshes, in one table, one numbering of the files and one collection.  The runs
+on each mesh print nothing.  The loop prints one line at its start and one at
+its end, and with the report ``"full"`` a line at each change of the mesh.  This steel plate at :math:`300\ \mathrm{K}` has its left side held
 at :math:`400\ \mathrm{K}`, and the mesh follows the heat that enters from
 that side (from ``tests/python/test_adaptivity.py``):
 
@@ -168,12 +169,11 @@ that side (from ``tests/python/test_adaptivity.py``):
    plate.time(end_time="2000 s", initial_time_step="100 s", step_control={"by": "fixed"})
    plate.postprocessor("peak", maximum="temperature")
    plate.mesh_adaptivity(
-       indicator="gradient_recovery",
        field="temperature",
        refine_fraction=0.5,
        coarsen_fraction=0.05,
-       interval=2,
        maximum_refinement_level=3,
+       interval=2,
    )
    solution = plate.solve()
 
@@ -182,17 +182,36 @@ What a change of mesh carries
 
 A change of mesh in a transient run carries two parts of the state:
 
-- The value of every field at the nodes.  A node that the old mesh has keeps
-  its value, and a new node takes the value of the old solution at its
-  position, interpolated in the old cell that holds it.
+- The value of every field at the nodes.
 - The velocity of an equation with a second time derivative, such as the
-  balance of momentum of a solid with a ``density``, carried in the same way.
-  The run goes on from the velocity it reached, and the initial condition
-  applies at the start of the run only.
+  balance of momentum of a solid with a ``density``.  The run goes on from
+  the velocity it reached, and the initial condition applies at the start of
+  the run only.
 
-Refinement alone carries both as the same functions.  Coarsening removes
-nodes, and their values with them.  Nothing else is carried: the problem on
-the new mesh is built again from the input.
+Nothing else is carried: the problem on the new mesh is built again from the
+input.  The method of the problem decides how the values are carried:
+
+- Under FEM, a node that the old mesh has keeps its value, and a new node
+  takes the value of the old solution at its position, interpolated in the
+  old cell that holds it.  Refinement alone carries the fields as the same
+  functions.  Coarsening removes nodes, and their values with them.
+- Under DMCDM, each field keeps its content: the sum over the nodes of its
+  value times the measure of the control domain of the node.  A node that
+  the coarsening removes gives its content to the corners of the coarse cell
+  that holds it, and each corner takes the mean of its own value and the
+  values it receives, weighted by their measures.  A new node takes the
+  interpolated value, as under FEM.  Take a constant density :math:`\rho` in
+  :math:`\mathrm{kg/m^3}` and specific heat capacity :math:`c_p` in
+  :math:`\mathrm{J/(kg\,K)}`.  On triangles and tetrahedra in Cartesian
+  coordinates, the content of the temperature times :math:`\rho c_p` is then
+  the heat that the lumped heat capacity of conduction stores.  An insulated
+  body without a heat source therefore keeps its heat through every change
+  of mesh.  DMCDM carries values this way on linear elements only.  On
+  ``Tri6`` and ``Tet10``, whose shape functions are negative at some removed
+  nodes, it interpolates them as FEM does.
+
+The steady loop of the input and of Python carries the solution in the same
+way, as the start of the next solve.
 
 Adapt the mesh from Python
 --------------------------
@@ -227,8 +246,9 @@ Each cycle builds the problem on the current mesh, sets the solution of the
 last mesh carried to this one as the start, solves, and computes the
 indicators of ``variable``.  ``variable`` is the name of a variable, or a
 list of names, such as the components of a velocity, whose indicators add as
-squares.  The loop then marks the cells with ``marker`` and refines them.  It
-refines only, without coarsening and without a maximum level.
+squares.  The loop then marks the cells with ``marker``, and with
+``coarsen_fraction`` the cells to coarsen, and changes the mesh.  The steady
+loop of the input is this function.
 
 The parameters are:
 
@@ -262,8 +282,19 @@ The parameters are:
 ``boundaries`` (default ``None``)
    The curved sides to follow (see `Follow a curved side`_).
 
+``coarsen_fraction`` (default 0)
+   The share of the total squared error that the coarsened cells may carry,
+   as the key of the input sets it.  With 0, the loop refines only.
+
+``maximum_refinement_level`` (default ``None``)
+   The most refinement levels a cell may have above its cell of the initial
+   mesh.  With ``None``, the levels are unbounded.
+
+The other keyword arguments are the solver options of
+:meth:`~dualmesh.Problem.solve`, for every solve of the loop.
+
 The loop stops after ``num_cycles`` solves, when the mesh has reached
-``max_elements``, or when the marker marks no cell.  It returns an
+``max_elements``, or when the marker marks no cell below the maximum level.  It returns an
 :class:`~dualmesh.AdaptivityResult` with ``problem`` and ``mesh``, the
 problem and the mesh of the last cycle, and one entry per cycle in
 ``num_elements``, ``num_dofs`` and ``estimated_error``.

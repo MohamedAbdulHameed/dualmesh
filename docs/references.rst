@@ -112,6 +112,11 @@ Finite volume methods
    London, 1996.  The bounded face schemes of the DMCDM advection in
    :doc:`theory/finite_volume`.
 
+.. [VanAlbadaVanLeerRoberts1982] G. D. van Albada, B. van Leer and W. W.
+   Roberts, "A comparative study of computational methods in cosmic gas
+   dynamics", *Astronomy and Astrophysics*, 108:76–84, 1982.  The limiter of
+   the ``limited`` advection scheme.
+
 Finite elements
 ---------------
 
@@ -513,7 +518,7 @@ Verification and benchmarks
    cavity: a bench mark numerical solution", *International Journal for
    Numerical Methods in Fluids*, 3(3):249–264, 1983.
    DOI: 10.1002/fld.1650030305.  The natural convection benchmark of
-   ``examples/natural_convection.py``.
+   ``examples/natural_convection``.
 
 .. [COMSOLWrench] COMSOL AB, "Stresses and Strains in a Wrench", COMSOL
    Multiphysics 6.1 Application Library, model ``wrench``,
@@ -552,3 +557,11 @@ Neutronics
    1977.  DOI: 10.2172/5037820.  Problem 11-A2, the two-dimensional benchmark
    of the International Atomic Energy Agency (IAEA) for a pressurized water
    reactor (PWR), with its reference solution 11-A2-1.
+
+Diffusion and trapping
+----------------------
+
+.. [Oriani1970] R. A. Oriani, "The diffusion and trapping of hydrogen in
+   steel", *Acta Metallurgica*, 18(1):147–157, 1970.  The local equilibrium
+   between a diffusing species and its traps, and the effective diffusivity
+   that follows, which :ref:`theory-user-models` derives for a linear trap.

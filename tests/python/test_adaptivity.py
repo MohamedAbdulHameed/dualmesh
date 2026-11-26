@@ -297,11 +297,9 @@ def test_the_input_adapts_the_mesh_to_a_corner_where_the_boundary_temperature_ju
     plate.boundary_conditions("left", temperature="400 K")
     plate.boundary_conditions("bottom", temperature="300 K")
     plate.mesh_adaptivity(
-        indicator="gradient_recovery",
         field="temperature",
         refine_fraction=0.5,
         coarsen_fraction=0.05,
-        interval=1,
         maximum_refinement_level=3,
     )
     solution = plate.solve(report="none")
@@ -333,7 +331,6 @@ def test_a_transient_run_adapts_the_mesh_to_the_front_that_enters_from_a_heated_
     plate.time(end_time="2000 s", initial_time_step="100 s", step_control={"by": "fixed"})
     plate.postprocessor("peak", maximum="temperature")
     plate.mesh_adaptivity(
-        indicator="gradient_recovery",
         field="temperature",
         refine_fraction=0.5,
         coarsen_fraction=0.05,
@@ -371,7 +368,6 @@ def test_a_plate_pulled_by_a_traction_keeps_its_momentum_through_the_adapted_mes
     plate.time(end_time=f"{end_time} s", initial_time_step="2e-5 s", step_control={"by": "fixed"})
     plate.postprocessor("mean", average="displacement_x")
     plate.mesh_adaptivity(
-        indicator="gradient_recovery",
         field="displacement",
         refine_fraction=0.5,
         coarsen_fraction=0.0,
@@ -431,6 +427,74 @@ def test_a_body_falling_under_its_weight_keeps_its_velocity_across_a_change_of_m
     assert second.gathered_values("disp_y") == pytest.approx(-0.5 * g * t_2**2, rel=1e-6)
     assert second.gathered_velocities()["disp_y"] == pytest.approx(-g * t_2, rel=1e-6)
     assert numpy.abs(second.gathered_values("disp_x")).max() < 1e-9 * 0.5 * g * t_2**2
+
+
+def test_DMCDM_keeps_the_heat_of_an_insulated_plate_through_refinement_and_coarsening():
+    """A square insulated on every side and without a source keeps its heat, the integral of
+    rho c_p T, here 6 times the integral of the temperature T.  DMCDM stores the heat in the
+    control domains of the nodes and its fluxes cancel between neighbours, so every time step
+    keeps it.  Every change of mesh keeps it too: refinement interpolates, which keeps T as the
+    same function, and coarsening gives the heat of each removed control domain to the nodes that
+    interpolate it.  The run refines the left half, coarsens it, then coarsens the left half and
+    refines the right half in one change, and the temperature stays within its bounds."""
+    from dualmesh.adaptivity import _Hierarchy
+
+    def plate(mesh):
+        problem = dualmesh.Problem(mesh, method="DMCDM")
+        problem.add_physics(
+            "heat_conduction",
+            thermal_conductivity=1.0,
+            density=2.0,
+            specific_heat=3.0,
+            initial_condition="1 + x*(1 - x)*y",
+        )
+        return problem
+
+    def heat(problem):
+        problem.initialize()
+        return 6.0 * problem.integrate("temperature")
+
+    def left_half():
+        mesh = hierarchy.mesh()
+        points = numpy.asarray(mesh.points())
+        return numpy.array(
+            [points[list(cell)][:, 0].mean() < 0.5 for _type, cell, _block in mesh.cells()]
+        )
+
+    hierarchy = _Hierarchy(
+        dualmesh.generate_rectangle_mesh(0.0, 1.0, 0.0, 1.0, 8, 8, element_type="Tri3")
+    )
+    problem = plate(hierarchy.mesh())
+    total = heat(problem)
+    time, dt = 0.0, 0.005
+
+    def run():
+        nonlocal time
+        problem.solve_transient(
+            end_time=time + 2 * dt, start_time=time, time_step=dt, report="none"
+        )
+        time += 2 * dt
+        assert heat(problem) == pytest.approx(total, rel=1e-11)
+
+    def change(refine, coarsen):
+        nonlocal problem
+        before = problem.gathered_values("temperature")
+        assert hierarchy.adapt(refine, coarsen, 1)
+        carried = hierarchy.carry(problem, {"temperature": before})["temperature"]
+        assert before.min() - 1e-12 <= carried.min() and carried.max() <= before.max() + 1e-12
+        problem = plate(hierarchy.mesh())
+        problem.set_gathered_values("temperature", carried)
+        assert heat(problem) == pytest.approx(total, rel=1e-12)
+        run()
+
+    run()
+    cells = hierarchy.mesh().num_elements
+    change(left_half(), numpy.zeros(cells, bool))
+    refined = hierarchy.mesh().num_elements
+    change(numpy.zeros(refined, bool), hierarchy.coarsenable())
+    assert hierarchy.mesh().num_elements < refined
+    left = left_half()
+    change(~left & hierarchy.refinable(1), left & hierarchy.coarsenable())
 
 
 # ---------------------------------------------------------------------------

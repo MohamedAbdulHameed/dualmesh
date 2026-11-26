@@ -3,13 +3,13 @@
 Reactor criticality with the generic solver
 ===========================================
 
-dualmesh-multiphysics has no neutronics module.  In this tutorial, you write
-the multigroup neutron diffusion equations as text with the
-``general_form_PDE`` physics, and you find the effective multiplication
-factor of a reactor core with the eigenvalue study that every problem has.
-The same steps solve any eigenvalue problem that no physics names.  The
-physics follows J. C. Lee, *Nuclear Reactor Physics and Engineering*
-[Lee2025]_.
+dualmesh has no neutronics module.  In this tutorial, you write the
+two-group neutron diffusion equations of a bare core as two models of your
+own in the input, and you find the effective multiplication factor of the
+core with an eigenvalue study.  You then write the multigroup equations of a
+core with regions as text with the ``general_form_PDE`` physics.  The same
+steps solve any eigenvalue problem that no physics names.  The physics follows
+J. C. Lee, *Nuclear Reactor Physics and Engineering* [Lee2025]_.
 
 The equations
 -------------
@@ -59,51 +59,67 @@ Write the equations
 
 The script ``examples/reactor_criticality.py`` computes a bare square core of
 side :math:`L = 2\ \mathrm{m}` with zero flux on its boundary, in two groups,
-with all fission neutrons born fast.
+with all fission neutrons born fast.  A model of your own states the balance
+:math:`\partial m/\partial t + \nabla\cdot\mathbf{F} = s` of one unknown,
+with the storage :math:`m`, the flux :math:`\mathbf{F}` and the source
+:math:`s` (see :ref:`input-models`).  Equation :eq:`multigroup-diffusion` of
+group :math:`g` is that balance without a storage, with
+:math:`\mathbf{F}_g = -D_g \nabla\phi_g` and the other terms in the source.
 
-1. Create the problem on a mesh of :math:`40 \times 40` elements:
+1. Create the problem on a mesh of :math:`40 \times 40` squares:
 
    .. literalinclude:: ../../examples/reactor_criticality.py
       :language: python
-      :start-at: mesh = dualmesh.generate_rectangle_mesh(
-      :end-at: problem = dualmesh.Problem(mesh, method=method)
+      :start-at: reactor = dualmesh.problem(
+      :end-before: reactor.model(
       :dedent: 4
 
-   The function ``criticality`` of the script takes ``num_elements=40`` and
-   ``method="FEM"`` by default.
+2. Write one model per group, with the flux of the group as its unknown in
+   :math:`\mathrm{1/(m^2\,s)}`:
 
-2. Give the cross sections in SI units, the cross sections in
-   :math:`\mathrm{1/m}` and the diffusion coefficients in
-   :math:`\mathrm{m}`:
+   .. literalinclude:: ../../examples/reactor_criticality.py
+      :language: python
+      :start-at: reactor.model(
+      :end-before: reactor.properties(
+      :dedent: 4
+
+   The source of the fast group reads the symbol ``eigenvalue``, which is
+   :math:`1/k`.  The problem has no time derivative, so the eigenvalue is a
+   number, and the smallest eigenvalue gives the largest :math:`k`.  The
+   fission source then needs no factor of one second.
+
+3. Give the cross sections in :math:`\mathrm{1/m}` and the diffusion
+   coefficients in :math:`\mathrm{m}`.  Each is a name outside the
+   vocabulary, so it states its unit once:
 
    .. literalinclude:: ../../examples/reactor_criticality.py
       :language: python
       :start-at: cross_sections = {
       :end-at: }
 
-3. Write one equation per group as it is printed.  The fission source
-   carries the symbol ``eigenvalue``, which is :math:`1/k`, so the smallest
-   eigenvalue gives the largest :math:`k`:
+   .. literalinclude:: ../../examples/reactor_criticality.py
+      :language: python
+      :start-at: reactor.properties(
+      :end-before: for boundary in
+      :dedent: 4
+
+   The names stand for :math:`D_1`, :math:`D_2`, :math:`\Sigma_{a,1}`,
+   :math:`\Sigma_{a,2}`, :math:`\Sigma_{s,1 \to 2}` and
+   :math:`\nu\Sigma_{f,2}`, in this order.
+
+4. Hold both fluxes at zero on the four sides, and ask for one eigenvalue:
 
    .. literalinclude:: ../../examples/reactor_criticality.py
       :language: python
-      :start-at: neutrons = problem.add_physics(
-      :end-before: boundary = list(mesh.sideset_names())
+      :start-at: for boundary in
+      :end-at: reactor.eigenvalues(count=1)
       :dedent: 4
 
-   Every keyword of ``add_physics`` that is not a parameter, here each cross
-   section, is a named constant that the equations use.  Each equation
-   belongs to the field whose divergence it holds.  ``units`` gives the unit
-   of each flux, which the output files carry.
-
-4. Hold the flux at zero on the boundary, and solve the eigenvalue problem
-   for one mode:
+   The function ``criticality`` solves the problem and returns :math:`k`:
 
    .. literalinclude:: ../../examples/reactor_criticality.py
       :language: python
-      :start-at: boundary = list(mesh.sideset_names())
-      :end-at: return 1.0 / float(result.eigenvalues[0])
-      :dedent: 4
+      :pyobject: criticality
 
 For a bare core, two-group theory without fast fission gives
 ([Lee2025]_, Eq. 7.26, without up-scattering and with one buckling for both
@@ -120,17 +136,18 @@ computes it, and the script prints the computed :math:`k`, the exact one and
 their difference in pcm, where one pcm (per cent mille) is :math:`10^{-5}`
 in :math:`k`.  The test ``test_the_example_matches_two_group_theory`` in
 ``tests/python/test_criticality.py`` runs the script on 10, 20 and 40
-elements per side.  It checks that the order of convergence of the error exceeds
+cells per side.  It checks that the order of convergence of the error exceeds
 1.8 and that the error is below :math:`2 \times 10^{-5}\,k` on the finest
 mesh.
 
 Regions with their own cross sections
 -------------------------------------
 
-A core has regions of different materials.  Give the cross sections of each
-region as properties of a ``constant`` property object on its block.  The
-equations use them by their names, which take the values of the region at
-every point.  The script ``verification/benchmarks/neutronics/run_iaea_2d_pwr.py``
+A core has regions of different materials.  With the object-level
+``general_form_PDE`` physics, you write the equations as they are printed and
+give the cross sections of each region as properties of a ``constant``
+property object on its block.  The equations use them by their names, which
+take the values of the region at every point.  The script ``verification/benchmarks/neutronics/run_iaea_2d_pwr.py``
 writes the two-dimensional benchmark of the International Atomic Energy
 Agency (IAEA) for a pressurized water reactor (PWR) [ANL7416]_ in this way.
 It adds one property object per region, with the axial buckling in the

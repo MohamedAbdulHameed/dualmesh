@@ -29,7 +29,7 @@ This example from ``examples/bus_bar.py`` adds five post-processors and an outpu
    bar.postprocessor("temperature_bottom", point_value="temperature", point=["0.05 m", "0 m"])
    bar.postprocessor("temperature_top", point_value="temperature", point=["0.05 m", "0.05 m"])
    bar.postprocessor("hottest", maximum="temperature")
-   bar.output(file="bus_bar", interval=1, fields=["temperature"])
+   bar.output(file="bus_bar", fields=["temperature"])
 
    solution = bar.solve()
    for name in solution.postprocessor_names():
@@ -56,18 +56,18 @@ name of your choice and exactly one of these keys:
    The integral over the domain, the average over the domain, or the largest or smallest nodal
    value of a field. The integral has the unit of the field times
    :math:`\mathrm{m}^d`, with :math:`d` the dimension of the mesh, or :math:`\mathrm{m}^3` in
-   axisymmetric coordinates, where the integral covers the body of revolution. The input refuses a
-   post-processor over one ``region``.
+   axisymmetric coordinates, where the integral covers the body of revolution. A post-processor
+   covers the whole domain, so the input refuses a ``region`` key.
 
 ``point_value``
    The value of a field at ``point``, a list of one length for each direction of the mesh. A
    component such as ``displacement_x`` or ``stress_yy`` names one component of a field. A stress
-   component is available as a ``point_value`` of a steady solid at small strain in Cartesian
-   coordinates, in Pa.
+   component is the Cauchy stress in Pa that the solid computes in the cell that holds the point,
+   at small or finite strain, at every output time.
 
 ``boundary_flux``
-   The flow of a flux out of the body through ``boundary``. ``heat_flux`` is the flux available in
-   this version. Its flow is in W on a three-dimensional or axisymmetric mesh, in
+   The flow of a flux out of the body through ``boundary``: ``heat_flux``, or the ``flux_name`` of
+   a model. The flow of ``heat_flux`` is in W on a three-dimensional or axisymmetric mesh, in
    :math:`\mathrm{W/m}` on a two-dimensional one, and in :math:`\mathrm{W/m^2}` on a segment.
 
 The results of a run
@@ -93,13 +93,24 @@ The results of a run
    the unit, for example ``"K"``.
 
 ``times`` and ``output_times``
-   The times of the accepted time steps, and the times of the rows of the post-processor table. A
-   steady run has one row, at 0 s.
+   The times of the accepted time steps, and the times of the rows of the post-processor table.
+   The table has a row after a steady solve, at 0 s, and at the start and after every accepted
+   step of a transient run.
 
 ``table()``
-   The post-processor table as a dictionary of columns. The keys are the headers of the
+   The post-processor table, a :class:`~dualmesh.Table`. Its headers are those of the
    comma-separated values (CSV) file that the next section describes: ``time [s]``, then
-   ``<name> [<unit>]`` for each post-processor.
+   ``<name> [<unit>]`` for each post-processor. ``table()["peak"]`` is the column of ``peak``.
+
+``line(name)``
+   The table of a ``line`` post-processor, a :class:`~dualmesh.Table` with the columns of its CSV
+   file: ``time`` in a transient run, ``distance``, the coordinates and the field.
+
+``eigenvalues`` and ``frequencies``
+   The eigenvalues :math:`\lambda` of an eigenvalue study in :math:`\mathrm{1/s}`, closest to
+   ``near`` first, and the natural frequencies :math:`f = |\operatorname{Im}\lambda|/(2\pi)` in
+   Hz of a vibration, a problem whose only time term is an inertia. The fields of an eigenvalue
+   study are those of its first mode.
 
 ``examples/transient_slab.py`` compares a field with an exact solution:
 
@@ -112,26 +123,31 @@ The results of a run
 The files of the input
 ~~~~~~~~~~~~~~~~~~~~~~
 
-An ``output`` section has three keys:
+An ``output`` section has the keys ``file`` and ``fields``, and a transient run also takes
+``interval``:
 
 ``file``
    The start of every file name. A relative path starts from the folder of the case file, or
    from the working directory in :func:`dualmesh.problem`.
 
 ``interval``
-   A positive integer. A transient run writes the fields at its first accepted time step, at
-   every ``interval``-th accepted step after it, and at its end. A steady run writes them once.
+   A positive integer, 1 when it is left out. A transient run writes the fields at its start, at
+   every ``interval``-th accepted step and at its end. A steady run writes them once, at its end,
+   and refuses an ``interval``.
 
 ``fields``
    The fields that the files hold, among the fields that the physics solve for:
    ``temperature``, ``displacement``, ``velocity`` and ``pressure``.
 
-The run writes these files:
+The section lowers onto the :class:`~dualmesh.Output` group of the solve, with ``interval`` as its
+``step_interval``, so the run writes the files of `Files`_:
 
-* ``<file>_0000.vtu``, ``<file>_0001.vtu`` and so on: the fields at each output time, in the VTK
-  unstructured grid (VTU) format of the Visualization Toolkit (VTK).
-* ``<file>.pvd``: the ParaView data (PVD) collection that lists the time of each VTU file.
-  ParaView opens it as one time series.
+* ``<file>.vtu`` in a steady run, and ``<file>_00000.vtu``, ``<file>_00001.vtu`` and so on in a
+  transient run: the fields at each output time, in the VTK unstructured grid (VTU) format of the
+  Visualization Toolkit (VTK).
+* ``<file>.pvd`` in a transient run: the ParaView data (PVD) collection that lists the time of
+  each VTU file. ParaView opens it as one time series. A transient run that adapts its mesh keeps
+  one numbering and one collection across the meshes.
 * ``<file>.csv``: the post-processor table, when the input has post-processors, with the unit of
   each column in brackets in its header.
 
@@ -188,7 +204,7 @@ The studies return result objects that share these methods:
 
 ``write_csv(path, table=None)``
    Writes the main table, or the table that ``table`` names, to a CSV file. The header names each
-   column with its unit in parentheses, for example ``temperature (K)``.
+   column with its unit in square brackets, for example ``temperature [K]``.
 
 ``write_json(path)`` and ``to_dict()``
    All the numbers of the result, as a JavaScript Object Notation (JSON) file or a dictionary.
@@ -318,8 +334,8 @@ the start and after every accepted time step of a transient solve:
 
 .. code-block:: python
 
-   problem.add_postprocessor("average", "mean_temperature", variable="temperature")
-   problem.add_postprocessor("heat_flow", "heat_out", boundary="left")
+   problem.add_postprocessor("average", "mean_temperature", variable="temperature", unit="K")
+   problem.add_postprocessor("heat_flow", "heat_out", boundary="left", unit="W")
    problem.solve()
    print(problem.postprocessor_table())
    problem.write_postprocessor_csv("history.csv")
@@ -347,11 +363,14 @@ Type                      Parameters                           Value
 ========================  ===================================  ===========================================
 
 ``direction`` is ``"x"`` (the default), ``"y"`` or ``"z"``. ``physics`` names the physics, and
-you can leave it out when the problem has one physics of that type.
+you can leave it out when the problem has one physics of that type. Every type also takes
+``unit``, the unit of its value, which heads its column of the history. Without it the column
+has no unit.
 :meth:`~dualmesh.Problem.postprocessor_values` returns the history as
 ``{"time": array, name: array, ...}``, :meth:`~dualmesh.Problem.postprocessor_table` returns it as
-aligned text, and :meth:`~dualmesh.Problem.write_postprocessor_csv` writes it as CSV, with one row
-for each evaluation.
+a :class:`~dualmesh.Table`, which prints as aligned text, and
+:meth:`~dualmesh.Problem.write_postprocessor_csv` writes it as CSV, with one row for each
+evaluation and the headers ``time [s]`` and ``<name> [<unit>]``.
 
 The error indicator
 ~~~~~~~~~~~~~~~~~~~
@@ -395,12 +414,14 @@ A study writes the files of its fields when you give it an :class:`~dualmesh.Out
    The directory, which the study makes when it doesn't exist, and the start of each file name.
    The defaults are ``"."`` and ``"output"``.
 
-``times`` or ``interval``
-   The output times of a transient study in s: a list of increasing times, or the time between
-   two outputs from the start time. Give at most one of the two. The time steps land on the
-   output times. With ``interval``, the study also writes its end time. Without either, a
-   transient study writes its start and end times. A steady solve and an eigenvalue study write once, at the end, and
-   refuse both keys.
+``times``, ``interval`` or ``step_interval``
+   The output times of a transient study: a list of increasing times in s, the time between two
+   outputs in s from the start time, or a number of accepted steps. Give at most one of the
+   three. The time steps land on the times of ``times`` and ``interval``, and with ``interval``
+   the study also writes its end time. With ``step_interval``, the study writes its start, every
+   ``step_interval``-th accepted step and its last step, and the steps keep the sizes that the
+   stepper chooses. Without any of the three, a transient study writes its start and end times.
+   A steady solve and an eigenvalue study write once, at the end, and refuse the three keys.
 
 ``fields``
    The variables that the files hold. The default is every variable.
@@ -425,16 +446,15 @@ You can also write files at any point of a script:
    problem.write_vtu("result.vtu")
    problem.write_vtu("stress.vtu", cell_properties=["stress"])
    problem.write_csv("nodes.csv", variables=["temperature"])
-   problem.write_mesh_file("result.msh")
+   dualmesh.write_mesh(problem.mesh, "result.msh", temperature=problem.values("temperature"))
 
 :meth:`~dualmesh.Problem.write_vtu` writes the mesh, the variables of ``fields`` (every variable
 by default) as point data, and the properties of ``cell_properties`` as cell data. Each data array of a variable carries its unit in the attribute ``units``. Quadratic
 elements become the quadratic VTK cells of the same nodes, so ParaView can draw their curved
 sides. :meth:`~dualmesh.Problem.write_csv` writes one row for each node, with its coordinates and
 the values of ``variables`` (every variable by default), and a header with the unit of each
-column. :meth:`~dualmesh.Problem.write_mesh_file` writes the mesh and every nodal field through
-:func:`dualmesh.write_mesh` in any format of the meshio library [meshio]_, such as Gmsh
-[Gmsh2009]_ or Exodus II.
+column. :func:`dualmesh.write_mesh` writes the mesh and the nodal fields that you give it in any
+format of the meshio library [meshio]_, such as Gmsh [Gmsh2009]_ or Exodus II.
 
 Each physics gives the SI unit of each variable that it makes: ``K`` for a temperature, ``m`` for
 a displacement, ``rad`` for a rotation, ``m/s`` for a velocity and ``Pa`` for a pressure. A
@@ -466,7 +486,8 @@ number of processes:
    problem.solve_transient(end_time=2e6, time_step=1e3, restart="results/plate.chk")
 
 ``start_time`` stays the start of the original run, so the output times and the file numbers
-continue those of the original run. Checkpoints need a build with the Portable, Extensible Toolkit
+continue those of the original run. A restart numbers its files by the output times, so it
+refuses ``step_interval``. Checkpoints need a build with the Portable, Extensible Toolkit
 for Scientific Computation (PETSc), which every build with the Message Passing Interface (MPI)
 has.
 

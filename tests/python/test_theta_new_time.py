@@ -94,7 +94,11 @@ def test_an_explicit_step_solves_an_equation_without_a_time_derivative_at_the_ne
     order = numpy.argsort(x)
     problem.set_values("T", numpy.sin(numpy.pi * x))
     problem.solve_transient(
-        end_time=4e-3, time_step=1e-3, time_scheme="forward_Euler", report="none"
+        end_time=4e-3,
+        time_step=1e-3,
+        time_scheme="forward_Euler",
+        time_stepper="fixed",
+        report="none",
     )
     T = problem.values("T")[order]
     h = 1.0 / n

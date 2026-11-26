@@ -63,7 +63,6 @@ from .engine import Problem, SensitivityResult, SolveResult
 from .expressions import Expression, ParsedFunction, parsed_function
 from .input.units import input_error
 from .meshing import (
-    annulus_coordinates,
     generate_annulus_mesh,
     generate_box_mesh,
     generate_line_mesh,
@@ -127,7 +126,6 @@ __all__ = [
     "AdaptivityResult",
     "abs",
     "adaptivity",
-    "annulus_coordinates",
     "cos",
     "describe_object",
     "exp",
@@ -177,12 +175,14 @@ def describe(object_type: str) -> str:
     if physics.is_registered(object_type):
         return physics.describe(object_type)
     if object_type not in registered_types():
-        import difflib
+        from .console import suggestion
 
-        names = sorted(set(registered_types()) | set(physics.registered()))
-        close = difflib.get_close_matches(object_type, names, n=1)
-        hint = f" Did you mean '{close[0]}'?" if close else ""
-        raise ValueError(f"Unknown type '{object_type}'.{hint} 'dualmesh list' prints every type.")
+        names = set(registered_types()) | set(physics.registered())
+        raise ValueError(
+            f"Unknown type '{object_type}'."
+            + suggestion(object_type, names, listing=False)
+            + " 'dualmesh list' prints every type."
+        )
     return f"{object_type} ({object_category(object_type)}, module {object_module(object_type)})\n{describe_object(object_type)}"
 
 

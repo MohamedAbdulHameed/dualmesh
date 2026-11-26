@@ -76,33 +76,36 @@ class _Hierarchy:
         if kind in ("Quad4", "Hex8"):
             self._core = _core.Subdivision(mesh)
             self._per_level = 1
-            self._steps = self._core.levels
         else:
             self._core = _core.Bisection(mesh)
             self._per_level = mesh.dimension
-            self._steps = self._core.generations
 
     def mesh(self):
         return self._core.mesh()
 
-    def refinable(self, max_level: int) -> numpy.ndarray:
+    def _cuts(self, max_level: int | None) -> int:
+        """The cuts of a cell at the level max_level, which None leaves unbounded."""
+        return 2**20 if max_level is None else self._per_level * max_level
+
+    def refinable(self, max_level: int | None) -> numpy.ndarray:
         """Whether each cell is below the level max_level."""
-        return numpy.asarray(self._steps()) < self._per_level * max_level
+        return numpy.asarray(self._core.levels()) < self._cuts(max_level)
 
     def coarsenable(self) -> numpy.ndarray:
         """Whether each cell is finer than its cell of the initial mesh."""
-        return numpy.asarray(self._steps()) > 0
+        return numpy.asarray(self._core.levels()) > 0
 
-    def adapt(self, refine, coarsen, max_level: int) -> bool:
-        """Coarsen where coarsen marks, then refine where refine marks, in one change of the mesh."""
+    def adapt(self, refine, coarsen, max_level: int | None) -> bool:
+        """Coarsen where coarsen marks, then refine where refine marks, in one change of the
+        mesh.  It returns whether the mesh changed."""
         return self._core.adapt(
             [int(bool(m)) for m in refine],
             [int(bool(m)) for m in coarsen],
-            self._per_level * max_level,
+            self._cuts(max_level),
         )
 
     def refine(self, marked) -> bool:
-        return self._core.refine([int(bool(m)) for m in marked], 2**20)
+        return self._core.refine([int(bool(m)) for m in marked], self._cuts(None))
 
     def project(self, name: str, projection) -> None:
         """Move the nodes of side set ``name`` onto a curved boundary: ``projection((x, y, z))``
@@ -117,6 +120,29 @@ class _Hierarchy:
     def transfer(self, values, width: int = 1) -> numpy.ndarray:
         """Values at the nodes of the mesh before the last change, carried to the current one."""
         return numpy.asarray(self._core.transfer(numpy.asarray(values, dtype=float), width))
+
+    def carry(self, engine, fields: dict) -> dict:
+        """Fields at the nodes of the mesh before the last change, by name, carried to the
+        current one.  ``engine`` is the problem on the mesh before the change.
+
+        Under DMCDM on linear elements each field keeps its content, the sum of its values times
+        the measures of the control domains: a node that the coarsening removes gives its content
+        to the nodes that interpolate it, in a measure-weighted mean, and a new node interpolates.
+        Under FEM, and on quadratic elements, whose shape functions are negative at some removed
+        nodes, each field is interpolated, which carries the fields exactly under refinement.
+        """
+        from .meshing import _QUADRATIC
+
+        quadratic = engine.mesh.num_elements > 0 and engine.mesh.element_type(0) in _QUADRATIC
+        if engine.method != "DMCDM" or quadratic or not fields:
+            return {name: self.transfer(values) for name, values in fields.items()}
+        measures = numpy.asarray(engine.gathered_node_measures(), dtype=float)
+        return {
+            name: numpy.asarray(
+                self._core.restrict(numpy.asarray(values, dtype=float), 1, measures)
+            )
+            for name, values in fields.items()
+        }
 
 
 def refine_marked(mesh, marked: Sequence[bool]):
@@ -187,6 +213,28 @@ def mark_by_threshold(indicators, threshold: float) -> numpy.ndarray:
     return numpy.asarray(indicators, dtype=float).ravel() > float(threshold)
 
 
+def _coarsening(indicators, fraction: float, refine, coarsenable) -> numpy.ndarray:
+    """The largest set of the refined cells outside ``refine`` whose squared indicators sum to at
+    most ``fraction`` of the total, the smallest first."""
+    squared = numpy.asarray(indicators, dtype=float) ** 2
+    marked = numpy.zeros(squared.size, dtype=bool)
+    candidates = numpy.flatnonzero(~refine & coarsenable)
+    if fraction <= 0.0 or candidates.size == 0:
+        return marked
+    order = candidates[numpy.argsort(squared[candidates])]
+    count = int(numpy.searchsorted(numpy.cumsum(squared[order]), fraction * squared.sum(), "right"))
+    marked[order[:count]] = True
+    return marked
+
+
+def _marks(hierarchy: _Hierarchy, indicators, marker, coarsen_fraction: float, max_level):
+    """The cells to refine, those that ``marker`` marks below the level ``max_level``, and the
+    cells to coarsen, those of the share ``coarsen_fraction`` of the error that :func:`_coarsening`
+    gives."""
+    refine = numpy.asarray(marker(indicators), dtype=bool) & hierarchy.refinable(max_level)
+    return refine, _coarsening(indicators, coarsen_fraction, refine, hierarchy.coarsenable())
+
+
 @dataclass
 class AdaptivityResult(ResultTables):
     """The outcome of :func:`solve_with_adaptive_refinement`: the problem
@@ -247,19 +295,26 @@ def solve_with_adaptive_refinement(
     callback: Callable[[int, Problem, numpy.ndarray], None] | None = None,
     report: str = "full",
     boundaries: dict | None = None,
+    coarsen_fraction: float = 0.0,
+    maximum_refinement_level: int | None = None,
+    **options,
 ):
-    """Solve, estimate, mark and refine, ``num_cycles`` times.
+    """Solve, estimate, mark and adapt, at most ``num_cycles`` times.
 
     ``build_problem`` is called with a mesh and returns a
     :class:`~dualmesh.Problem` defined on it, ready to solve.  The problem is
     built anew on every mesh, which keeps its boundary conditions and
     properties exactly as the user wrote them, and its solve starts from the
-    solution of the last mesh, carried to the new one.
+    solution of the last mesh, carried to the new one: under DMCDM each field
+    keeps its content, its values times the measures of the control domains.
     ``marker`` turns the vector of indicators into a boolean array of elements
-    to refine.  ``max_elements`` stops the loop early once the mesh has grown
-    past that size, and ``callback(cycle, problem, indicators)`` is called after
-    every solve, which is where a calculation writes output or records a
-    convergence history.
+    to refine.  ``coarsen_fraction`` coarsens the refined elements that carry
+    the smallest indicators, up to that share of the total squared error, and
+    ``maximum_refinement_level`` bounds the levels of refinement, each of which
+    halves the size of a cell.  The loop stops when no element below that level
+    is marked, or once the mesh has grown past ``max_elements``.
+    ``callback(cycle, problem, indicators)`` is called after every solve, which
+    is where a calculation writes output or records a convergence history.
 
     ``variable`` names the variable whose error indicator drives the marking,
     or several (the components of a velocity), whose indicators add as
@@ -274,7 +329,8 @@ def solve_with_adaptive_refinement(
     ``report`` sets what the study prints: ``"full"`` (the default: a line
     for each cycle and the summary), ``"summary"`` (one line that names the
     study, then the summary) or ``"none"``.  The solves inside the study
-    print nothing.
+    print nothing.  The other keyword arguments are the solver options of
+    :meth:`~dualmesh.Problem.solve`.
 
     Returns an :class:`AdaptivityResult` with the problem on the last,
     finest mesh, that mesh and the history of the cycles.
@@ -285,15 +341,14 @@ def solve_with_adaptive_refinement(
     if level == "full":
         print(header("adaptive refinement"))
     names = [variable] if isinstance(variable, str) else list(variable)
-    root = _core.mpi_rank() == 0
-    if level != "none" and root:
+    if level != "none":
         print(
             f"dualmesh adaptive refinement of {', '.join(names)}: at most {num_cycles} cycles",
             flush=True,
         )
     result = AdaptivityResult(problem=None, mesh=mesh)
-    # One hierarchy of bisections for the whole loop, so that the triangles keep their refinement
-    # edges from one cycle to the next, as newest-vertex bisection needs.
+    # One hierarchy for the whole loop, so that the triangles keep their refinement edges from
+    # one cycle to the next, as newest-vertex bisection needs, and a refined cell can coarsen.
     hierarchy = _Hierarchy(mesh)
     start = {}
     for cycle in range(num_cycles):
@@ -302,13 +357,15 @@ def solve_with_adaptive_refinement(
             # The solve starts from the solution of the last mesh, carried to this one.
             for name, values in start.items():
                 problem.set_gathered_values(name, values)
-            problem.solve()
+            problem.solve(**options)
+        # Every process holds the same hierarchy of the whole mesh, so the indicators are those
+        # of the whole mesh, and every process adapts it the same way.
         indicators = numpy.sqrt(sum(problem.gathered_error_indicator(name) ** 2 for name in names))
         result.problem, result.mesh = problem, mesh
         result.num_elements.append(int(mesh.num_elements))
         result.num_dofs.append(int(problem.num_global_dofs))
         result.estimated_error.append(float(numpy.sqrt(numpy.sum(indicators**2))))
-        if level == "full" and root:
+        if level == "full":
             print(
                 f"  cycle {cycle}: {mesh.num_elements} elements, {problem.num_global_dofs} unknowns, estimated error {result.estimated_error[-1]:.6g}",
                 flush=True,
@@ -319,17 +376,20 @@ def solve_with_adaptive_refinement(
             break
         if max_elements is not None and mesh.num_elements >= max_elements:
             break
-        marked = marker(indicators)
-        if not marked.any():
+        refine, coarsen = _marks(
+            hierarchy, indicators, marker, coarsen_fraction, maximum_refinement_level
+        )
+        if not refine.any():
             break
         reached = {
             name: problem.gathered_values(name) for name in problem._problem.variable_names()
         }
-        hierarchy.refine(marked)
+        if not hierarchy.adapt(refine, coarsen, maximum_refinement_level):
+            break
         for name, projection in (boundaries or {}).items():
             hierarchy.project(name, projection)
         mesh = hierarchy.mesh()
-        start = {name: hierarchy.transfer(values) for name, values in reached.items()}
-    if level != "none" and root:
+        start = hierarchy.carry(problem, reached)
+    if level != "none":
         print(result.summary())
     return result

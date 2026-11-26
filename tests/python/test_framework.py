@@ -15,6 +15,7 @@ import math
 import dualmesh
 import numpy
 import pytest
+from dualmesh.input import units
 
 
 # ---------------------------------------------------------------------------
@@ -67,15 +68,15 @@ def test_blocks_allow_different_materials_in_one_mesh():
     problem = dualmesh.Problem(layered, method="DMCDM")
     problem.add_variable("temperature")
     problem.add_kernel(
-        "heat_conduction",
+        "diffusion",
         variable="temperature",
-        thermal_conductivity=left_conductivity,
+        diffusivity=left_conductivity,
         block=["0"],
     )
     problem.add_kernel(
-        "heat_conduction",
+        "diffusion",
         variable="temperature",
-        thermal_conductivity=right_conductivity,
+        diffusivity=right_conductivity,
         block=["1"],
     )
     problem.add_boundary_condition("Dirichlet", "left", variable="temperature", value=100.0)
@@ -113,22 +114,22 @@ def test_radiative_boundary_condition_is_nonlinear_and_converges():
     mesh = dualmesh.generate_line_mesh(start=0.0, end=0.1, num_elements=10)
     problem = dualmesh.Problem(mesh, method="DMCDM")
     problem.add_variable("temperature", initial_condition=1000.0)
-    problem.add_kernel("heat_conduction", variable="temperature", thermal_conductivity=20.0)
+    problem.add_kernel("diffusion", variable="temperature", diffusivity=20.0)
     problem.add_boundary_condition("Dirichlet", "left", variable="temperature", value=1000.0)
+    # Grey-body radiation, e sigma (T^4 - T_a^4) leaving the body, with the emissivity e = 0.8.
+    sigma = units.standard_names()["Stefan_Boltzmann_constant"].value
     problem.add_boundary_condition(
-        "radiative_heat_flux",
+        "Neumann",
         "right",
         variable="temperature",
-        emissivity=0.8,
-        ambient_temperature=300.0,
+        flux=f"-{sigma!r}*0.8*(temperature^4 - 300^4)",
     )
     result = problem.solve()
     assert result.converged
     temperature = problem.values("temperature")
     assert 300.0 < temperature[-1] < 1000.0
     # The heat conducted to the surface must equal the heat radiated away
-    Stefan_Boltzmann = 5.670374419e-8
-    radiated = 0.8 * Stefan_Boltzmann * (temperature[-1] ** 4 - 300.0**4)
+    radiated = 0.8 * sigma * (temperature[-1] ** 4 - 300.0**4)
     conducted = 20.0 * (temperature[-2] - temperature[-1]) / 0.01
     assert conducted == pytest.approx(radiated, rel=1e-3)
 
@@ -139,7 +140,7 @@ def test_spherical_coordinates_reproduce_the_analytical_solution():
     mesh = dualmesh.generate_line_mesh(start=0.0, end=radius, num_elements=20)
     problem = dualmesh.Problem(mesh, method="DMCDM", coordinates="spherical")
     problem.add_variable("temperature")
-    problem.add_kernel("heat_conduction", variable="temperature", thermal_conductivity=conductivity)
+    problem.add_kernel("diffusion", variable="temperature", diffusivity=conductivity)
     problem.add_kernel("body_force", variable="temperature", value=generation)
     problem.add_boundary_condition(
         "Dirichlet",
@@ -170,7 +171,7 @@ def test_three_dimensional_conduction_and_elasticity():
     )
     conduction = dualmesh.Problem(mesh, method="DMCDM")
     conduction.add_variable("temperature")
-    conduction.add_kernel("heat_conduction", variable="temperature", thermal_conductivity=2.0)
+    conduction.add_kernel("diffusion", variable="temperature", diffusivity=2.0)
     conduction.add_boundary_condition("Dirichlet", "left", variable="temperature", value=100.0)
     conduction.add_boundary_condition("Dirichlet", "right", variable="temperature", value=0.0)
     conduction.solve()
@@ -202,10 +203,8 @@ def test_transient_conduction_against_the_Fourier_series():
     mesh = dualmesh.generate_line_mesh(start=0.0, end=length, num_elements=40)
     problem = dualmesh.Problem(mesh, method="DMCDM")
     problem.add_variable("temperature", initial_condition=1.0)
-    problem.add_kernel("heat_conduction", variable="temperature", thermal_conductivity=diffusivity)
-    problem.add_kernel(
-        "heat_conduction_time_derivative", variable="temperature", density=1.0, specific_heat=1.0
-    )
+    problem.add_kernel("diffusion", variable="temperature", diffusivity=diffusivity)
+    problem.add_kernel("time_derivative", variable="temperature")
     problem.add_boundary_condition(
         "Dirichlet",
         ["left", "right"],

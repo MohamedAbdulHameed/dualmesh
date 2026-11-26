@@ -66,11 +66,13 @@ field, each with its sign and factor, and the source :math:`s` is minus the sum
 of the other terms that are not time derivatives.  For ``"-laplacian(u) = 1"`` the flux is
 :math:`\mathbf{F} = -\nabla u` and the source is :math:`s = 1`.
 
-For each component, ``general_form_PDE`` adds a ``parsed_kernel`` with the
-flux and the source, and, when the equation has them, a ``time_derivative``
-kernel with :math:`d_1` and a ``second_time_derivative`` kernel with
-:math:`d_2`.  Automatic differentiation gives Newton's method the exact
-Jacobian.
+The equation becomes a conservation law of the model language, the law that
+a model of your own of the input also becomes, and the two lower onto the same
+objects.  For each component, ``general_form_PDE`` adds a ``parsed_kernel``
+with the flux and the source, and, when the equation has them, a
+``time_derivative`` kernel with :math:`d_1` and a ``second_time_derivative``
+kernel with :math:`d_2`.  Automatic differentiation gives Newton's method the
+exact Jacobian.
 
 The notation
 ------------
@@ -126,16 +128,16 @@ dimension of the mesh.
      - ``[a, b]``, ``[[a, b], [c, d]]``
      - One entry per dimension.  A tensor is written row by row.
    * - :math:`\mathbf{I}`, :math:`\mathbf{A}^\mathsf{T}`, :math:`\operatorname{tr} \mathbf{A}`, :math:`\det \mathbf{A}`, :math:`\mathbf{A}^{-1}`
-     - ``I``, ``transpose(A)``, ``trace(A)``, ``det(A)``, ``inverse(A)``
+     - ``I``, ``transpose(A)``, ``trace(A)``, ``det(A)`` or ``determinant(A)``, ``inverse(A)``
      -
    * - :math:`\tfrac12 (\mathbf{A} + \mathbf{A}^\mathsf{T})`, :math:`\tfrac12 (\mathbf{A} - \mathbf{A}^\mathsf{T})`
-     - ``sym(A)``, ``skew(A)``
+     - ``sym(A)`` or ``symmetric(A)``, ``skew(A)``
      -
    * - :math:`\mathbf{A} - \tfrac{1}{n_d} (\operatorname{tr} \mathbf{A}) \mathbf{I}`
-     - ``dev(A)``
+     - ``dev(A)`` or ``deviatoric(A)``
      -
    * - :math:`\mathbf{A} : \mathbf{B}`, :math:`\mathbf{a} \otimes \mathbf{b}`
-     - ``ddot(A, B)``, ``outer(a, b)``
+     - ``ddot(A, B)`` or ``inner(A, B)``, ``outer(a, b)``
      -
    * - functions of one argument
      - ``sin``, ``cos``, ``tan``, ``asin``, ``acos``, ``atan``, ``sinh``,
@@ -146,15 +148,22 @@ dimension of the mesh.
      - ``atan2``, ``pow``, ``hypot``, ``min``, ``max``
      - Of scalars.
    * - a condition
-     - ``if(c, a, b)``, with ``<``, ``>``, ``<=``, ``>=``, ``==``, ``!=``,
-       ``and``, ``or``
-     - A comparison is 1 when true and 0 when false.
+     - ``if(c, a, b)`` or ``conditional(c, a, b)``, with ``<``, ``>``, ``<=``,
+       ``>=``, ``==``, ``!=``, ``and``, ``or``
+     - A comparison is 1 when true and 0 when false.  A condition holds where it is not 0.
    * - :math:`\pi`, :math:`e`, the eigenvalue
      - ``pi``, ``e``, ``eigenvalue``
      - ``eigenvalue`` in an eigenvalue study.
 
-The text follows these rules:
+The language is the formula language of the input (see
+:doc:`/user_guide/input`).  The equations add the derivatives ``du/dt``,
+``du/dx`` and ``du/dn``, and ``div``, ``laplacian``, ``curl``, ``cross`` and
+``grad`` of any expression.  ``sym``, ``dev``, ``det``, ``ddot`` and ``if`` are short spellings,
+each the same function as its long one.  The text follows these rules:
 
+* The equations carry no units: the fields, the coordinates, the time and the
+  definitions are numbers.  Write each value as its number in one consistent
+  system of units.
 * You write every multiplication: ``2*u``.  The text ``2u`` is refused.
 * ``^`` or ``**`` is a power.  It binds tighter than a minus sign and groups
   from the right, so ``-u^2`` is :math:`-(u^2)` and ``a^b^c`` is
@@ -575,9 +584,10 @@ the largest :math:`k_\mathrm{eff}` (see :ref:`tutorial-criticality`):
    neutrons.add_boundary_condition(["phi1 = 0", "phi2 = 0"], boundary=walls)
    k_eff = 1.0 / problem.solve_eigenvalue(num_modes=1).eigenvalues[0]
 
-The script ``examples/reactor_criticality.py`` solves this core on a square of
-side :math:`2\ \mathrm{m}` and compares :math:`k_\mathrm{eff}` with the exact
-value of two-group theory.
+The script ``examples/reactor_criticality.py`` solves the same core on a
+square of side :math:`2\ \mathrm{m}` through the input, with one model of
+your own per group, and compares :math:`k_\mathrm{eff}` with the exact value
+of two-group theory.
 
 Axisymmetric heat conduction
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~

@@ -4,8 +4,8 @@ The input
 .. currentmodule:: dualmesh
 
 A :class:`problem` holds the input of one simulation as a tree of sections:
-the mesh, the physics, the properties, the conditions, the time span and the
-settings of the solve.  Each method of :class:`problem` sets one section, and
+the mesh, the physics, the properties, the conditions, the time span or the
+eigenvalue study, the postprocessors and the settings of the solve.  Each method of :class:`problem` sets one section, and
 :meth:`problem.from_file` reads the tree from a case file in YAML (YAML Ain't
 Markup Language) or TOML (Tom's Obvious Minimal Language).
 :meth:`problem.solve` solves the problem and returns a :class:`results`

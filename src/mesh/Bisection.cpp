@@ -12,19 +12,19 @@
 namespace dualmesh
 {
 
-Bisection::Bisection(const Mesh & initial)
-    : _dimension(initial.dimension()), _space_dimension(initial.spaceDimension()),
-      _block_names(initial.blockNames()), _mesh(initial.dimension())
+namespace
 {
-  _type = initial.numElements() > 0 ? initial.element(0).type : ElementType::Tri3;
-  const bool simplices = _dimension == 2
-                             ? (_type == ElementType::Tri3 || _type == ElementType::Tri6)
-                             : (_type == ElementType::Tet4 || _type == ElementType::Tet10);
-  for (const auto & el : initial.elements())
-    if (!simplices || el.type != _type || (_dimension != 2 && _dimension != 3))
-      throw InputError(
-          "Local refinement and coarsening need a mesh of one element type: Tri3, Tri6, Tet4 or "
-          "Tet10, refined by bisection, or Quad4 or Hex8, refined by subdivision.");
+/// The edges of a triangle and of a tetrahedron by their local corners, in the order of the middle
+/// nodes of Tri6 and Tet10.
+const int triangle_edges[3][2] = {{0, 1}, {1, 2}, {2, 0}};
+const int tetrahedron_edges[6][2] = {{0, 1}, {1, 2}, {0, 2}, {0, 3}, {1, 3}, {2, 3}};
+} // namespace
+
+Bisection::Bisection(const Mesh & initial)
+    : MeshHierarchy(initial,
+                    initial.numElements() > 0 ? initial.element(0).type : ElementType::Tri3,
+                    {ElementType::Tri3, ElementType::Tri6, ElementType::Tet4, ElementType::Tet10})
+{
   const ReferenceElement & reference_element = ReferenceElement::get(_type);
   for (const auto & el : initial.elements())
   {
@@ -34,13 +34,9 @@ Bisection::Bisection(const Mesh & initial)
       coordinates[el.nodes[static_cast<std::size_t>(k)]] = reference_element.node(k);
     _origin_reference.push_back(std::move(coordinates));
   }
-  _points = initial.nodes();
   _parent_edge.assign(_points.size(), Edge{-1, -1});
-  _live.assign(_points.size(), 1);
   // The middle nodes of a quadratic mesh are the middles of their edges, which bisection makes
-  // corners, in the order of the nodes of Tri6 and Tet10.
-  static const int triangle_edges[3][2] = {{0, 1}, {1, 2}, {2, 0}};
-  static const int tetrahedron_edges[6][2] = {{0, 1}, {1, 2}, {0, 2}, {0, 3}, {1, 3}, {2, 3}};
+  // corners.
   for (const auto & el : initial.elements())
   {
     const int corners = _dimension + 1;
@@ -84,34 +80,7 @@ Bisection::Bisection(const Mesh & initial)
     t.origin = static_cast<Index>(_triangles.size());
     _triangles.push_back(t);
   }
-  for (const auto & [name, sides] : initial.sidesets())
-    for (const Side & side : sides)
-    {
-      const std::vector<Index> ends = initial.sideNodes(side);
-      const std::pair<std::string, int> set{name, initial.element(side.first).block};
-      if (_dimension == 3)
-        _face_sets[faceKey(ends[0], ends[1], ends[2])].push_back(set);
-      else
-        _edge_sets[key(ends[0], ends[1])].push_back(set);
-    }
-  _initial_nodes = initial.numNodes();
-  const std::vector<char> & on_boundary = initial.boundaryNodeMarkers();
-  for (const auto & [name, members] : initial.nodesets())
-  {
-    _node_set_names.push_back(name);
-    std::vector<char> in(_points.size(), 0);
-    bool boundary = !members.empty();
-    for (Index n : members)
-    {
-      in[n] = 1;
-      boundary = boundary && on_boundary[static_cast<std::size_t>(n)];
-    }
-    _in_node_set.push_back(std::move(in));
-    _boundary_node_set.push_back(boundary);
-  }
-  build();
-  _numbers_before = _numbers;
-  _placed_before = _placed;
+  start();
 }
 
 Point
@@ -150,67 +119,42 @@ Bisection::middle(const Edge & edge, Index origin)
     for (std::size_t k = 0; k < nodes.size(); ++k)
       position = position + N[k] * _points[static_cast<std::size_t>(nodes[k])];
   }
-  _points.push_back(position);
+  addNode(position, {edge.first, edge.second});
   _parent_edge.push_back(edge);
-  _live.push_back(1);
-  for (auto & in : _in_node_set)
-    in.push_back(in[edge.first] && in[edge.second]);
   _middles[edge] = m;
   return m;
 }
 
-bool
-Bisection::unchanged()
+std::vector<MeshHierarchy::Placed>
+Bisection::currentElements()
 {
-  // The mesh before the call is the current one, so transfer() carries values unchanged.
-  _numbers_before = _numbers;
-  _placed_before = _placed;
-  return false;
+  // The middles of the edges of a quadratic element may be new.
+  std::vector<Placed> out;
+  for (const Triangle & t : _triangles)
+    out.push_back({t.origin, t.block, t.generation, -1, elementNodes(t.n.data(), t.origin)});
+  for (const Tetrahedron & t : _tetrahedra)
+    out.push_back({t.origin, t.block, t.generation, -1, elementNodes(t.n.data(), t.origin)});
+  return out;
 }
 
 bool
-Bisection::refine(const std::vector<char> & marked, int max_generation)
+Bisection::coarsenElements(const std::vector<char> & coarsen, std::vector<char> & refine)
 {
-  if (marked.size() != numElements())
-    throw InputError("The refinement marker must have one entry per element.");
-  if (!(_dimension == 3 ? refineTetrahedra(marked, max_generation)
-                        : refineTriangles(marked, max_generation)))
-    return unchanged();
-  build();
-  return true;
+  return _dimension == 3 ? coarsenTetrahedra(coarsen, refine) : coarsenTriangles(coarsen, refine);
 }
 
 bool
-Bisection::coarsen(const std::vector<char> & marked)
+Bisection::refineElements(const std::vector<char> & refine, int max_level)
 {
-  if (marked.size() != numElements())
-    throw InputError("The coarsening marker must have one entry per element.");
-  if (!(_dimension == 3 ? coarsenTetrahedra(marked) : coarsenTriangles(marked)))
-    return unchanged();
-  build();
-  return true;
+  return _dimension == 3 ? refineTetrahedra(refine, max_level)
+                         : refineTriangles(refine, max_level);
 }
 
-bool
-Bisection::adapt(const std::vector<char> & refine,
-                 const std::vector<char> & coarsen,
-                 int max_generation)
+void
+Bisection::recordRemoval(Index m)
 {
-  if (refine.size() != numElements() || coarsen.size() != numElements())
-    throw InputError("The refinement and coarsening markers must have one entry per element.");
-  // A triangle marked for both is refined.
-  std::vector<char> only_coarsen(coarsen.size());
-  for (std::size_t t = 0; t < coarsen.size(); ++t)
-    only_coarsen[t] = coarsen[t] && !refine[t];
-  std::vector<char> carried = refine;
-  const bool coarsened = _dimension == 3 ? coarsenTetrahedra(only_coarsen, &carried)
-                                         : coarsenTriangles(only_coarsen, &carried);
-  const bool refined = _dimension == 3 ? refineTetrahedra(carried, max_generation)
-                                       : refineTriangles(carried, max_generation);
-  if (!coarsened && !refined)
-    return unchanged();
-  build();
-  return true;
+  const Edge & edge = _parent_edge[static_cast<std::size_t>(m)];
+  _removed.push_back({m, {{edge.first, 0.5}, {edge.second, 0.5}}});
 }
 
 bool
@@ -276,20 +220,20 @@ Bisection::refineTriangles(const std::vector<char> & marked, int max_generation)
   // The halves of an edge of a side set are in that set.
   for (const Edge & edge : edges)
   {
-    const auto found = _edge_sets.find(edge);
-    if (found == _edge_sets.end())
+    const auto found = _side_sets.find(sideKey({edge.first, edge.second}));
+    if (found == _side_sets.end())
       continue;
     const auto sets = found->second;
-    _edge_sets.erase(found);
+    _side_sets.erase(found);
     const Index m = _middles.at(edge);
-    _edge_sets[key(edge.first, m)] = sets;
-    _edge_sets[key(m, edge.second)] = sets;
+    _side_sets[sideKey({edge.first, m})] = sets;
+    _side_sets[sideKey({m, edge.second})] = sets;
   }
   return true;
 }
 
 bool
-Bisection::coarsenTriangles(const std::vector<char> & marked, std::vector<char> * carried)
+Bisection::coarsenTriangles(const std::vector<char> & marked, std::vector<char> & carried)
 {
   std::vector<std::vector<std::size_t>> around(_points.size());
   for (std::size_t t = 0; t < _triangles.size(); ++t)
@@ -348,27 +292,23 @@ Bisection::coarsenTriangles(const std::vector<char> & marked, std::vector<char> 
     if (!removed[t])
     {
       kept.push_back(_triangles[t]);
-      if (carried)
-        marks.push_back((*carried)[t]);
+      marks.push_back(carried[t]);
     }
   kept.insert(kept.end(), parents.begin(), parents.end());
   _triangles = std::move(kept);
-  if (carried)
-  {
-    marks.resize(_triangles.size(), 0);
-    *carried = std::move(marks);
-  }
+  marks.resize(_triangles.size(), 0);
+  carried = std::move(marks);
   for (Index m : gone)
   {
+    recordRemoval(m);
     const Edge edge = _parent_edge[m];
-    const auto half = _edge_sets.find(key(edge.first, m));
-    if (half != _edge_sets.end())
+    const auto half = _side_sets.find(sideKey({edge.first, m}));
+    if (half != _side_sets.end())
     {
-      _edge_sets[edge] = half->second;
-      _edge_sets.erase(half);
-      _edge_sets.erase(key(m, edge.second));
+      _side_sets[sideKey({edge.first, edge.second})] = half->second;
+      _side_sets.erase(half);
+      _side_sets.erase(sideKey({m, edge.second}));
     }
-    _live[m] = 0;
   }
   return true;
 }
@@ -457,13 +397,13 @@ Bisection::refineTetrahedra(const std::vector<char> & marked, int max_generation
       for (Index c : tets[u].n)
         if (c != edge.first && c != edge.second)
         {
-          const auto found = _face_sets.find(faceKey(edge.first, edge.second, c));
-          if (found == _face_sets.end())
+          const auto found = _side_sets.find(sideKey({edge.first, edge.second, c}));
+          if (found == _side_sets.end())
             continue;
           const auto sets = found->second;
-          _face_sets.erase(found);
-          _face_sets[faceKey(edge.first, m, c)] = sets;
-          _face_sets[faceKey(m, edge.second, c)] = sets;
+          _side_sets.erase(found);
+          _side_sets[sideKey({edge.first, m, c})] = sets;
+          _side_sets[sideKey({m, edge.second, c})] = sets;
         }
     // Each tetrahedron of the ring splits into the one with the second end of the edge replaced
     // by the middle node and the one with the first end replaced, which keep its orientation.
@@ -492,7 +432,7 @@ Bisection::refineTetrahedra(const std::vector<char> & marked, int max_generation
 }
 
 bool
-Bisection::coarsenTetrahedra(const std::vector<char> & marked, std::vector<char> * carried)
+Bisection::coarsenTetrahedra(const std::vector<char> & marked, std::vector<char> & carried)
 {
   std::vector<std::vector<std::size_t>> around(_points.size());
   for (std::size_t t = 0; t < _tetrahedra.size(); ++t)
@@ -564,12 +504,12 @@ Bisection::coarsenTetrahedra(const std::vector<char> & marked, std::vector<char>
     for (const auto & [others, pair] : by_others)
       for (const Index c : {others.first, others.second})
       {
-        const auto half = _face_sets.find(faceKey(edge.first, m, c));
-        if (half == _face_sets.end())
+        const auto half = _side_sets.find(sideKey({edge.first, m, c}));
+        if (half == _side_sets.end())
           continue;
-        _face_sets[faceKey(edge.first, edge.second, c)] = half->second;
-        _face_sets.erase(half);
-        _face_sets.erase(faceKey(m, edge.second, c));
+        _side_sets[sideKey({edge.first, edge.second, c})] = half->second;
+        _side_sets.erase(half);
+        _side_sets.erase(sideKey({m, edge.second, c}));
       }
   }
   if (gone.empty())
@@ -580,187 +520,21 @@ Bisection::coarsenTetrahedra(const std::vector<char> & marked, std::vector<char>
     if (!removed[t])
     {
       kept.push_back(_tetrahedra[t]);
-      if (carried)
-        marks.push_back((*carried)[t]);
+      marks.push_back(carried[t]);
     }
   kept.insert(kept.end(), parents.begin(), parents.end());
   _tetrahedra = std::move(kept);
-  if (carried)
-  {
-    marks.resize(_tetrahedra.size(), 0);
-    *carried = std::move(marks);
-  }
+  marks.resize(_tetrahedra.size(), 0);
+  carried = std::move(marks);
   for (Index m : gone)
-    _live[m] = 0;
+    recordRemoval(m);
   return true;
-}
-
-void
-Bisection::project(const std::string & name, const std::function<Point(const Point &)> & projection)
-{
-  const auto found = _mesh.sidesets().find(name);
-  if (found == _mesh.sidesets().end())
-    throw InputError("There is no side set '" + name + "' to move onto its boundary.");
-  std::vector<char> moved(_points.size(), 0);
-  for (const Side & side : found->second)
-    for (Index i : _mesh.sideNodes(side))
-    {
-      const Index n = _numbers[static_cast<std::size_t>(i)];
-      if (moved[static_cast<std::size_t>(n)])
-        continue;
-      _points[static_cast<std::size_t>(n)] = projection(_points[static_cast<std::size_t>(n)]);
-      moved[static_cast<std::size_t>(n)] = 1;
-    }
-  // The same mesh with the moved positions, and the same mesh before the last change.
-  const std::vector<Index> numbers_before = _numbers_before;
-  const std::vector<Placed> placed_before = _placed_before;
-  build();
-  _numbers_before = numbers_before;
-  _placed_before = placed_before;
-}
-
-std::vector<int>
-Bisection::generations() const
-{
-  std::vector<int> out;
-  for (const Triangle & t : _triangles)
-    out.push_back(t.generation);
-  for (const Tetrahedron & t : _tetrahedra)
-    out.push_back(t.generation);
-  return out;
-}
-
-std::vector<Index>
-Bisection::origins() const
-{
-  std::vector<Index> out;
-  for (const Triangle & t : _triangles)
-    out.push_back(t.origin);
-  for (const Tetrahedron & t : _tetrahedra)
-    out.push_back(t.origin);
-  return out;
-}
-
-void
-Bisection::build()
-{
-  _numbers_before = _numbers;
-  _placed_before = std::move(_placed);
-  _placed.clear();
-  // The nodes of every element; the middles of the edges of a quadratic element may be new.
-  std::vector<int> blocks;
-  for (const Triangle & t : _triangles)
-  {
-    _placed.push_back({t.origin, elementNodes(t.n.data(), t.origin)});
-    blocks.push_back(t.block);
-  }
-  for (const Tetrahedron & t : _tetrahedra)
-  {
-    _placed.push_back({t.origin, elementNodes(t.n.data(), t.origin)});
-    blocks.push_back(t.block);
-  }
-  std::vector<char> used(_points.size(), 0);
-  for (const Placed & element : _placed)
-    for (Index n : element.nodes)
-      used[n] = 1;
-  _numbers.clear();
-  std::vector<Index> index(_points.size(), -1);
-  Mesh out(_dimension);
-  out.setSpaceDimension(_space_dimension);
-  for (const auto & [block, name] : _block_names)
-    out.setBlockName(block, name);
-  for (Index n = 0; n < static_cast<Index>(_points.size()); ++n)
-    if (used[n])
-    {
-      index[n] = static_cast<Index>(_numbers.size());
-      _numbers.push_back(n);
-      out.addNode(_points[n]);
-    }
-  for (std::size_t e = 0; e < _placed.size(); ++e)
-  {
-    std::vector<Index> nodes;
-    for (Index n : _placed[e].nodes)
-      nodes.push_back(index[n]);
-    out.addElement(_type, nodes, blocks[e]);
-  }
-  // The sides of every edge (face): one on the boundary, two inside.  A side of a set between two
-  // blocks is the side of the element of its block.
-  std::map<std::string, std::vector<Side>> sets;
-  const auto addSets = [&](const auto & sides_of, const auto & sets_of)
-  {
-    for (const auto & [face, names] : sets_of)
-    {
-      const auto found = sides_of.find(face);
-      if (found == sides_of.end())
-        continue;
-      for (const auto & [name, block] : names)
-      {
-        Side chosen = found->second.front();
-        for (const Side & side : found->second)
-          if (out.element(side.first).block == block)
-            chosen = side;
-        sets[name].push_back(chosen);
-      }
-    }
-  };
-  if (_dimension == 3)
-  {
-    std::map<Face, std::vector<Side>> sides;
-    for (Index e = 0; e < out.numElements(); ++e)
-      for (int k = 0; k < 4; ++k)
-      {
-        const std::vector<Index> c = out.sideNodes({e, k});
-        sides[faceKey(_numbers[c[0]], _numbers[c[1]], _numbers[c[2]])].push_back({e, k});
-      }
-    addSets(sides, _face_sets);
-  }
-  else
-  {
-    std::map<Edge, std::vector<Side>> sides;
-    for (Index e = 0; e < out.numElements(); ++e)
-      for (int k = 0; k < 3; ++k)
-      {
-        const std::vector<Index> ends = out.sideNodes({e, k});
-        sides[key(_numbers[ends[0]], _numbers[ends[1]])].push_back({e, k});
-      }
-    addSets(sides, _edge_sets);
-  }
-  for (const auto & [name, list] : sets)
-    out.addSideset(name, list);
-  addNodeSets(out);
-  _mesh = std::move(out);
-}
-
-void
-Bisection::addNodeSets(Mesh & out) const
-{
-  // A new node joins a node set on the boundary only where it lies on the boundary too, as
-  // Mesh::refined grows its sets: the middle of an edge between two members may lie inside, on a
-  // chord across a corner.
-  const std::vector<char> & boundary = out.boundaryNodeMarkers();
-  for (std::size_t k = 0; k < _node_set_names.size(); ++k)
-  {
-    std::vector<Index> members;
-    for (std::size_t i = 0; i < _numbers.size(); ++i)
-    {
-      const Index n = _numbers[i];
-      if (!_in_node_set[k][static_cast<std::size_t>(n)])
-        continue;
-      if (_boundary_node_set[k] && n >= _initial_nodes && !boundary[i])
-        continue;
-      members.push_back(static_cast<Index>(i));
-    }
-    out.addNodeset(_node_set_names[k], members);
-  }
 }
 
 std::vector<Index>
 Bisection::elementNodes(const Index * corners, Index origin)
 {
   std::vector<Index> nodes(corners, corners + (_dimension == 3 ? 4 : 3));
-  // The middles of the edges, in the order of the nodes of Tri6 and Tet10.
-  static const int triangle_edges[3][2] = {{0, 1}, {1, 2}, {2, 0}};
-  static const int tetrahedron_edges[6][2] = {{0, 1}, {1, 2}, {0, 2}, {0, 3}, {1, 3}, {2, 3}};
   if (_type == ElementType::Tri6)
     for (const auto & e : triangle_edges)
       nodes.push_back(middle(key(corners[e[0]], corners[e[1]]), origin));
@@ -770,83 +544,34 @@ Bisection::elementNodes(const Index * corners, Index origin)
   return nodes;
 }
 
-Eigen::VectorXd
-Bisection::transfer(const Eigen::VectorXd & before, int width) const
+bool
+Bisection::locate(const Placed & element, Index node, Point & xi) const
 {
-  if (before.size() != static_cast<Index>(_numbers_before.size()) * width)
-    throw InputError("The values to transfer have " + std::to_string(before.size()) +
-                     " entries, and the mesh before the change has " +
-                     std::to_string(_numbers_before.size()) + " nodes of " + std::to_string(width) +
-                     " values.");
-  std::vector<Index> position_before(_points.size(), -1);
-  for (std::size_t i = 0; i < _numbers_before.size(); ++i)
-    position_before[static_cast<std::size_t>(_numbers_before[i])] = static_cast<Index>(i);
-  // The old elements of each initial element, where a new node is looked for.
-  std::map<Index, std::vector<std::size_t>> old_of_origin;
-  for (std::size_t e = 0; e < _placed_before.size(); ++e)
-    old_of_origin[_placed_before[e].origin].push_back(e);
-  // An initial element of each new node: that of an element of the current mesh that holds it.
-  std::vector<Index> origin_of(_points.size(), -1);
-  for (const Placed & element : _placed)
-    for (Index n : element.nodes)
-      origin_of[static_cast<std::size_t>(n)] = element.origin;
-  const ReferenceElement & reference_element = ReferenceElement::get(_type);
-  const int corners = _dimension + 1;
-  Eigen::VectorXd after(static_cast<Index>(_numbers.size()) * width);
-  for (std::size_t i = 0; i < _numbers.size(); ++i)
+  // The barycentric coordinates of the node in the element, in the reference coordinates of the
+  // initial element, where every element of the hierarchy is affine:
+  // x = c0 + sum_k xi_k (c_k - c0).
+  const Point x = reference(node, element.origin);
+  const Point c0 = reference(element.nodes[0], element.origin);
+  Eigen::Matrix3d A = Eigen::Matrix3d::Identity();
+  Eigen::Vector3d rhs = Eigen::Vector3d::Zero();
+  for (int k = 1; k <= _dimension; ++k)
   {
-    const Index n = _numbers[i];
-    if (position_before[static_cast<std::size_t>(n)] >= 0)
-    {
-      after.segment(static_cast<Index>(i) * width, width) =
-          before.segment(position_before[static_cast<std::size_t>(n)] * width, width);
-      continue;
-    }
-    // The old element of the same initial element whose corners hold the node, in the reference
-    // coordinates of the initial element, where every element of the hierarchy is affine.
-    const Index origin = origin_of[static_cast<std::size_t>(n)];
-    const Point x = reference(n, origin);
-    bool found = false;
-    for (std::size_t e : old_of_origin[origin])
-    {
-      const Placed & old = _placed_before[e];
-      // The barycentric coordinates of x in the old element: x = c0 + sum_k xi_k (c_k - c0).
-      Eigen::Matrix3d A = Eigen::Matrix3d::Identity();
-      Eigen::Vector3d rhs = Eigen::Vector3d::Zero();
-      const Point c0 = reference(old.nodes[0], origin);
-      for (int k = 1; k < corners; ++k)
-      {
-        const Point ck = reference(old.nodes[static_cast<std::size_t>(k)], origin);
-        for (int d = 0; d < 3; ++d)
-          A(d, k - 1) = ck[d] - c0[d];
-      }
-      for (int d = 0; d < 3; ++d)
-        rhs[d] = x[d] - c0[d];
-      const Eigen::Vector3d xi = A.colPivHouseholderQr().solve(rhs);
-      double sum = 0.0;
-      bool inside = true;
-      for (int k = 0; k < _dimension; ++k)
-      {
-        inside = inside && xi[k] >= -1e-10;
-        sum += xi[k];
-      }
-      if (!inside || sum > 1.0 + 1e-10)
-        continue;
-      std::array<double, 10> N{};
-      std::array<Point, 10> dN{};
-      reference_element.shape(Point{xi[0], xi[1], xi[2]}, N.data(), dN.data());
-      Eigen::VectorXd value = Eigen::VectorXd::Zero(width);
-      for (std::size_t k = 0; k < old.nodes.size(); ++k)
-        value += N[k] * before.segment(
-                            position_before[static_cast<std::size_t>(old.nodes[k])] * width, width);
-      after.segment(static_cast<Index>(i) * width, width) = value;
-      found = true;
-      break;
-    }
-    if (!found)
-      throw std::logic_error("dualmesh: a new node lies in no element of the mesh before.");
+    const Point ck = reference(element.nodes[static_cast<std::size_t>(k)], element.origin);
+    for (int d = 0; d < 3; ++d)
+      A(d, k - 1) = ck[d] - c0[d];
   }
-  return after;
+  for (int d = 0; d < 3; ++d)
+    rhs[d] = x[d] - c0[d];
+  const Eigen::Vector3d solution = A.colPivHouseholderQr().solve(rhs);
+  double sum = 0.0;
+  for (int k = 0; k < _dimension; ++k)
+  {
+    if (solution[k] < -1e-10)
+      return false;
+    sum += solution[k];
+  }
+  xi = Point{solution[0], solution[1], solution[2]};
+  return sum <= 1.0 + 1e-10;
 }
 
 } // namespace dualmesh

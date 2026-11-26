@@ -132,6 +132,10 @@ def _axis_coordinates(
             raise ValueError(
                 f"Give {name}_coordinates or the bounds of {name}, not both: the coordinates hold the bounds."
             )
+        if num_elements is not None or bias != 1.0:
+            raise ValueError(
+                f"Give {name}_coordinates or the element count and bias of {name}, not both: the coordinates hold the elements."
+            )
         return [float(c) for c in coordinates]
     if minimum is None or maximum is None or num_elements is None:
         raise ValueError(
@@ -277,13 +281,6 @@ def generate_box_mesh(
     z = _axis_coordinates(z_coordinates, z_min, z_max, num_z_elements, z_bias, "z")
     linear = _core.generate_box_mesh(x, y, z, _corner_type(element_type))
     return _promote(linear, element_type)
-
-
-def annulus_coordinates(
-    inner_radius: float, outer_radius: float, num_elements: int, bias: float = 1.0
-) -> list[float]:
-    """Radial node coordinates for an annulus (a convenience alias)."""
-    return graded_coordinates(inner_radius, outer_radius, num_elements, bias)
 
 
 def generate_annulus_mesh(
@@ -613,8 +610,3 @@ def write_sidesets(mesh: Mesh, filename: str) -> None:
         for k, name in enumerate(names):
             cell_data[name].append(membership[k, rows])
     meshio.write(filename, meshio.Mesh(points, cells, cell_data=cell_data), file_format="vtu")
-
-
-def mesh_summary(mesh: Mesh) -> str:
-    """Human-readable description of a mesh."""
-    return mesh.summary()

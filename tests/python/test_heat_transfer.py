@@ -110,7 +110,7 @@ def test_example_5_3_2_cylinder_with_heat_generation(num_elements):
     mesh = dualmesh.generate_line_mesh(start=0.0, end=outer_radius, num_elements=num_elements)
     problem = dualmesh.Problem(mesh, method="dmcdm", coordinates="axisymmetric")
     problem.add_variable("temperature")
-    problem.add_kernel("heat_conduction", variable="temperature", thermal_conductivity=conductivity)
+    problem.add_kernel("diffusion", variable="temperature", diffusivity=conductivity)
     problem.add_kernel("body_force", variable="temperature", value=generation)
     problem.add_boundary_condition(
         "Dirichlet",
@@ -205,10 +205,10 @@ def bus_bar_like_problem(conductivity_polynomial=(1.0,)):
     problem = dualmesh.Problem(mesh, method="DMCDM")
     problem.add_variable("temperature", initial_condition=0.0)
     problem.add_kernel(
-        "heat_conduction",
+        "diffusion",
         variable="temperature",
-        thermal_conductivity=0.2,
-        temperature_polynomial=list(conductivity_polynomial),
+        diffusivity=0.2,
+        solution_polynomial=list(conductivity_polynomial),
     )
     problem.add_boundary_condition("Dirichlet", "left", variable="temperature", value=500.0)
     problem.add_boundary_condition("Dirichlet", "right", variable="temperature", value=300.0)
@@ -265,10 +265,10 @@ def bus_bar(nx, ny, conductivity_polynomial=(1.0,), conductivity=20.0):
     problem = dualmesh.Problem(mesh, method="DMCDM")
     problem.add_variable("temperature")
     problem.add_kernel(
-        "heat_conduction",
+        "diffusion",
         variable="temperature",
-        thermal_conductivity=conductivity,
-        temperature_polynomial=list(conductivity_polynomial),
+        diffusivity=conductivity,
+        solution_polynomial=list(conductivity_polynomial),
     )
     problem.add_kernel("body_force", variable="temperature", value=1.0e6)
     problem.add_boundary_condition("Dirichlet", "left", variable="temperature", value=40.0)
@@ -410,10 +410,10 @@ def test_example_6_2_3_temperature_dependent_bar(num_elements, expected):
     problem = line_problem(num_elements, length=0.18)
     problem.add_variable("temperature", initial_condition=400.0)
     problem.add_kernel(
-        "heat_conduction",
+        "diffusion",
         variable="temperature",
-        thermal_conductivity=0.2,
-        temperature_polynomial=[1.0, 2.0e-3],
+        diffusivity=0.2,
+        solution_polynomial=[1.0, 2.0e-3],
     )
     problem.add_boundary_condition("Dirichlet", "left", variable="temperature", value=500.0)
     problem.add_boundary_condition("Dirichlet", "right", variable="temperature", value=300.0)

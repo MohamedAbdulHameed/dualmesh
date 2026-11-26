@@ -34,8 +34,6 @@ struct MeshPartition
   /// Parts that touch each node, sorted and without duplicates.
   std::vector<std::vector<int>> node_parts;
 
-  /// Elements of one part.
-  std::vector<Index> elementsOf(int part) const;
   /// Number of faces of the mesh whose two elements are in different parts,
   /// which is the quantity a good partitioner minimizes.
   Index edgeCut(const Mesh & mesh) const;

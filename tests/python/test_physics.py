@@ -28,10 +28,10 @@ def bus_bar_mesh():
     )
 
 
-def test_heat_transfer_equals_the_objects_and_reproduces_Reddy():
+def test_heat_conduction_equals_the_objects_and_reproduces_Reddy():
     objects = dualmesh.Problem(bus_bar_mesh(), method="dmcdm")
     objects.add_variable("temperature")
-    objects.add_kernel("heat_conduction", variable="temperature", thermal_conductivity=20.0)
+    objects.add_kernel("diffusion", variable="temperature", diffusivity=20.0)
     objects.add_kernel("body_force", variable="temperature", value=1.0e6)
     objects.add_boundary_condition("Dirichlet", "left", variable="temperature", value=40.0)
     objects.add_boundary_condition("Dirichlet", "right", variable="temperature", value=10.0)
@@ -43,7 +43,7 @@ def test_heat_transfer_equals_the_objects_and_reproduces_Reddy():
     physics = dualmesh.Problem(bus_bar_mesh(), method="dmcdm")
     # The objects start at 0, so the physics does too, for the same iterates.
     heat = physics.add_physics(
-        "heat_transfer", thermal_conductivity=20.0, heat_source=1.0e6, initial_condition=0.0
+        "heat_conduction", thermal_conductivity=20.0, heat_source=1.0e6, initial_condition=0.0
     )
     heat.add_boundary_condition("temperature = 40", boundary="left")
     heat.add_boundary_condition("temperature = 10", boundary="right")
@@ -128,7 +128,7 @@ def cylinder(symmetry: bool):
         element_type="Quad9",
     )
     problem = dualmesh.Problem(mesh, method="fem")
-    heat = problem.add_physics("heat_transfer", thermal_conductivity=50.0)
+    heat = problem.add_physics("heat_conduction", thermal_conductivity=50.0)
     heat.add_boundary_condition("temperature = T_inner", boundary="inner", T_inner=t_inner)
     heat.add_boundary_condition("temperature = 0", boundary="outer")
     solid = problem.add_physics(
@@ -145,7 +145,7 @@ def cylinder(symmetry: bool):
         solid.add_boundary_condition("disp_x = 0", boundary="end")
     problem.add_coupling(
         "thermal_expansion",
-        heat_transfer=heat,
+        heat_conduction=heat,
         solid_mechanics=solid,
         linear_expansion_coefficient=expansion,
         stress_free_temperature=0.0,
@@ -274,48 +274,50 @@ def test_a_coupled_system_in_general_form_converges():
 
 def test_misuse_is_answered_with_what_to_do():
     problem = dualmesh.Problem(bus_bar_mesh())
-    with pytest.raises(ValueError, match="Did you mean 'heat_transfer'"):
-        problem.add_physics("heat_transfr")
+    with pytest.raises(ValueError, match="Did you mean 'heat_conduction'"):
+        problem.add_physics("heat_conductoin")
     with pytest.raises(ValueError, match="Did you mean 'thermal_conductivity'"):
-        problem.add_physics("heat_transfer", thermal_conductivty=1.0)
+        problem.add_physics("heat_conduction", thermal_conductivty=1.0)
     with pytest.raises(ValueError, match="is a coupling"):
         problem.add_physics(
             "thermal_expansion",
-            heat_transfer="a",
+            heat_conduction="a",
             solid_mechanics="b",
             linear_expansion_coefficient=1.0,
             stress_free_temperature=0.0,
         )
-    with pytest.raises(ValueError, match="has 0 heat_transfer physics"):
+    with pytest.raises(ValueError, match="has 0 heat_conduction physics"):
         problem.add_coupling(
             "thermal_expansion",
             linear_expansion_coefficient=1.0,
             stress_free_temperature=0.0,
         )
-    heat = problem.add_physics("heat_transfer", thermal_conductivity=1.0)
-    other = problem.add_physics("heat_transfer", thermal_conductivity=1.0)
-    assert (heat.name, other.name) == ("heat_transfer", "heat_transfer_2")
+    heat = problem.add_physics("heat_conduction", thermal_conductivity=1.0)
+    other = problem.add_physics("heat_conduction", thermal_conductivity=1.0)
+    assert (heat.name, other.name) == ("heat_conduction", "heat_conduction_2")
     solid = problem.add_physics(
         "solid_mechanics",
         formulation="plane_stress",
         youngs_modulus=1.0,
         poissons_ratio=0.3,
     )
-    with pytest.raises(ValueError, match="has 2 heat_transfer physics"):
+    with pytest.raises(ValueError, match="has 2 heat_conduction physics"):
         problem.add_coupling(
             "thermal_expansion", linear_expansion_coefficient=1.0, stress_free_temperature=0.0
         )
     with pytest.raises(ValueError, match="the object that add_physics returned, not 'heat'"):
         problem.add_coupling(
             "thermal_expansion",
-            heat_transfer="heat",
+            heat_conduction="heat",
             linear_expansion_coefficient=1.0,
             stress_free_temperature=0.0,
         )
-    with pytest.raises(ValueError, match="is a heat_transfer physics, and needs a solid_mechanics"):
+    with pytest.raises(
+        ValueError, match="is a heat_conduction physics, and needs a solid_mechanics"
+    ):
         problem.add_coupling(
             "thermal_expansion",
-            heat_transfer=heat,
+            heat_conduction=heat,
             solid_mechanics=other,
             linear_expansion_coefficient=1.0,
             stress_free_temperature=0.0,
@@ -338,7 +340,7 @@ def test_misuse_is_answered_with_what_to_do():
 
 def test_couplings_are_added_before_the_solve():
     problem = dualmesh.Problem(bus_bar_mesh(), method="fem")
-    heat = problem.add_physics("heat_transfer", thermal_conductivity=1.0)
+    heat = problem.add_physics("heat_conduction", thermal_conductivity=1.0)
     heat.add_boundary_condition("temperature = 1", boundary="left")
     solid = problem.add_physics(
         "solid_mechanics",
@@ -351,7 +353,7 @@ def test_couplings_are_added_before_the_solve():
     with pytest.raises(ValueError, match="before the problem is solved"):
         problem.add_coupling(
             "thermal_expansion",
-            heat_transfer=heat,
+            heat_conduction=heat,
             solid_mechanics=solid,
             linear_expansion_coefficient=1.0,
             stress_free_temperature=0.0,

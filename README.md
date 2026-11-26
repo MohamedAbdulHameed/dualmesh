@@ -1,6 +1,6 @@
-# dualmesh-multiphysics
+# dualmesh
 
-dualmesh-multiphysics solves coupled problems of heat transfer, solid mechanics and incompressible flow, and partial differential equations that you write yourself. It discretizes a problem by the finite element method (FEM), and a problem with a flow by the dual mesh control domain method (DMCDM), which conserves the transported quantity in every control domain. The `method` argument chooses the other method where it applies. The core is C++17 with PETSc and MPI, and you drive it from Python or from a YAML case file.
+dualmesh solves coupled problems of heat transfer, solid mechanics and incompressible flow, and partial differential equations that you write yourself. It discretizes a problem by the finite element method (FEM), and a problem with a flow by the dual mesh control domain method (DMCDM), which conserves the transported quantity in every control domain. The `method` argument chooses the other method where it applies. The core is C++17 with PETSc and MPI, and you drive it from Python or from a YAML case file.
 
 ## A first case
 

@@ -115,10 +115,28 @@ public:
   /// of the velocity, so it keeps the solution independent of a constant added to it and keeps
   /// upwind bounded.
   virtual bool nonConservativeFaceFlux() const { return false; }
-  /// Whether the source S of the kernel belongs to the strong residual of its equation, which a
-  /// residual-based stabilisation reads.  An advection written as a flux for conservation keeps
-  /// the source v . grad u as its term of the residual.
+  /// Whether the term of the kernel belongs to the strong residual of its equation, which a
+  /// residual-based stabilisation reads (StrongResidual): a source, and a flux whose divergence
+  /// strongResidual gives.  An advection written as a face flux keeps v . grad u as its term.
   virtual bool inStrongResidual() const { return hasSource(); }
+  /// The term of the kernel in the strong residual of its equation at the point of @p ctx: its
+  /// source by default.
+  virtual ADReal strongResidual(const QpContext & ctx) const { return computeSource(ctx); }
+  /// Whether strongResidual reads the fields, the position and the time alone, so that a context
+  /// of the old fields and the old time gives its term at the old state of a step.  A term that
+  /// reads properties does not, since that context keeps the properties of the new state.
+  virtual bool oldStateFromFields() const { return false; }
+  /// Whether the kernel is a residual-based stabilisation (SUPG, PSPG), whose term vanishes with
+  /// the strong residual and so stays out of it.
+  virtual bool isStabilization() const { return false; }
+  /// Whether the kernel carries its variable with a flow (an advection or its stabilisation).
+  /// The automatic quadrature of a storage term then takes the Gauss rule, since a lumped
+  /// storage loses phase accuracy in a transport.
+  virtual bool transportsVariable() const { return false; }
+  /// The quadrature rule of the kernel in an eigenvalue study (Problem::eigenvalueStudy): its
+  /// rule of every study by default.  A storage term that time stepping lumps takes its
+  /// consistent rule there (TimeDerivative).
+  virtual const QuadratureSpec & eigenvalueStudyQuadrature() const { return quadrature(); }
   /// Whether the kernel evaluates the residual of its equation with the time derivative in it (a
   /// residual-based stabilisation, weighted by QpContext::time_weight).  The theta method gives
   /// that derivative no weight when theta is 0, so an explicit step refuses such a kernel.
@@ -274,20 +292,8 @@ public:
   const std::vector<Index> & nodes() const { return _nodes; }
   bool isLoad() const override { return true; }
 
-  /// For a load given by coordinates rather than by a boundary: the entity each
-  /// requested point was resolved to, and how far that entity is from the
-  /// point.  One entry per requested point, in the order they were given.
-  const std::vector<std::pair<Index, double>> & pointNodes() const { return _point_nodes; }
-  /// Keep only the requested points whose flag is set, and rebuild nodes().
-  /// A distributed run uses this to drop the points that another process
-  /// resolved more accurately, because each process only sees its own part of
-  /// the mesh and would otherwise apply the load at its own nearest node.
-  void keepPoints(const std::vector<char> & keep);
-
 protected:
   std::vector<Index> _nodes;
-  std::vector<Index> _boundary_nodes;
-  std::vector<std::pair<Index, double>> _point_nodes;
   FunctionPtr _value;
 };
 
@@ -307,6 +313,68 @@ protected:
 
 /// Add the parameter advection_scheme of an advective kernel to @p params.
 void addAdvectionSchemeParam(InputParameters & params);
+/// Whether the advection scheme named by @p text is a face flux of DMCDM (upwind,
+/// linear_upwind, limited).
+bool isFaceAdvectionScheme(const std::string & text);
+
+/// The parameter of a residual-based stabilisation (SUPG, PSPG) after Tezduyar (1991),
+///
+///   tau = [ 4 a^2 / h^2 + 9 (4 d / h^2)^2 + s^2 ]^(-1/2) ,
+///
+/// with h the element size, a^2 the square @p speed2 of the advective speed, d the diffusivity
+/// @p diffusivity and s the rate @p unsteady of the time derivative, 2 / dt with dt the time step,
+/// or 0 in a steady solve.  The three terms are the reciprocal time scales of the convection, the
+/// diffusion across an element and the unsteadiness.  The factor 3 (9 on the square) gives the
+/// diffusive limit h^2 / (12 d) of the optimal parameter of linear elements.  The momentum
+/// equations take it per unit density: a = rho |v|, d = mu and s = 2 rho_t / dt.
+template <typename Real>
+Real
+stabilizationTau(double h, const Real & speed2, const Real & diffusivity, double unsteady)
+{
+  using std::sqrt;
+  Real inverse2 = (4.0 / (h * h)) * speed2;
+  const Real diffusive = 12.0 * diffusivity / (h * h);
+  inverse2 += diffusive * diffusive;
+  inverse2 += unsteady * unsteady;
+  return 1.0 / sqrt(inverse2);
+}
+
+/// The strong residual r of the equation of one variable, which a residual-based stabilisation
+/// (SUPG, PSPG) reads: the sum of the terms Kernel::strongResidual of the kernels of the variable
+/// that are inStrongResidual().  A term of a time kernel or of a kernel atNewTime() is taken at
+/// the new state, and the steady terms as the assembly weights them.  The helper also holds the
+/// size h of every element, halved on a quadratic element (elementSize).
+class StrongResidual
+{
+public:
+  /// Collect the terms of the equation of the variable named @p variable, for the stabilisation
+  /// named @p owner.  It matches the kernels by the name of their variable, since a kernel after
+  /// the owner has not resolved its variable yet.  It refuses a kernel with a flux that is
+  /// neither in the residual nor a stabilisation, whose term the residual would miss.
+  void setup(const Problem & problem, const std::string & variable, const std::string & owner);
+  /// r at the point of @p ctx, with the weight @p time_weight of the time terms
+  /// (QpContext::time_weight).  @p whole_step: the owner takes r at the new time with the weight
+  /// 1, so r is the residual of the discrete step, with the steady terms weighted by theta at the
+  /// new state and by 1 - theta at the old state, which a context of the old fields and the old
+  /// time gives.  Otherwise the assembly weights the owner as it weights the steady terms, and r
+  /// holds them at the state of @p ctx.
+  ADReal value(const QpContext & ctx, double time_weight, bool whole_step) const;
+  /// The kernels of the residual.
+  const std::vector<const Kernel *> & terms() const { return _terms; }
+  /// Whether the residual holds a time derivative.
+  bool hasTimeTerm() const;
+  bool threadSafe() const;
+  /// The size h of the element of @p ctx, 1 away from an element.
+  double elementSize(const QpContext & ctx) const
+  {
+    return ctx.element >= 0 ? _h[ctx.element] : 1.0;
+  }
+
+private:
+  std::vector<const Kernel *> _terms;
+  std::string _owner;
+  std::vector<double> _h;
+};
 
 /// The mass equation of the flow of the problem @p problem (the kernel whose
 /// conservedVelocity() is defined), or nullptr for a problem without one (the penalty

@@ -68,16 +68,6 @@ availablePartitioners()
   return out;
 }
 
-std::vector<Index>
-MeshPartition::elementsOf(int part) const
-{
-  std::vector<Index> out;
-  for (std::size_t e = 0; e < element_part.size(); ++e)
-    if (element_part[e] == part)
-      out.push_back(static_cast<Index>(e));
-  return out;
-}
-
 Index
 MeshPartition::edgeCut(const Mesh & mesh) const
 {

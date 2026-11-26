@@ -64,11 +64,11 @@ The registry gives the same information in Python:
    import dualmesh
 
    dualmesh.registered_types()  # every object type
-   dualmesh.object_category("heat_conduction")  # 'kernel'
-   print(dualmesh.describe_object("heat_conduction"))
+   dualmesh.object_category("diffusion")  # 'kernel'
+   print(dualmesh.describe_object("diffusion"))
 
 On the command line, ``dualmesh list`` prints the types and
-``dualmesh describe heat_conduction`` prints the parameters of one type.
+``dualmesh describe diffusion`` prints the parameters of one type.
 
 .. toctree::
    :maxdepth: 1

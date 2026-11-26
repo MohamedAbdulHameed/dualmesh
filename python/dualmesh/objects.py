@@ -59,15 +59,11 @@ def _base_parameters(
 
 
 class _PythonObjectMixin:
-    """Shared behaviour: keep user parameters, resolve names at setup time."""
+    """Shared behaviour: resolve names at setup time. Each subclass calls setup from its
+    initial_setup, after the initial_setup of its C++ base."""
 
     def setup(self, problem):  # pragma: no cover - default is a no-op
         """Resolve names (variables, functions, properties) before solving."""
-
-    def initial_setup(self, problem):
-        type(self).__mro__[1].initial_setup(self, problem)  # C++ base implementation
-        self.problem = problem
-        self.setup(problem)
 
 
 class PythonKernel(_core.Kernel, _PythonObjectMixin):

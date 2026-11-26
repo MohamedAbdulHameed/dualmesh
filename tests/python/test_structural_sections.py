@@ -23,7 +23,7 @@ def test_a_modulus_that_depends_on_the_temperature_has_an_exact_Jacobian():
 
     mesh = dualmesh.generate_line_mesh(start=0.0, end=1.0, num_elements=6)
     problem = dualmesh.Problem(mesh, method="fem")
-    heat = problem.add_physics("heat_transfer", thermal_conductivity=50.0, heat_source=1.0e4)
+    heat = problem.add_physics("heat_conduction", thermal_conductivity=50.0, heat_source=1.0e4)
     heat.add_boundary_condition("temperature = 293", boundary=["left", "right"])
     beam = problem.add_physics(
         "solid_mechanics",
@@ -48,7 +48,7 @@ alpha, t0, t1 = 1.2e-5, 293.0, 393.0
 
 def _heated(mesh, coordinates="cartesian", boundary=("left", "right")):
     problem = dualmesh.Problem(mesh, method="fem", coordinates=coordinates)
-    heat = problem.add_physics("heat_transfer", thermal_conductivity=50.0)
+    heat = problem.add_physics("heat_conduction", thermal_conductivity=50.0)
     heat.add_boundary_condition("temperature = T1", boundary=list(boundary), T1=t1)
     return problem
 
@@ -56,7 +56,7 @@ def _heated(mesh, coordinates="cartesian", boundary=("left", "right")):
 def _expand(problem, solid):
     problem.add_coupling(
         "thermal_expansion",
-        heat_transfer=None,
+        heat_conduction=None,
         solid_mechanics=solid,
         linear_expansion_coefficient=alpha,
         stress_free_temperature=t0,

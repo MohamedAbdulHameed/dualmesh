@@ -41,10 +41,10 @@ test = ["pytest>=7.0", "meshio>=5.0", "sympy>=1.9", "scipy>=1.7", "pyyaml>=6.0"]
 all = ["meshio>=5.0", "matplotlib>=3.5", "sympy>=1.9", "scipy>=1.7", "pyyaml>=6.0"]
 
 [project.urls]
-Homepage = "https://github.com/MohamedAbdulHameed/dualmesh-multiphysics"
-Documentation = "https://github.com/MohamedAbdulHameed/dualmesh-multiphysics/tree/main/docs"
-Repository = "https://github.com/MohamedAbdulHameed/dualmesh-multiphysics"
-Issues = "https://github.com/MohamedAbdulHameed/dualmesh-multiphysics/issues"
+Homepage = "https://github.com/MohamedAbdulHameed/dualmesh"
+Documentation = "https://dualmesh.readthedocs.io"
+Repository = "https://github.com/MohamedAbdulHameed/dualmesh"
+Issues = "https://github.com/MohamedAbdulHameed/dualmesh/issues"
 
 [project.scripts]
 dualmesh = "dualmesh.cli:main"

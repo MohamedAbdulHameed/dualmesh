@@ -37,7 +37,10 @@ Computation (PETSc) [PETSc2023]_, SNES, runs the iteration.  The option
    Direct iteration.  The coefficients that a kernel reads as coefficients
    take the value of the previous iterate and carry no derivative, so each step
    solves the equations with frozen coefficients.  The same kernel serves both
-   iterations.
+   iterations.  An expression, such as a property formula or the flux of
+   ``parsed_kernel``, takes the current iterate with its derivatives under
+   both iterations, because it can be a term of an equation as well as a
+   coefficient.
 
 ``"linear"``
    One linear solve.  A residual above the tolerance after it stops the solve
@@ -99,6 +102,11 @@ times a vector, to
 the size :math:`\mathbf{R}^\mathrm{term}` of the terms inside the fluxes and the sources.  It
 is the floor for an equation whose terms all vanish, such as the momentum of a
 uniform flow, or cancel, such as the stress of a stiff solid at a small strain.
+The components of a vector unknown, a velocity or a displacement, take the test
+as one equation, with the norms over all their entries: the share of one
+component depends on the orientation of the axes, and a component whose terms
+all vanish, such as the transverse momentum of a plug flow, holds only the
+round-off that the solve of the other components leaves.
 A small step counts as no convergence: an iteration that stalls with a residual
 above the test has not found the solution.
 
@@ -152,8 +160,41 @@ time :math:`t^n`, a step of the :math:`\theta` method solves
    + \theta \, \mathbf{R}_s(\mathbf{U}^{n+1}, t^{n+1})
    + (1 - \theta) \, \mathbf{R}_s(\mathbf{U}^{n}, t^{n}) = 0 ,
 
-with the rate :math:`(u^{n+1} - u^n)/\Delta t` in :math:`\mathbf{R}_t` and the
-dimensionless weight :math:`\theta`.  The schemes are ``"backward_Euler"``
+with the dimensionless weight :math:`\theta`.  The one storage kernel,
+``time_derivative``, gives :math:`\mathbf{R}_t` the term
+
+.. math::
+   :label: time-storage
+
+   c \, \frac{m(u^{n+1}, \mathbf{q}^{n+1}) - m(u^n, \mathbf{q}^n)}{\Delta t} ,
+
+with :math:`m` the storage, an expression of the unknown :math:`u`, the other
+fields, the position, the time and the internal states :math:`\mathbf{q}` of a
+``parsed_state`` object, and :math:`c` a coefficient.  The difference of the
+storage itself makes the change of the stored amount over a step equal to what
+the fluxes and the sources bring, for any storage :math:`m`, where the rate form
+:math:`c\, \partial u/\partial t` of a capacity :math:`c` that varies with the
+solution does not.  The default storage is :math:`m = u`, which gives the rate
+form :math:`c\, (u^{n+1} - u^n)/\Delta t` with :math:`c` at the new state: the
+heat capacity :math:`\rho c_p` of heat conduction, the density of the momentum
+of a flow, or a capacity whose antiderivative has no closed form, such as one
+given by a table.  For a constant :math:`c` the two forms are the same discrete
+equation.
+
+On a mesh of linear elements the automatic quadrature lumps the storage of an
+equation of first order in time when no kernel of its variable carries it with
+a flow: each node takes the integral of its shape function, which in DMCDM is
+the measure of its control domain, with the storage at the node.  The lumped
+storage keeps the maximum principle of diffusion for every step on a mesh
+without obtuse angles [ThomeeWahlbin2008]_.  A quadratic element, whose lumped
+weights are not all positive, a variable carried by a flow, whose transport
+loses phase accuracy with a lumped storage, and the damping of a structure,
+which is proportional to its consistent mass, take the Gauss rule.  The lumping
+serves time stepping, so an eigenvalue study (:doc:`eigenvalues`) takes the
+Gauss rule on every mesh.  Under FEM, each eigenvalue of a symmetric problem is
+then an upper bound of the exact one (the Rayleigh-Ritz method).
+
+The schemes are ``"backward_Euler"``
 (:math:`\theta = 1`, the default, first order), ``"Crank-Nicolson"``
 (:math:`\theta = 1/2`, the trapezoidal rule [CrankNicolson1947]_, second order)
 and ``"forward_Euler"`` (:math:`\theta = 0`, explicit in the steady terms).
@@ -168,9 +209,8 @@ and ``"forward_Euler"`` (:math:`\theta = 0`, explicit in the steady terms).
   step solves the steady problem at its time.
 * ``"forward_Euler"`` refuses a stabilization whose residual holds the time
   derivative.
-* A time-derivative kernel with ``quadrature="nodal"`` gives the lumped
-  capacity, which in DMCDM is the measure of the control domain times the
-  nodal rate.
+* A storage with ``quadrature="nodal"`` is lumped on any mesh, and a storage
+  with a Gauss rule is consistent on any mesh.
 
 Second-order equations
 ~~~~~~~~~~~~~~~~~~~~~~
@@ -200,7 +240,9 @@ and the rate
 :math:`(1 - \alpha_f) \dot{\mathbf{U}}^{n+1} + \alpha_f \dot{\mathbf{U}}^n`, and
 the steady terms take the weights of the :math:`\theta` method with
 :math:`\theta = 1 - \alpha_f`.  The first-order equations of the same problem
-take that :math:`\theta`.
+take that :math:`\theta`.  A ``time_derivative`` of a second-order equation is
+a damping :math:`c\, \dot{u}`, whose storage is the unknown itself, with the
+rate above in place of :eq:`time-storage`.
 
 The dimensionless parameters follow from the spectral radius
 :math:`\rho_\infty` at infinite frequency (``spectral_radius``, default 0.75,
@@ -231,12 +273,12 @@ Time step control
 
 The option ``time_stepper`` chooses how the step changes.
 
-``"fixed"`` (the default)
+``"error"`` (the default)
+   The step follows an estimate :math:`e` of the local truncation error.
+
+``"fixed"``
    The step stays :math:`\Delta t`, and the last step is shortened to land on
    the end time.
-
-``"error"``
-   The step follows an estimate :math:`e` of the local truncation error.
 
 ``"iteration"``
    A step that converged in fewer than ``optimal_iterations`` minus
@@ -259,11 +301,44 @@ rejections in a row (default 10) or below the smallest step, which is
 The error estimate
 ~~~~~~~~~~~~~~~~~~
 
-The estimate :math:`e` is dimensionless.  The difference
-:math:`\lVert \mathbf{U}_a - \mathbf{U}_b \rVert_e` of two states is the largest
-change at a node over the range of the variable, over the variables with a time
-derivative.  A variable without one, such as the pressure of an incompressible
-flow, has no truncation error of its own and is left out.
+The estimate :math:`e` is dimensionless.  For two states :math:`\mathbf{U}_a`
+and :math:`\mathbf{U}_b`, let :math:`\delta_v` be the largest difference of
+variable :math:`v` at a node.  The difference of the two states is
+
+.. math::
+
+   \lVert \mathbf{U}_a - \mathbf{U}_b \rVert_e = \max_v \frac{\delta_v}{s_v} ,
+
+over the variables with a time derivative, with :math:`s_v` the scale of
+:math:`v`.  A variable without a time derivative, such as the pressure of an
+incompressible flow, has no truncation error of its own and is left out.  A
+problem without a time derivative measures every variable.
+
+The scale is the largest of three sizes of :math:`v`:
+
+* its range :math:`r_v`, the largest value less the smallest,
+* its change :math:`c_v`, the largest difference at a node from the state at
+  the start of the run, and
+* the floor :math:`\sqrt{\epsilon_m}\, m_v`, with :math:`m_v` the largest
+  magnitude of :math:`v` and :math:`\epsilon_m = 2^{-52}` the machine epsilon
+  of double precision.
+
+.. math::
+
+   s_v = \max\bigl( r_v,\ c_v,\ \sqrt{\epsilon_m}\, m_v \bigr) .
+
+Each size is the largest it has reached over the accepted states of the run and
+the state :math:`\mathbf{U}_a` of the step.  The components of a vector
+unknown, a velocity or a displacement, share one scale, the largest over the
+components, as in the convergence test.
+
+The change has no offset, so the scale of a temperature near
+:math:`300\ \mathrm{K}` is the distance it has moved from its initial value.  A
+field that is uniform, or zero up to round-off, has a range near zero and takes
+the scale of its change: the displacement of a rigid motion, or the velocity of
+a uniform flow.  The floor keeps the round-off of a field at rest from counting
+as an error.  The sizes start again at each call of ``solve_transient``, so a
+run that adapts the mesh starts them again on each new mesh.
 
 For a step of the :math:`\theta` method, the code compares the step with the
 polynomial through the last accepted states extrapolated to the end of the step
@@ -293,11 +368,33 @@ polynomial through the last accepted states extrapolated to the end of the step
      e = \frac{\Delta t^3}{2\Pi + \Delta t^3} \,
          \lVert \mathbf{U}^{n+1} - \mathbf{U}_p \rVert_e .
 
-The first steps, before enough states are accepted, an equation with a second
-time derivative and the projection integration of a flow take step doubling
-instead [RichardsonGaunt1927]_.  The code advances the interval once with one
-step and once with two half steps, keeps the solution of the half steps, and
-estimates
+For a step of the projection integration of a flow (:doc:`fluids`), let
+:math:`q` be its order, the ``time_order`` :math:`\ell` up to 2.  The predictor
+:math:`\mathbf{U}_p` is the polynomial of degree :math:`q` through the last
+:math:`q + 1` accepted states, extrapolated to the end of the step, and the
+corrector is BDF\ :math:`q`.  Let :math:`t^{n+1}` be the end of the step,
+:math:`t^{n}, \dots, t^{n-q}` the times of the accepted states, and
+:math:`b_0` the coefficient of the new state in BDF\ :math:`q` on the levels
+:math:`t^{n+1}, \dots, t^{n-q+1}`.  With :math:`A` the derivative of order
+:math:`q + 1` of the velocity over :math:`(q + 1)!`, the corrector has the local
+error :math:`(\Delta t / b_0) A \prod_{m=0}^{q-1} (t^{n+1} - t^{n-m})` and the
+predictor the error :math:`-A \prod_{m=0}^{q} (t^{n+1} - t^{n-m})`, so
+
+.. math::
+
+   e = \frac{\Delta t}{\Delta t + b_0 \, (t^{n+1} - t^{n-q})} \,
+       \lVert \mathbf{U}^{n+1} - \mathbf{U}_p \rVert_e .
+
+For BDF1 this is the estimate of the order-one :math:`\theta` method with
+:math:`\theta = 1`.  ``time_order`` 3 takes the pair of order 2, the order at
+which its velocity converges because of the splitting.  The estimate measures
+the error of the backward difference.  The splitting error of the pressure is
+outside it.
+
+The first steps, before enough states are accepted, and an equation with a
+second time derivative take step doubling instead [RichardsonGaunt1927]_.  The
+code advances the interval once with one step and once with two half steps,
+keeps the solution of the half steps, and estimates
 
 .. math::
 
@@ -306,22 +403,26 @@ estimates
 with :math:`\mathbf{U}_1` the state after the single step,
 :math:`\mathbf{U}_{1/2}` that after the two half steps and :math:`p` the order
 of the scheme: 1 for an order-one :math:`\theta` method, 2 for Crank-Nicolson
-and for the generalized-:math:`\alpha` and Newmark methods, and the order of the
-projection integration.
+and for the generalized-:math:`\alpha` and Newmark methods, and :math:`q` for
+the projection integration.
 
 The controller [HairerNorsettWanner1993]_ accepts the step when :math:`e` is at
 most :math:`\epsilon_t`, the ``error_tolerance`` (default :math:`10^{-3}`).  With
-the factor :math:`f_q = 0.9 \, (\epsilon_t / e)^{1/(p+1)}`, the growth factor
-:math:`f_g` (``growth_factor``, default 2) and the cutback factor :math:`f_c`
-(``cutback_factor``), the next step is
+the factor :math:`f_q = 0.9 \, (\epsilon_t / e)^{1/(p+1)}` and the growth factor
+:math:`f_g` (``growth_factor``, default 2), the next step is
 
 .. math::
 
    \Delta t_\mathrm{new} =
    \begin{cases}
      \Delta t \, \min\bigl(f_g, \max(1, f_q)\bigr) & \text{after an accepted step,} \\
-     \Delta t \, \max(f_c, f_q) & \text{after a rejected step.}
+     \Delta t \, \max(0.1, f_q) & \text{after a step rejected by its error.}
    \end{cases}
+
+The factor :math:`f_q` is the step at which the estimate of order :math:`p + 1` in
+:math:`\Delta t` meets :math:`\epsilon_t`, with the safety factor 0.9, so one retry
+usually suffices.  A step whose nonlinear solve fails has no estimate and takes
+``cutback_factor``.
 
 Linear solvers
 --------------
@@ -338,6 +439,26 @@ variables, and :math:`n_v` is the block size of the matrix.  This keeps the
 couplings of a multi-field model close to the diagonal.  The row of a prescribed
 value takes the mean size of the diagonal of its equation, so a change of units
 scales it with the rest of that equation.
+
+Within the nonlinear iteration, PETSc solves the scaled system
+:math:`\mathbf{D} \mathbf{J} \, \delta\mathbf{U} = -\mathbf{D} \mathbf{R}`.  The
+diagonal matrix :math:`\mathbf{D}` holds :math:`1 / s_e` on every row of equation
+:math:`e`, the rows of its prescribed values included.  For each variable
+:math:`v`, the code takes the larger of
+:math:`\lVert \mathbf{R}^{\mathrm{ref}}_v \rVert` at the current iterate and
+:math:`\bar{R}_v`.  The size :math:`s_e` is the Euclidean norm of these values over
+the variables of the equation, with the components of a vector unknown taken
+together as in the convergence test.  An equation whose terms have all been zero
+so far keeps its rows as they are.  The Krylov method stops when the norm of the scaled residual of the linear
+system falls to the linear tolerance times
+:math:`\lVert \mathbf{D} \mathbf{R} \rVert`.  Each equation then counts by its
+own size, and the test has no unit.  A raw norm adds equations in different units
+and follows the one with the largest numbers.  The scaling leaves
+:math:`\delta\mathbf{U}` as it is, and the block preconditioners of a flow build
+their operators for the scaled matrix.  The size :math:`s_e` changes only while
+the terms of the equation grow, so the tolerance of Eisenstat and Walker
+[EisenstatWalker1996]_ compares the residuals of successive iterates in one norm
+once the sizes settle.
 
 The limits of the direct solver
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

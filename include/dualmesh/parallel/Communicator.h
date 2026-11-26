@@ -28,8 +28,6 @@ public:
   int rank() const { return _rank; }
   int size() const { return _size; }
   bool isRoot() const { return _rank == 0; }
-  /// Whether this build can actually talk to other processes.
-  static bool haveMpi();
   /// Shut MPI down, if this library started it.  Calling it twice is
   /// harmless.  A C++ program does not need to call it, because it is
   /// registered with atexit; the Python bindings do call it, from an interpreter

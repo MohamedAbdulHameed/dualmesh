@@ -53,8 +53,8 @@ enum class linear_solve_kind
 struct linear_solve_attempt
 {
   linear_solve_kind kind = linear_solve_kind::direct;
-  /// The Schur approximation of a Schur split.
-  SchurApproximation Schur_approximation = SchurApproximation::LeastSquaresCommutator;
+  /// The Schur approximation of a Schur split, and none for any other kind.
+  std::optional<SchurApproximation> Schur_approximation = std::nullopt;
   /// Whether a failure stops the solve; otherwise the next attempt follows.
   bool must_converge = true;
 };

@@ -2,11 +2,10 @@ Plane elasticity
 ================
 
 In this tutorial, you solve two problems of linear elasticity in plane
-stress: a bar pulled by a traction, with the input
-:class:`dualmesh.problem`, and a plate with a circular hole, with the
-object-level API :class:`dualmesh.Problem`.  You check the first against its
-exact displacement and the second against the stress concentration factor of
-a hole in an infinite plate.
+stress with the input :class:`dualmesh.problem`: a bar pulled by a traction,
+and a plate with a circular hole.  You check the first against its exact
+displacement and the second against the stress of a hole in an infinite
+plate.
 
 The equations
 -------------
@@ -97,73 +96,92 @@ A plate with a hole
 -------------------
 
 A large plate with a hole of radius :math:`a` is pulled far from the hole by
-a uniform stress :math:`\sigma_\infty` along :math:`x`.  At the top of the
-hole, :math:`\sigma_{xx} = 3\sigma_\infty` in an infinite plate
-[TimoshenkoGoodier1970]_: the stress concentration factor is 3.  The model is
-a quarter of the plate, an annulus of inner radius :math:`a = 1` and outer
-radius 20, with :math:`E = 1` and :math:`\sigma_\infty = 1` in a consistent
-set of units.  The input generates segments, rectangles and boxes only, so
-this problem uses the object-level API.
+a uniform stress :math:`\sigma_\infty` along :math:`x`.  In an infinite
+plate, the stress on the :math:`y` axis is the solution of Kirsch
+[TimoshenkoGoodier1970]_,
 
-The script is ``examples/plate_with_hole.py``.
+.. math::
 
-1. Generate a mesh of the quarter annulus, graded towards the hole:
+   \sigma_{xx}(0, y) = \sigma_\infty \left( 1 + \frac{a^2}{2 y^2}
+   + \frac{3 a^4}{2 y^4} \right),
 
-   .. literalinclude:: ../../examples/plate_with_hole.py
+which is :math:`3\sigma_\infty` at the top of the hole, :math:`y = a`: the
+stress concentration factor is 3.  The steel plate has :math:`E = 200\
+\mathrm{GPa}`, :math:`\nu = 0.3`, :math:`a = 10\ \mathrm{mm}` and
+:math:`\sigma_\infty = 100\ \mathrm{MPa}`.  The planes :math:`x = 0` and
+:math:`y = 0` are planes of symmetry, so the model is a quarter of the plate,
+an annulus of outer radius :math:`200\ \mathrm{mm}`.
+
+The scripts are in ``examples/plate_with_hole``.
+``make_plate_mesh.py`` builds the mesh with Gmsh and writes
+``plate_with_hole.msh``, which is part of the repository.  It has
+:math:`30 \times 30` quadrilaterals, whose radial size grows by the ratio
+1.15 from the hole outwards, and four named curves: ``hole``, ``outer``,
+``bottom`` (the edge on the :math:`x` axis) and ``left`` (the edge on the
+:math:`y` axis).  ``plate_with_hole.py`` solves the problem.
+
+1. Read the mesh file, whose coordinates are in :math:`\mathrm{mm}`, and add
+   the solid in plane stress with its two properties:
+
+   .. literalinclude:: ../../examples/plate_with_hole/plate_with_hole.py
       :language: python
-      :start-at: mesh = dualmesh.generate_annulus_mesh(
-      :end-at: problem = dualmesh.Problem(mesh)
+      :start-at: quarter = dualmesh.problem(
+      :end-at: quarter.properties(
       :dedent: 4
 
-   The annulus spans :math:`0^\circ` to :math:`90^\circ`, and its side sets
-   are ``inner`` (the hole), ``outer``, ``start`` (the edge along
-   :math:`x`) and ``end`` (the edge along :math:`y`).
+   A mesh file does not state the unit of its coordinates, so the input
+   takes it as ``length_unit``.
 
-2. Add the solid in plane stress:
-
-   .. literalinclude:: ../../examples/plate_with_hole.py
-      :language: python
-      :start-at: solid = problem.add_physics(
-      :end-before: # Symmetry on the two straight edges.
-      :dedent: 4
-
-3. Add the conditions.  The two straight edges are planes of symmetry, where
-   the word ``symmetry`` holds the normal displacement at zero and leaves the
-   tangential one free.  On the outer arc the traction of the remote stress
-   is :math:`\boldsymbol{\sigma}\mathbf{n} = (\sigma_\infty n_x, 0)`, with
+2. Make the two straight edges planes of symmetry, and load the outer arc
+   with the traction of the remote stress,
+   :math:`\boldsymbol{\sigma}\mathbf{n} = (\sigma_\infty n_x, 0)` with
    :math:`n_x = x/\sqrt{x^2 + y^2}`:
 
-   .. literalinclude:: ../../examples/plate_with_hole.py
+   .. literalinclude:: ../../examples/plate_with_hole/plate_with_hole.py
       :language: python
-      :start-at: solid.add_boundary_condition("symmetry", boundary="start")
-      :end-at: problem.solve()
+      :start-at: quarter.boundary_conditions("left"
+      :end-at: quarter.boundary_conditions("outer"
       :dedent: 4
 
-   A traction written as text takes one expression of :math:`x`,
-   :math:`y`, :math:`z` and :math:`t` per component.  The hole takes no
-   condition, so it is free of traction.
+   The word ``symmetry`` holds the displacement normal to the edge at zero,
+   and leaves the tangential one free.  Each component of the traction is a
+   constant or a formula of the coordinates.  The hole takes no condition,
+   so it is free of traction.
 
-4. Read the stress at the element centroids, and write it to a file of the
-   Visualization Toolkit (VTK):
+3. Ask for the stress at the top of the hole, and for its values along the
+   :math:`y` axis, from the hole to :math:`50\ \mathrm{mm}`:
 
-   .. literalinclude:: ../../examples/plate_with_hole.py
+   .. literalinclude:: ../../examples/plate_with_hole/plate_with_hole.py
       :language: python
-      :start-at: stress = problem.property_at_centroids("stress")
-      :end-at: problem.write_vtu("plate_with_hole.vtu", cell_properties=["stress"])
+      :start-at: quarter.postprocessor("peak"
+      :end-at: quarter.output(
       :dedent: 4
 
-   :meth:`~dualmesh.Problem.property_at_centroids` returns six stress
-   components per element, in the order :math:`\sigma_{xx}`,
-   :math:`\sigma_{yy}`, :math:`\sigma_{zz}`, :math:`\sigma_{yz}`,
-   :math:`\sigma_{xz}`, :math:`\sigma_{xy}`.  ``cell_properties`` writes them
-   as cell data, which ParaView shows one value per element.
+   The stress at a point is that of the element that holds the point.  The
+   line writes ``plate_with_hole_ligament.csv``, with the distance along the
+   line, the coordinates and :math:`\sigma_{xx}`, each with its unit.  The
+   Python call writes the key ``from`` as ``from_``, since ``from`` is a
+   word of Python.
 
-The script prints the largest :math:`\sigma_{xx}` at the centroids of the
-elements next to the hole, 2.868.  The centroid of an element of the first
-ring lies off the edge of the hole, where :math:`\sigma_{xx}` is below its
-peak value of 3.
+4. Solve, and read the line from the results:
+
+   .. literalinclude:: ../../examples/plate_with_hole/plate_with_hole.py
+      :language: python
+      :start-at: solution = plate().solve()
+      :end-at: ligament = solution.line("ligament")
+      :dedent: 4
+
+The script prints the stress concentration factor 3.047, and the stress
+along the :math:`y` axis next to the solution of Kirsch.  The test
+``test_the_plate_with_a_hole_has_the_stress_of_Kirsch`` in
+``tests/python/test_examples.py`` runs the script and checks that the peak is
+within 2 % of :math:`3\sigma_\infty`, and that the stress from :math:`y =
+2a` outwards is within 1 % of the solution of Kirsch.  The outer radius
+:math:`r` is 20 times that of the hole, where the terms of the hole in the
+solution of Kirsch scale with :math:`(a/r)^2 = 1/400`, so the finite plate is
+close to the infinite one.
 
 An axisymmetric body, such as a thick cylinder under internal pressure, is
-modelled on a mesh of its cross-section with
-``dualmesh.Problem(mesh, coordinates="axisymmetric")``.  Its solid then takes
-the axisymmetric formulation, and ``add_physics`` takes no ``formulation``.
+modelled on a mesh of its cross-section with ``coordinate_system:
+axisymmetric`` in the mesh section.  Its solid then takes the axisymmetric
+formulation, and the physics takes no ``formulation``.

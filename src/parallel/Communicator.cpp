@@ -40,16 +40,6 @@ Communicator::finalize()
 #endif
 }
 
-bool
-Communicator::haveMpi()
-{
-#ifdef DUALMESH_HAVE_MPI
-  return true;
-#else
-  return false;
-#endif
-}
-
 Communicator::Communicator()
 {
 #ifdef DUALMESH_HAVE_MPI

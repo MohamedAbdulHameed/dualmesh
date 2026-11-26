@@ -14,7 +14,7 @@ from pathlib import Path
 
 MODULE_TITLES = {
     "framework": "Framework",
-    "heat_transfer": "Heat transfer",
+    "heat_conduction": "Heat conduction",
     "solid_mechanics": "Solid mechanics",
     "fluids": "Viscous incompressible flow",
 }
@@ -31,21 +31,20 @@ the equations of the verification problems.  The objects of the other modules
 share their base classes, so the parameters ``variable``, ``block`` and
 ``quadrature`` mean the same in every module.
 """,
-    "heat_transfer": r"""
-The heat transfer module states the energy balance :math:`\rho c_p \partial
-T/\partial t + \nabla \cdot \mathbf{q} = s` of a body, with the temperature
-:math:`T` in :math:`\mathrm{K}`, the density :math:`\rho` in
-:math:`\mathrm{kg/m^3}`, the specific heat capacity :math:`c_p` in
-:math:`\mathrm{J/(kg\,K)}` and the heat generated per unit volume :math:`s` in
-:math:`\mathrm{W/m^3}`.  The heat flux :math:`\mathbf{q} = -k \nabla T` in
-:math:`\mathrm{W/m^2}` follows Fourier's law, with the thermal conductivity
-:math:`k` in :math:`\mathrm{W/(m\,K)}`.  The module holds the conduction, the
-heat capacity term, the heat that a flow carries with its streamline
-stabilisation, and the surface conditions of radiation and of heat transfer
-across a gap.  The framework objects ``Neumann`` and ``Robin`` give a
-prescribed heat flux and convection.  The conductivity may depend on the
-position, the time, a property and the temperature, which makes the
-conduction nonlinear.
+    "heat_conduction": r"""
+The heat conduction module holds the objects of the energy balance
+:math:`\rho c_p \partial T/\partial t + \nabla \cdot \mathbf{q} = s` of a body
+that the framework objects do not.  Here :math:`T` is the temperature in
+:math:`\mathrm{K}`, :math:`\rho` the density in :math:`\mathrm{kg/m^3}`,
+:math:`c_p` the specific heat capacity in :math:`\mathrm{J/(kg\,K)}`,
+:math:`s` the heat generated per unit volume in :math:`\mathrm{W/m^3}` and
+:math:`\mathbf{q} = -k \nabla T` the heat flux in :math:`\mathrm{W/m^2}`, with
+the thermal conductivity :math:`k` in :math:`\mathrm{W/(m\,K)}`.  The
+framework objects state the conduction (``diffusion``), the heat capacity
+term (``time_derivative``), the heat that a flow carries (``advection``), the
+heat source (``body_force``) and a prescribed heat flux, convection or
+radiation (``Neumann``).  This module adds the streamline stabilisation of
+the heat that a flow carries and the heat transfer across a gap.
 """,
     "solid_mechanics": r"""
 The solid mechanics module states the balance of momentum :math:`\rho\,
@@ -324,7 +323,7 @@ name and set its parameters by keyword arguments:
         "",
         ".. code-block:: python",
         "",
-        '   problem.add_kernel("heat_conduction", variable="temperature", thermal_conductivity=20.0)',
+        '   problem.add_kernel("diffusion", variable="temperature", diffusivity=20.0)',
         "",
         _wrap(
             """

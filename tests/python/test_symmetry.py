@@ -64,7 +64,7 @@ def test_conduction(method, element_type):
     """A conductivity, a source and walls symmetric about x = 1."""
     problem = dualmesh.Problem(mesh((0, 2), (0, 1), (8, 4), element_type), method=method)
     heat = problem.add_physics(
-        "heat_transfer",
+        "heat_conduction",
         thermal_conductivity="1 + (x - 1)^2",
         heat_source="2 + cos(3*(x - 1)) + y",
     )
@@ -80,7 +80,7 @@ def test_transient_conduction(method):
     """Crank-Nicolson from a symmetric start."""
     problem = dualmesh.Problem(mesh((0, 2), (0, 1), (8, 4)), method=method)
     heat = problem.add_physics(
-        "heat_transfer",
+        "heat_conduction",
         thermal_conductivity=1.0,
         density=1.0,
         specific_heat=1.0,
@@ -189,10 +189,16 @@ def test_natural_convection(method, scheme):
     flow = problem.add_physics(
         "fluid_dynamics", dynamic_viscosity=0.71, density=1.0, formulation="equal_order"
     )
-    heat = problem.add_physics("heat_transfer", thermal_conductivity=1.0, advection_scheme=scheme)
+    heat = problem.add_physics(
+        "heat_conduction",
+        thermal_conductivity=1.0,
+        density=1.0,
+        specific_heat=1.0,
+        advection_scheme=scheme,
+    )
     problem.add_coupling(
         "nonisothermal_flow",
-        heat_transfer=heat,
+        heat_conduction=heat,
         fluid_dynamics=flow,
         gravity=[0.0, -1.0],
         volumetric_expansion_coefficient=1e4 * 0.71,
@@ -217,12 +223,12 @@ def test_thermal_expansion(method):
         "solid_mechanics", formulation="plane_stress", youngs_modulus=100.0, poissons_ratio=0.3
     )
     heat = problem.add_physics(
-        "heat_transfer", thermal_conductivity=1.0, heat_source="5*(1 + (x - 1)^2)"
+        "heat_conduction", thermal_conductivity=1.0, heat_source="5*(1 + (x - 1)^2)"
     )
     problem.add_coupling(
         "thermal_expansion",
         solid_mechanics=solid,
-        heat_transfer=heat,
+        heat_conduction=heat,
         linear_expansion_coefficient=1e-3,
         stress_free_temperature=0.0,
     )
@@ -262,7 +268,7 @@ def conduction(method, element_type, coordinates, source=None):
         mesh((0.5, 1.5), (0, 1), (8, 8), element_type), method=method, coordinates=coordinates
     )
     heat = problem.add_physics(
-        "heat_transfer", thermal_conductivity="1 + x*y", initial_condition=0.0
+        "heat_conduction", thermal_conductivity="1 + x*y", initial_condition=0.0
     )
     heat.add_boundary_condition("temperature = 0", boundary="left")
     heat.add_boundary_condition("heat_flux = 2*temperature", boundary="top")

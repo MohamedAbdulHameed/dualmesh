@@ -141,10 +141,9 @@ defineConduction(Problem & problem)
 {
   problem.addVariable("temperature");
   problem.addObject(
-      "heat_conduction",
+      "diffusion",
       "conduction",
-      params("heat_conduction",
-             {{"variable", std::string("temperature")}, {"thermal_conductivity", 2.5}}));
+      params("diffusion", {{"variable", std::string("temperature")}, {"diffusivity", 2.5}}));
   problem.addObject(
       "body_force",
       "source",
@@ -783,17 +782,17 @@ main()
     const auto define = [](Problem & problem)
     {
       problem.addVariable("temperature");
-      problem.addObject("heat_conduction",
+      problem.addObject("diffusion",
                         "inner",
-                        params("heat_conduction",
+                        params("diffusion",
                                {{"variable", std::string("temperature")},
-                                {"thermal_conductivity", 3.0},
+                                {"diffusivity", 3.0},
                                 {"block", std::vector<std::string>{"inner"}}}));
-      problem.addObject("heat_conduction",
+      problem.addObject("diffusion",
                         "outer",
-                        params("heat_conduction",
+                        params("diffusion",
                                {{"variable", std::string("temperature")},
-                                {"thermal_conductivity", 16.0},
+                                {"diffusivity", 16.0},
                                 {"block", std::vector<std::string>{"outer"}}}));
       problem.addObject("body_force",
                         "source",
@@ -876,10 +875,12 @@ main()
     for (const auto & [name, method] :
          std::vector<std::pair<std::string, Method>>{{"dmcdm", Method::DualMesh}})
     {
+      // Fixed steps: the restarted run takes the ten steps of the second half of the whole run.
       TransientOptions whole;
       whole.end_time = 1.0;
       whole.dt = 0.05;
       whole.theta = 0.5;
+      whole.time_stepper = "fixed";
       DistributedOptions first_options;
       DistributedProblem uninterrupted(mesh, method, CoordinateSystem::Cartesian, first_options);
       define(uninterrupted.local());
@@ -977,9 +978,11 @@ main()
                   name,
                   params("periodic", {{"primary", primary}, {"secondary", secondary}}));
         };
+        // Fixed steps: both runs take the eight steps of 0.05.
         TransientOptions transient;
         transient.end_time = 0.4;
         transient.dt = 0.05;
+        transient.time_stepper = "fixed";
         Problem reference(std::make_shared<Mesh>(mesh), method);
         define(reference);
         reference.setTimeIntegrator(

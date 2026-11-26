@@ -13,6 +13,8 @@
 #include <limits>
 #include <set>
 #include <sstream>
+#include <unordered_map>
+#include <utility>
 
 namespace dualmesh
 {
@@ -155,6 +157,7 @@ Problem::addVariable(const std::string & name,
     throw InputError(os.str());
   }
   _initialized = false;
+  _dependent_of.clear();
   // Grow the solution, keeping existing values.
   Vector U = Vector::Zero(numDofs());
   const int nold = numVariables() - 1;
@@ -190,53 +193,14 @@ Problem::buildOrderLayout()
 void
 Problem::updateDependentDofs(Vector & U) const
 {
-  interpolateFirstOrderVariables(U);
-  for (std::size_t d = 0; d < _primary_of.size(); ++d)
-    if (_primary_of[d] >= 0)
-      U[static_cast<Index>(d)] = U[_primary_of[d]];
-  for (std::size_t d = 0; d < _hanging_of.size(); ++d)
-    if (!_hanging_of[d].empty())
+  for (std::size_t d = 0; d < _dependent_of.size(); ++d)
+    if (!_dependent_of[d].empty())
     {
       double value = 0.0;
-      for (const auto & [p, w] : _hanging_of[d])
+      for (const auto & [p, w] : _dependent_of[d])
         value += w * U[p];
       U[static_cast<Index>(d)] = value;
     }
-}
-
-void
-Problem::interpolateFirstOrderVariables(Vector & U) const
-{
-  if (!_mixed_order)
-    return;
-  const int nv = numVariables();
-  double N[kMaxElementNodes];
-  Point dN[kMaxElementNodes];
-  for (const auto & el : _mesh->elements())
-  {
-    const int corners = el.numCorners();
-    const int nn = el.numNodes();
-    if (corners == nn)
-      continue;
-    const auto & quadratic = ReferenceElement::get(el.type);
-    const auto & linear = ReferenceElement::get(elementCornerType(el.type));
-    for (int k = corners; k < nn; ++k)
-    {
-      // The linear shape functions at the reference position of node k.  A
-      // node shared by several elements gets the same value from each,
-      // because the linear interpolant is continuous.
-      linear.shape(quadratic.node(k), N, dN);
-      for (int v = 0; v < nv; ++v)
-      {
-        if (_full_order_rank[v] >= 0)
-          continue;
-        double value = 0.0;
-        for (int a = 0; a < corners; ++a)
-          value += N[a] * U[dof(el.nodes[a], v)];
-        U[dof(el.nodes[k], v)] = value;
-      }
-    }
-  }
 }
 
 void
@@ -553,84 +517,177 @@ Problem::addConstraint(std::shared_ptr<Constraint> constraint)
   _initialized = false;
 }
 
-void
-Problem::buildConstraints()
+std::unordered_map<Index, Index>
+joinedRepresentatives(const std::vector<std::pair<Index, Index>> & pairs)
 {
-  _primary_of.clear();
-  buildPeriodicConstraints();
-  buildHangingConstraints();
+  std::unordered_map<Index, Index> parent;
+  std::unordered_map<Index, bool> secondary;
+  const auto root = [&](Index g)
+  {
+    Index r = g;
+    while (parent[r] != r)
+      r = parent[r];
+    while (parent[g] != r)
+      g = std::exchange(parent[g], r);
+    return r;
+  };
+  for (const auto & [s, p] : pairs)
+  {
+    if (s == p)
+      continue;
+    parent.emplace(s, s);
+    parent.emplace(p, p);
+    secondary[s] = true;
+    secondary.emplace(p, false);
+    const Index a = root(s), b = root(p);
+    if (a != b)
+      parent[std::max(a, b)] = std::min(a, b);
+  }
+  std::unordered_map<Index, Index> representative;
+  for (const auto & [g, is_secondary] : secondary)
+    if (!is_secondary)
+    {
+      const auto [it, added] = representative.emplace(root(g), g);
+      if (!added)
+        it->second = std::min(it->second, g);
+    }
+  std::unordered_map<Index, Index> joined;
+  for (const auto & [g, is_secondary] : secondary)
+  {
+    const auto it = representative.find(root(g));
+    if (it == representative.end())
+      throw InputError("The constraints make a node a copy of itself through a loop. One node of "
+                       "each loop must stay a primary.");
+    if (it->second != g)
+      joined[g] = it->second;
+  }
+  return joined;
 }
 
 void
-Problem::buildHangingConstraints()
+Problem::buildDependentDofs()
 {
-  _hanging_of.clear();
-  _polygon_of.clear();
-  _polygon_cells.clear();
-  const auto & constraints = _mesh->nodeConstraints();
-  if (constraints.empty())
-    return;
-  // The dual mesh method keeps the hanging nodes as unknowns, with control domains of their own.
-  if (isDual())
-  {
-    buildPolygonCells();
-    return;
-  }
   const Index n = numDofs();
   const int nv = numVariables();
-  _hanging_of.assign(static_cast<std::size_t>(n), {});
-  for (const auto & c : constraints)
-    for (int v = 0; v < nv; ++v)
-      for (const auto & [p, w] : c.on)
-        _hanging_of[static_cast<std::size_t>(dof(c.node, v))].push_back({dof(p, v), w});
-  // A primary may hang itself, or be the copy of a periodic node: expand it until every
-  // primary is independent.  2:1 balance keeps the chains short.
-  for (int round = 0;; ++round)
+  _dependent_of.clear();
+  _fold_dependents = false;
+  _polygon_of.clear();
+  _polygon_cells.clear();
+  // What each dependent degree of freedom depends on directly, before chains are resolved.
+  std::vector<std::vector<std::pair<Index, double>>> on(static_cast<std::size_t>(n));
+  bool any = false;
+  // A first-order variable has no unknown at a non-corner node of a quadratic element: its slot
+  // there is the linear interpolant of the corners, the same from every element that holds the
+  // node, because the interpolant is continuous.
+  if (_mixed_order)
   {
-    bool expanded = false;
-    std::vector<std::vector<std::pair<Index, double>>> next = _hanging_of;
-    for (std::size_t d = 0; d < next.size(); ++d)
+    double N[kMaxElementNodes];
+    Point dN[kMaxElementNodes];
+    for (const auto & el : _mesh->elements())
     {
-      if (_hanging_of[d].empty())
+      const int corners = el.numCorners();
+      if (corners == el.numNodes())
         continue;
-      std::map<Index, double> sum;
-      for (const auto & [p, w] : _hanging_of[d])
+      const auto & quadratic = ReferenceElement::get(el.type);
+      const auto & linear = ReferenceElement::get(elementCornerType(el.type));
+      for (int k = corners; k < el.numNodes(); ++k)
       {
-        const auto & deeper = _hanging_of[static_cast<std::size_t>(p)];
-        if (!deeper.empty())
+        linear.shape(quadratic.node(k), N, dN);
+        for (int v = 0; v < nv; ++v)
         {
-          expanded = true;
-          for (const auto & [q, u] : deeper)
-            sum[q] += w * u;
+          auto & list = on[static_cast<std::size_t>(dof(el.nodes[k], v))];
+          if (_full_order_rank[v] >= 0 || !list.empty())
+            continue;
+          for (int a = 0; a < corners; ++a)
+            if (N[a] != 0.0)
+              list.push_back({dof(el.nodes[a], v), N[a]});
+          any = true;
         }
-        else if (!_primary_of.empty() && _primary_of[static_cast<std::size_t>(p)] >= 0)
-        {
-          expanded = true;
-          sum[_primary_of[static_cast<std::size_t>(p)]] += w;
-        }
-        else
-          sum[p] += w;
       }
-      next[d].assign(sum.begin(), sum.end());
     }
-    _hanging_of = std::move(next);
-    if (!expanded)
-      break;
-    if (round > 64)
-      throw InputError("The hanging nodes of the mesh depend on each other in a loop.");
   }
-  // A hanging node takes its value from the side it lies on, so it can be prescribed only where
-  // every node it depends on is.
-  std::vector<char> prescribed(static_cast<std::size_t>(n), 0);
-  for (const auto & bc : _nbcs)
-    for (Index node : bc->nodes())
-      prescribed[static_cast<std::size_t>(dof(node, bc->variable()))] = 1;
+  // A periodic copy takes the value of its group's representative.  A distributed run joins the
+  // copies in its gather-scatter instead (DistributedProblem::joinConstraints).
+  std::unordered_map<Index, Index> representative;
+  if (!_parallel)
+  {
+    std::vector<std::pair<Index, Index>> pairs;
+    for (const auto & c : _constraints)
+    {
+      c->initialSetup(*this);
+      pairs.insert(pairs.end(), c->pairs().begin(), c->pairs().end());
+    }
+    representative = joinedRepresentatives(pairs);
+    for (const auto & [d, r] : representative)
+      if (on[static_cast<std::size_t>(d)].empty())
+      {
+        on[static_cast<std::size_t>(d)] = {{r, 1.0}};
+        any = _fold_dependents = true;
+      }
+  }
+  // Under FEM a hanging node is the weighted sum of the nodes of the side it lies on.  A periodic
+  // group with a hanging member hangs as a whole: its representative takes the weights, its own
+  // first, and every copy follows the representative.  DMCDM keeps a hanging node as an unknown
+  // of its own, in a polygon cell.
+  const auto & hanging = _mesh->nodeConstraints();
+  if (!hanging.empty() && isDual())
+    buildPolygonCells();
+  else
+    for (const bool copies : {false, true})
+      for (const auto & c : hanging)
+        for (int v = 0; v < nv; ++v)
+        {
+          const Index d = dof(c.node, v);
+          const auto joined = representative.find(d);
+          const Index target = joined == representative.end() ? d : joined->second;
+          auto & list = on[static_cast<std::size_t>(target)];
+          if ((target != d) != copies || !list.empty())
+            continue;
+          for (const auto & [p, w] : c.on)
+            list.push_back({dof(p, v), w});
+          any = _fold_dependents = true;
+        }
+  if (!any)
+    return;
+  // Resolve chains (a node hanging on a hanging node or on a periodic copy, the copy of a hanging
+  // node) until every dependent degree of freedom is a sum over independent ones.
+  _dependent_of.assign(static_cast<std::size_t>(n), {});
+  std::vector<char> state(static_cast<std::size_t>(n), 0);
+  const std::function<const std::vector<std::pair<Index, double>> &(Index)> resolve =
+      [&](Index d) -> const std::vector<std::pair<Index, double>> &
+  {
+    auto & out = _dependent_of[static_cast<std::size_t>(d)];
+    if (state[static_cast<std::size_t>(d)] == 2)
+      return out;
+    if (state[static_cast<std::size_t>(d)] == 1)
+      throw InputError("The periodic boundaries and the hanging nodes of the mesh make a node "
+                       "depend on itself through a loop.");
+    state[static_cast<std::size_t>(d)] = 1;
+    std::map<Index, double> sum;
+    for (const auto & [p, w] : on[static_cast<std::size_t>(d)])
+      if (on[static_cast<std::size_t>(p)].empty())
+        sum[p] += w;
+      else
+        for (const auto & [q, u] : resolve(p))
+          sum[q] += w * u;
+    out.assign(sum.begin(), sum.end());
+    state[static_cast<std::size_t>(d)] = 2;
+    return out;
+  };
+  for (Index d = 0; d < n; ++d)
+    if (!on[static_cast<std::size_t>(d)].empty())
+      resolve(d);
+  // A dependent degree of freedom has no equation of its own, so it can be prescribed only where
+  // every degree of freedom it depends on is.
+  const std::vector<char> prescribed = prescribedDofs();
   for (Index d = 0; d < n; ++d)
     if (prescribed[static_cast<std::size_t>(d)])
-      for (const auto & [p, w] : _hanging_of[static_cast<std::size_t>(d)])
+      for (const auto & [p, w] : _dependent_of[static_cast<std::size_t>(d)])
         if (!prescribed[static_cast<std::size_t>(p)])
-          throw InputError("A hanging node carries a prescribed value that a node of the side it "
-                           "hangs on does not; prescribe the value on the whole boundary.");
+          throw InputError("A periodic copy or a hanging node carries a prescribed value that its "
+                           "primary node does not. Prescribe the value on both periodic "
+                           "boundaries or on neither, and on the whole side a node hangs on.");
+  updateDependentDofs(_U);
 }
 
 void
@@ -680,6 +737,10 @@ Problem::buildPolygonCells()
       const auto found = on_edge.find(std::minmax(el.nodes[i], el.nodes[j]));
       return found == on_edge.end() ? -1 : slotOf(found->second, 0.5 * (ref.node(i) + ref.node(j)));
     };
+    // The leaf edges (2D) or the leaf faces, each the ring of its slots, and their centres (3D).
+    std::vector<std::array<int, 2>> edges;
+    std::vector<std::vector<int>> faces;
+    std::vector<Point> face_centres;
     if (el.type == ElementType::Quad4)
       // The sides of Quad4 go round the cell; a side with a hanging node is two leaf edges.
       for (int side = 0; side < ref.numSides(); ++side)
@@ -687,11 +748,11 @@ Problem::buildPolygonCells()
         const int i = ref.sideNodes(side)[0], j = ref.sideNodes(side)[1];
         const int m = middleOf(i, j);
         if (m < 0)
-          cell.edges.push_back({i, j});
+          edges.push_back({i, j});
         else
         {
-          cell.edges.push_back({i, m});
-          cell.edges.push_back({m, j});
+          edges.push_back({i, m});
+          edges.push_back({m, j});
         }
       }
     else
@@ -719,8 +780,8 @@ Problem::buildPolygonCells()
             if (m >= 0)
               ring.push_back(m);
           }
-          cell.faces.push_back(ring);
-          cell.face_centres.push_back(face_centre);
+          faces.push_back(ring);
+          face_centres.push_back(face_centre);
           continue;
         }
         const int c = slotOf(centre->second, face_centre);
@@ -735,12 +796,62 @@ Problem::buildPolygonCells()
           Point sub_centre{0, 0, 0};
           for (int slot : ring)
             sub_centre = sub_centre + 0.25 * cell.xi[static_cast<std::size_t>(slot)];
-          cell.faces.push_back(ring);
-          cell.face_centres.push_back(sub_centre);
+          faces.push_back(ring);
+          face_centres.push_back(sub_centre);
         }
       }
     if (!hanging)
       continue;
+    // The dual mesh of the polygon, as ReferenceElement builds that of a conforming cell.
+    const Point & centre = ref.centroid();
+    const auto at = [&](int slot) { return cell.xi[static_cast<std::size_t>(slot)]; };
+    cell.control.assign(cell.nodes.size(), {});
+    if (el.type == ElementType::Quad4)
+    {
+      // Each slot ends two leaf edges, whose middles bound its quadrilateral with the centre.
+      std::vector<std::vector<Point>> middles(cell.nodes.size());
+      for (const auto & [p, q] : edges)
+      {
+        const Point middle = 0.5 * (at(p) + at(q));
+        middles[static_cast<std::size_t>(p)].push_back(middle);
+        middles[static_cast<std::size_t>(q)].push_back(middle);
+        DualFace face{p, q, {}};
+        face.patch.dim = 1;
+        face.patch.corners = {middle, centre};
+        cell.faces.push_back(face);
+      }
+      for (std::size_t k = 0; k < cell.nodes.size(); ++k)
+      {
+        Patch patch;
+        patch.dim = 2;
+        patch.corners = {cell.xi[k], middles[k][0], centre, middles[k][1]};
+        cell.control[k] = {patch};
+      }
+    }
+    else
+      for (std::size_t f = 0; f < faces.size(); ++f)
+      {
+        const auto & ring = faces[f];
+        const Point & face_centre = face_centres[f];
+        for (std::size_t i = 0; i < ring.size(); ++i)
+        {
+          const int p = ring[i], q = ring[(i + 1) % ring.size()];
+          const int r = ring[(i + ring.size() - 1) % ring.size()];
+          const Point next = 0.5 * (at(p) + at(q)), previous = 0.5 * (at(r) + at(p));
+          // The pyramid over the part of the leaf face nearest p, a cube collapsed onto the centre.
+          Patch patch;
+          patch.dim = 3;
+          patch.extra_points = 1;
+          patch.corners = {at(p), next, face_centre, previous, centre, centre, centre, centre};
+          cell.control[static_cast<std::size_t>(p)].push_back(patch);
+          // The triangle between p and q, a square collapsed onto the centre.
+          DualFace face{p, q, {}};
+          face.patch.dim = 2;
+          face.patch.extra_points = 1;
+          face.patch.corners = {next, face_centre, centre, centre};
+          cell.faces.push_back(face);
+        }
+      }
     // Automatic differentiation seeds a slot for every variable at every node of the cell, its
     // hanging nodes included.
     const int slots = static_cast<int>(cell.nodes.size()) * numVariables();
@@ -756,64 +867,6 @@ Problem::buildPolygonCells()
   }
 }
 
-void
-Problem::buildPeriodicConstraints()
-{
-  if (_constraints.empty())
-    return;
-  if (_constraints_outside)
-    return;
-  // Every pair joins two degrees of freedom into one unknown (a union-find), so that a node joined in several directions, such as a corner of a doubly periodic domain, ends in one group.
-  const Index n = numDofs();
-  std::vector<Index> parent(static_cast<std::size_t>(n));
-  for (Index d = 0; d < n; ++d)
-    parent[d] = d;
-  const auto root = [&](Index d)
-  {
-    while (parent[d] != d)
-      d = parent[d] = parent[parent[d]];
-    return d;
-  };
-  std::vector<char> dependent(static_cast<std::size_t>(n), 0);
-  for (const auto & c : _constraints)
-  {
-    c->initialSetup(*this);
-    for (const auto & [secondary, primary] : c->pairs())
-    {
-      dependent[secondary] = 1;
-      const Index a = root(secondary), b = root(primary);
-      if (a != b)
-        parent[std::max(a, b)] = std::min(a, b);
-    }
-  }
-  // Each group is represented by its first member that is a primary only; a group whose every member is a secondary was joined in a loop.
-  std::vector<Index> representative(static_cast<std::size_t>(n), -1);
-  for (Index d = 0; d < n; ++d)
-    if (!dependent[d] && representative[root(d)] < 0)
-      representative[root(d)] = d;
-  _primary_of.assign(static_cast<std::size_t>(n), -1);
-  for (Index d = 0; d < n; ++d)
-  {
-    const Index r = root(d);
-    if (r == d && parent[d] == d && !dependent[d])
-      continue;
-    if (representative[r] < 0)
-      throw InputError("The constraints make a node a copy of itself through a loop; one node of "
-                       "each loop must stay a primary.");
-    if (representative[r] != d)
-      _primary_of[d] = representative[r];
-  }
-  // A dependent degree of freedom has no equation of its own, so it cannot carry a prescribed value that its primary does not have.
-  std::vector<char> prescribed(static_cast<std::size_t>(n), 0);
-  for (const auto & bc : _nbcs)
-    for (Index node : bc->nodes())
-      prescribed[dof(node, bc->variable())] = 1;
-  for (Index d = 0; d < n; ++d)
-    if (_primary_of[d] >= 0 && prescribed[d] && !prescribed[_primary_of[d]])
-      throw InputError("A node that a constraint makes a copy of another carries a prescribed "
-                       "value that its primary node does not; prescribe the value on both "
-                       "boundaries, or on neither.");
-}
 void
 Problem::addProperty(std::shared_ptr<Property> m)
 {
@@ -974,7 +1027,7 @@ Problem::initialize()
     b->initialSetup(*this);
   for (auto & l : _loads)
     l->initialSetup(*this);
-  buildConstraints();
+  buildDependentDofs();
   // Check that required properties exist.
   for (auto & k : _kernels)
     for (const auto & p : k->requiredProperties())
@@ -1028,17 +1081,32 @@ void
 Problem::buildGroups()
 {
   _groups.clear();
-  for (const auto & k : _kernels)
+  const auto groupOf = [&](const QuadratureSpec & spec) -> Group &
   {
     auto it = std::find_if(
-        _groups.begin(), _groups.end(), [&](const Group & g) { return g.spec == k->quadrature(); });
-    if (it == _groups.end())
-    {
-      _groups.push_back({k->quadrature(), {}});
-      it = _groups.end() - 1;
-    }
-    it->kernels.push_back(k.get());
-  }
+        _groups.begin(), _groups.end(), [&](const Group & g) { return g.spec == spec; });
+    if (it != _groups.end())
+      return *it;
+    _groups.push_back({spec, {}});
+    return _groups.back();
+  };
+  // The groups of the rules of time stepping come first, in every study, so that the index of
+  // a group, which keys the history states of its points (stateKey), is the same in each.
+  for (const auto & k : _kernels)
+    groupOf(k->quadrature());
+  for (const auto & k : _kernels)
+    groupOf(_eigenvalue_study ? k->eigenvalueStudyQuadrature() : k->quadrature())
+        .kernels.push_back(k.get());
+}
+
+void
+Problem::setEigenvalueStudy(bool on)
+{
+  if (on == _eigenvalue_study)
+    return;
+  _eigenvalue_study = on;
+  if (_initialized)
+    buildGroups();
 }
 
 void

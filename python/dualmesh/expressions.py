@@ -25,9 +25,10 @@ comparisons ``< > <= >= == !=`` give 1 or 0.  The names in scope are ``x``,
 ``cos``, ``tan``, ``asin``, ``acos``, ``atan``, ``sinh``, ``cosh``, ``tanh``,
 ``exp``, ``log``, ``log10``, ``sqrt``, ``abs``, ``floor``, ``ceil``, ``erf``,
 ``sign``, ``atan2``, ``pow``, ``hypot``, ``min``, ``max`` and
-``if(condition, a, b)``.  SymPy's printed form (``E``, ``Abs``, ``**``) is
-accepted unchanged, so a manufactured source derived symbolically can be
-passed straight in.
+``if(condition, a, b)``.  A SymPy expression reaches this language through
+the printer of the model language, as ``dualmesh.mms`` writes its
+manufactured sources: ``write_expression(from_sympy(e), where)`` of
+``dualmesh.input.lower`` and ``dualmesh.model.sympy_form``.
 
 :class:`Expression` is the same language with any variable names.  It is the
 language of the parsed objects (``parsed_property``, ``parsed_eigenstrain``

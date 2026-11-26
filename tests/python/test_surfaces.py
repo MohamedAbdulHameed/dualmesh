@@ -39,7 +39,7 @@ def heat_on_rectangle(tilted, method, element_type):
         mesh.fix_orientation()
     problem = dualmesh.Problem(mesh, method=method)
     heat = problem.add_physics(
-        "heat_transfer", thermal_conductivity=3.0, heat_source=10.0, initial_condition=0.0
+        "heat_conduction", thermal_conductivity=3.0, heat_source=10.0, initial_condition=0.0
     )
     heat.add_boundary_condition("temperature = 1", boundary="left")
     heat.add_boundary_condition("heat_flux = 5*(temperature - 0.5)", boundary="top")

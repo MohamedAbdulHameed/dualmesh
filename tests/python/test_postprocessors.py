@@ -112,30 +112,33 @@ def test_a_transient_records_every_accepted_step(tmp_path):
     problem.add_kernel("time_derivative", variable="u")
     problem.add_kernel("diffusion", variable="u")
     problem.add_postprocessor("average", "mean", variable="u")
-    problem.solve_transient(end_time=0.3, time_step=0.1)
+    problem.solve_transient(end_time=0.3, time_step=0.1, time_stepper="fixed")
     history = problem.postprocessor_values()
     assert history["time"] == pytest.approx([0.0, 0.1, 0.2, 0.3])
     # Nothing leaves through the insulated ends: the mean is conserved.
     assert history["mean"] == pytest.approx(numpy.ones(4))
     problem.write_postprocessor_csv(tmp_path / "history.csv")
     lines = (tmp_path / "history.csv").read_text().splitlines()
-    assert lines[0] == "time,mean" and len(lines) == 5
+    assert lines[0] == "time [s],mean" and len(lines) == 5
+    # A post-processor given its unit heads its column with it.
+    problem.add_postprocessor("maximum", "peak", variable="u", unit="K")
+    assert problem.postprocessor_table().headers() == ["time [s]", "mean", "peak [K]"]
 
 
 def test_misuse_is_refused_with_the_valid_choices():
     problem, conduction = _linear_field_problem()
     with pytest.raises(ValueError, match="average"):
         problem.add_postprocessor("Average", "a", variable="u")
-    with pytest.raises(ValueError, match="takes: variable"):
+    with pytest.raises(ValueError, match="takes: unit, variable"):
         problem.add_postprocessor("average", "a", field="u")
-    with pytest.raises(ValueError, match="takes: variable"):
+    with pytest.raises(ValueError, match="takes: unit, variable"):
         problem.add_postprocessor("maximum", "e", variable="u", value_type="max")
     # A misspelled type is answered with the closest one.
     with pytest.raises(ValueError, match="Did you mean 'average'"):
         problem.add_postprocessor("averge", "a", variable="u")
     # A flow through a boundary needs its physics, which this problem has not.
     problem.add_postprocessor("heat_flow", "q", boundary="left")
-    with pytest.raises(ValueError, match="give the heat_transfer physics"):
+    with pytest.raises(ValueError, match="give the heat_conduction physics"):
         problem.solve()
     problem.add_postprocessor("average", "a", variable="u")
     with pytest.raises(ValueError, match="already exists"):

@@ -44,7 +44,8 @@ with these matrices:
 
 * :math:`\mathbf{K}`, the Jacobian of the steady terms at :math:`\Lambda = 0`,
 * :math:`\mathbf{M}_1` and :math:`\mathbf{M}_2`, the Jacobians of the first and
-  the second time derivatives,
+  the second time derivatives, with the consistent storage (the Gauss rule)
+  where time stepping lumps it,
 * :math:`\mathbf{B}_1` and :math:`\mathbf{B}_2`, the linear and the quadratic
   parts of the terms that use ``eigenvalue``.
 

@@ -1,13 +1,13 @@
 cff-version: 1.2.0
-title: "dualmesh-multiphysics: coupled heat transfer, solid mechanics and incompressible flow by the finite element method and the dual mesh control domain method"
+title: "dualmesh: coupled heat transfer, solid mechanics and incompressible flow by the finite element method and the dual mesh control domain method"
 message: "If you use this software, please cite it as below."
 type: software
 version: 0.2.0
 license: LGPL-2.1-or-later
-repository-code: "https://github.com/MohamedAbdulHameed/dualmesh-multiphysics"
-url: "https://github.com/MohamedAbdulHameed/dualmesh-multiphysics"
+repository-code: "https://github.com/MohamedAbdulHameed/dualmesh"
+url: "https://github.com/MohamedAbdulHameed/dualmesh"
 abstract: >-
-  dualmesh-multiphysics solves coupled problems of heat transfer, solid
+  dualmesh solves coupled problems of heat transfer, solid
   mechanics and incompressible flow, and partial differential equations
   written as text. It discretizes a problem by the finite element method
   (FEM), and a problem with a flow by the dual mesh control domain method

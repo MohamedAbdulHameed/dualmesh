@@ -33,7 +33,7 @@ def test_a_heat_flux_condition_is_the_heat_leaving(method):
     """T(0) = 0 and 2 W/m^2 leaving at x = 1: the heat flows to the right, so T falls,
     T = -2x/k, and the same heat enters at the left."""
     problem = bar(method)
-    heat = problem.add_physics("heat_transfer", thermal_conductivity=4.0)
+    heat = problem.add_physics("heat_conduction", thermal_conductivity=4.0)
     heat.add_boundary_condition("temperature = 0", boundary="left")
     heat.add_boundary_condition("heat_flux = 2", boundary="right")
     problem.solve(report="none")
@@ -46,7 +46,7 @@ def test_a_heat_flux_condition_is_the_heat_leaving(method):
 def test_a_heat_source_heats_and_its_heat_leaves_through_the_held_walls(method):
     """q = 8 W/m^3 between walls at 0: T rises to q/(8k) in the middle, and each wall takes half."""
     problem = bar(method)
-    heat = problem.add_physics("heat_transfer", thermal_conductivity=1.0, heat_source=8.0)
+    heat = problem.add_physics("heat_conduction", thermal_conductivity=1.0, heat_source=8.0)
     heat.add_boundary_condition("temperature = 0", boundary=["left", "right"])
     problem.solve(report="none")
     assert problem.maximum("temperature") == pytest.approx(1.0, rel=1e-10)
@@ -60,7 +60,7 @@ def test_a_heat_source_heats_and_its_heat_leaves_through_the_held_walls(method):
 def test_cooling_by_convection_is_heat_leaving(method):
     """A body at 300 K on the left cooled to 290 K air on the right: heat leaves on the right."""
     problem = bar(method)
-    heat = problem.add_physics("heat_transfer", thermal_conductivity=1.0)
+    heat = problem.add_physics("heat_conduction", thermal_conductivity=1.0)
     heat.add_boundary_condition("temperature = 300", boundary="left")
     heat.add_boundary_condition("heat_flux = 2*(temperature - 290)", boundary="right")
     problem.solve(report="none")
@@ -75,7 +75,7 @@ def test_a_corner_belongs_to_the_boundary_that_holds_it(method):
     so the insulated top and bottom carry nothing and the left takes the whole source."""
     mesh = dualmesh.generate_rectangle_mesh(0, 1, 0, 1, 5, 4)
     problem = dualmesh.Problem(mesh, method=method)
-    heat = problem.add_physics("heat_transfer", thermal_conductivity=1.0, heat_source=3.0)
+    heat = problem.add_physics("heat_conduction", thermal_conductivity=1.0, heat_source=3.0)
     heat.add_boundary_condition("temperature = 0", boundary="left")
     problem.solve(report="none")
     assert heat.heat_flow("top") == 0.0
@@ -86,7 +86,7 @@ def test_a_corner_belongs_to_the_boundary_that_holds_it(method):
 @pytest.mark.parametrize("method", methods)
 def test_a_point_heat_source_heats(method):
     problem = bar(method)
-    heat = problem.add_physics("heat_transfer", thermal_conductivity=1.0)
+    heat = problem.add_physics("heat_conduction", thermal_conductivity=1.0)
     heat.add_boundary_condition("temperature = 0", boundary=["left", "right"])
     problem.add_point_source(variable="temperature", value=2.0, points=[[0.5, 0.5]])
     problem.solve(report="none")
@@ -100,7 +100,7 @@ def test_the_heat_of_an_axisymmetric_body_counts_its_whole_circumference(method)
     heat leaving is the heat generated, q pi R^2 H = pi W."""
     mesh = dualmesh.generate_rectangle_mesh(0, 1, 0, 1, 6, 3)
     problem = dualmesh.Problem(mesh, method=method, coordinates="axisymmetric")
-    heat = problem.add_physics("heat_transfer", thermal_conductivity=1.0, heat_source=1.0)
+    heat = problem.add_physics("heat_conduction", thermal_conductivity=1.0, heat_source=1.0)
     heat.add_boundary_condition("temperature = 0", boundary="right")
     problem.solve(report="none")
     assert heat.heat_flow("right") == pytest.approx(numpy.pi, rel=exact)
@@ -231,10 +231,12 @@ def test_a_heated_fluid_rises(method):
     mesh = dualmesh.generate_rectangle_mesh(0, 1, 0, 1, 12, 12)
     problem = dualmesh.Problem(mesh, method=method)
     flow = problem.add_physics("fluid_dynamics", density=1.0, dynamic_viscosity=1.0)
-    heat = problem.add_physics("heat_transfer", thermal_conductivity=1.0)
+    heat = problem.add_physics(
+        "heat_conduction", thermal_conductivity=1.0, density=1.0, specific_heat=1.0
+    )
     problem.add_coupling(
         "nonisothermal_flow",
-        heat_transfer=heat,
+        heat_conduction=heat,
         fluid_dynamics=flow,
         gravity=[0.0, -1.0],
         volumetric_expansion_coefficient=1000.0,
@@ -257,10 +259,10 @@ def test_heating_expands_a_free_body(method):
     """A plate fixed only at its left edge, heated 10 K above its stress-free temperature with
     alpha = 1e-3: its right edge moves out by alpha dT L = 0.02 (plane strain adds (1 + nu))."""
     problem, solid = plane_strain(method)
-    heat = problem.add_physics("heat_transfer", thermal_conductivity=1.0)
+    heat = problem.add_physics("heat_conduction", thermal_conductivity=1.0)
     problem.add_coupling(
         "thermal_expansion",
-        heat_transfer=heat,
+        heat_conduction=heat,
         solid_mechanics=solid,
         linear_expansion_coefficient=1.0e-3,
         stress_free_temperature=300.0,
@@ -279,7 +281,7 @@ def test_a_source_heats_a_body_in_time(method):
     """An insulated body with q = 6 W/m^3 and rho c_p = 3: dT/dt = 2 K/s everywhere."""
     problem = bar(method)
     problem.add_physics(
-        "heat_transfer",
+        "heat_conduction",
         thermal_conductivity=1.0,
         heat_source=6.0,
         density=1.0,
@@ -297,8 +299,10 @@ def test_a_flow_carries_heat_downstream(method):
     mesh = dualmesh.generate_rectangle_mesh(0, 4, 0, 1, 16, 2)
     problem = dualmesh.Problem(mesh, method=method)
     flow = problem.add_physics("fluid_dynamics", density=1.0, dynamic_viscosity=1.0)
-    heat = problem.add_physics("heat_transfer", thermal_conductivity=0.1)
-    problem.add_coupling("nonisothermal_flow", heat_transfer=heat, fluid_dynamics=flow)
+    heat = problem.add_physics(
+        "heat_conduction", thermal_conductivity=0.1, density=1.0, specific_heat=1.0
+    )
+    problem.add_coupling("nonisothermal_flow", heat_conduction=heat, fluid_dynamics=flow)
     flow.add_boundary_condition(["velocity_x = 1", "velocity_y = 0"], boundary="left")
     flow.add_boundary_condition("velocity_y = 0", boundary=["top", "bottom"])
     flow.add_boundary_condition("pressure = 0", boundary="right")

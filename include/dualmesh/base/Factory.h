@@ -75,5 +75,7 @@ void registerSolidMechanicsObjects(Factory & f);
 void registerStructuralMemberObjects(Factory & f);
 void registerFluidObjects(Factory & f);
 void registerParsedObjects(Factory & f);
+/// The internal states of a balance law (parsed_state).
+void registerParsedStateObjects(Factory & f);
 
 } // namespace dualmesh

@@ -10,9 +10,9 @@ wrench, define the conditions on them, and solve the three-dimensional
 elasticity of the wrench as it tightens a nut.  You check the solution
 against the statics of the wrench and beam theory.
 
-The scripts are in ``examples/wrench``.  The object-level API,
-:class:`dualmesh.Problem`, and the mesh functions of :mod:`dualmesh` do the
-work.
+The scripts are in ``examples/wrench``.  The mesh functions of
+:mod:`dualmesh` name and check the boundaries, and the input of
+:class:`dualmesh.problem` solves the wrench.
 
 The problem
 -----------
@@ -183,97 +183,96 @@ condition to them.
    the side set ``jaws``.  Each face spans one flat of the nut through the
    whole thickness of the wrench.
 
-Define the boundary conditions
-------------------------------
+Define the problem
+------------------
 
-1. Add the ``solid_mechanics`` physics, which creates the three displacement
-   variables ``disp_x``, ``disp_y`` and ``disp_z``:
+The function ``wrench`` of ``wrench.py`` builds the input of the problem.
+
+1. Read the mesh file.  A mesh file does not state the unit of its
+   coordinates, and ``wrench.msh`` is in m:
 
    .. literalinclude:: ../../examples/wrench/wrench.py
       :language: python
-      :start-at: solid = problem.add_physics(
-      :end-before: # The nut holds the jaws
+      :start-at: tool = dualmesh.problem(
+      :end-before: tool.physics(
       :dedent: 4
 
-   A boundary condition names the side set it acts on, the quantity it
-   sets, and the value, with one entry per displacement component for a
-   vector such as a force.
+   The input takes the side sets of the file, ``jaws`` and ``grip``, as the
+   names of its boundaries.
 
-2. Fix the jaws.  The nut is rigid and bonded to the jaws, so all three
-   displacement components are zero there.  The word ``fixed`` sets every
-   displacement to zero:
+2. Add the solid and its material.  The mesh is three-dimensional, so the
+   solid is too, and ``solid_mechanics`` takes no formulation:
 
-   .. code-block:: python
+   .. literalinclude:: ../../examples/wrench/wrench.py
+      :language: python
+      :start-at: tool.physics(
+      :end-at: tool.properties(
+      :dedent: 4
 
-      solid.add_boundary_condition("fixed", boundary="jaws")
+3. Fix the jaws.  The nut is rigid and bonded to the jaws, so the three
+   components of the displacement are zero there.  Load the grip by a
+   traction, the force per area:
 
-   All three components are needed: with :math:`u` and :math:`v` alone the
-   wrench could move freely along :math:`z`, and the stiffness matrix would
-   be singular.  Written out one displacement at a time, the same condition
-   is ``solid.add_boundary_condition(["disp_x = 0", "disp_y = 0", "disp_z =
-   0"], boundary="jaws")``.  A displacement left out of the list is free.
+   .. literalinclude:: ../../examples/wrench/wrench.py
+      :language: python
+      :start-at: tool.boundary_conditions("jaws"
+      :end-at: tool.boundary_conditions("grip"
+      :dedent: 4
 
-3. Load the grip by its total force.  The condition ``total_force`` gives the
-   force on the side set, :math:`\mathbf{F} = (0, -150, 0)\ \mathrm{N}`, and
-   spreads each component uniformly over the area :math:`A` of the side set:
-
-   .. code-block:: python
-
-      solid.add_boundary_condition("total_force = [0, -F, 0]", boundary="grip", F=force)
-
-   The script sets ``force = 150.0``.  A keyword such as ``F`` is a constant
-   that the text uses by its name.  The traction on every face of the grip is
+   All three components on the jaws are needed: with :math:`u` and :math:`v`
+   alone the wrench could move freely along :math:`z`, and the stiffness
+   matrix would be singular.  The hand force :math:`F = 150\ \mathrm{N}`
+   along :math:`-y`, spread uniformly over the area :math:`A` of the grip,
+   gives the traction
 
    .. math::
 
       t_y = \frac{F_y}{A} = \frac{-150\ \mathrm{N}}{6 \times 10^{-4}\ \mathrm{m^2}}
           = -2.5 \times 10^{5}\ \mathrm{Pa},
 
-   where :math:`F_y` is the component of the force along :math:`y`.  The code
-   computes :math:`A` itself (:meth:`~dualmesh.Problem.boundary_area`).  The
-   same load given as the traction itself, in force per unit area, is
-
-   .. code-block:: python
-
-      solid.add_boundary_condition("traction = [0, -2.5e5, 0]", boundary="grip")
-
-   A boundary takes one of the two.  Give the total force when the force is
-   the known quantity, so that you never compute the area of the faces of an
-   imported mesh by hand.  A traction that varies over the faces is a
-   ``traction`` with an expression of :math:`x`, :math:`y`, :math:`z` and
-   :math:`t` per component.
+   where :math:`F_y` is the component of the force along :math:`y`.  The
+   area comes from the table of :func:`~dualmesh.sideset_summary`.  A
+   traction that varies over the faces is a formula of :math:`x`, :math:`y`,
+   :math:`z` and ``time`` per component.
 
 4. Leave the other faces without a condition.  A face that belongs to no
    condition is free of traction, the natural boundary condition of the
    equilibrium equations.
 
+5. Ask for the quantities to check, and write the displacement:
+
+   .. literalinclude:: ../../examples/wrench/wrench.py
+      :language: python
+      :start-at: tool.postprocessor("reaction"
+      :end-at: tool.output(
+      :dedent: 4
+
+   ``boundary_flux: traction_y`` integrates the traction of the solid along
+   :math:`y` over the jaws, which is the reaction of the nut.  The line
+   ``section`` samples :math:`\sigma_{xx}` across the handle at :math:`x = 60\
+   \mathrm{mm}`, and ``edge`` takes the von Mises stress at the edge of that
+   section.  ``deflection`` is the smallest displacement along :math:`y`.
+
 Solve the wrench
 ----------------
 
-The function ``solve`` of ``wrench.py`` reads the mesh, prints the side
-sets, adds the physics and the conditions, and solves:
-
-.. literalinclude:: ../../examples/wrench/wrench.py
-   :language: python
-   :pyobject: solve
-
-Run it from ``examples/wrench``:
+Run the script from ``examples/wrench``:
 
 .. code-block:: console
 
-   python wrench.py FEM --figure
+   python wrench.py
 
-The script writes the displacement and the stress to ``wrench_FEM.vtu``, which
-ParaView opens, and ``--figure`` draws the von Mises stress on the upper face
-to ``wrench_FEM_von_mises.png``.  The script ``plot_wrench_geometry.py``
-draws the figures of the geometry and of the side sets.
+It solves the problem with the finite element method (FEM), and it writes the
+displacement to ``wrench.vtu``, which ParaView opens, the postprocessors to
+``wrench.csv`` and the line to ``wrench_section.csv``, in the working
+directory.  The script ``plot_wrench_geometry.py`` draws the figures of the
+geometry and of the side sets.
 
 Check the result
 ----------------
 
-The function ``check`` of ``wrench.py`` compares the solution with three
-results that do not depend on the finite element model, and prints each
-computed value next to its reference:
+The script compares the solution with two results that do not depend on the
+finite element model, and prints each computed value next to its reference:
 
 .. list-table::
    :header-rows: 1
@@ -283,33 +282,40 @@ computed value next to its reference:
      - Reference
    * - Reaction of the jaws along :math:`y`
      - :math:`F = 150\ \mathrm{N}`, the equilibrium of forces
-   * - Moment of the reactions about the centre of the nut
-     - :math:`F (x_g - x_n) = 21.675\ \mathrm{N\,m}`, the equilibrium of
-       moments
-   * - Bending stress :math:`\sigma_{xx}` of the handle at :math:`x = 60\
-       \mathrm{mm}`
+   * - Bending stress :math:`\sigma_{xx}` at the edge of the handle at
+       :math:`x = 60\ \mathrm{mm}`
+     - :math:`90.63\ \mathrm{MPa}`, beam theory
+   * - Von Mises stress at the same edge
      - :math:`90.63\ \mathrm{MPa}`, beam theory
 
-The moment arm runs from the centre of the nut, :math:`x_n = -12\
-\mathrm{mm}`, to the centroid of the grip, :math:`x_g = 132.5\ \mathrm{mm}`.
-The reactions are the residuals of the equations at the nodes of the jaws,
-so they balance the load to the tolerance of the solve.  Beam theory gives
-the bending stress at the edge of the handle as
+The reaction is the residual of the equations at the nodes of the jaws, so it
+balances the load to the tolerance of the solve.  Beam theory gives the
+bending stress at the edge of the handle as
 
 .. math::
 
    \sigma_{xx} = \frac{M c}{I} = \frac{F (x_g - x)\, (h_s/2)}{b_s h_s^3 / 12},
 
-where :math:`M` is the bending moment at the section :math:`x`, :math:`h_s =
-12\ \mathrm{mm}` is the width of the handle in the plane of bending,
-:math:`b_s = 5\ \mathrm{mm}` is its thickness, :math:`c = h_s/2` is the
-distance from the neutral axis to the edge, and :math:`I` is the second
-moment of area.  ``check`` fits a straight line to :math:`\sigma_{xx}`
-against :math:`y` over the elements whose centroids lie within :math:`3\
-\mathrm{mm}` of the section, multiplies its slope by :math:`h_s/2`, and prints
-the result beside the value of beam theory.
+where :math:`M` is the bending moment at the section :math:`x`, :math:`x_g =
+132.5\ \mathrm{mm}` is the centroid of the grip, :math:`h_s = 12\
+\mathrm{mm}` is the width of the handle in the plane of bending, :math:`b_s =
+5\ \mathrm{mm}` is its thickness, :math:`c = h_s/2` is the distance from the
+neutral axis to the edge, and :math:`I` is the second moment of area.  The
+function ``bending_stress`` fits a straight line to :math:`\sigma_{xx}`
+against :math:`y` along the line ``section`` and multiplies its slope by
+:math:`h_s/2`:
 
+.. literalinclude:: ../../examples/wrench/wrench.py
+   :language: python
+   :pyobject: bending_stress
 
+The shear stress of the bending vanishes at the edge of the handle, so the
+stress there is :math:`\sigma_{xx}` alone, and the von Mises stress equals
+it.  The test
+``test_the_wrench_balances_its_load_and_has_the_bending_stress_of_beam_theory``
+in ``tests/python/test_examples.py`` checks the reaction to
+:math:`10^{-8}`, the bending stress to :math:`10^{-3}` and the von Mises
+stress to :math:`2 \times 10^{-3}` of their references.
 
 .. figure:: ../_static/figures/wrench/wrench_von_mises.png
    :width: 85%

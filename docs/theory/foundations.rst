@@ -166,6 +166,116 @@ interfaces cancel and only the flux through the boundary of the union remains.
 The discrete balance therefore holds over every control domain, over every
 union of control domains and over the whole domain.
 
+.. _theory-user-models:
+
+Models of your own
+------------------
+
+A model of the ``models`` section of the input (:ref:`input-models`) is the
+balance law :eq:`balance-law` of one scalar unknown :math:`u`, with internal
+states :math:`q_1, \dots, q_n`. Each state is a number at each integration point
+with the rate law
+
+.. math::
+   :label: state-rate
+
+   \frac{\mathrm{d}q_i}{\mathrm{d}t} = g_i(\mathbf{q}, u, \nabla u, \mathbf{x}, t) ,
+
+with :math:`g_i` the rate of :math:`q_i` in the unit of :math:`q_i` per s and
+:math:`\mathbf{q}` the vector of the states. The storage :math:`m`, the flux
+:math:`\mathbf{F}` and the source :math:`s` may read the states. The input
+writes the properties of each region into the terms, so each term is a
+formula of the fields, their gradients, the states, the position and the time.
+The solve differentiates the rates symbolically for the Newton method of the
+states, and automatic differentiation gives the Jacobian of the whole problem.
+
+The storage term
+~~~~~~~~~~~~~~~~
+
+A step from the time :math:`t^n` to :math:`t^{n+1} = t^n + \Delta t` takes
+the rate of the storage as the change of the storage itself:
+
+.. math::
+   :label: storage-difference
+
+   \frac{\partial m}{\partial t} \approx
+   \frac{m(u^{n+1}, \mathbf{q}^{n+1}) - m(u^n, \mathbf{q}^n)}{\Delta t} ,
+
+with the superscripts naming the time of each value and :math:`\Delta t` the
+time step in s. The fluxes and the sources are taken at :math:`t^{n+1}`, as
+the backward Euler method takes them. Summed over all control domains, or
+over all test functions of the finite element method (FEM), the interior
+fluxes cancel (see `Local conservation`_), and
+:eq:`storage-difference` gives
+
+.. math::
+
+   \int_\Omega m^{n+1} \, \mathrm{d}V = \int_\Omega m^n \, \mathrm{d}V
+   + \Delta t \left( \int_\Omega s^{n+1} \, \mathrm{d}V
+   - \oint_{\partial\Omega} \mathbf{F}^{n+1} \cdot \mathbf{n} \, \mathrm{d}S \right) .
+
+The amount stored therefore changes by what the sources and the boundary bring
+in each step, for any storage, linear or not. The capacity form
+:math:`c\,\partial u/\partial t` of `The balance law`_, with :math:`c` taken at
+:math:`t^{n+1}`, gains or loses a part of the amount in each step where
+:math:`c` changes, so a model takes the difference
+:eq:`storage-difference`. For a storage :math:`m = c\,u` with a constant
+capacity :math:`c` the two forms are equal, and a model of heat conduction
+gives the temperatures of ``heat_conduction``.
+
+On a mesh of linear elements, the storage term ``time_derivative`` is lumped at
+the nodes, as the heat capacity of the ``heat_conduction`` physics is: each node takes the storage of its
+control domain, or the integral of its shape function under FEM, at its own
+value. The system of each step then keeps the maximum principle of diffusion
+on a mesh without obtuse angles, so a concentration stays between its bounds.
+A term that carries the unknown, a flux such as :math:`\mathbf{v} u` or a source
+such as :math:`\mathbf{v} \cdot \nabla u` with a velocity :math:`\mathbf{v}` in
+m/s, keeps the Gauss rule, since a lumped storage loses the phase accuracy of a
+transport.  An eigenvalue study takes the Gauss rule on every mesh, since the
+lumping serves time stepping.
+
+The states
+~~~~~~~~~~
+
+Each integration point keeps its states from step to step. A step integrates :eq:`state-rate` by the
+backward Euler method,
+
+.. math::
+   :label: state-step
+
+   r_i(\mathbf{q}^{n+1}) = \frac{q_i^{n+1} - q_i^n}{\Delta t}
+   - g_i(\mathbf{q}^{n+1}, u^{n+1}, \nabla u^{n+1}, \mathbf{x}, t^{n+1}) = 0 ,
+
+with :math:`r_i` the residual of state :math:`i`. The point solves
+:eq:`state-step` by the Newton method from :math:`\mathbf{q}^n`, with the
+Jacobian :math:`J_{ij} = \delta_{ij}/\Delta t - \partial g_i/\partial q_j`,
+where :math:`\delta_{ij}` is 1 for :math:`i = j` and 0 otherwise. A step that
+does not lower the norm of :math:`\mathbf{r}` is halved. The derivative of the
+states with respect to the unknowns of the problem follows from the implicit
+function theorem,
+:math:`\partial \mathbf{q}^{n+1}/\partial u = -J^{-1}\,\partial \mathbf{r}/\partial u`,
+so the Newton method of the problem converges at its quadratic rate.
+
+The backward Euler method is the method of the transient problems of the
+input, so the unknown and the states advance with the same method. It is
+stable for any step, and it holds a state at the root of a fast rate, such as
+the local equilibrium of a trap whose rates exceed :math:`1/\Delta t` by far.
+Then :math:`q_i^{n+1}` tends to the root of :math:`g_i`, and the storage
+:eq:`storage-difference` of a linear trap :math:`m = c + q` with
+:math:`q = K c` becomes :math:`(1 + K)\,c`. The concentration :math:`c` then
+diffuses with the effective diffusivity :math:`D/(1 + K)` of
+[Oriani1970]_, with :math:`D` the diffusivity in :math:`\mathrm{m^2/s}` and
+:math:`K` the dimensionless ratio of the trapping and release rates.
+
+A steady problem has no time derivative, so it holds each state at the root
+of its rates, :math:`\mathbf{g}(\mathbf{q}) = \mathbf{0}`, the equilibrium of
+each point. The Newton method of the point then has the Jacobian
+:math:`-\partial g_i/\partial q_j`.
+
+The storage at :math:`t^n` reads the states at :math:`t^n`, which the point
+keeps, and the fields at :math:`t^n`. Under the lumped rule the states live at
+the nodes, where the storage is evaluated.
+
 Coordinate systems
 ------------------
 

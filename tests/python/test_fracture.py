@@ -113,7 +113,7 @@ def test_phase_field_damage_of_a_uniform_bar_is_the_closed_form_and_does_not_hea
             (t, problem.values("damage").copy(), problem.property_at_centroids("stress")[0][0])
         )
     )
-    problem.solve_transient(end_time=2.5, time_step=0.5, report="none")
+    problem.solve_transient(end_time=2.5, time_step=0.5, time_stepper="fixed", report="none")
     peak_damage = None
     for t, damage, stress in records:
         strain = 1e-3 * (t - 2 * max(t - 2, 0))

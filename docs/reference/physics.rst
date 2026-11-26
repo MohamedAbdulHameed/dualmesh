@@ -26,7 +26,7 @@ Physics types
    :toctree: generated/
    :template: class_alone.rst
 
-   HeatTransfer
+   HeatConduction
    SolidMechanics
    FluidDynamics
    GeneralFormPDE

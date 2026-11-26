@@ -28,7 +28,7 @@ def bus_bar():
     bar.postprocessor("temperature_bottom", point_value="temperature", point=["0.05 m", "0 m"])
     bar.postprocessor("temperature_top", point_value="temperature", point=["0.05 m", "0.05 m"])
     bar.postprocessor("hottest", maximum="temperature")
-    bar.output(file="bus_bar", interval=1, fields=["temperature"])
+    bar.output(file="bus_bar", fields=["temperature"])
     return bar
 
 

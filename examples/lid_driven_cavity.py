@@ -1,9 +1,11 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
-"""Flow in a lid-driven cavity by the penalty method.
+"""Flow in a lid-driven cavity at a Reynolds number of 1000, by the penalty formulation.
 
-The velocity of the lid is applied in load steps, because Newton's method
-started from rest does not converge at Re = 1000.  The horizontal velocity
-along the vertical centreline is compared with the published dual mesh values.
+A square cavity of side a = 1 m holds a fluid of density 1000 kg/m^3 and viscosity 1 Pa s, and
+its lid moves at V = 1 m/s, so the Reynolds number rho V a / mu is 1000. The rows of the mesh
+shrink towards the lid, where the velocity changes fastest. The horizontal velocity on the
+vertical centreline is compared with the dual mesh control domain method (DMCDM) solution of
+Example 9.8.4 of Reddy's book, on its mesh of 16 by 20 elements.
 """
 
 import dualmesh
@@ -53,36 +55,28 @@ published_u = [
 ]
 
 
-def solve(Reynolds_number=1000.0):
-    mesh = dualmesh.generate_rectangle_mesh(
-        x_coordinates=dualmesh.meshing.coordinates_from_spacings(0.0, [0.0625] * 16),
-        y_coordinates=dualmesh.meshing.coordinates_from_spacings(
-            0.0, [0.0625] * 12 + [0.03125] * 8
-        ),
+def cavity():
+    flow = dualmesh.problem(
+        mesh={"rectangle": {"size": ["1 m", "1 m"], "cells": [16, 20], "grading": [1, 0.964]}},
+        method="DMCDM",
     )
-    problem = dualmesh.Problem(mesh)
-    # Re = rho V0 a / mu with V0 = a = mu = 1, so the density is the Reynolds number.
-    flow = problem.add_physics(
-        "fluid_dynamics",
-        dynamic_viscosity=1.0,
-        density=Reynolds_number,
-        formulation="penalty",
-        penalty_parameter=1.0e8,
+    flow.physics("fluid_dynamics", formulation="penalty")
+    flow.properties(density="1000 kg/m^3", dynamic_viscosity="1 Pa*s")
+    for wall in ("left", "right", "bottom"):
+        flow.boundary_conditions(wall, velocity=["0 m/s", "0 m/s"])
+    flow.boundary_conditions("top", velocity=["1 m/s", "0 m/s"])
+    flow.postprocessor(
+        "centreline", line="velocity_x", from_=["0.5 m", "0 m"], to=["0.5 m", "1 m"], points=33
     )
-    flow.add_boundary_condition(
-        ["velocity_x = 0", "velocity_y = 0"], boundary=["left", "right", "bottom"]
-    )
-    flow.add_boundary_condition(["velocity_x = 1", "velocity_y = 0"], boundary="top")
-    problem.solve(max_iterations=60)
-    return problem
+    flow.output(file="cavity", fields=["velocity"])
+    return flow
 
 
 if __name__ == "__main__":
-    problem = solve()
-    points = numpy.column_stack([numpy.full(len(published_y), 0.5), published_y])
-    computed = problem.sample("velocity_x", points)
-    print("    y      velocity_x (dualmesh)   velocity_x (published)")
+    solution = cavity().solve()
+    line = solution.line("centreline")
+    computed = numpy.interp(published_y, line["y"], line["velocity_x"])
+    print("    y (m)   velocity_x (m/s)   Reddy (m/s)")
     for y, mine, published in zip(published_y, computed, published_u):
-        print(f"{y:7.4f}  {mine:12.4f}  {published:9.4f}")
-    problem.write_vtu("cavity.vtu", cell_properties=["pressure"])
-    print("wrote cavity.vtu (velocity components and recovered pressure)")
+        print(f"{y:8.4f}  {mine:14.4f}  {published:12.4f}")
+    print("wrote cavity.vtu and cavity_centreline.csv")

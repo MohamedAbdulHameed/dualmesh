@@ -78,7 +78,7 @@ endif()
 
 # PETSc is found with pkg-config, which every PETSc installation provides
 # (PETSC_DIR/PETSC_ARCH/lib/pkgconfig for a source build; set PKG_CONFIG_PATH
-# to it).  It must use the same MPI as dualmesh-multiphysics.
+# to it).  It must use the same MPI as dualmesh.
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(PETSC REQUIRED IMPORTED_TARGET PETSc)
 message(STATUS "PETSc found: ${PETSC_VERSION}")

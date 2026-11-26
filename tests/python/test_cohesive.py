@@ -86,7 +86,7 @@ def test_the_zone_follows_the_bilinear_law_and_does_not_heal(method, primary, se
         )
 
     problem.set_time_step_callback(record)
-    problem.solve_transient(end_time=4.0, time_step=0.02, report="none")
+    problem.solve_transient(end_time=4.0, time_step=0.02, time_stepper="fixed", report="none")
     reached, work, before = 0.0, 0.0, (0.0, 0.0)
     for top, opening, force, through_upper, through_lower in steps:
         traction = bilinear(opening, reached, stiffness)
@@ -127,7 +127,7 @@ def test_a_sheared_zone_separates_with_the_work_of_the_toughness():
         steps.append((problem.values("disp_x")[top][0], force["x"]))
 
     problem.set_time_step_callback(record)
-    problem.solve_transient(end_time=1.0, time_step=0.005, report="none")
+    problem.solve_transient(end_time=1.0, time_step=0.005, time_stepper="fixed", report="none")
     moves, forces = numpy.array([(0.0, 0.0)] + steps).T
     assert max(forces) > 0.5 * strength
     assert forces[-1] == pytest.approx(0.0, abs=1e-6 * strength)

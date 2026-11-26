@@ -3,12 +3,14 @@
 
 #include "dualmesh/core/ADReal.h"
 
+#include <algorithm>
 #include <array>
 #include <cctype>
 #include <cmath>
 #include <cstdlib>
 #include <iterator>
 #include <sstream>
+#include <stdexcept>
 
 namespace dualmesh
 {
@@ -64,8 +66,6 @@ const UnaryEntry unary_functions[] = {
     {"log10", [](double v) { return std::log10(v); }},
     {"sqrt", [](double v) { return std::sqrt(v); }},
     {"abs", [](double v) { return std::abs(v); }},
-    {"Abs", [](double v) { return std::abs(v); }},
-    {"fabs", [](double v) { return std::abs(v); }},
     {"floor", [](double v) { return std::floor(v); }},
     {"ceil", [](double v) { return std::ceil(v); }},
     {"erf", [](double v) { return std::erf(v); }},
@@ -272,7 +272,7 @@ private:
         emit(Op::Constant, 0, 3.14159265358979323846);
         return;
       }
-      if (name == "e" || name == "E")
+      if (name == "e")
       {
         emit(Op::Constant, 0, std::exp(1.0));
         return;
@@ -430,11 +430,47 @@ unaryDerivative(int k, double a)
     return 1.0 / (a * std::log(10.0));
   if (name == "sqrt")
     return 0.5 / std::sqrt(a);
-  if (name == "abs" || name == "Abs" || name == "fabs")
+  if (name == "abs")
     return signOf(a);
   if (name == "erf")
     return 2.0 / std::sqrt(3.14159265358979323846) * std::exp(-a * a);
   return 0.0; // floor, ceil, sign: piecewise constant
+}
+
+/// The second derivative of unary function k at a.
+double
+unarySecondDerivative(int k, double a)
+{
+  const std::string name = unary_functions[k].name;
+  if (name == "sin")
+    return -std::sin(a);
+  if (name == "cos")
+    return -std::cos(a);
+  if (name == "tan")
+    return 2.0 * std::tan(a) / (std::cos(a) * std::cos(a));
+  if (name == "asin")
+    return a / std::pow(1.0 - a * a, 1.5);
+  if (name == "acos")
+    return -a / std::pow(1.0 - a * a, 1.5);
+  if (name == "atan")
+    return -2.0 * a / ((1.0 + a * a) * (1.0 + a * a));
+  if (name == "sinh")
+    return std::sinh(a);
+  if (name == "cosh")
+    return std::cosh(a);
+  if (name == "tanh")
+    return -2.0 * std::tanh(a) * (1.0 - std::tanh(a) * std::tanh(a));
+  if (name == "exp")
+    return std::exp(a);
+  if (name == "log")
+    return -1.0 / (a * a);
+  if (name == "log10")
+    return -1.0 / (a * a * std::log(10.0));
+  if (name == "sqrt")
+    return -0.25 / (a * std::sqrt(a));
+  if (name == "erf")
+    return -4.0 * a / std::sqrt(3.14159265358979323846) * std::exp(-a * a);
+  return 0.0; // abs, floor, ceil, sign: piecewise linear or constant
 }
 
 /// a scaled so that its value is v and its derivatives are d times those of a.
@@ -614,6 +650,161 @@ binaryValue(int k, const Bounded & a, const Bounded & b)
               (r2 > 0.0 ? (std::abs(b.value) * a.size + std::abs(a.value) * b.size) / r2 : 0.0)};
 }
 
+// ---- evaluation with second derivatives ------------------------------------
+constexpr int kOrder2 = ParsedExpression::kMaxSecondOrderVariables;
+
+/// A value with its gradient and its Hessian in the variables of an expression: forward
+/// differentiation to second order.
+struct Taylor2
+{
+  double value = 0.0;
+  std::array<double, kOrder2> gradient{};
+  std::array<double, kOrder2 * kOrder2> hessian{};
+  Taylor2() = default;
+  Taylor2(double v) : value(v) {}
+};
+
+double
+plainValue(const Taylor2 & v)
+{
+  return v.value;
+}
+
+/// x d, which is zero where x is zero, also for an infinite d (sqrt at 0), as in chain().
+double
+scaled(double x, double d)
+{
+  return x == 0.0 ? 0.0 : x * d;
+}
+
+/// f(a, b) from its value v and its first (fa, fb) and second (faa, fab, fbb) partial
+/// derivatives at (a, b), by the chain rule to second order.
+Taylor2
+chain(const Taylor2 & a,
+      const Taylor2 & b,
+      double v,
+      double fa,
+      double fb,
+      double faa,
+      double fab,
+      double fbb)
+{
+  Taylor2 r(v);
+  for (int i = 0; i < kOrder2; ++i)
+  {
+    r.gradient[i] = scaled(a.gradient[i], fa) + scaled(b.gradient[i], fb);
+    for (int j = 0; j < kOrder2; ++j)
+    {
+      const int k = i * kOrder2 + j;
+      r.hessian[k] = scaled(a.hessian[k], fa) + scaled(b.hessian[k], fb) +
+                     scaled(a.gradient[i] * a.gradient[j], faa) +
+                     scaled(a.gradient[i] * b.gradient[j] + b.gradient[i] * a.gradient[j], fab) +
+                     scaled(b.gradient[i] * b.gradient[j], fbb);
+    }
+  }
+  return r;
+}
+
+/// f(a) from its value v and its first and second derivatives d1 and d2 at a.
+Taylor2
+chain(const Taylor2 & a, double v, double d1, double d2)
+{
+  return chain(a, Taylor2(), v, d1, 0.0, d2, 0.0, 0.0);
+}
+
+Taylor2
+operator-(const Taylor2 & a)
+{
+  return chain(a, -a.value, -1.0, 0.0);
+}
+
+Taylor2
+operator+(const Taylor2 & a, const Taylor2 & b)
+{
+  return chain(a, b, a.value + b.value, 1.0, 1.0, 0.0, 0.0, 0.0);
+}
+
+Taylor2
+operator-(const Taylor2 & a, const Taylor2 & b)
+{
+  return chain(a, b, a.value - b.value, 1.0, -1.0, 0.0, 0.0, 0.0);
+}
+
+Taylor2
+operator*(const Taylor2 & a, const Taylor2 & b)
+{
+  return chain(a, b, a.value * b.value, b.value, a.value, 0.0, 1.0, 0.0);
+}
+
+Taylor2
+operator/(const Taylor2 & a, const Taylor2 & b)
+{
+  const double q = a.value / b.value, inverse = 1.0 / b.value;
+  return chain(
+      a, b, q, inverse, -q * inverse, 0.0, -inverse * inverse, 2.0 * q * inverse * inverse);
+}
+
+Taylor2
+power(const Taylor2 & a, const Taylor2 & b)
+{
+  const double av = a.value, p = b.value, v = power(av, p);
+  const bool constant_exponent =
+      std::all_of(b.gradient.begin(), b.gradient.end(), [](double g) { return g == 0.0; });
+  if (constant_exponent)
+  {
+    // p a^(p-1) and p (p - 1) a^(p-2), defined for a negative base with an integer exponent.
+    const double d1 = p == 0.0 ? 0.0 : p * power(av, p - 1.0);
+    const double d2 = p == 0.0 || p == 1.0 ? 0.0 : p * (p - 1.0) * power(av, p - 2.0);
+    return chain(a, v, d1, d2);
+  }
+  const double ln = std::log(av), below = power(av, p - 1.0);
+  return chain(a,
+               b,
+               v,
+               p * below,
+               v * ln,
+               p * (p - 1.0) * power(av, p - 2.0),
+               below * (1.0 + p * ln),
+               v * ln * ln);
+}
+
+Taylor2
+unaryValue(int k, const Taylor2 & a)
+{
+  return chain(a,
+               unary_functions[k].f(a.value),
+               unaryDerivative(k, a.value),
+               unarySecondDerivative(k, a.value));
+}
+
+Taylor2
+binaryValue(int k, const Taylor2 & a, const Taylor2 & b)
+{
+  const std::string name = binary_functions[k].name;
+  if (name == "pow")
+    return power(a, b);
+  if (name == "min")
+    return a.value <= b.value ? a : b;
+  if (name == "max")
+    return a.value >= b.value ? a : b;
+  const double x = a.value, y = b.value, r2 = x * x + y * y;
+  if (name == "hypot")
+  {
+    const double v = std::hypot(x, y), v3 = v * v * v;
+    return chain(a, b, v, x / v, y / v, y * y / v3, -x * y / v3, x * x / v3);
+  }
+  // atan2(a, b), whose first derivatives are b / (a^2 + b^2) and -a / (a^2 + b^2).
+  const double r4 = r2 * r2;
+  return chain(a,
+               b,
+               std::atan2(x, y),
+               y / r2,
+               -x / r2,
+               -2.0 * x * y / r4,
+               (x * x - y * y) / r4,
+               2.0 * x * y / r4);
+}
+
 template <typename T>
 T
 run(const std::vector<Instruction> & program, const T * variables)
@@ -736,6 +927,32 @@ ParsedExpression::termSize(const double * variables) const
   for (std::size_t k = 0; k < _variables.size(); ++k)
     values[k] = Bounded(variables[k]);
   return run(_program, values.data()).size;
+}
+
+void
+ParsedExpression::secondOrder(const double * variables,
+                              double & value,
+                              double * gradient,
+                              double * hessian) const
+{
+  const std::size_t n = _variables.size();
+  if (n > static_cast<std::size_t>(kOrder2))
+    throw std::logic_error("dualmesh: second derivatives take at most " + std::to_string(kOrder2) +
+                           " variables.");
+  std::array<Taylor2, kOrder2> seeds;
+  for (std::size_t k = 0; k < n; ++k)
+  {
+    seeds[k] = Taylor2(variables[k]);
+    seeds[k].gradient[k] = 1.0;
+  }
+  const Taylor2 r = run(_program, seeds.data());
+  value = r.value;
+  for (std::size_t i = 0; i < n; ++i)
+  {
+    gradient[i] = r.gradient[i];
+    for (std::size_t j = 0; j < n; ++j)
+      hessian[i * n + j] = r.hessian[i * kOrder2 + j];
+  }
 }
 
 int

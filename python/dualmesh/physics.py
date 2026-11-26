@@ -13,7 +13,7 @@ initialised::
     solid.add_boundary_condition("total_force = [0, -150, 0]", boundary="grip")
     problem.solve()
 
-Each physics defines its variables.  heat_transfer has ``temperature``,
+Each physics defines its variables.  heat_conduction has ``temperature``,
 solid_mechanics has ``disp_x``, ``disp_y`` and ``disp_z``, and fluid_dynamics
 has ``velocity_x``, ``velocity_y``, ``velocity_z`` and ``pressure``.  The
 fields of general_form_PDE are named in its ``variables``.  The boundary
@@ -40,7 +40,7 @@ from .parameters import InputError, check_keywords, describe_fields, parameter
 __all__ = [
     "Coupling",
     "NonisothermalFlow",
-    "HeatTransfer",
+    "HeatConduction",
     "FluidDynamics",
     "Physics",
     "SolidMechanics",
@@ -82,13 +82,11 @@ def describe(type_name: str) -> str:
 def create(type_name: str, name: str, parameters: dict):
     """A physics or a coupling of a registered type, with its parameters
     checked."""
-    import difflib
+    from .console import suggestion
 
     if type_name not in _REGISTRY:
-        close = difflib.get_close_matches(type_name, list(_REGISTRY), n=1)
-        hint = f" Did you mean '{close[0]}'?" if close else ""
         raise InputError(
-            f"Unknown physics or coupling type '{type_name}'.{hint} Registered types: {' '.join(sorted(_REGISTRY))}"
+            f"Unknown physics or coupling type '{type_name}'." + suggestion(type_name, _REGISTRY)
         )
     cls = _REGISTRY[type_name]
     where = label(type_name, name)
@@ -149,7 +147,7 @@ def _expand_conditions(condition, parameters: dict, where: str) -> list[str]:
     among ``parameters`` written into them, and those definitions removed
     from ``parameters``.  A number is written as its value and a text, in
     parentheses, as itself; a definition may use the ones before it."""
-    import difflib
+    from .console import suggestion
 
     texts = [condition] if isinstance(condition, str) else list(condition)
     names = [k for k in parameters if k not in _CONDITION_PARAMETERS]
@@ -165,8 +163,7 @@ def _expand_conditions(condition, parameters: dict, where: str) -> list[str]:
         )
 
     def hint(name: str) -> str:
-        close = difflib.get_close_matches(name, [*_CONDITION_PARAMETERS, "boundary"], n=1)
-        return f" Did you mean '{close[0]}'?" if close else ""
+        return suggestion(name, [*_CONDITION_PARAMETERS, "boundary"], listing=False)
 
     known: dict = {}
     for name, value in definitions.items():
@@ -330,7 +327,7 @@ class Physics:
         A variable of the physics on the left prescribes its value on the
         boundary, and the name of the normal flux of the physics on the left
         prescribes the flux through it, along the outward normal: ``heat_flux``
-        (the heat leaving the body) for ``heat_transfer``, ``traction``,
+        (the heat leaving the body) for ``heat_conduction``, ``traction``,
         ``total_force`` and ``pressure`` for ``solid_mechanics``,
         ``normal_flux`` for ``general_form_PDE``.  The right side is an
         expression of x, y, z, t, the functions, the properties and the
@@ -473,7 +470,7 @@ class Physics:
 
     def add_kernel(self, kernel: str, **parameters):
         """Add a term of the object reference (or a word of this physics,
-        such as ``"heat_source"`` of ``heat_transfer``) to the equations of
+        such as ``"heat_source"`` of ``heat_conduction``) to the equations of
         this physics.  The variable is filled in for a physics with one
         variable, and must be given for one with several::
 
@@ -587,7 +584,7 @@ class Coupling:
 # ---------------------------------------------------------------------------
 @register
 @dataclass
-class HeatTransfer(Physics):
+class HeatConduction(Physics):
     r"""Heat conduction in a solid or in a fluid at rest, with an optional heat
     source and heat capacity.
 
@@ -610,8 +607,8 @@ class HeatTransfer(Physics):
     :math:`\mathbf{n} \cdot \mathbf{q}`, the heat flux that leaves the body
     along the outward unit normal :math:`\mathbf{n}`."""
 
-    type_name: ClassVar[str] = "heat_transfer"
-    module: ClassVar[str] = "heat_transfer"
+    type_name: ClassVar[str] = "heat_conduction"
+    module: ClassVar[str] = "heat_conduction"
     #: heat_flux, the heat leaving the body, is Neumann with the flux entering, -heat_flux.
     #: heat_source is body_force with the volumetric heat generation.
     kernel_words: ClassVar[dict] = {"heat_source": ("body_force", {"heat_source": "value"})}
@@ -632,12 +629,12 @@ class HeatTransfer(Physics):
     density: float | str | None = parameter(
         None,
         unit="kg/m^3",
-        description="Density rho of the heat capacity term rho c_p dT/dt, a constant or the name of a function. Default none: the equation has a heat capacity term only when density and specific_heat are both given, and a transient solve needs it.",
+        description="Density rho of the heat capacity term rho c_p dT/dt and, with a nonisothermal_flow coupling, of the heat that the flow carries, a constant or the name of a function. Default none: the equation has a heat capacity term only when density and specific_heat are both given, and a transient solve needs it.",
     )
     specific_heat: float | str | None = parameter(
         None,
         unit="J/(kg K)",
-        description="Specific heat capacity c_p of the heat capacity term and, with a nonisothermal_flow coupling, of the heat that the flow carries. Default none: no heat capacity term, as for density. The coupling then takes 1, the value of the non-dimensional equations.",
+        description="Specific heat capacity c_p of the heat capacity term and, with a nonisothermal_flow coupling, of the heat that the flow carries. Default none: no heat capacity term, as for density. A nonisothermal_flow coupling needs it.",
     )
     advection_scheme: str | None = parameter(
         None,
@@ -656,7 +653,7 @@ class HeatTransfer(Physics):
     def __post_init__(self):
         if (self.density is None) != (self.specific_heat is None):
             raise InputError(
-                "heat_transfer: give both density and specific_heat for the heat capacity term, or neither."
+                "heat_conduction: give both density and specific_heat for the heat capacity term, or neither."
             )
         # An abbreviation keeps its capitals (SUPG); the lower-case spelling is accepted.
         if isinstance(self.advection_scheme, str) and self.advection_scheme.lower() == "supg":
@@ -681,35 +678,27 @@ class HeatTransfer(Physics):
 
     def _build(self, problem) -> None:
         T, restrict = self.temperature, self._restriction()
-        if self.thermal_conductivity is None:
-            problem.add_kernel(
-                "heat_conduction",
-                variable=T,
-                thermal_conductivity="thermal_conductivity",
-                **restrict,
-            )
-        else:
-            problem.add_kernel(
-                "heat_conduction",
-                variable=T,
-                thermal_conductivity=self.thermal_conductivity,
-                **restrict,
-            )
+        conductivity = self.thermal_conductivity
+        problem.add_kernel(
+            "diffusion",
+            variable=T,
+            diffusivity="thermal_conductivity" if conductivity is None else conductivity,
+            **restrict,
+        )
         if self.heat_source is not None:
-            problem.add_kernel(
-                "body_force",
-                variable=T,
-                value=self.heat_source,
-                **restrict,
-            )
+            problem.add_kernel("body_force", variable=T, value=self.heat_source, **restrict)
         if self.density is not None:
             problem.add_kernel(
-                "heat_conduction_time_derivative",
-                variable=T,
-                density=self.density,
-                specific_heat=self.specific_heat,
-                **restrict,
+                "time_derivative", variable=T, coefficient=self.heat_capacity(), **restrict
             )
+
+    def heat_capacity(self):
+        """The volumetric heat capacity rho c_p, a number or an expression, of the heat capacity
+        term and of the heat that a flow carries."""
+        numbers = (int, float)
+        if isinstance(self.density, numbers) and isinstance(self.specific_heat, numbers):
+            return float(self.density) * float(self.specific_heat)
+        return f"({self.density})*({self.specific_heat})"
 
     def _manufactured_terms(self, fields, coordinates, dimension):
         from .mms import _symbols
@@ -734,42 +723,21 @@ class HeatTransfer(Physics):
 # ---------------------------------------------------------------------------
 # General form PDE
 # ---------------------------------------------------------------------------
-_GRADIENT = r"grad_([xyz])\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)"
+def _holds_condition(node) -> bool:
+    """Whether an expression of the model language holds a condition: conditional, maximum,
+    minimum or a comparison."""
+    from .model.dimensions import comparisons
 
-
-def _general_form_expression(text, fields: dict, constants: dict):
-    """A flux or source expression of general_form_PDE as SymPy, with every
-    field replaced by its exact solution and every grad_x(u), grad_y(u) and
-    grad_z(u) by the derivative of that solution."""
-
-    x, y, z, _t = _symbols_of_mms()
-    axes = {"x": x, "y": y, "z": z}
-    placeholders = {}
-
-    def replace(match):
-        name = f"_gradient_{match.group(1)}_{match.group(2)}"
-        placeholders[name] = (match.group(1), match.group(2))
-        return name
-
-    expression = _sympy_expression(re.sub(_GRADIENT, replace, str(text)))
-    substitutions = {}
-    for name, (axis, field) in placeholders.items():
-        if field not in fields:
-            raise InputError(
-                f"general_form_PDE: grad_{axis}({field}) names '{field}', which is not a field."
-            )
-        substitutions[_sympy_expression(name)] = fields[field].diff(axes[axis])
-    for field, exact in fields.items():
-        substitutions[_sympy_expression(field)] = exact
-    for constant, value in constants.items():
-        substitutions[_sympy_expression(constant)] = value
-    return expression.subs(substitutions)
-
-
-def _symbols_of_mms():
-    from .mms import _symbols
-
-    return _symbols()
+    pending, seen = [node], set()
+    while pending:
+        current = pending.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        if current.kind in ("conditional", "maximum", "minimum") or current.kind in comparisons:
+            return True
+        pending.extend(current.operands)
+    return False
 
 
 @register
@@ -795,9 +763,11 @@ class GeneralFormPDE(Physics):
     the outward unit normal :math:`\mathbf{n}`.  Any other keyword is a
     definition that the equations use by its name.  A number is a named
     constant, and a text is a named expression, which may use the
-    definitions before it.  The equations are reduced symbolically to their
-    fluxes and sources, compiled once and differentiated automatically, so
-    Newton's method has the exact Jacobian."""
+    definitions before it.  The model language (:mod:`dualmesh.model`) reads
+    the equations into conservation laws, which lower onto the objects of the
+    engine as the models of the input do.  The engine compiles their fluxes
+    and sources once and differentiates them automatically, so Newton's
+    method has the exact Jacobian."""
 
     type_name: ClassVar[str] = "general_form_PDE"
     module: ClassVar[str] = "framework"
@@ -918,24 +888,14 @@ class GeneralFormPDE(Physics):
             raise InputError(
                 f"{where}: there are {len(fields)} field(s) ({', '.join(fields)}) and {len(self._texts)} equation(s); give one equation for each field, in 'equations' or by its coefficients."
             )
-        # The definitions: numbers are constants, texts are expressions.
-        self._constants, self._expressions = {}, []
-        # The coordinates are checked when the problem is known (r is a coordinate only in
-        # axisymmetric coordinates).
+        # The definitions, numbers and texts, are read with the equations. The coordinates are
+        # checked when the problem is known (r is a coordinate only in axisymmetric coordinates).
         reserved = set(fields) | {"t", "n", "I", "pi", "e", "eigenvalue"}
-        for name, value in self._definitions.items():
+        for name in self._definitions:
             if name in reserved:
                 raise InputError(
                     f"{where}: '{name}' is a name of the equation language or a field, so it cannot be defined. Rename the definition."
                 )
-            if isinstance(value, bool) or not isinstance(value, (int, float, str)):
-                raise InputError(
-                    f"{where}: the definition {name} = {value!r} is not a number or an expression (a text)."
-                )
-            if isinstance(value, str):
-                self._expressions.append((name, value))
-            else:
-                self._constants[name] = float(value)
         units = self.units
         self.units = {fields[0]: units} if isinstance(units, str) else dict(units)
         initial = self.initial_condition
@@ -974,7 +934,20 @@ class GeneralFormPDE(Physics):
                 raise InputError(
                     f"general_form_PDE: '{name}' is a coordinate of this problem, so it cannot be defined. Rename the definition."
                 )
-        self._reduced = self._reduce(*self._geometry)
+        self._scope, self._laws = self._read(coordinates, dimension)
+
+    def _read(self, coordinates: str, dimension: int) -> tuple:
+        """The scope of the equations, with their definitions, and the conservation law of each
+        field, read by the model language."""
+        from .input.units import input_error
+        from .model.parse import equation_scope, read_equations
+
+        ranks = {field: 0 if kind == "scalar" else 1 for field, kind in self._kinds.items()}
+        try:
+            scope = equation_scope(ranks, dimension, coordinates, self._definitions)
+            return scope, read_equations(self._texts, self._keys, scope)
+        except input_error as error:
+            raise InputError(f"general_form_PDE: {error}") from None
 
     def _attach(self, problem) -> None:
         self._problem = problem
@@ -1003,20 +976,6 @@ class GeneralFormPDE(Physics):
             )
         return self._problem.boundary_flux(variable, boundary)
 
-    def _scope(self, dimension: int, axisymmetric: bool) -> tuple:
-        fields = [(f, 0 if k == "scalar" else 1) for f, k in self._kinds.items()]
-        return (dimension, axisymmetric, fields, list(self._constants), self._expressions)
-
-    def _reduce(self, dimension: int, axisymmetric: bool) -> list[dict]:
-        from . import _core
-
-        try:
-            return _core.reduce_equations(
-                *self._scope(dimension, axisymmetric), self._texts, self._keys
-            )
-        except _core.InputError as error:
-            raise InputError(f"general_form_PDE: {error}") from None
-
     def _variable_units(self) -> dict:
         units = {}
         for field, unit in self.units.items():
@@ -1031,133 +990,136 @@ class GeneralFormPDE(Physics):
         field = variable.rsplit("_", 1)[0]
         return self.initial_condition.get(field) if self._kinds.get(field) == "vector" else None
 
-    def _inline_constants(self, text: str) -> str:
-        """``text`` with the named constants replaced by their values, for
-        the objects that take no constants."""
-        return re.sub(
-            r"(?<![A-Za-z0-9_.])[A-Za-z_][A-Za-z0-9_]*",
-            lambda m: (
-                f"({self._constants[m.group(0)]!r})"
-                if m.group(0) in self._constants
-                else m.group(0)
-            ),
-            text,
-        )
-
-    def _used_names(self) -> set:
-        texts = list(self._texts) + [t for _, t in self._expressions]
-        texts += getattr(self, "_condition_texts", [])
-        return set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", " ".join(texts)))
-
     def add_boundary_condition(self, condition, boundary=None, **parameters):
         """Add a boundary condition written as text, on the side sets or
         node sets named by ``boundary``: ``"u = 0"`` prescribes the value of
         a field, and a condition with the normal flux on the left,
         ``"-k*du/dn = h*(u - 1)"`` or ``"normal_flux = 5"``, prescribes
         n . Gamma, the flux of the equation through the boundary along the
-        outward normal n.  A list of texts adds several conditions.
+        outward normal n.  A list of texts adds several conditions.  Any
+        other keyword is a definition that the texts use by its name, a
+        number or an expression, which may use the definitions before it.
 
             pde.add_boundary_condition("u = 0", boundary=["left", "right"])
             pde.add_boundary_condition("-k*du/dn = h*(u - 1)", boundary="top")
         """
-        if isinstance(condition, (list, tuple)) or _is_condition_text(condition):
-            where = f"general_form_PDE, boundary condition {condition!r}"
-            texts = _expand_conditions(condition, parameters, where)
-            if len(texts) > 1 or isinstance(condition, (list, tuple)):
-                for text in texts:
-                    self.add_boundary_condition(text, boundary, **parameters)
-                return None
-            condition = texts[0]
-        if not _is_condition_text(condition):
+        if not isinstance(condition, (list, tuple)) and not _is_condition_text(condition):
             return super().add_boundary_condition(condition, boundary, **parameters)
-        from . import _core
+        from .console import suggestion
+        from .input.lower import write_expression
+        from .input.units import input_error
+        from .input.user_model import add_boundary_condition
+        from .model.parse import read_condition
 
+        where = f"general_form_PDE, boundary condition {condition!r}"
         if boundary is None:
             mesh = self._problem.mesh
             names = sorted(set(mesh.sideset_names()) | set(mesh.nodeset_names()))
             listed = f", one or more of: {', '.join(names)}" if names else ""
-            raise InputError(
-                f"general_form_PDE, boundary condition '{condition}': give boundary{listed}."
-            )
-        problem = self._problem
+            raise InputError(f"{where}: give boundary{listed}.")
+        passed = {key: parameters.pop(key) for key in _CONDITION_PARAMETERS if key in parameters}
+        texts = [condition] if isinstance(condition, str) else list(condition)
+        conditions = []
         try:
-            reduced = _core.reduce_condition(
-                *self._scope(problem.mesh.space_dimension, problem.coordinates == "axisymmetric"),
-                self._texts,
-                self._keys,
-                condition,
-                ["normal_flux"],
-            )
-        except _core.InputError as error:
-            raise InputError(f"general_form_PDE: {error}") from None
-        self._condition_texts = getattr(self, "_condition_texts", []) + [condition]
-        for item in reduced:
-            value = self._inline_constants(item["value"])
-            if item["dirichlet"]:
-                problem.add_boundary_condition(
-                    "Dirichlet", boundary, variable=item["field"], value=value, **parameters
+            scope = self._scope.with_definitions(parameters)
+            for text in texts:
+                if not _is_condition_text(text):
+                    raise input_error(f"'{text}' is not a condition written as text")
+                conditions += read_condition(text, scope, self._laws)
+            values = [
+                (self._scope.variable(field, component), flux, value)
+                for field, component, flux, value in conditions
+            ]
+            values = [
+                (variable, flux, write_expression(value, where, self._scope.variables))
+                for variable, flux, value in values
+            ]
+        except input_error as error:
+            raise InputError(f"{where}: {error}") from None
+        for name in parameters:
+            if name not in scope.reads:
+                hint = suggestion(name, [*_CONDITION_PARAMETERS, "boundary"], listing=False)
+                raise InputError(
+                    f"{where}: '{name}' is defined and not used by the condition.{hint}"
                 )
-            else:
-                # Neumann takes the flux entering the body, -n . Gamma.
-                problem.add_boundary_condition(
-                    "Neumann", boundary, variable=item["field"], flux=f"-({value})", **parameters
-                )
+        self._scope.reads |= scope.reads
+        for variable, flux, value in values:
+            add_boundary_condition(self._problem, boundary, variable, value, flux, **passed)
         return None
 
     def _build(self, problem) -> None:
-        unused = [name for name in self._definitions if name not in self._used_names()]
+        unused = [name for name in self._definitions if name not in self._scope.reads]
         if unused:
-            import difflib
+            from .console import suggestion
 
-            close = difflib.get_close_matches(
+            hint = suggestion(
                 unused[0],
                 [f.name for f in dataclasses.fields(self) if not f.name.startswith("_")],
-                n=1,
+                listing=False,
             )
-            hint = f" Did you mean the parameter '{close[0]}'?" if close else ""
             raise InputError(
                 f"general_form_PDE: '{unused[0]}' is defined and not used by an equation, a definition or a boundary condition.{hint}"
             )
-        restrict = self._restriction()
-        constants = {"constants": dict(self._constants)} if self._constants else {}
-        for q in self._reduced:
-            if q["second_time_coefficient"]:
-                problem.add_kernel(
-                    "second_time_derivative",
-                    variable=q["field"],
-                    coefficient=self._inline_constants(q["second_time_coefficient"]),
-                    **restrict,
+        from .input.units import input_error
+        from .input.user_model import add_law
+
+        try:
+            for law in self._laws.values():
+                add_law(
+                    problem,
+                    law,
+                    self._scope.variables,
+                    self._geometry[0],
+                    True,
+                    self._restriction(),
+                    "general_form_PDE",
                 )
-            if q["flux"] or q["source"]:
-                problem.add_kernel(
-                    "parsed_kernel",
-                    variable=q["field"],
-                    flux=list(q["flux"]),
-                    source=q["source"],
-                    **constants,
-                    **restrict,
-                )
-            if q["time_coefficient"]:
-                problem.add_kernel(
-                    "time_derivative",
-                    variable=q["field"],
-                    coefficient=self._inline_constants(q["time_coefficient"]),
-                    **restrict,
-                )
+        except input_error as error:
+            raise InputError(f"general_form_PDE: {error}") from None
 
     def _manufactured_terms(self, fields, coordinates, dimension):
-        _x, _y, _z, t = _symbols_of_mms()
+        from .mms import _symbols, _sympy
+        from .model.sympy_form import to_sympy
+
+        sympy = _sympy()
+        x, y, z, t = _symbols()
+        axes = (x, y, z)
+        scope, laws = self._read(coordinates, dimension)
+
+        def leaf(node):
+            if node.kind == "position_component":
+                return axes[node.direction]
+            if node.kind == "time":
+                return t
+            if node.kind in ("field_component", "gradient_component"):
+                exact = fields[scope.variable(node.name, node.component)]
+                if node.kind == "field_component":
+                    return exact
+                return exact.diff(axes[node.direction])
+            # A name that the engine resolves, such as eigenvalue.
+            return sympy.Symbol(node.name)
+
         terms = {}
-        for q in self._reduce(dimension, coordinates == "axisymmetric"):
-            flux = [-_general_form_expression(c, fields, self._constants) for c in q["flux"]]
-            flux += [0] * (3 - len(flux))
-            source = 0
-            if q["source"]:
-                source -= _general_form_expression(q["source"], fields, self._constants)
-            if q["time_coefficient"]:
-                d = _general_form_expression(q["time_coefficient"], fields, self._constants)
-                source += d * fields[q["field"]].diff(t)
-            terms[q["field"]] = (flux, source)
+        for law in laws.values():
+            names = scope.variables[law.unknown.name]
+            for variable, scalar in zip(names, law.components(dimension), strict=True):
+                parts = [*(scalar.flux or []), scalar.source, scalar.capacity, scalar.mass]
+                for part in parts:
+                    if part is not None and _holds_condition(part):
+                        raise InputError(
+                            f"general_form_PDE: a manufactured solution takes the derivatives of each term with SymPy, which has no smooth derivative of a condition (if, min, max, and, or or a comparison), so it refuses the term '{part}', which holds a condition."
+                        )
+                flux = [-to_sympy(component, leaf) for component in scalar.flux or []]
+                flux += [0] * (3 - len(flux))
+                exact = fields[variable]
+                source = 0
+                if scalar.source is not None:
+                    source -= to_sympy(scalar.source, leaf)
+                if scalar.capacity is not None:
+                    source += to_sympy(scalar.capacity, leaf) * exact.diff(t)
+                if scalar.mass is not None:
+                    source += to_sympy(scalar.mass, leaf) * exact.diff(t, 2)
+                terms[variable] = (flux, source)
         return terms
 
 
@@ -1227,6 +1189,8 @@ FORMULATIONS = (
 MEMBERS = ("truss", "shell")
 #: The formulations of the structural theories, which reduce the body to a surface or a line.
 STRUCTURAL = ("plate", "beam", "circular_plate")
+#: The named hyperelastic laws of elasticity, each at finite strain.
+HYPERELASTIC = ("neo-Hookean", "Saint_Venant_Kirchhoff")
 #: The theories of each structural formulation; the first is the default.
 THEORIES = {
     "plate": ("first_order",),
@@ -1391,11 +1355,15 @@ class SolidMechanics(Physics):
     )
     large_deformation: bool = parameter(
         False,
-        description="Finite strain and rotation, with a pressure that follows the deformed surface. Linear elasticity, creep and plasticity then take the rotated small strain of Hughes and Winget. Available for plane strain, axisymmetric and three-dimensional continua. Default false: small strain, which holds while the strains and the rotations stay small. The neo-Hookean elasticity is always at finite strain.",
+        description="Finite strain and rotation, with a pressure that follows the deformed surface. Linear elasticity, creep and plasticity then take the rotated small strain of Hughes and Winget. Available for plane strain, axisymmetric and three-dimensional continua, and in plane stress with a hyperelastic law. Default false: small strain, which holds while the strains and the rotations stay small. A hyperelastic law (elasticity other than linear, or strain_energy) is always at finite strain.",
     )
     elasticity: str = parameter(
         "linear",
-        description="The elastic law: linear (Hooke's law) or neo-Hookean (the compressible neo-Hookean hyperelastic law, at finite strain). Default linear, the law of an elastic solid at small strain.",
+        description="The elastic law: linear (Hooke's law), neo-Hookean (the compressible neo-Hookean hyperelastic law) or Saint_Venant_Kirchhoff (the hyperelastic law S = lambda tr(E) I + 2 G E of the second Piola-Kirchhoff stress S and the Green-Lagrange strain E). The hyperelastic laws are at finite strain. Default linear, the law of an elastic solid at small strain.",
+    )
+    strain_energy: str | None = parameter(
+        None,
+        description="A hyperelastic law given by its strain energy psi (J/m^3) per unit volume of the stress-free state, as an expression of I_C and trace_C_squared (the traces of C and C^2, with C = F^T F the right Cauchy-Green tensor of the elastic part F of the deformation gradient), J (det F), shear_modulus and first_Lame_parameter (Pa, from youngs_modulus and poissons_ratio). The code differentiates it twice, so the Jacobian is exact. It is at finite strain and takes no elasticity. Default none: the law of elasticity.",
     )
     creep: Mapping[str, object] | None = parameter(
         None,
@@ -1416,7 +1384,7 @@ class SolidMechanics(Physics):
     temperature: float | str | None = parameter(
         None,
         unit="K",
-        description="The temperature that creep and a temperature-dependent yield stress read: the name of a field, such as that of heat_transfer, or a number. Default: the temperature of a thermal_expansion coupling, so that one temperature field drives the expansion and the material law.",
+        description="The temperature that creep and a temperature-dependent yield stress read: the name of a field, such as that of heat_conduction, or a number. Default: the temperature of a thermal_expansion coupling, so that one temperature field drives the expansion and the material law.",
     )
     axial_force: float | str = parameter(
         0.0,
@@ -1735,6 +1703,7 @@ class SolidMechanics(Physics):
                 "plasticity",
                 "phase_field_fracture",
                 "viscoelasticity",
+                "strain_energy",
                 "temperature",
                 "density",
                 "damping",
@@ -2288,9 +2257,13 @@ class SolidMechanics(Physics):
 
     def _check_inelastic(self) -> None:
         """The checks of the material law, creep and plasticity."""
-        if self.elasticity not in ("linear", "neo-Hookean"):
+        if self.elasticity not in ("linear", *HYPERELASTIC):
             raise InputError(
-                f"solid_mechanics: elasticity is linear or neo-Hookean, not '{self.elasticity}'."
+                f"solid_mechanics: elasticity is linear, neo-Hookean or Saint_Venant_Kirchhoff, not '{self.elasticity}'."
+            )
+        if self.strain_energy is not None and self.elasticity != "linear":
+            raise InputError(
+                "solid_mechanics: strain_energy gives the elastic law, so it takes no elasticity."
             )
         allowed = {
             "creep": ({"rate"}, {"rate", "constants", "grain_size", "hill"}),
@@ -2314,13 +2287,13 @@ class SolidMechanics(Physics):
             raise InputError(
                 "solid_mechanics: kinematic_hardening takes 'C' (the moduli, Pa) and 'gamma' (the dynamic recovery, default 0)."
             )
-        if self.elasticity == "neo-Hookean" and (self.creep or self.plasticity):
+        if self._hyperelastic and (self.creep or self.plasticity):
             raise InputError(
-                "solid_mechanics: creep and plasticity act with linear elasticity; the neo-Hookean law has neither."
+                "solid_mechanics: creep and plasticity act with linear elasticity, and a hyperelastic law has neither."
             )
         if self.formulation in STRUCTURAL and (
             self.large_deformation
-            or self.elasticity != "linear"
+            or self._hyperelastic
             or self.creep
             or self.plasticity
             or self.viscoelasticity
@@ -2332,16 +2305,23 @@ class SolidMechanics(Physics):
             )
 
     @property
+    def _hyperelastic(self) -> bool:
+        """A hyperelastic law: a named one or a strain energy."""
+        return self.elasticity != "linear" or self.strain_energy is not None
+
+    @property
     def _finite(self) -> bool:
         """Finite strain: asked for, or by a hyperelastic material."""
-        return self.large_deformation or self.elasticity == "neo-Hookean"
+        return self.large_deformation or self._hyperelastic
 
     def _material_parameters(self) -> dict:
         """The parameters of the stress object for the material law, creep and plasticity."""
         where = label(self.type_name, self.name)
         parameters: dict = {}
-        if self.elasticity == "neo-Hookean":
-            parameters["stress_update"] = "neo-Hookean"
+        if self.strain_energy is not None:
+            parameters.update(stress_update="strain_energy", strain_energy=self.strain_energy)
+        elif self.elasticity != "linear":
+            parameters["stress_update"] = self.elasticity
         rate = (self.creep or {}).get("rate")
         yield_stress = (self.plasticity or {}).get("yield_stress")
         if yield_stress is not None and not isinstance(yield_stress, str):
@@ -2355,7 +2335,7 @@ class SolidMechanics(Physics):
             temperature = self._coupled["thermal_expansion"]["temperature"]
         if self.creep is not None and temperature is None:
             raise InputError(
-                f"{where}: creep needs the temperature: give temperature (a field or a number), or couple the solid to a heat_transfer by thermal_expansion."
+                f"{where}: creep needs the temperature: give temperature (a field or a number), or couple the solid to a heat_conduction by thermal_expansion."
             )
         if uses_temperature and temperature is None:
             raise InputError(f"{where}: the yield stress reads the temperature; give temperature.")
@@ -2763,9 +2743,9 @@ class SolidMechanics(Physics):
             raise InputError(
                 f"{label(self.type_name, self.name)}: an anisotropic material is available at small strain only."
             )
-        if self._finite and self.formulation == "plane_stress":
+        if self._finite and not self._hyperelastic and self.formulation == "plane_stress":
             raise InputError(
-                f"{label(self.type_name, self.name)}: large deformation is available in plane_strain, axisymmetric and three_dimensional problems, not in plane_stress."
+                f"{label(self.type_name, self.name)}: large deformation with linear elasticity is available in plane_strain, axisymmetric and three_dimensional problems, not in plane_stress. A hyperelastic law (elasticity neo-Hookean or Saint_Venant_Kirchhoff, or strain_energy) takes plane_stress."
             )
         problem.add_property(
             "finite_strain_stress" if self._finite else "small_strain_stress",
@@ -3001,9 +2981,9 @@ class FluidDynamics(Physics):
         default_factory=dict,
         description="The initial values of the fields of a transient flow: field name -> value, the velocity as one value per component, for example {'velocity': ['1 - y^2', 0], 'pressure': 0}. Each value is a constant, the name of a function or an expression of x, y and z. Default: at rest, the state before the flow starts.",
     )
-    viscous_form: str = parameter(
-        "stress",
-        description="The form of the viscous term: stress, mu (grad v + grad v^T), whose natural boundary condition is a zero traction, or laplacian, mu grad v, which gives the same equations for a constant viscosity and whose natural boundary condition is the do-nothing outflow mu dv/dn - p n = 0. Default stress: it holds for a viscosity that varies, and its natural boundary quantity is the traction, the force of the fluid on the boundary. The projection time integration always takes the laplacian form.",
+    viscous_form: str | None = parameter(
+        None,
+        description="The form of the viscous term: stress, mu (grad v + grad v^T), whose natural boundary condition is a zero traction, or laplacian, mu grad v, which gives the same equations for a constant viscosity and whose natural boundary condition is the do-nothing outflow mu dv/dn - p n = 0. The projection time integration takes the laplacian form only. Default stress, and laplacian with the projection time integration: stress holds for a viscosity that varies, and its natural boundary quantity is the traction, the force of the fluid on the boundary.",
     )
     time_integration: str = parameter(
         "monolithic",
@@ -3015,15 +2995,21 @@ class FluidDynamics(Physics):
     )
 
     def __post_init__(self):
-        if self.viscous_form not in ("stress", "laplacian"):
-            raise InputError(
-                f"fluid_dynamics: viscous_form is stress or laplacian, not '{self.viscous_form}'."
-            )
         if self.time_integration not in FLOW_TIME_INTEGRATIONS:
             raise InputError(
                 f"fluid_dynamics: unknown time_integration '{self.time_integration}'. Use {', '.join(FLOW_TIME_INTEGRATIONS)}."
             )
+        if self.viscous_form is None:
+            self.viscous_form = "laplacian" if self.time_integration == "projection" else "stress"
+        if self.viscous_form not in ("stress", "laplacian"):
+            raise InputError(
+                f"fluid_dynamics: viscous_form is stress or laplacian, not '{self.viscous_form}'."
+            )
         if self.time_integration == "projection":
+            if self.viscous_form == "stress":
+                raise InputError(
+                    "fluid_dynamics: the projection time integration takes the laplacian form of the viscous term, mu grad v, whose natural boundary condition is the do-nothing outflow mu dv/dn - p n = 0. Leave viscous_form out, or give viscous_form='laplacian'."
+                )
             if self.formulation not in (None, "equal_order"):
                 raise InputError(
                     "fluid_dynamics: the projection time integration needs formulation='equal_order'."
@@ -3136,10 +3122,13 @@ class FluidDynamics(Physics):
     def _build(self, problem) -> None:
         velocities, restrict = list(self.velocities), self._restriction()
         existing = set(problem._problem.object_names())
-        # The equal-order pressure needs the pressure stabilisation of the mass equation, and the
-        # inertia takes the streamline stabilisation (SUPG). The Taylor-Hood element needs neither.
-        stabilization = self.formulation == "equal_order"
-        supg = stabilization and self.density != 0.0
+        # The inertia of an equal-order flow takes the streamline stabilisation (SUPG), and the
+        # mass equation finds its own pressure stabilisation. The Taylor-Hood element needs neither.
+        supg = self.formulation == "equal_order" and self.density != 0.0
+        # The penalty parameter of the penalty formulation, when it is given.
+        penalty = (
+            {} if self.penalty_parameter is None else {"penalty_parameter": self.penalty_parameter}
+        )
         force = (
             [f if isinstance(f, str) else float(f) for f in self.body_force]
             if self.body_force is not None
@@ -3167,7 +3156,6 @@ class FluidDynamics(Physics):
                         "momentum_stabilization",
                         variable=variable,
                         velocities=velocities,
-                        pressure=self.pressure,
                         **restrict,
                     )
             else:
@@ -3175,17 +3163,15 @@ class FluidDynamics(Physics):
                     "penalty_incompressibility",
                     variable=variable,
                     velocities=velocities,
-                    penalty_parameter=1.0e8
-                    if self.penalty_parameter is None
-                    else self.penalty_parameter,
+                    **penalty,
                     **restrict,
                 )
             if self.density:
                 problem.add_kernel(
-                    "convective_inertia",
+                    "advection",
                     variable=variable,
-                    velocities=velocities,
-                    density=self.density,
+                    velocity=velocities,
+                    coefficient=self.density,
                     **restrict,
                 )
             if force[component] != 0.0:
@@ -3204,13 +3190,12 @@ class FluidDynamics(Physics):
                     **restrict,
                 )
         if self._pressure_formulation:
-            # The stabilisation reads the density, the viscosity, the body forces and the
-            # buoyancy from the momentum kernels above (and from those that couplings add).
+            # The stabilisation builds the momentum residual from the momentum kernels above (and
+            # from those that couplings add).
             problem.add_kernel(
                 "mass_conservation",
                 variable=self.pressure,
                 velocities=velocities,
-                stabilization=stabilization,
                 **restrict,
             )
             # The mass equation takes the flow through every boundary.
@@ -3223,9 +3208,18 @@ class FluidDynamics(Physics):
                     velocities=velocities,
                 )
         else:
-            problem.add_property("penalty_pressure", velocities=velocities, **restrict)
+            problem.add_property("penalty_pressure", velocities=velocities, **penalty, **restrict)
+        from . import _core
+
+        # A transient run starts from the projection of the initial velocity onto a field without
+        # divergence that keeps the prescribed values.
+        _core.attach_start_projection(
+            problem._problem,
+            problem._distributed,
+            velocities,
+            self.pressure if self._pressure_formulation else "",
+        )
         if self.time_integration == "projection":
-            from . import _core
             from .engine import _as_function
 
             settings = _core.ProjectionSettings()
@@ -3286,7 +3280,7 @@ class FluidDynamics(Physics):
 @dataclass
 class ThermalExpansion(Coupling):
     r"""The thermal strain of a solid_mechanics physics, from the temperature of
-    a heat_transfer physics.
+    a heat_conduction physics.
 
     The thermal strain is
 
@@ -3309,9 +3303,9 @@ class ThermalExpansion(Coupling):
     stress_free_temperature: float = parameter(
         unit="K", description="Temperature T_0 at which the solid is free of thermal strain."
     )
-    heat_transfer: Physics | None = parameter(
+    heat_conduction: Physics | None = parameter(
         None,
-        description="The heat_transfer physics that gives the temperature, the object that add_physics returned. Default: the only heat_transfer physics of the problem, which needs no name.",
+        description="The heat_conduction physics that gives the temperature, the object that add_physics returned. Default: the only heat_conduction physics of the problem, which needs no name.",
     )
     solid_mechanics: Physics | None = parameter(
         None,
@@ -3319,7 +3313,7 @@ class ThermalExpansion(Coupling):
     )
 
     def _apply(self, problem) -> None:
-        heat = self._physics(problem, "heat_transfer", HeatTransfer)
+        heat = self._physics(problem, "heat_conduction", HeatConduction)
         solid = self._physics(problem, "solid_mechanics", SolidMechanics)
         solid._coupled["thermal_expansion"] = dict(
             temperature=heat.temperature,
@@ -3331,18 +3325,18 @@ class ThermalExpansion(Coupling):
 @register
 @dataclass
 class NonisothermalFlow(Coupling):
-    r"""The coupling of a fluid_dynamics and a heat_transfer physics, in which
+    r"""The coupling of a fluid_dynamics and a heat_conduction physics, in which
     the flow carries the heat and the temperature can drive the flow by
     buoyancy.
 
-    The energy equation of the heat_transfer physics gains the advection term
+    The energy equation of the heat_conduction physics gains the advection term
     :math:`\rho c_p \mathbf{v} \cdot \nabla T`, with the density
-    :math:`\rho` in :math:`\mathrm{kg/m^3}` of the flow, the specific heat
-    capacity :math:`c_p` in :math:`\mathrm{J/(kg\,K)}` of the heat transfer,
-    the velocity :math:`\mathbf{v}` in :math:`\mathrm{m/s}` and the
-    temperature :math:`T` in :math:`\mathrm{K}`.  A flow without a density and
-    a heat transfer without a specific heat take 1, the value of the
-    non-dimensional equations.  When ``gravity`` and
+    :math:`\rho` in :math:`\mathrm{kg/m^3}`, the specific heat capacity
+    :math:`c_p` in :math:`\mathrm{J/(kg\,K)}`, the velocity :math:`\mathbf{v}`
+    in :math:`\mathrm{m/s}` and the temperature :math:`T` in :math:`\mathrm{K}`.
+    The energy equation takes :math:`\rho` and :math:`c_p` of the
+    heat_conduction physics, which must give both, and a flow with inertia must
+    have the same density.  When ``gravity`` and
     ``volumetric_expansion_coefficient`` are given, the momentum equations
     gain the Boussinesq buoyancy force per unit volume
 
@@ -3358,9 +3352,9 @@ class NonisothermalFlow(Coupling):
     type_name: ClassVar[str] = "nonisothermal_flow"
     module: ClassVar[str] = "fluids"
 
-    heat_transfer: Physics | None = parameter(
+    heat_conduction: Physics | None = parameter(
         None,
-        description="The heat_transfer physics, the object that add_physics returned. Default: the only heat_transfer physics of the problem, which needs no name.",
+        description="The heat_conduction physics, the object that add_physics returned. Default: the only heat_conduction physics of the problem, which needs no name.",
     )
     fluid_dynamics: Physics | None = parameter(
         None,
@@ -3388,54 +3382,55 @@ class NonisothermalFlow(Coupling):
                 "nonisothermal_flow: give both gravity and volumetric_expansion_coefficient for the buoyancy force, or neither."
             )
 
-    @staticmethod
-    def _density(flow) -> float:
-        # The density of the flow; a Stokes flow has none, and 1 is the value of the
-        # non-dimensional equations.
-        return float(flow.density) if flow.density else 1.0
-
-    @staticmethod
-    def _specific_heat(heat):
-        # The specific heat of the heat transfer; 1 is the value of the non-dimensional equations.
-        return heat.specific_heat if heat.specific_heat is not None else 1.0
-
     def _apply(self, problem) -> None:
         # The stabilisation of the flow reads the buoyancy from the Boussinesq_buoyancy kernels.
-        self._physics(problem, "heat_transfer", HeatTransfer)
+        self._physics(problem, "heat_conduction", HeatConduction)
         self._physics(problem, "fluid_dynamics", FluidDynamics)
 
     def _build(self, problem) -> None:
-        heat, flow = self.heat_transfer, self.fluid_dynamics
+        heat, flow = self.heat_conduction, self.fluid_dynamics
+        # The energy equation takes one density and one specific heat, those of the heat_conduction
+        # physics, in its heat capacity term, its convection and their stabilisation.
+        if heat.specific_heat is None:
+            raise InputError(
+                "nonisothermal_flow: the flow carries the heat rho c_p v . grad T, so the heat_conduction physics needs its density and specific_heat. A non-dimensional problem gives the values of its equations, such as specific_heat = 1."
+            )
+        numbers = (int, float)
+        if (
+            isinstance(heat.density, numbers)
+            and isinstance(flow.density, numbers)
+            and flow.density != 0.0
+            and heat.density != flow.density
+        ):
+            raise InputError(
+                f"nonisothermal_flow: the heat_conduction physics has the density {heat.density} and the fluid_dynamics physics {flow.density}. The fluid has one density, so give both the same."
+            )
         restrict = flow._restriction()
         # The heat that the flow carries: by default the streamline stabilisation (SUPG), which
         # removes the oscillations of the central scheme where convection dominates.
         scheme = heat.advection_scheme or "SUPG"
         problem.add_kernel(
-            "heat_convection",
+            "advection",
             variable=heat.temperature,
-            velocities=list(flow.velocities),
-            density=self._density(flow),
-            specific_heat=self._specific_heat(heat),
+            velocity=list(flow.velocities),
+            coefficient=heat.heat_capacity(),
             advection_scheme="central" if scheme == "SUPG" else scheme,
             **restrict,
         )
         if scheme == "SUPG":
-            # Its residual is the sum of the sources of the other kernels of the temperature.
+            # Its residual is the strong residual of the other kernels of the temperature, and it
+            # takes the conductivity and the heat capacity of the diffusion and advection kernels.
             problem.add_kernel(
                 "heat_streamline_stabilization",
                 variable=heat.temperature,
                 velocities=list(flow.velocities),
-                density=self._density(flow),
-                specific_heat=self._specific_heat(heat),
-                thermal_conductivity=str(
-                    heat.thermal_conductivity
-                    if heat.thermal_conductivity is not None
-                    else "thermal_conductivity"
-                ),
                 **restrict,
             )
         if self.gravity is None:
             return
+        # The buoyancy force of the momentum equations takes the density of the flow, and 1, the
+        # value of the non-dimensional equations, for a Stokes flow.
+        density = float(flow.density) if flow.density else 1.0
         for component, variable in enumerate(flow.velocities):
             if component < len(self.gravity) and self.gravity[component] != 0.0:
                 problem.add_kernel(
@@ -3444,7 +3439,7 @@ class NonisothermalFlow(Coupling):
                     velocities=list(flow.velocities),
                     temperature=heat.temperature,
                     gravity=list(self.gravity),
-                    density=self._density(flow),
+                    density=density,
                     volumetric_expansion_coefficient=self.volumetric_expansion_coefficient,
                     reference_temperature=self.reference_temperature,
                     **restrict,

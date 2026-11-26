@@ -63,6 +63,12 @@ user_choice(const std::string & options)
       ++k;
       continue;
     }
+    // The convergence of Newton's method is tested equation by equation against the size of its
+    // terms, so PETSc's own tolerances of the nonlinear solver would have no effect.
+    if (word == "-snes_rtol" || word == "-snes_atol" || word == "-snes_stol")
+      throw InputError("The PETSc option " + word +
+                       " has no effect: the convergence of Newton's method is tested for each "
+                       "equation against the size of its terms. Give relative_tolerance instead.");
     target = word.rfind("-snes_", 0) == 0 ? &parts.nonlinear : &parts.linear;
     append(*target, word);
   }
@@ -96,7 +102,7 @@ linear_solve_attempts(const linear_system_traits & system, const user_split & sp
   if (split.Schur)
     return {{kind::Schur_split, *split.Schur, true}};
   if (split.physics)
-    return {{kind::physics_blocks, SchurApproximation::LeastSquaresCommutator, true}};
+    return {{kind::physics_blocks, std::nullopt, true}};
   // Options of the user choose the solver themselves.
   if (!system.user_options.empty())
     return {{kind::user_options}};
@@ -114,10 +120,10 @@ linear_solve_attempts(const linear_system_traits & system, const user_split & sp
   // A solid takes smoothed aggregation with its rigid body modes, a solid coupled to other physics
   // the split by physics, and any other system BoomerAMG, which scales with the processes.
   if (system.displacement_variables == 0)
-    return {{kind::BoomerAMG, SchurApproximation::LeastSquaresCommutator, false}, direct};
+    return {{kind::BoomerAMG, std::nullopt, false}, direct};
   if (system.displacement_variables == system.variables)
-    return {{kind::GAMG, SchurApproximation::LeastSquaresCommutator, false}, direct};
-  return {{kind::physics_blocks, SchurApproximation::LeastSquaresCommutator, false}, direct};
+    return {{kind::GAMG, std::nullopt, false}, direct};
+  return {{kind::physics_blocks, std::nullopt, false}, direct};
 }
 
 } // namespace dualmesh

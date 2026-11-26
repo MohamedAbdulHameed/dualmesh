@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
-"""Objects defined by expressions: parsed_property, parsed_eigenstrain and the
-parsed creep of small_strain_stress.
+"""Objects defined by expressions: parsed_property, the table property, parsed_eigenstrain and
+the parsed creep of small_strain_stress.
 
 Each is checked against a built-in object that computes the same thing, or
 against an exact solution, and the automatic derivatives are checked through
@@ -42,6 +42,83 @@ def _conduction(conductivity):
     )
     result = p.solve()
     return p, result
+
+
+def _ramp(argument, points, values):
+    """A line from 0 to 1 m whose temperature rises linearly from 300 K to 1200 K, with a table
+    property k of the argument."""
+    p = dualmesh.Problem(dualmesh.generate_line_mesh(0.0, 1.0, 9))
+    p.add_variable("temperature")
+    p.add_property("table", property_name="k", argument=argument, points=points, values=values)
+    p.add_kernel("diffusion", variable="temperature", diffusivity="k")
+    p.initialize()
+    p.set_values("temperature", 300.0 + 900.0 * p.node_coordinates()[:, 0])
+    return p
+
+
+@pytest.mark.parametrize(
+    "argument, points, values, exact",
+    [
+        # k(T) through the rows (300, 10), (600, 7) and (1200, 1).
+        (
+            "temperature",
+            [300.0, 600.0, 1200.0],
+            [10.0, 7.0, 1.0],
+            lambda T, x: numpy.where(
+                T <= 600.0, 10.0 - 0.01 * (T - 300.0), 7.0 - 0.01 * (T - 600.0)
+            ),
+        ),
+        # k(x) through the rows (0, 2) and (1, 4).
+        ("x", [0.0, 1.0], [2.0, 4.0], lambda T, x: 2.0 + 2.0 * x),
+    ],
+)
+def test_a_table_property_takes_the_values_between_its_rows_on_lines(
+    argument, points, values, exact
+):
+    """At points between the nodes and on them, the property is the linear interpolation of the
+    rows that bound the argument there, to round-off, and the ends of the range are in it."""
+    p = _ramp(argument, points, values)
+    x = numpy.array([0.0, 1.0 / 6.0, 0.25, 1.0 / 3.0, 0.5, 0.9, 1.0])
+    T = 300.0 + 900.0 * x
+    k = p.property_at_points("k", [[xi, 0.0, 0.0] for xi in x])[:, 0]
+    assert k == pytest.approx(exact(T, x), rel=1e-12, abs=1e-12)
+
+
+def test_a_table_property_read_outside_its_range_names_the_property_and_the_value():
+    p = _ramp("temperature", [300.0, 1000.0], [10.0, 3.0])
+    with pytest.raises(
+        RuntimeError,
+        match=r"the table of the property k reads temperature = 1200, outside the range of the table, from 300 to 1000",
+    ):
+        p.property_at_points("k", [[1.0, 0.0, 0.0]])
+
+
+def test_a_table_conductivity_gives_the_solution_of_its_formula():
+    """A table of two rows is the line k = 10 + 0.01 (T - 300) W/(m K) over its range, so the
+    conduction with the table and with that formula solve to the same temperature, which the
+    derivative of the table brings to convergence as the formula's does."""
+
+    def table(p):
+        p.add_property(
+            "table",
+            property_name="k",
+            argument="temperature",
+            points=[300.0, 2000.0],
+            values=[10.0, 27.0],
+        )
+        p.add_kernel("diffusion", variable="temperature", diffusivity="k")
+
+    def formula(p):
+        p.add_property("parsed", property_name="k", expression="10 + 0.01*(temperature - 300)")
+        p.add_kernel("diffusion", variable="temperature", diffusivity="k")
+
+    with_table, table_result = _conduction(table)
+    with_formula, formula_result = _conduction(formula)
+    assert table_result.converged and formula_result.converged
+    assert with_table.values("temperature") == pytest.approx(
+        with_formula.values("temperature"), rel=1e-12
+    )
+    assert table_result.total_iterations == formula_result.total_iterations
 
 
 def _free_bar(eigenstrain):
@@ -213,9 +290,9 @@ def test_a_non_finite_Jacobian_is_reported_as_such():
             expression="1 + (temperature - 300)^(1/2)",
         )
         p.add_kernel(
-            "heat_conduction",
+            "diffusion",
             variable="temperature",
-            thermal_conductivity="k",
+            diffusivity="k",
         )
 
     with pytest.raises(RuntimeError, match="NaN or infinite entries"):
@@ -274,7 +351,7 @@ def _bar_creep_strain(rate, constants, end_time, time_step):
     """The creep strain of _creep_bar after end_time, from the axial strain."""
     p = _creep_bar(creep_rate=rate, creep_constants=constants)
     p.solve(report="none")
-    p.solve_transient(end_time=end_time, time_step=time_step, report="none")
+    p.solve_transient(end_time=end_time, time_step=time_step, time_stepper="fixed", report="none")
     strain = p.sample("uz", [[0.5e-3, 0.5e-3, 1e-3 * (1 - 1e-9)]])[0] / 1e-3
     return strain - 50e6 / 1e11
 

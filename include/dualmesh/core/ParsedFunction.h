@@ -23,12 +23,12 @@
 //
 // so exponentiation is right-associative and binds tighter than a unary minus
 // (-x^2 is -(x^2)), as in mathematics.  The names in scope are the variables
-// x, y, z and t; the constants pi and e (also E); and the functions sin, cos,
-// tan, asin, acos, atan, sinh, cosh, tanh, exp, log, log10, sqrt, abs (also
-// Abs and fabs), floor, ceil, erf, sign, atan2, pow, hypot, min, max, and
-// if(condition, a, b).  A comparison is 1 when true and 0 when false.  The
-// spellings E, Abs and ** are accepted so that the text printed by SymPy can be
-// used unchanged, which is what the manufactured-solution tools rely on.
+// x, y, z and t; the constants pi and e; and the functions sin, cos, tan, asin,
+// acos, atan, sinh, cosh, tanh, exp, log, log10, sqrt, abs, floor, ceil, erf,
+// sign, atan2, pow, hypot, min, max, and if(condition, a, b).  A comparison is 1
+// when true and 0 when false.  The input and the equations of general_form_PDE
+// reach this language through one printer (python/dualmesh/input/lower.py),
+// which also writes the expressions that SymPy derives.
 #pragma once
 
 #include "dualmesh/core/ADReal.h"
@@ -61,6 +61,13 @@ public:
   /// through every operation, so that terms that cancel (mu (F - F^-T) at a small strain) keep
   /// their size.  The round-off of the value is about the machine epsilon times it.
   double termSize(const double * variables) const;
+  /// The most variables that secondOrder() takes.
+  static constexpr int kMaxSecondOrderVariables = 5;
+  /// The value, the gradient and the Hessian, row by row (n by n with n the number of
+  /// variables), at the plain values @p variables, by forward differentiation to second order.
+  /// It takes at most kMaxSecondOrderVariables variables.
+  void
+  secondOrder(const double * variables, double & value, double * gradient, double * hessian) const;
 
   const std::string & text() const { return _text; }
   const std::vector<std::string> & variables() const { return _variables; }

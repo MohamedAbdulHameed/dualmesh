@@ -64,7 +64,6 @@ DistributedProblem::DistributedProblem(LocalMesh part,
   _local = std::make_unique<Problem>(_mesh, method, coord);
   // The local problem's drivers solve the whole problem through this object.
   _local->setParallel(this);
-  _local->setConstraintsHandledOutside(true);
   // The local mesh holds only part of each side set, so a quantity defined by the area of a whole side set (the total_force of a traction) takes the sum over the ranks.
   std::map<std::string, double> measures;
   for (const auto & [name, sides] : _mesh->sidesets())
@@ -264,43 +263,24 @@ DistributedProblem::joinConstraints()
       if (secondary_ids[k] != primary_ids[matched[k]])
         pairs.push_back({secondary_ids[k], primary_ids[matched[k]]});
   }
-  // One unknown per group of joined nodes (a union-find over global indices), represented by its smallest member that is a primary only, as in a serial problem.
-  std::map<Index, Index> parent;
-  std::set<Index> dependent;
-  const auto root = [&](Index g)
-  {
-    auto it = parent.find(g);
-    if (it == parent.end())
-      return g;
-    Index r = g;
-    while (parent.count(r) && parent[r] != r)
-      r = parent[r];
-    parent[g] = r;
-    return r;
-  };
-  for (const auto & [secondary, primary] : pairs)
-  {
-    dependent.insert(secondary);
-    for (Index g : {secondary, primary})
-      parent.emplace(g, g);
-    const Index a = root(secondary), b = root(primary);
-    if (a != b)
-      parent[std::max(a, b)] = std::min(a, b);
-  }
-  std::map<Index, Index> representative;
-  for (const auto & [g, p] : parent)
-    if (!dependent.count(g) && !representative.count(root(g)))
-      representative[root(g)] = g;
-  std::unordered_map<Index, Index> joined; // global node -> the global node it is joined to
-  for (const auto & [g, p] : parent)
-  {
-    const auto it = representative.find(root(g));
-    if (it == representative.end())
-      throw InputError("The constraints make a node a copy of itself through a loop; one node of "
-                       "each loop must stay a primary.");
-    if (it->second != g)
-      joined[g] = it->second;
-  }
+  // One unknown per group of joined nodes, represented as in a serial problem.
+  const std::unordered_map<Index, Index> joined = joinedRepresentatives(pairs);
+  // Under FEM a hanging node takes its value from the side it lies on, which this process may not
+  // hold for every copy of the node, so the copies of a periodic group cannot hang.
+  std::set<Index> members;
+  for (const auto & [g, r] : joined)
+    members.insert({g, r});
+  bool hangs_and_joins = false;
+  if (!_local->isDual())
+    for (const auto & c : _local->mesh().nodeConstraints())
+      hangs_and_joins =
+          hangs_and_joins || members.count(_local_to_global[static_cast<std::size_t>(c.node)]);
+  if (_comm.any(hangs_and_joins))
+    throw InputError("A distributed run under FEM takes no node that hangs on a periodic "
+                     "boundary: the gather-scatter joins the copies of a periodic node, and the "
+                     "process of one copy does not hold the side another copy hangs on. Run it "
+                     "on one process, or refine the mesh alike at both periodic boundaries "
+                     "without leaving a node hanging there.");
   // The gather-scatter treats a joined node and its representative as one entity: the residuals of both are added, and the global numbering gives both one number.
   std::vector<Index> ids(_local_to_global);
   for (auto & g : ids)
@@ -314,16 +294,6 @@ DistributedProblem::joinConstraints()
     _owned_node[i] = _gs.owns(static_cast<Index>(i)) ? 1 : 0;
 }
 
-std::vector<char>
-DistributedProblem::localPrescribed() const
-{
-  std::vector<char> mask(static_cast<std::size_t>(_local->numDofs()), 0);
-  for (const auto & bc : _local->nodalBCs())
-    for (Index n : bc->nodes())
-      mask[_local->dof(n, bc->variable())] = 1;
-  return mask;
-}
-
 void
 DistributedProblem::agreePrescribedValues()
 {
@@ -331,11 +301,11 @@ DistributedProblem::agreePrescribedValues()
   if (_local->constraints().empty() && !_has_ghosts)
     return;
   // A prescribed value on one node of a group of joined nodes binds every copy, on every rank.
-  const auto fixed = localPrescribed();
+  const auto fixed = _local->prescribedDofs();
   Vector prescribed(_local->numDofs());
   for (Index d = 0; d < _local->numDofs(); ++d)
     prescribed[d] = fixed[d] ? 1.0 : 0.0;
-  addAcrossRanks(prescribed);
+  addAtNodes(prescribed.data(), _local->numVariables());
   _prescribed_elsewhere.assign(static_cast<std::size_t>(_local->numDofs()), 0);
   for (Index d = 0; d < _local->numDofs(); ++d)
     _prescribed_elsewhere[d] = prescribed[d] > 0.5 && !fixed[d] ? 1 : 0;
@@ -348,7 +318,7 @@ DistributedProblem::shareDirichletValues(Vector & U) const
   if (_prescribed_elsewhere.empty())
     return;
   // Each rank that prescribes a value contributes it, and the copies that do not know it take the average of the contributions (all equal when the conditions agree).
-  const auto fixed = localPrescribed();
+  const auto fixed = _local->prescribedDofs();
   Vector value = Vector::Zero(U.size()), count = Vector::Zero(U.size());
   for (Index d = 0; d < U.size(); ++d)
     if (fixed[d] && !_prescribed_elsewhere[d])
@@ -356,8 +326,8 @@ DistributedProblem::shareDirichletValues(Vector & U) const
       value[d] = U[d];
       count[d] = 1.0;
     }
-  addAcrossRanks(value);
-  addAcrossRanks(count);
+  addAtNodes(value.data(), _local->numVariables());
+  addAtNodes(count.data(), _local->numVariables());
   for (Index d = 0; d < U.size(); ++d)
     if (_prescribed_elsewhere[d] && count[d] > 0)
       U[d] = value[d] / count[d];
@@ -377,7 +347,7 @@ DistributedProblem::prepare()
   Vector active(_local->numDofs());
   for (Index i = 0; i < _local->numDofs(); ++i)
     active[i] = _local->activeDofs()[i] ? 1.0 : 0.0;
-  addAcrossRanks(active);
+  addAtNodes(active.data(), _local->numVariables());
   std::vector<char> global_active(_local->numDofs(), 0);
   for (Index i = 0; i < _local->numDofs(); ++i)
     global_active[i] = active[i] > 0.5 ? 1 : 0;
@@ -385,111 +355,51 @@ DistributedProblem::prepare()
   // Concentrated loads are attached to a node, not to an element, so only the
   // owning rank may apply them.
   _local->setOwnedNodes(_owns_node);
-  // A concentrated load given by coordinates is resolved to the nearest node,
-  // and each process only sees its own part of the mesh, so every one of them
-  // would find a nearest node of its own.  The process whose node is globally
-  // nearest keeps the load; a tie (the point sits on a shared node) is broken
-  // by the ownership mask above.
-  for (const auto & load : _local->nodalLoads())
-  {
-    const auto & points = load->pointNodes();
-    if (points.empty())
-      continue;
-    std::vector<double> distance;
-    distance.reserve(points.size());
-    for (const auto & [node, d] : points)
-    {
-      (void) node;
-      distance.push_back(d);
-    }
-    std::vector<double> best = distance;
-    _comm.minInPlace(best);
-    std::vector<char> keep(points.size(), 0);
-    for (std::size_t i = 0; i < points.size(); ++i)
-      keep[i] = distance[i] <= best[i] * (1.0 + 1e-12) + 1e-12 ? 1 : 0;
-    load->keepPoints(keep);
-  }
-  // The same holds for a value prescribed at the entity nearest to a point,
-  // such as the pressure level of an enclosed flow: every process would pin a
-  // node of its own, and the flow would get several pressure levels.  The
-  // globally nearest node is kept, with a tie between two different nodes at
-  // the same distance broken by the smaller global number, so that exactly one
-  // global node is constrained; a node shared by several processes is kept by
-  // all of them, which is the same degree of freedom.
-  for (const auto & bc : _local->nodalBCs())
-  {
-    auto * point = dynamic_cast<PointDirichletBC *>(bc.get());
-    if (!point)
-      continue;
-    const bool have = !point->nodes().empty();
-    const double distance = have ? point->distance() : std::numeric_limits<double>::infinity();
-    std::vector<double> best(1, distance);
-    _comm.minInPlace(best);
-    const bool candidate = have && distance <= best[0] * (1.0 + 1e-12) + 1e-14;
-    const double id = candidate ? static_cast<double>(_local_to_global[point->nodes()[0]])
-                                : std::numeric_limits<double>::infinity();
-    std::vector<double> winner(1, id);
-    _comm.minInPlace(winner);
-    if (!candidate || id != winner[0])
-      point->clear();
-  }
+  // A concentrated load and a value given at a point resolve to the node nearest the point over
+  // every process (Problem::nearestNode).
   agreePrescribedValues();
-  _num_global_dofs = _comm.sum(numOwnedDofs());
-  // A global numbering of the degrees of freedom, for assembling one
-  // distributed matrix: the owned ones of rank r follow those of ranks 0 to
-  // r - 1, and a shared one takes its owner's number.
-  {
-    const std::vector<Index> owned = _comm.allGather(numOwnedDofs());
-    _first_owned_dof = 0;
-    for (int r = 0; r < _comm.rank(); ++r)
-      _first_owned_dof += owned[r];
-    Vector number = Vector::Zero(_local->numDofs());
-    Index next = _first_owned_dof;
-    for (Index i = 0; i < _local->mesh().numNodes(); ++i)
-      if (_owned_node[i])
-        for (int k = 0; k < _local->numVariables(); ++k)
-          number[_local->dof(i, k)] = static_cast<double>(next++);
-    _gs.copyFromOwners(number.data(), _local->numVariables());
-    _global_dof.resize(_local->numDofs());
-    for (Index i = 0; i < _local->numDofs(); ++i)
-      _global_dof[i] = static_cast<Index>(std::llround(number[i]));
-  }
-  // The same numbering of the entities, for systems with one unknown per entity.
-  {
-    const std::vector<Index> owned = _comm.allGather(numOwnedEntities());
-    _first_owned_entity = 0;
-    _num_global_entities = 0;
-    for (int r = 0; r < _comm.size(); ++r)
-    {
-      if (r < _comm.rank())
-        _first_owned_entity += owned[r];
-      _num_global_entities += owned[r];
-    }
-    std::vector<double> number(static_cast<std::size_t>(_local->mesh().numNodes()), 0.0);
-    Index next = _first_owned_entity;
-    for (Index i = 0; i < _local->mesh().numNodes(); ++i)
-      if (_owned_node[i])
-        number[i] = static_cast<double>(next++);
-    _gs.copyFromOwners(number.data(), 1);
-    _global_entity.resize(number.size());
-    for (std::size_t i = 0; i < number.size(); ++i)
-      _global_entity[i] = static_cast<Index>(std::llround(number[i]));
-  }
+  // A global numbering of the degrees of freedom, for assembling one distributed matrix, and of
+  // the entities, for systems with one unknown per entity.
+  _global_dof =
+      globalNumbers(_owned_node, _local->numVariables(), _first_owned_dof, _num_global_dofs);
+  _global_entity = globalNumbers(_owned_node, 1, _first_owned_entity, _num_global_entities);
   _prepared = true;
+}
+
+std::vector<Index>
+DistributedProblem::globalNumbers(const std::vector<char> & owned,
+                                  int width,
+                                  Index & first,
+                                  Index & total) const
+{
+  const Index count = static_cast<Index>(std::count(owned.begin(), owned.end(), 1)) * width;
+  const std::vector<Index> counts = _comm.allGather(count);
+  first = 0;
+  total = 0;
+  for (int r = 0; r < _comm.size(); ++r)
+  {
+    if (r < _comm.rank())
+      first += counts[static_cast<std::size_t>(r)];
+    total += counts[static_cast<std::size_t>(r)];
+  }
+  std::vector<double> number(owned.size() * static_cast<std::size_t>(width), -1.0);
+  Index next = first;
+  for (std::size_t i = 0; i < owned.size(); ++i)
+    if (owned[i])
+      for (int k = 0; k < width; ++k)
+        number[i * static_cast<std::size_t>(width) + static_cast<std::size_t>(k)] =
+            static_cast<double>(next++);
+  _gs.copyFromOwners(number.data(), width);
+  std::vector<Index> out(number.size());
+  for (std::size_t i = 0; i < number.size(); ++i)
+    out[i] = static_cast<Index>(std::llround(number[i]));
+  return out;
 }
 
 Index
 DistributedProblem::numOwnedEntities() const
 {
   return static_cast<Index>(std::count(_owned_node.begin(), _owned_node.end(), 1));
-}
-
-void
-DistributedProblem::applyDirichlet(Vector & U, double data_fraction) const
-{
-  _local->applyDirichlet(U, data_fraction);
-  shareDirichletValues(U);
-  copyFromOwners(U);
 }
 
 Index
@@ -501,19 +411,6 @@ DistributedProblem::numOwnedDofs() const
     if (_owned_node[i])
       count += nv;
   return count;
-}
-
-void
-DistributedProblem::addAcrossRanks(Vector & v) const
-{
-  _gs.sum(v.data(), _local->numVariables());
-}
-
-void
-DistributedProblem::copyFromOwners(Vector & v) const
-{
-  const int nv = _local->numVariables();
-  _gs.copyFromOwners(v.data(), nv);
 }
 
 double
@@ -559,7 +456,7 @@ void
 DistributedProblem::shareDirichlet(Vector & U) const
 {
   shareDirichletValues(U);
-  copyFromOwners(U);
+  copyFromOwners(U.data(), _local->numVariables());
 }
 
 CheckpointLayout
@@ -580,14 +477,6 @@ DistributedProblem::checkpointLayout(const Problem &) const
     largest_element = std::max(largest_element, e);
   layout.num_global_elements = _comm.max(largest_element) + 1;
   return layout;
-}
-
-void
-DistributedProblem::writeFields(Problem &,
-                                const std::string & base,
-                                const std::vector<std::string> & fields) const
-{
-  writeVTU(base, {}, fields);
 }
 
 // ---- the solves: the drivers of the local problem, through this object --------------------

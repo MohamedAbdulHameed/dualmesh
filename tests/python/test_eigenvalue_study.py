@@ -179,3 +179,39 @@ def test_too_many_modes_are_refused():
     clamp(problem)
     with pytest.raises(ValueError, match="Ask for fewer modes"):
         problem.solve_eigenvalue(num_modes=5, report="none")
+
+
+def cooling_square(method, quadrature="automatic"):
+    """du/dt = laplacian(u) on the unit square of linear elements, zero on the boundary, whose
+    automatic storage time stepping lumps."""
+    problem = dualmesh.Problem(unit_square(8), method=method)
+    problem.add_variable("u")
+    problem.add_kernel("diffusion", variable="u")
+    problem.add_kernel("time_derivative", variable="u", quadrature=quadrature)
+    clamp(problem)
+    return problem
+
+
+def cooled(problem):
+    """The field after a transient from u = sin(pi x) sin(pi y) + x y (1 - x) (1 - y)."""
+    problem.initialize()
+    x, y = problem.node_coordinates()[:, 0], problem.node_coordinates()[:, 1]
+    problem.set_values(
+        "u", numpy.sin(numpy.pi * x) * numpy.sin(numpy.pi * y) + x * y * (1 - x) * (1 - y)
+    )
+    problem.solve_transient(end_time=0.05, time_step=0.01, report="none")
+    return problem.values("u")
+
+
+@pytest.mark.parametrize("method", methods)
+def test_a_transient_after_an_eigenvalue_study_lumps_its_storage_again(method):
+    """The eigenvalue study takes the consistent storage, and the transient solve after it on the
+    same problem takes the lumped storage of time stepping again: it gives the field of the same
+    transient on a fresh problem to round-off, and not that of the consistent storage."""
+    studied = cooling_square(method)
+    studied.solve_eigenvalue(num_modes=2, report="none")
+    after = cooled(studied)
+    fresh = cooled(cooling_square(method))
+    assert numpy.abs(after - fresh).max() < 1e-12 * numpy.abs(fresh).max()
+    consistent = cooled(cooling_square(method, quadrature="gauss2"))
+    assert numpy.abs(consistent - fresh).max() > 1e-6 * numpy.abs(fresh).max()

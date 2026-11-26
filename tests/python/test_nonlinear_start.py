@@ -100,7 +100,7 @@ def test_continuation_ramps_the_prescribed_values_from_the_starting_state():
     mesh = dualmesh.generate_line_mesh(start=0.0, end=1.0, num_elements=20)
     problem = dualmesh.Problem(mesh)
     heat = problem.add_physics(
-        "heat_transfer", thermal_conductivity="(temperature/300)^6", initial_condition=300.0
+        "heat_conduction", thermal_conductivity="(temperature/300)^6", initial_condition=300.0
     )
     heat.add_boundary_condition("temperature = 300", boundary="left")
     heat.add_boundary_condition("temperature = 3000", boundary="right")

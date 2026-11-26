@@ -20,12 +20,13 @@ from __future__ import annotations
 import contextlib
 import contextvars
 import datetime
+import difflib
 import platform
 import socket
-from collections.abc import Sequence
 
 from . import _core
 from ._core import InputError
+from .tables import Table
 
 RULE = "-" * 79
 
@@ -62,41 +63,16 @@ def inner_study():
         _INNER_STUDY.reset(token)
 
 
-def table(rows: Sequence[Sequence], headers: Sequence[str], indent: int = 2) -> str:
-    """Rows as aligned columns under the given headers.  Numbers are right
-    aligned, everything else left aligned."""
-    text_rows = [[_text(cell) for cell in row] for row in rows]
-    widths = [len(h) for h in headers]
-    for row in text_rows:
-        for i, cell in enumerate(row):
-            widths[i] = max(widths[i], len(cell))
-    numeric = [
-        bool(rows) and all(_is_number(row[i]) for row in rows if i < len(row))
-        for i in range(len(headers))
-    ]
-    pad = " " * indent
-
-    def line(cells):
-        parts = []
-        for i, cell in enumerate(cells):
-            parts.append(cell.rjust(widths[i]) if numeric[i] else cell.ljust(widths[i]))
-        return (pad + "  ".join(parts)).rstrip()
-
-    out = [line(list(headers)), pad + "  ".join("-" * w for w in widths)]
-    out.extend(line(row) for row in text_rows)
-    return "\n".join(out)
-
-
-def _is_number(value) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
-
-
-def _text(value) -> str:
-    if isinstance(value, bool):
-        return "yes" if value else "no"
-    if isinstance(value, float):
-        return f"{value:.6g}"
-    return str(value)
+def suggestion(word, choices, listing: bool = True) -> str:
+    """The end of a message that refuses a misspelled ``word``: the nearest of ``choices``, as
+    " Did you mean 'x'?", or the list of the choices when none is near and ``listing`` holds."""
+    choices = sorted(str(choice) for choice in choices)
+    nearest = difflib.get_close_matches(str(word), choices, n=1)
+    if nearest:
+        return f" Did you mean '{nearest[0]}'?"
+    if not choices or not listing:
+        return ""
+    return " The valid names are " + ", ".join(f"'{choice}'" for choice in choices) + "."
 
 
 def header(title: str = "dualmesh") -> str:
@@ -136,10 +112,8 @@ def problem_report(problem, parameters: bool = True) -> str:
         "  " + mesh.summary().strip().replace("\n", "\n  "),
         "Variables",
     ]
-    rows = []
-    for name in core.variable_names():
-        rows.append([name, problem.variable_order(name)])
-    lines.append(table(rows, ["name", "order"], indent=2))
+    rows = [[name, problem.variable_order(name)] for name in core.variable_names()]
+    lines.append(Table(["name", "order"], rows=rows).format(indent=2))
     lines.append("Objects")
     for name in core.object_names():
         obj = core.object(name)
@@ -151,7 +125,7 @@ def problem_report(problem, parameters: bool = True) -> str:
             value = row["value"] if row["value"] != "" else "(none)"
             rows.append([row["name"], value, "(default)" if row["is_default"] else "given"])
         if rows:
-            lines.append(table(rows, ["parameter", "value", "source"], indent=6))
+            lines.append(Table(["parameter", "value", "source"], rows=rows).format(indent=6))
     return "\n".join(lines)
 
 
@@ -165,8 +139,10 @@ def solve_report(result, wall_time: float | None = None) -> str:
     if result.time_steps:
         rows.append(["time steps accepted", int(result.time_steps)])
         rows.append(["time steps rejected", int(result.rejected_steps)])
+    if result.start_correction is not None:
+        rows.append(["initial velocity correction", float(result.start_correction)])
     if result.history:
         rows.append(["final residual", float(result.history[-1].residual_norm)])
     if wall_time is not None:
         rows.append(["wall time (s)", float(wall_time)])
-    return "Solve\n" + table(rows, ["quantity", "value"], indent=2)
+    return "Solve\n" + Table(["quantity", "value"], rows=rows).format(indent=2)

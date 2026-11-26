@@ -1,7 +1,7 @@
 Installation
 ============
 
-You build dualmesh-multiphysics from its source.  The build compiles a C++17
+You build dualmesh from its source.  The build compiles a C++17
 library and its Python extension, and it links them to MPI, the Message Passing
 Interface, and to PETSc, the Portable, Extensible Toolkit for Scientific
 Computation.  The code builds on Linux and macOS.  Windows is not supported.
@@ -52,8 +52,8 @@ Install the package
 
    .. code-block:: console
 
-      git clone https://github.com/MohamedAbdulHameed/dualmesh-multiphysics.git
-      cd dualmesh-multiphysics
+      git clone https://github.com/MohamedAbdulHameed/dualmesh.git
+      cd dualmesh
 
 2. Build and install the package with all its optional dependencies:
 
@@ -67,10 +67,10 @@ Install the package
 
       python -c "import dualmesh; print(dualmesh.petsc_version())"
       dualmesh --version
-      dualmesh list --module heat_transfer
+      dualmesh list --module heat_conduction
 
    The first command prints the version of PETSc, the second the version of
-   dualmesh-multiphysics, and the third the objects of the heat transfer
+   dualmesh, and the third the objects of the heat transfer
    module.
 
 The optional dependencies

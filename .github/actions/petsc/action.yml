@@ -1,7 +1,7 @@
 name: MPI and PETSc
 description: >-
   Install MPI, PETSc with hypre and MUMPS, Eigen and pkg-config, which every build of
-  dualmesh-multiphysics needs. Linux takes the Ubuntu packages, macOS those of Homebrew.
+  dualmesh needs. Linux takes the Ubuntu packages, macOS those of Homebrew.
 runs:
   using: composite
   steps:

@@ -5,6 +5,7 @@ or read from a YAML file, gives the same answer, and an input that no physics re
 leaves out what a physics needs, is refused with its key."""
 
 import csv
+from pathlib import Path
 
 import dualmesh
 import numpy
@@ -52,6 +53,47 @@ def test_the_same_slab_read_from_a_YAML_file_gives_the_same_temperatures(tmp_pat
     assert read_back.solve(report="none").field("temperature") == pytest.approx(
         slab.solve(report="none").field("temperature"), rel=1e-12
     )
+
+
+def test_a_table_of_the_input_gives_the_solution_of_its_formula(tmp_path, monkeypatch):
+    """A table of two rows is the line k = 40 + 0.01 (T - 250 K) W/(m K) over its range, given
+    inline or in a CSV file, so the slab with the table takes the temperatures of the slab with
+    that formula.  The source as a table in x of two equal rows is the uniform source."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "k.csv").write_text(
+        "temperature [K], thermal_conductivity [W/(m*K)]\n250, 40\n1250, 50\n"
+    )
+    inline = dualmesh.table(
+        temperature=("K", [1250, 250]), thermal_conductivity=("W/(m*K)", [50, 40])
+    )
+    formula = "[40 W/(m*K)] + [0.01 W/(m*K^2)]*(temperature - [250 K])"
+    temperatures = []
+    for conductivity_value in (formula, inline, dualmesh.table("k.csv")):
+        slab = heated_slab()
+        slab.properties(
+            thermal_conductivity=conductivity_value,
+            volumetric_heat_source=dualmesh.table(
+                x=("m", [0, 0.1]), volumetric_heat_source=("MW/m^3", [1, 1])
+            ),
+        )
+        temperatures.append(slab.solve(report="none").field("temperature")[:, 0])
+    assert temperatures[0].max() > 320.0
+    for temperature in temperatures[1:]:
+        assert temperature == pytest.approx(temperatures[0], rel=1e-12)
+
+
+def test_a_table_read_outside_its_range_stops_the_run_with_the_property_and_the_value():
+    """The slab peaks near 328 K, above the 310 K that ends the table."""
+    slab = heated_slab()
+    slab.properties(
+        thermal_conductivity=dualmesh.table(
+            temperature=("K", [250, 310]), thermal_conductivity=("W/(m*K)", [45, 45])
+        )
+    )
+    with pytest.raises(
+        RuntimeError, match="the table of the property thermal_conductivity reads temperature = 3"
+    ):
+        slab.solve(report="none")
 
 
 def test_a_slab_cooled_by_convection_has_the_heat_flow_of_its_series_resistance():
@@ -125,9 +167,9 @@ def test_a_transient_run_writes_its_fields_and_its_postprocessors_with_their_uni
     solution = slab.solve(report="none")
     assert solution.times == pytest.approx([10.0, 20.0, 30.0, 40.0])
     assert sorted(path.name for path in tmp_path.glob("slab_*.vtu")) == [
-        "slab_0000.vtu",
-        "slab_0001.vtu",
-        "slab_0002.vtu",
+        "slab_00000.vtu",
+        "slab_00001.vtu",
+        "slab_00002.vtu",
     ]
     assert (tmp_path / "slab.pvd").exists()
     with open(tmp_path / "slab.csv") as file:
@@ -156,7 +198,9 @@ def test_the_bus_bar_example_gives_the_temperature_of_Reddy(tmp_path, monkeypatc
     assert solution.postprocessor("temperature_bottom")[-1] - 273.15 == pytest.approx(
         83.142, abs=5e-4
     )
-    assert (tmp_path / "bus_bar.pvd").exists() and (tmp_path / "bus_bar.csv").exists()
+    # A steady run writes its fields once, without a collection.
+    assert (tmp_path / "bus_bar.vtu").exists() and (tmp_path / "bus_bar.csv").exists()
+    assert not (tmp_path / "bus_bar.pvd").exists()
 
 
 def test_the_cooling_fin_example_gives_the_temperatures_of_Reddy():
@@ -254,10 +298,17 @@ def test_the_weight_of_a_finite_strain_column_is_that_of_the_small_strain_one():
     )
 
 
+# The velocity that the round-off eps of the balance of the pressure gradient and the weight of
+# water at rest drives in a tank 1 m deep: eps rho g H^2 / mu, with mu = 1e-3 Pa*s.
+rest_velocity_round_off = numpy.finfo(float).eps * 1000.0 * gravity_g * 1.0**2 / 1e-3
+
+
 @pytest.mark.parametrize("method", ["DMCDM", "FEM"])
 def test_water_at_rest_in_a_tank_carries_the_hydrostatic_pressure(method):
     """Water in a closed tank 1 m deep, open to p = 0 at the top, stays at rest, and its pressure
-    is p = rho g (H - y): the pressure gradient balances the weight, with no spurious flow."""
+    is p = rho g (H - y): the pressure gradient balances the weight, with no spurious flow.  The
+    round-off of that balance, of relative size eps (the machine epsilon), drives a velocity of
+    eps rho g H^2 / mu, about 2e-9 m/s, which bounds the computed one."""
     tank = dualmesh.problem(
         mesh={"rectangle": {"size": ["1 m", "1 m"], "cells": [6, 6]}}, method=method
     )
@@ -269,10 +320,10 @@ def test_water_at_rest_in_a_tank_carries_the_hydrostatic_pressure(method):
     tank.boundary_conditions("top", pressure="0 Pa")
     solution = tank.solve(report="none")
     y = solution.coordinates("pressure")[:, 1]
-    assert solution.field("pressure") == pytest.approx(
+    assert solution.field("pressure")[:, 0] == pytest.approx(
         1000.0 * gravity_g * (1.0 - y), rel=1e-8, abs=1e-6
     )
-    assert numpy.abs(solution.field("velocity")).max() < 1e-10
+    assert numpy.abs(solution.field("velocity")).max() < rest_velocity_round_off
 
 
 def test_gravity_on_a_problem_without_a_solid_or_a_flow_is_refused():
@@ -325,13 +376,14 @@ def test_a_steady_flow_carries_heat_with_its_heat_capacity():
     x = solution.coordinates("temperature")[:, 0]
     a = rho * c_p * U / k
     rise = q / (rho * c_p * U) * (x - (numpy.exp(a * (x - L)) - numpy.exp(-a * L)) / a)
-    computed = solution.field("temperature") - 300.0
+    computed = solution.field("temperature")[:, 0] - 300.0
     assert numpy.abs(computed - rise).max() < 5e-3 * q * L / (rho * c_p * U)
 
 
 def test_a_heated_fluid_at_its_reference_temperature_stays_at_rest():
     """Water in a tank whose walls are all at the reference temperature T_0 takes no buoyancy:
-    it stays at rest, at T_0, with the hydrostatic pressure rho g (H - y)."""
+    it stays at rest, at T_0, with the hydrostatic pressure rho g (H - y), and a velocity within
+    the round-off of the tank without heat."""
     tank = dualmesh.problem(mesh={"rectangle": {"size": ["1 m", "1 m"], "cells": [6, 6]}})
     tank.physics("heat_conduction")
     tank.physics("fluid_dynamics")
@@ -351,9 +403,9 @@ def test_a_heated_fluid_at_its_reference_temperature_stays_at_rest():
     tank.boundary_conditions("top", pressure="0 Pa")
     solution = tank.solve(report="none")
     assert solution.field("temperature") == pytest.approx(293.15, abs=1e-9)
-    assert numpy.abs(solution.field("velocity")).max() < 1e-10
+    assert numpy.abs(solution.field("velocity")).max() < rest_velocity_round_off
     y = solution.coordinates("pressure")[:, 1]
-    assert solution.field("pressure") == pytest.approx(
+    assert solution.field("pressure")[:, 0] == pytest.approx(
         1000.0 * gravity_g * (1.0 - y), rel=1e-8, abs=1e-6
     )
 
@@ -436,3 +488,65 @@ def test_the_heat_of_the_example_case_leaves_through_its_held_and_cooled_sides()
     top = solution.postprocessor("heat_through_top")[-1]
     assert left + top == pytest.approx(1.0e6 * 0.1 * 0.02, rel=1e-8)
     assert 300.0 < solution.postprocessor("peak_temperature")[-1] < 300.0 + 1.0e6 * 0.1**2 / 40.0
+
+
+def test_a_conductivity_of_the_position_and_the_time_gives_the_exact_temperature():
+    """k = k0 (1 + x/L + t/[1 s]) with k0 = 45 W/(m*K), between 400 K at x = 0 and 300 K at
+    x = L = 0.1 m, with the source q = (100 K / L) (k0 / L) = 0.45 MW/m^3.  The linear
+    T = 400 K - (100 K) x / L solves -(k T')' = (100 K / L) dk/dx = q at every time, and the
+    elements represent it exactly, since k is linear in x."""
+    slab = dualmesh.problem(mesh={"segment": {"length": "0.1 m", "cells": 10}})
+    slab.physics("heat_conduction")
+    slab.properties(
+        thermal_conductivity="[45 W/(m*K)]*(1 + x/[0.1 m] + time/[1 s])",
+        volumetric_heat_source="0.45 MW/m^3",
+    )
+    slab.boundary_conditions("left", temperature="400 K")
+    slab.boundary_conditions("right", temperature="300 K")
+    solution = slab.solve(report="none")
+    x = solution.coordinates("temperature")[:, 0]
+    temperature = solution.field("temperature")[:, 0]
+    assert temperature == pytest.approx(400.0 - 1000.0 * x, rel=1e-10)
+
+
+def test_the_input_leaves_the_flow_formulation_to_the_physics():
+    """With FEM on a mesh of quadratic cells the fluid_dynamics physics takes Taylor-Hood, which
+    needs no stabilisation, so the input gives the flow that the Python interface gives."""
+    from dualmesh.input import schema
+    from dualmesh.input.build import build_problem
+
+    quadratic = dualmesh.generate_rectangle_mesh(0.0, 1.0, 0.0, 1.0, 2, 2, element_type="Quad9")
+    tank = dualmesh.problem(
+        mesh={"rectangle": {"size": ["1 m", "1 m"], "cells": [2, 2]}}, method="FEM"
+    )
+    tank.physics("fluid_dynamics")
+    tank.properties(density="1000 kg/m^3", dynamic_viscosity="1e-3 Pa*s")
+    _, physics, _ = build_problem(schema.validate(tank.to_tree()), quadratic)
+    assert physics["fluid_dynamics"].formulation == "Taylor-Hood"
+
+
+def test_a_distributed_run_names_its_pvtu_files_and_one_process_writes_the_collection(
+    tmp_path, monkeypatch
+):
+    """A problem split among processes writes each output as the .pvtu index of its pieces,
+    which the collection names, and only the first process writes the collection."""
+    from dualmesh import _core
+    from dualmesh.output import Output, Series
+
+    class distributed_problem:
+        def _write_fields(self, output, index):
+            return [output.path(f"_{index:05d}.pvtu")]
+
+    def run(directory):
+        series = Series(Output(directory=str(directory), file_base="run", step_interval=1))
+        files = [path for time in (1.0, 2.0) for path in series.write(distributed_problem(), time)]
+        series.write_collection("pvtu")
+        return [Path(path).name for path in files]
+
+    assert run(tmp_path) == ["run_00000.pvtu", "run_00001.pvtu"]
+    collection = (tmp_path / "run.pvd").read_text()
+    assert 'file="run_00000.pvtu"' in collection and 'file="run_00001.pvtu"' in collection
+    other = tmp_path / "other"
+    monkeypatch.setattr(_core, "mpi_rank", lambda: 1)
+    assert run(other) == ["run_00000.pvtu", "run_00001.pvtu"]
+    assert not (other / "run.pvd").exists()

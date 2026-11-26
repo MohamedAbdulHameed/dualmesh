@@ -44,7 +44,7 @@ def test_a_free_thermal_expansion_is_free_of_stress():
     """Heated uniformly with no load and no axial force: eps_zz = alpha dT, and no stress."""
     mesh = dualmesh.generate_rectangle_mesh(0, 1, 0, 1, 3, 3)
     problem = dualmesh.Problem(mesh)
-    heat = problem.add_physics("heat_transfer", thermal_conductivity=1.0)
+    heat = problem.add_physics("heat_conduction", thermal_conductivity=1.0)
     body = problem.add_physics(
         "solid_mechanics",
         formulation="generalized_plane_strain",
@@ -53,7 +53,7 @@ def test_a_free_thermal_expansion_is_free_of_stress():
     )
     problem.add_coupling(
         "thermal_expansion",
-        heat_transfer=heat,
+        heat_conduction=heat,
         solid_mechanics=body,
         linear_expansion_coefficient=1e-5,
         stress_free_temperature=300.0,

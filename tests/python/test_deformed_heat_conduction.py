@@ -57,9 +57,9 @@ def _heated_cylinder(strain, method="fem", surface="dirichlet", deformed=True):
     p.add_boundary_condition("Dirichlet", "bottom", variable="disp_z", value=0.0)
     on_deformed = {"deformation_gradient_property": "deformation_gradient"} if deformed else {}
     p.add_kernel(
-        "heat_conduction",
+        "diffusion",
         variable="temperature",
-        thermal_conductivity=K,
+        diffusivity=K,
         **on_deformed,
     )
     p.add_kernel("body_force", variable="temperature", value=q0)
@@ -166,9 +166,9 @@ def test_a_rigid_rotation_changes_nothing():
         )
         on_deformed = {"deformation_gradient_property": "deformation_gradient"} if deformed else {}
         p.add_kernel(
-            "heat_conduction",
+            "diffusion",
             variable="temperature",
-            thermal_conductivity=2.0,
+            diffusivity=2.0,
             **on_deformed,
         )
         p.add_kernel("body_force", variable="temperature", value=5.0)
@@ -200,6 +200,6 @@ def test_the_property_must_have_nine_components():
     p = dualmesh.Problem(mesh)
     p.add_variable("temperature")
     p.add_property("constant", properties={"k": 1.0})
-    p.add_kernel("heat_conduction", variable="temperature", deformation_gradient_property="k")
+    p.add_kernel("diffusion", variable="temperature", deformation_gradient_property="k")
     with pytest.raises(Exception, match="must have nine components"):
         p.solve()

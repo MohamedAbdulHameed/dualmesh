@@ -34,7 +34,7 @@ def solve_with_dualmesh(nx: int, ny: int, method: str = "dmcdm"):
     )
     problem = dualmesh.Problem(mesh, method=method)
     problem.add_variable("temperature")
-    problem.add_kernel("heat_conduction", variable="temperature", thermal_conductivity=0.2)
+    problem.add_kernel("diffusion", variable="temperature", diffusivity=0.2)
     problem.add_boundary_condition("Dirichlet", "left", variable="temperature", value=500.0)
     problem.add_boundary_condition(
         "Dirichlet",

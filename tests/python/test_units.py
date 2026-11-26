@@ -40,13 +40,13 @@ def channel(scale, solve):
         viscous_form="laplacian",
     )
     heat = problem.add_physics(
-        "heat_transfer",
+        "heat_conduction",
         thermal_conductivity=0.6 * scale,
         density=1000.0 / scale**3,
         specific_heat=4000.0 * scale**2,
         initial_condition=300.0,
     )
-    problem.add_coupling("nonisothermal_flow", heat_transfer=heat, fluid_dynamics=flow)
+    problem.add_coupling("nonisothermal_flow", heat_conduction=heat, fluid_dynamics=flow)
     u = 1e-3 * scale
     flow.add_boundary_condition(
         [f"velocity_x = {6 * u}*y*({scale} - y)/{scale**2}", "velocity_y = 0"], boundary="left"
@@ -69,7 +69,7 @@ def cavity(scale, solve):
         formulation="equal_order",
     )
     heat = problem.add_physics(
-        "heat_transfer",
+        "heat_conduction",
         thermal_conductivity=0.026 * scale,
         density=1.2 / scale**3,
         specific_heat=1005.0 * scale**2,
@@ -77,7 +77,7 @@ def cavity(scale, solve):
     )
     problem.add_coupling(
         "nonisothermal_flow",
-        heat_transfer=heat,
+        heat_conduction=heat,
         fluid_dynamics=flow,
         gravity=[0.0, -9.81 * scale],
         volumetric_expansion_coefficient=1 / 300,
@@ -103,14 +103,14 @@ def plate(scale, solve):
         body_force=[0.0, -7.8e4 / scale**2],
     )
     heat = problem.add_physics(
-        "heat_transfer",
+        "heat_conduction",
         thermal_conductivity=50.0 * scale,
         heat_source=1e6 / scale,
     )
     problem.add_coupling(
         "thermal_expansion",
         solid_mechanics=solid,
-        heat_transfer=heat,
+        heat_conduction=heat,
         linear_expansion_coefficient=1.2e-5,
         stress_free_temperature=300.0,
     )

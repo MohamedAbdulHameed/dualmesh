@@ -17,10 +17,17 @@ boundary, with $\\mathbf{n}$ the outward unit normal. A positive boundary flux
 therefore removes the conserved quantity. `flux_name` is the standard name
 of $\\mathbf{F}$, such as `heat_flux`, which a boundary flux postprocessor names.
 
+A storage written as the antiderivative of a coefficient $c$ by the unknown,
+$\\mathbf{m} = \\int^{u} c\\,\\mathrm{d}u'$, has the rate $c\\,\\partial u/\\partial t$.
+The equations of general_form_PDE write their time derivatives so, and an
+inertia always so.
+
 The law holds expressions only. It never names a test function or a method, so the
-input front end lowers the same law onto the general form of the engine, for FEM and DMCDM.
+models of the input and the equations of general_form_PDE lower the same law onto the
+general form of the engine, for FEM and DMCDM.
 """
 
+import dataclasses
 import importlib
 
 from dualmesh.input.units import base, input_error
@@ -30,6 +37,7 @@ from dualmesh.input.units import base, input_error
 # the same name, which hides the modules of those names.
 graph = importlib.import_module("dualmesh.model.expression")
 dimensions = importlib.import_module("dualmesh.model.dimensions")
+differentiation = importlib.import_module("dualmesh.model.differentiate")
 dimension_error = dimensions.dimension_error
 # The number zero stands for a term the law does not have.
 is_absent = dimensions.is_zero
@@ -262,5 +270,78 @@ class conservation_law:
             node for node in self.leaves_of(expressions) if node.kind == "constant"
         )
 
+    def components(self, space_dimension: int) -> list:
+        """Return the scalar terms of each scalar component of the unknown, in a space of
+        space_dimension, as `scalar_terms`.
+
+        A storage or an inertia written as the antiderivative of a coefficient c by the
+        component u takes the rate form c du/dt, or c d2u/dt2, with c read by `differentiate`.
+        Any other storage keeps its expression m, whose rate is dm/dt.
+        """
+        count = 1 if self.unknown.rank == 0 else space_dimension
+        unknown = graph.expand(self.unknown, space_dimension)
+        unknown = [unknown] if self.unknown.rank == 0 else unknown
+
+        def per_component(node):
+            if is_absent(node):
+                return [None] * count
+            expanded = graph.expand(node, space_dimension)
+            return [expanded] if self.unknown.rank == 0 else expanded
+
+        def rate_coefficient(node, leaf, what: str):
+            if node is None:
+                return None
+            if node.kind != "antiderivative":
+                raise input_error(
+                    f"conservation law '{self.name}': the {what} '{node}' is lowered as the "
+                    f"antiderivative of its coefficient only"
+                )
+            return differentiation.differentiate(node, leaf)
+
+        result = []
+        for leaf, storage, inertia, flux, source in zip(
+            unknown,
+            per_component(self.storage),
+            per_component(self.inertia),
+            per_component(self.flux),
+            per_component(self.source),
+            strict=True,
+        ):
+            if flux is not None and all(is_absent(entry) for entry in flux):
+                flux = None
+            if source is not None and is_absent(source):
+                source = None
+            capacity = None
+            if storage is not None and storage.kind == "antiderivative":
+                capacity, storage = differentiation.differentiate(storage, leaf), None
+            result.append(
+                scalar_terms(
+                    unknown=leaf,
+                    storage=storage,
+                    capacity=capacity,
+                    mass=rate_coefficient(inertia, leaf, "inertia"),
+                    flux=flux,
+                    source=source,
+                )
+            )
+        return result
+
     def __repr__(self) -> str:
         return f"conservation_law({self.name}, unknown {self.unknown.name})"
+
+
+@dataclasses.dataclass(frozen=True)
+class scalar_terms:
+    """The terms of the equation of one scalar component of the unknown, as scalar expressions.
+
+    `unknown` is the leaf of the component. Each term is None where the law does not have it:
+    `storage` m of the rate dm/dt, `capacity` c of the rate c du/dt, `mass` c of the inertia
+    c d2u/dt2, `flux` with one expression per direction of space, and `source`.
+    """
+
+    unknown: object
+    storage: object
+    capacity: object
+    mass: object
+    flux: list | None
+    source: object

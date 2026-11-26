@@ -12,7 +12,6 @@
 
 #include "dualmesh/base/Factory.h"
 #include "dualmesh/base/Problem.h"
-#include "dualmesh/core/Equation.h"
 #include "dualmesh/core/ParsedFunction.h"
 #include "dualmesh/fe/Assembly.h"
 #include "dualmesh/linalg/PetscSolver.h"
@@ -388,101 +387,6 @@ PYBIND11_MODULE(_core, m)
       .def(-py::self)
       .def("__pow__", [](const ADReal & a, double p) { return pow(a, p); })
       .def("__pow__", [](const ADReal & a, const ADReal & b) { return pow(a, b); });
-  // ---- equations written as text ----------------------------------------
-  const auto equationScope =
-      [](int dimension,
-         bool axisymmetric,
-         const std::vector<std::pair<std::string, int>> & fields,
-         const std::vector<std::string> & constants,
-         const std::vector<std::pair<std::string, std::string>> & definitions,
-         const std::vector<std::string> & flux_names)
-  {
-    EquationScope scope;
-    scope.dimension = dimension;
-    scope.axisymmetric = axisymmetric;
-    scope.fields = fields;
-    scope.constants = constants;
-    scope.definitions = definitions;
-    if (!flux_names.empty())
-      scope.flux_names = flux_names;
-    return scope;
-  };
-  const auto equationDict = [](const ScalarEquation & q)
-  {
-    py::dict d;
-    d["field"] = q.field;
-    d["equation"] = q.equation;
-    d["flux"] = q.flux;
-    d["source"] = q.source;
-    d["time_coefficient"] = q.time_coefficient;
-    d["second_time_coefficient"] = q.second_time_coefficient;
-    return d;
-  };
-  m.def(
-      "reduce_equations",
-      [=](int dimension,
-          bool axisymmetric,
-          const std::vector<std::pair<std::string, int>> & fields,
-          const std::vector<std::string> & constants,
-          const std::vector<std::pair<std::string, std::string>> & definitions,
-          const std::vector<std::string> & equations,
-          const std::vector<std::string> & keys)
-      {
-        py::list out;
-        for (const auto & q : reduceEquations(
-                 equationScope(dimension, axisymmetric, fields, constants, definitions, {}),
-                 equations,
-                 keys))
-          out.append(equationDict(q));
-        return out;
-      },
-      py::arg("dimension"),
-      py::arg("axisymmetric"),
-      py::arg("fields"),
-      py::arg("constants"),
-      py::arg("definitions"),
-      py::arg("equations"),
-      py::arg("keys") = std::vector<std::string>{},
-      "Reduce equations written as text to one scalar equation m d2u/dt2 + d du/dt + div(Gamma) "
-      "= f per scalar unknown: a list of dicts with field, equation, flux, source, time_coefficient and "
-      "second_time_coefficient.");
-  m.def(
-      "reduce_condition",
-      [=](int dimension,
-          bool axisymmetric,
-          const std::vector<std::pair<std::string, int>> & fields,
-          const std::vector<std::string> & constants,
-          const std::vector<std::pair<std::string, std::string>> & definitions,
-          const std::vector<std::string> & equations,
-          const std::vector<std::string> & keys,
-          const std::string & condition,
-          const std::vector<std::string> & flux_names)
-      {
-        const EquationScope scope =
-            equationScope(dimension, axisymmetric, fields, constants, definitions, flux_names);
-        const auto reduced = reduceEquations(scope, equations, keys);
-        py::list out;
-        for (const auto & c : reduceCondition(scope, reduced, condition))
-        {
-          py::dict d;
-          d["field"] = c.field;
-          d["dirichlet"] = c.dirichlet;
-          d["value"] = c.value;
-          out.append(d);
-        }
-        return out;
-      },
-      py::arg("dimension"),
-      py::arg("axisymmetric"),
-      py::arg("fields"),
-      py::arg("constants"),
-      py::arg("definitions"),
-      py::arg("equations"),
-      py::arg("keys"),
-      py::arg("condition"),
-      py::arg("flux_names") = std::vector<std::string>{},
-      "Read a boundary condition written as text: a list of dicts with field, dirichlet (u = "
-      "value) or not (n . Gamma = value), and value.");
 
   m.def("sqrt", [](const ADReal & a) { return sqrt(a); });
   m.def("exp", [](const ADReal & a) { return exp(a); });
@@ -802,7 +706,8 @@ PYBIND11_MODULE(_core, m)
           "call it.")
       .def("refined",
            &Mesh::refined,
-           "A uniformly refined copy: every element is split into 2^dim children, and the "
+           "A uniformly refined copy: every element is split into 2^dim children (a pyramid into "
+           "six pyramids and four tetrahedra), and the "
            "side sets and node sets are carried over. Only linear meshes can be refined; "
            "refine first and promote to second order afterwards.")
       .def("second_order",
@@ -922,40 +827,44 @@ PYBIND11_MODULE(_core, m)
         py::arg("y"),
         py::arg("element_type") = "Quad4",
         py::arg("diagonal") = "alternate");
-  py::class_<Subdivision>(m, "Subdivision")
-      .def(py::init<const Mesh &>(), py::arg("mesh"))
+  py::class_<MeshHierarchy>(m, "MeshHierarchy")
       .def(
-          "mesh", [](const Subdivision & s) { return s.mesh(); }, "The current mesh.")
+          "mesh", [](const MeshHierarchy & h) { return h.mesh(); }, "The current mesh.")
       .def(
           "refine",
-          [](Subdivision & s, const std::vector<int> & marked, int max_level)
-          { return s.refine(std::vector<char>(marked.begin(), marked.end()), max_level); },
+          [](MeshHierarchy & h, const std::vector<int> & marked, int max_level)
+          { return h.refine(std::vector<char>(marked.begin(), marked.end()), max_level); },
           py::arg("marked"),
-          py::arg("max_level"))
+          py::arg("max_level"),
+          "Refine the marked elements below max_level refinements, and those that the "
+          "conformity or the balance needs; return whether the mesh changed.")
       .def(
           "coarsen",
-          [](Subdivision & s, const std::vector<int> & marked)
-          { return s.coarsen(std::vector<char>(marked.begin(), marked.end())); },
-          py::arg("marked"))
+          [](MeshHierarchy & h, const std::vector<int> & marked)
+          { return h.coarsen(std::vector<char>(marked.begin(), marked.end())); },
+          py::arg("marked"),
+          "Coarsen every family whose elements are all marked; return whether the mesh changed.")
       .def(
           "adapt",
-          [](Subdivision & s,
+          [](MeshHierarchy & h,
              const std::vector<int> & refine,
              const std::vector<int> & coarsen,
              int max_level)
           {
-            return s.adapt(std::vector<char>(refine.begin(), refine.end()),
+            return h.adapt(std::vector<char>(refine.begin(), refine.end()),
                            std::vector<char>(coarsen.begin(), coarsen.end()),
                            max_level);
           },
           py::arg("refine"),
           py::arg("coarsen"),
-          py::arg("max_level"))
+          py::arg("max_level"),
+          "Coarsen the families whose elements are all marked to coarsen and none to refine, "
+          "then refine, in one change; return whether the mesh changed.")
       .def(
           "project",
-          [](Subdivision & s, const std::string & name, const py::function & projection)
+          [](MeshHierarchy & h, const std::string & name, const py::function & projection)
           {
-            s.project(
+            h.project(
                 name,
                 [&](const Point & x)
                 {
@@ -971,21 +880,11 @@ PYBIND11_MODULE(_core, m)
           py::arg("projection"),
           "Move the nodes of a side set onto a curved boundary, except the hanging nodes: "
           "projection((x, y, z)) gives the point of each.")
-      .def("levels", &Subdivision::levels)
-      .def("origins", &Subdivision::origins)
-      .def(
-          "hanging",
-          [](const Subdivision & s)
-          {
-            py::list out;
-            for (const auto & h : s.hanging())
-              out.append(py::make_tuple(h.node, h.on));
-            return out;
-          },
-          "The hanging nodes: (node, [(node, weight), ...]) for each.")
+      .def("levels", &MeshHierarchy::levels)
+      .def("origins", &MeshHierarchy::origins)
       .def(
           "transfer",
-          [](Subdivision & h, const std::vector<double> & values, int width)
+          [](MeshHierarchy & h, const std::vector<double> & values, int width)
           {
             const Eigen::VectorXd after = h.transfer(
                 Eigen::Map<const Eigen::VectorXd>(values.data(), static_cast<Index>(values.size())),
@@ -995,77 +894,40 @@ PYBIND11_MODULE(_core, m)
           py::arg("values"),
           py::arg("width"),
           "Values at the nodes of the mesh before the last change, width per node, carried to "
-          "the current mesh.");
-  py::class_<Bisection>(m, "Bisection")
-      .def(py::init<const Mesh &>(), py::arg("mesh"))
+          "the current mesh.")
       .def(
-          "mesh", [](const Bisection & b) { return b.mesh(); }, "The current mesh.")
-      .def(
-          "refine",
-          [](Bisection & b, const std::vector<int> & marked, int max_generation)
-          { return b.refine(std::vector<char>(marked.begin(), marked.end()), max_generation); },
-          py::arg("marked"),
-          py::arg("max_generation"),
-          "Refine the marked triangles below max_generation bisections, and those the "
-          "conformity needs; return whether the mesh changed.")
-      .def(
-          "coarsen",
-          [](Bisection & b, const std::vector<int> & marked)
-          { return b.coarsen(std::vector<char>(marked.begin(), marked.end())); },
-          py::arg("marked"),
-          "Undo one bisection wherever every triangle of its patch is marked; return whether "
-          "the mesh changed.")
-      .def(
-          "adapt",
-          [](Bisection & b,
-             const std::vector<int> & refine,
-             const std::vector<int> & coarsen,
-             int max_generation)
+          "restrict",
+          [](MeshHierarchy & h,
+             const std::vector<double> & values,
+             int width,
+             const std::vector<double> & measures)
           {
-            return b.adapt(std::vector<char>(refine.begin(), refine.end()),
-                           std::vector<char>(coarsen.begin(), coarsen.end()),
-                           max_generation);
-          },
-          py::arg("refine"),
-          py::arg("coarsen"),
-          py::arg("max_generation"),
-          "Coarsen the patches whose triangles are all marked to coarsen and none to refine, then "
-          "refine, in one change; return whether the mesh changed.")
-      .def(
-          "project",
-          [](Bisection & b, const std::string & name, const py::function & projection)
-          {
-            b.project(
-                name,
-                [&](const Point & x)
-                {
-                  const auto moved =
-                      projection(py::make_tuple(x[0], x[1], x[2])).cast<std::vector<double>>();
-                  Point out{0, 0, 0};
-                  for (std::size_t k = 0; k < moved.size() && k < 3; ++k)
-                    out[static_cast<int>(k)] = moved[k];
-                  return out;
-                });
-          },
-          py::arg("name"),
-          py::arg("projection"),
-          "Move the nodes of a side set onto a curved boundary: projection((x, y, z)) gives the "
-          "point of each.")
-      .def("generations", &Bisection::generations)
-      .def("origins", &Bisection::origins)
-      .def(
-          "transfer",
-          [](Bisection & h, const std::vector<double> & values, int width)
-          {
-            const Eigen::VectorXd after = h.transfer(
+            const Eigen::VectorXd after = h.restrictValues(
                 Eigen::Map<const Eigen::VectorXd>(values.data(), static_cast<Index>(values.size())),
-                width);
+                width,
+                Eigen::Map<const Eigen::VectorXd>(measures.data(),
+                                                  static_cast<Index>(measures.size())));
             return std::vector<double>(after.data(), after.data() + after.size());
           },
           py::arg("values"),
           py::arg("width"),
-          "Carry nodal values, width per node, from the mesh before the last change to the "
-          "current one.");
+          py::arg("measures"),
+          "Values at the nodes of the mesh before the last change, width per node, carried to "
+          "the current mesh so that the sum of the values times the measures of the nodes "
+          "before stays: a removed node gives its content to the nodes of its merged element.");
+  py::class_<Subdivision, MeshHierarchy>(m, "Subdivision")
+      .def(py::init<const Mesh &>(), py::arg("mesh"))
+      .def(
+          "hanging",
+          [](const Subdivision & s)
+          {
+            py::list out;
+            for (const auto & h : s.hanging())
+              out.append(py::make_tuple(h.node, h.on));
+            return out;
+          },
+          "The hanging nodes: (node, [(node, weight), ...]) for each.");
+  py::class_<Bisection, MeshHierarchy>(m, "Bisection").def(py::init<const Mesh &>(), py::arg("mesh"));
 
   m.def("generate_box_mesh",
         &generateBoxMesh,
@@ -1214,8 +1076,6 @@ PYBIND11_MODULE(_core, m)
       .def_readwrite("second_order_scheme", &TransientOptions::second_order_scheme)
       .def_readwrite("spectral_radius", &TransientOptions::spectral_radius)
       .def_readwrite("output_times", &TransientOptions::output_times)
-      .def_readwrite("output_file_base", &TransientOptions::output_file_base)
-      .def_readwrite("output_fields", &TransientOptions::output_fields)
       .def_readwrite("time_stepper", &TransientOptions::time_stepper)
       .def_readwrite("courant_number", &TransientOptions::courant_number)
       .def_readwrite("dt_min", &TransientOptions::dt_min)
@@ -1257,6 +1117,7 @@ PYBIND11_MODULE(_core, m)
       .def_readonly("rejected_steps", &SolveResult::rejected_steps)
       .def_readonly("step_history", &SolveResult::step_history)
       .def_readonly("next_time_step", &SolveResult::next_time_step)
+      .def_readonly("start_correction", &SolveResult::start_correction)
       .def_readonly("history", &SolveResult::history);
 
   m.def(
@@ -1488,6 +1349,30 @@ PYBIND11_MODULE(_core, m)
       py::arg("distributed"),
       py::arg("settings"),
       "Advance the transient solves of @p problem with the projection time integration of a flow.");
+  m.def(
+      "attach_start_projection",
+      [](Problem & problem,
+         DistributedProblem * distributed,
+         const std::vector<std::string> & velocities,
+         const std::string & pressure)
+      {
+        problem.addStartProjection(
+            [&problem, distributed, velocities, pressure](Vector & solution)
+            {
+              std::vector<int> components;
+              for (const auto & name : velocities)
+                components.push_back(problem.variableIndex(name));
+              const int p = pressure.empty() ? -1 : problem.variableIndex(pressure);
+              return projectInitialVelocity(problem, distributed, components, p, solution);
+            });
+      },
+      py::arg("problem"),
+      py::arg("distributed"),
+      py::arg("velocities"),
+      py::arg("pressure"),
+      "Start the transient runs of @p problem from the projection of the initial velocity of "
+      "the flow of @p velocities onto a field without divergence (an empty @p pressure for a "
+      "flow without a pressure variable).");
 
   // ---- problem -----------------------------------------------------------
 
@@ -1528,7 +1413,7 @@ PYBIND11_MODULE(_core, m)
               Vector R;
               SparseMatrix J;
               p.assemble(p.solution(), options, R, &J);
-              p.dirichletRows(p.solution(), 1.0, R, &J);
+              p.dirichletRows(R, &J);
               J.makeCompressed();
               blocks = p.saddlePointBlocks(J, *approximation);
             }
@@ -1584,7 +1469,7 @@ PYBIND11_MODULE(_core, m)
                Vector lagged = p.solution();
                options.lagged = &lagged;
                p.assemble(p.solution(), options, R, &J);
-               p.dirichletRows(p.solution(), 1.0, R, &J);
+               p.dirichletRows(R, &J);
                J.makeCompressed();
              }
              const auto n = J.rows();
@@ -1618,6 +1503,14 @@ PYBIND11_MODULE(_core, m)
                                      "derivative. Solve the modes without it.");
               const double saved = p.eigenvalue();
               p.setEigenvalue(eigenvalue);
+              // The operators of an eigenvalue study take its rules: the consistent storage,
+              // where time stepping lumps it (TimeDerivative).
+              struct Study
+              {
+                Problem & problem;
+                ~Study() { problem.setEigenvalueStudy(false); }
+              } study{p};
+              p.setEigenvalueStudy(true);
               Problem::AssemblyOptions options;
               Vector lagged = p.solution();
               Vector old = Vector::Zero(p.solution().size());
@@ -1878,6 +1771,12 @@ PYBIND11_MODULE(_core, m)
            &Problem::solveTransient,
            py::arg("transient"),
            py::arg("options") = SolverOptions())
+      .def("project_initial_velocity",
+           &Problem::projectInitialVelocity,
+           "Project the velocity of every flow onto a field without divergence that keeps the "
+           "prescribed values, as a transient run does before its first step, and return the "
+           "largest change of the velocity over the largest speed, or None for a problem "
+           "without a flow. Collective in a distributed problem.")
       .def("set_time_step_callback",
            [](Problem & p, const py::function & f)
            {
@@ -1918,10 +1817,16 @@ PYBIND11_MODULE(_core, m)
            py::arg("variable"),
            "One error indicator per element, from gradient recovery.")
       .def("property_at_centroids", &Problem::propertyAtCentroids)
+      .def("property_at_points", &Problem::propertyAtPoints)
       .def("kernel_flux_at_centroids", &Problem::kernelFluxAtCentroids)
       .def("section_stress_at_centroids", &Problem::sectionStressAtCentroids)
       .def("integrate", &Problem::integrate)
       .def("element_integrals", &Problem::elementIntegrals)
+      .def("node_measures",
+           &Problem::nodeMeasures,
+           "The measure of each node as the nodal rule weighs it: that of its control domain "
+           "(DMCDM) or the integral of its shape function (FEM), with the coordinate factor at "
+           "the node.")
       .def(
           "error_norms",
           [](const Problem & p,

@@ -147,10 +147,6 @@ Problem::sensitivities(const Objective & objective,
                        const SolverOptions & options)
 {
   initialize();
-  if (!_primary_of.empty() || !_hanging_of.empty())
-    throw InputError("sensitivities: a problem with periodic boundary conditions or hanging "
-                     "nodes is not differentiated. Their constraints tie degrees of freedom "
-                     "together in a way the adjoint does not follow.");
   if (_state_record > 0)
     throw InputError("sensitivities: a problem with a material history (creep, a stateful property "
                      "object) is not differentiated. Its solution depends on the whole "
@@ -174,7 +170,7 @@ Problem::sensitivities(const Objective & objective,
   assemble(_U, ao, R, &Jraw);
   Vector Rmod = R;
   SparseMatrix Jmod = Jraw;
-  dirichletRows(_U, 1.0, Rmod, &Jmod);
+  dirichletRows(Rmod, &Jmod);
 
   // The adjoint: J^T lambda = dg/dU.  Its matrix is that of a steady solve, and pcd, whose
   // F_p carries the convection of the forward equations, does not fit the transposed system.
@@ -185,9 +181,13 @@ Problem::sensitivities(const Objective & objective,
                      "the matrix.");
   _linear_dt = 0.0;
   _linear_theta = 1.0;
+  // With C the map from the independent degrees of freedom to all of them (periodic copies and
+  // hanging nodes), the matrix is C^T J C, so the adjoint takes C^T dg/dU.
   const Vector gradient = objectiveGradient(objective);
+  Vector folded_gradient = gradient;
+  foldDependents(folded_gradient, nullptr);
   const SparseMatrix transposed = Jmod.transpose();
-  const Vector lambda = linearSolve(transposed, gradient, options, nullptr);
+  const Vector lambda = linearSolve(transposed, folded_gradient, options, nullptr);
 
   // A parameter enters the solution through the equations of the free
   // degrees of freedom and, when it moves a prescribed value, through U
@@ -209,21 +209,22 @@ Problem::sensitivities(const Objective & objective,
     vars[k]->set(p0 + h);
     Vector Rp;
     assemble(_U, ao, Rp, nullptr);
-    dirichletRows(_U, 1.0, Rp, nullptr);
+    dirichletRows(Rp, nullptr);
     Vector Up(_U);
     applyDirichlet(Up, 1.0);
 
     vars[k]->set(p0 - h);
     Vector Rm;
     assemble(_U, ao, Rm, nullptr);
-    dirichletRows(_U, 1.0, Rm, nullptr);
+    dirichletRows(Rm, nullptr);
     Vector Um(_U);
     applyDirichlet(Um, 1.0);
     vars[k]->set(p0);
 
     const Vector dRdp = (Rp - Rm) / (2.0 * h);
     const Vector dUdp = (Up - Um) / (2.0 * h);
-    const Vector JdU = Jraw * dUdp;
+    Vector JdU = Jraw * dUdp;
+    foldDependents(JdU, nullptr);
     double total = gradient.dot(dUdp); // dU/dp is zero on the free rows
     for (Index i = 0; i < numDofs(); ++i)
       if (!fixed[i])

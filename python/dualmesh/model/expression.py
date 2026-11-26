@@ -22,6 +22,14 @@ fold numbers and remove additions of zero and multiplications by zero and one.
 The gradient of a vector field $\\mathbf{u}$ is the tensor
 $(\\nabla\\mathbf{u})_{ij} = \\partial u_i / \\partial x_j$.
 
+A `list` is a vector of scalar items, or a tensor whose rows are its vector
+items, with one item per direction of space. A `rate` (a time derivative of a
+field) and a `divergence` (of a flux) are the terms of an equation, which
+`parse.read_equations` sorts into a conservation law. They stand nowhere
+else, so `expand` refuses them. A `constant` without a value is a name that the
+engine resolves, such as a property or `eigenvalue`, and the printer writes it
+by its name.
+
 A Python number in an expression is a dimensionless `number`. Values of
 `constant` and `state` given as Python numbers are in SI. Values given as text
 carry their unit, for example `"10 mol/m^3"`.
@@ -37,7 +45,14 @@ from functools import reduce
 
 from dualmesh.input import units
 from dualmesh.input.units import base, dimension, dimensionless, input_error
-from dualmesh.model.dimensions import dimension_of, is_zero, leaf_kinds, length
+from dualmesh.model.dimensions import (
+    comparisons,
+    dimension_of,
+    given_dimension_kinds,
+    is_zero,
+    leaf_kinds,
+    length,
+)
 
 __all__ = [
     "expression",
@@ -56,15 +71,37 @@ __all__ = [
     "grad",
     "exp",
     "log",
+    "log10",
     "sqrt",
     "sin",
     "cos",
+    "tan",
+    "asin",
+    "acos",
+    "atan",
+    "sinh",
+    "cosh",
     "tanh",
+    "erf",
+    "floor",
+    "ceil",
+    "sign",
+    "atan2",
+    "hypot",
     "maximum",
     "minimum",
     "less",
     "greater",
+    "less_equal",
+    "greater_equal",
+    "equal",
+    "not_equal",
+    "logical_and",
+    "logical_or",
     "conditional",
+    "list_of",
+    "rate",
+    "divergence",
     "dot",
     "inner",
     "outer",
@@ -98,7 +135,49 @@ largest_rank = 2
 largest_table_input_count = 3
 time_dimension = base("time")
 
-scalar_functions = frozenset({"exp", "log", "sqrt", "sin", "cos", "tanh", "abs"})
+# The functions of one scalar, each in the math module or of Python.
+number_functions = {
+    "exp": math.exp,
+    "log": math.log,
+    "log10": math.log10,
+    "sqrt": math.sqrt,
+    "sin": math.sin,
+    "cos": math.cos,
+    "tan": math.tan,
+    "asin": math.asin,
+    "acos": math.acos,
+    "atan": math.atan,
+    "sinh": math.sinh,
+    "cosh": math.cosh,
+    "tanh": math.tanh,
+    "erf": math.erf,
+    "floor": math.floor,
+    "ceil": math.ceil,
+    "sign": lambda value: float((value > 0.0) - (value < 0.0)),
+    "abs": abs,
+}
+scalar_functions = frozenset(number_functions)
+# The operations of two scalars.
+number_operations = {
+    "add": operator.add,
+    "multiply": operator.mul,
+    "divide": operator.truediv,
+    "power": operator.pow,
+    "maximum": max,
+    "minimum": min,
+    "atan2": math.atan2,
+    "hypot": math.hypot,
+}
+scalar_pairs = frozenset({"power", "maximum", "minimum", "atan2", "hypot", *comparisons})
+# The truth of each comparison of two numbers.
+comparison_operations = {
+    "less": operator.lt,
+    "greater": operator.gt,
+    "less_equal": operator.le,
+    "greater_equal": operator.ge,
+    "equal": operator.eq,
+    "not_equal": operator.ne,
+}
 
 # Every live node, keyed by its structure. A node leaves the table when no
 # reference to it remains.
@@ -162,7 +241,7 @@ class expression:
             "initial": self.initial,
             "table": self.table,
         }
-        if self.kind in leaf_kinds or self.kind == "interpolation":
+        if self.kind in leaf_kinds or self.kind in given_dimension_kinds:
             attributes["physical_dimension"] = self.dimension
         if self.kind in leaf_kinds:
             attributes["rank"] = self.rank
@@ -354,9 +433,21 @@ def rank_of(kind: str, operands: tuple, component: tuple) -> int:
     if kind == "divide":
         require(ranks[1] == 0, "the denominator must be a scalar")
         return ranks[0]
-    if kind in scalar_functions or kind in ("power", "maximum", "minimum", "less", "greater"):
+    if kind in scalar_functions or kind in scalar_pairs:
         require(all(rank == 0 for rank in ranks), "the operands must be scalars")
         return 0
+    if kind == "list":
+        require(
+            ranks and all(rank == ranks[0] for rank in ranks) and ranks[0] < largest_rank,
+            "the items must be scalars, or vectors for the rows of a tensor, all of one rank",
+        )
+        return ranks[0] + 1
+    if kind == "rate":
+        require(operands[0].kind == "field", "the operand must be a field")
+        return ranks[0]
+    if kind == "divergence":
+        require(ranks[0] in (1, 2), "the operand must be a vector or a tensor")
+        return ranks[0] - 1
     if kind == "component":
         require(1 <= len(component) <= ranks[0], "the number of indices must be from 1 to the rank")
         return ranks[0] - len(component)
@@ -430,31 +521,13 @@ def fold(kind: str, function, *values) -> float:
     return result
 
 
-number_functions = {
-    "exp": math.exp,
-    "log": math.log,
-    "sqrt": math.sqrt,
-    "sin": math.sin,
-    "cos": math.cos,
-    "tanh": math.tanh,
-    "abs": abs,
-    "negate": operator.neg,
-}
-number_operations = {
-    "add": operator.add,
-    "multiply": operator.mul,
-    "divide": operator.truediv,
-    "power": operator.pow,
-    "maximum": max,
-    "minimum": min,
-}
-
-
 def simplify(kind: str, operands: tuple, rank: int, node_dimension: dimension):
     """Return a simpler node equal to the node of kind with operands, or None."""
     if kind in leaf_kinds:
         return None
     if all(is_number(operand) for operand in operands):
+        if kind == "negate":
+            return number(-operands[0].value, node_dimension)
         if kind in number_functions:
             return number(fold(kind, number_functions[kind], operands[0].value), node_dimension)
         if kind in number_operations:
@@ -499,16 +572,24 @@ def simplify(kind: str, operands: tuple, rank: int, node_dimension: dimension):
         # in dimension and still give zero.
         if is_zero(if_true) and is_zero(if_false):
             return number(0.0, node_dimension)
-        if all(is_number(operand) for operand in condition.operands):
-            first, second = condition.operands
-            holds = (
-                first.value < second.value
-                if condition.kind == "less"
-                else first.value > second.value
-            )
+        holds = truth(condition)
+        if holds is not None:
             chosen = if_true if holds else if_false
             if chosen.dimension == node_dimension:
                 return chosen
+    return None
+
+
+def truth(condition: expression) -> bool | None:
+    """Return whether a condition of numbers holds, or None when it reads more than numbers.
+
+    A number holds where it is not zero, and a comparison of two numbers where it is true.
+    """
+    if is_number(condition):
+        return condition.value != 0.0
+    if condition.kind in comparison_operations and all(map(is_number, condition.operands)):
+        first, second = condition.operands
+        return comparison_operations[condition.kind](first.value, second.value)
     return None
 
 
@@ -791,6 +872,63 @@ def tanh(argument) -> expression:
     return build("tanh", (argument,))
 
 
+def log10(argument) -> expression:
+    """Return the logarithm to base 10."""
+    return build("log10", (argument,))
+
+
+def tan(argument) -> expression:
+    return build("tan", (argument,))
+
+
+def asin(argument) -> expression:
+    return build("asin", (argument,))
+
+
+def acos(argument) -> expression:
+    return build("acos", (argument,))
+
+
+def atan(argument) -> expression:
+    return build("atan", (argument,))
+
+
+def sinh(argument) -> expression:
+    return build("sinh", (argument,))
+
+
+def cosh(argument) -> expression:
+    return build("cosh", (argument,))
+
+
+def erf(argument) -> expression:
+    """Return the error function."""
+    return build("erf", (argument,))
+
+
+def floor(argument) -> expression:
+    return build("floor", (argument,))
+
+
+def ceil(argument) -> expression:
+    return build("ceil", (argument,))
+
+
+def sign(argument) -> expression:
+    """Return 1 where the argument is positive, -1 where it is negative and 0 where it is zero."""
+    return build("sign", (argument,))
+
+
+def atan2(first, second) -> expression:
+    """Return the angle of the point (second, first) from the first axis, in rad."""
+    return build("atan2", (first, second))
+
+
+def hypot(first, second) -> expression:
+    """Return the square root of the sum of the squares of the operands."""
+    return build("hypot", (first, second))
+
+
 def maximum(first, second) -> expression:
     return build("maximum", (first, second))
 
@@ -809,9 +947,64 @@ def greater(first, second) -> expression:
     return build("greater", (first, second))
 
 
+def less_equal(first, second) -> expression:
+    return build("less_equal", (first, second))
+
+
+def greater_equal(first, second) -> expression:
+    return build("greater_equal", (first, second))
+
+
+def equal(first, second) -> expression:
+    return build("equal", (first, second))
+
+
+def not_equal(first, second) -> expression:
+    return build("not_equal", (first, second))
+
+
+def logical_and(first, second) -> expression:
+    """Return 1 where both conditions hold and 0 elsewhere. A condition holds where it is not 0."""
+    return not_equal(first, 0.0) * not_equal(second, 0.0)
+
+
+def logical_or(first, second) -> expression:
+    """Return 1 where either condition holds and 0 elsewhere. A condition holds where it is not 0."""
+    return maximum(not_equal(first, 0.0), not_equal(second, 0.0))
+
+
 def conditional(condition, if_true, if_false) -> expression:
-    """Return if_true where condition holds and if_false elsewhere."""
+    """Return if_true where condition holds and if_false elsewhere.
+
+    The condition is a comparison, or a dimensionless number that holds where it is not 0.
+    """
     return build("conditional", (condition, if_true, if_false))
+
+
+def list_of(items) -> expression:
+    """Return the vector of scalar items, or the tensor whose rows are the vector items.
+
+    It has one item per direction of space, which `expand` checks.
+    """
+    return build("list", tuple(items))
+
+
+def rate(field_node: expression, order: int, physical_dimension: dimension) -> expression:
+    """Return the first or second time derivative of a field, a term of an equation.
+
+    It stands only as a term of an equation, which the equation front end sorts out, so
+    `expand` refuses it.
+    """
+    return build("rate", (field_node,), value=order, physical_dimension=physical_dimension)
+
+
+def divergence(flux: expression, physical_dimension: dimension) -> expression:
+    """Return the divergence of a flux, a term of an equation that stands for the flux itself.
+
+    It stands only as a term of an equation, which the equation front end sorts out, so
+    `expand` refuses it.
+    """
+    return build("divergence", (flux,), physical_dimension=physical_dimension)
 
 
 def dot(first, second) -> expression:
@@ -1054,7 +1247,20 @@ def expand(node: expression, space_dimension: int):
             return tabulate(2, lambda index: number(1.0 if index[0] == index[1] else 0.0))
         if not current.operands:
             return current
+        if kind in ("rate", "divergence"):
+            raise input_error(
+                f"'{current}' is a term of an equation of its own, so it stands neither inside a "
+                f"function nor inside another operator or derivative. A fourth-order equation is "
+                f"written as two second-order ones"
+            )
+        if kind == "list" and len(current.operands) != space_dimension:
+            raise rank_error(
+                f"a vector here has {space_dimension} components, one per dimension, and "
+                f"'{current}' has {len(current.operands)}"
+            )
         parts = [walk(operand) for operand in current.operands]
+        if kind == "list":
+            return parts
         ranks = [operand.rank for operand in current.operands]
         if kind == "component":
             if any(index >= space_dimension for index in current.component):
@@ -1197,7 +1403,14 @@ def leaves(node: expression) -> set:
 # Text
 
 
-precedence_of_kind = {"add": 1, "multiply": 2, "divide": 2, "negate": 3, "power": 4}
+precedence_of_kind = {
+    **dict.fromkeys(comparisons, 0),
+    "add": 1,
+    "multiply": 2,
+    "divide": 2,
+    "negate": 3,
+    "power": 4,
+}
 atom_precedence = 5
 
 
@@ -1253,6 +1466,15 @@ def text(node: expression) -> str:
         return f"{wrapped(operands[0], 5)}^{wrapped(operands[1], 3)}"
     if kind == "component":
         return f"{wrapped(operands[0], 5)}[{', '.join(str(index) for index in node.component)}]"
+    if kind in comparisons:
+        return f"{wrapped(operands[0], 1)} {comparisons[kind]} {wrapped(operands[1], 1)}"
+    if kind == "list":
+        return f"[{', '.join(text(operand) for operand in operands)}]"
+    if kind == "rate":
+        order = "" if node.value == 1 else str(node.value)
+        return f"d{order}{operands[0].name}/dt{order}"
+    if kind == "divergence":
+        return f"div({text(operands[0])})"
     if kind == "interpolation":
         orders = "".join(
             f", derivative by {input_name}"
