@@ -74,6 +74,9 @@ public:
   /// The factor of the inertia of a flow: 1, or 0 for the Stokes solve with which a steady flow
   /// at rest starts (Problem::solveSteady).
   double inertia = 1.0;
+  /// Whether the mass equation of a flow holds its pressure stabilization: false for the discrete
+  /// divergence alone, which the projection of the initial velocity takes.
+  bool stabilization = true;
   /// A steady solve: the state of equilibrium at long time, in which a viscous material has
   /// relaxed.  An evaluation outside a solve (an output) is not one.
   bool steady_solve = false;

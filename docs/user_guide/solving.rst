@@ -698,14 +698,25 @@ parameter ``time_integration`` selects:
 
 ``"projection"``
    Each step solves a pressure Poisson equation, preconditioned with
-   BoomerAMG, and then one Helmholtz equation per velocity component,
-   preconditioned with Jacobi.  The time derivative takes the backward
-   difference formula of order ``time_order`` (1, 2 or 3, default 2), and the
-   advection takes the extrapolation of the same order.  The projection needs
-   ``formulation="equal_order"`` and a positive density.  It runs with the
-   finite element method (FEM), where the iterations are the conjugate
-   gradient method, and with the dual mesh control domain method (DMCDM),
-   where they are GMRES, on one process and on several.
+   BoomerAMG, and then the velocity, preconditioned with Jacobi: one Helmholtz
+   equation per component with the ``"laplacian"`` viscous form, the default
+   of this time integration, and one system of every component with
+   ``"stress"``.  The time derivative takes the backward difference formula of
+   order ``time_order`` (1, 2 or 3, default 2), and the advection takes the
+   extrapolation of the same order.  The projection takes the operators of
+   the flow from the problem, so it runs in Cartesian and axisymmetric
+   coordinates, with the ``equal_order`` and the ``Taylor-Hood``
+   formulations, a body force, hanging nodes and periodic boundaries.  It
+   needs a positive density, and a prescribed pressure on every boundary
+   without a prescribed velocity.  It runs with the finite element method
+   (FEM), where the iterations are the conjugate gradient method, and with
+   the dual mesh control domain method (DMCDM), where they are GMRES, on one
+   process and on several.
+
+   The steady state that a projection reaches depends on its last step when
+   that step exceeds a bound of the order of the viscous time of an element
+   (:doc:`/theory/fluids`, the projection time integration).  Compute a
+   steady flow with a steady solve, or with the monolithic time integration.
 
 This decaying Taylor-Green vortex in a periodic box keeps the Courant number
 at one half (after ``tests/python/test_projection.py``):

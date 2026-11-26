@@ -1312,21 +1312,7 @@ PYBIND11_MODULE(_core, m)
   // ---- the projection time integration of a flow -------------------------
   py::class_<ProjectionSettings>(m, "ProjectionSettings")
       .def(py::init<>())
-      .def_readwrite("velocities", &ProjectionSettings::velocities)
-      .def_readwrite("pressure", &ProjectionSettings::pressure)
-      .def_readwrite("density", &ProjectionSettings::density)
-      .def_readwrite("dynamic_viscosity", &ProjectionSettings::dynamic_viscosity)
-      .def_readwrite("order", &ProjectionSettings::order)
-      .def_readwrite("own_objects", &ProjectionSettings::own_objects)
-      .def(
-          "set_body_force",
-          [](ProjectionSettings & s, const std::vector<py::object> & force)
-          {
-            s.body_force.clear();
-            for (const auto & f : force)
-              s.body_force.push_back(f.is_none() ? nullptr : toFunction(f));
-          },
-          py::arg("force"));
+      .def_readwrite("order", &ProjectionSettings::order);
   py::class_<ProjectionSolver, std::shared_ptr<ProjectionSolver>>(m, "ProjectionSolver")
       .def_static(
           "coefficients",
@@ -1339,35 +1325,33 @@ PYBIND11_MODULE(_core, m)
           py::arg("times"));
   m.def(
       "attach_projection",
-      [](Problem & problem, DistributedProblem * distributed, const ProjectionSettings & settings)
+      [](Problem & problem, const ProjectionSettings & settings)
       {
-        auto solver = std::make_shared<ProjectionSolver>(problem, distributed, settings);
+        auto solver = std::make_shared<ProjectionSolver>(problem, settings);
         problem.setTimeIntegrator(solver);
         return solver;
       },
       py::arg("problem"),
-      py::arg("distributed"),
       py::arg("settings"),
-      "Advance the transient solves of @p problem with the projection time integration of a flow.");
+      "Advance the transient solves of @p problem with the projection time integration of its "
+      "flow.");
   m.def(
       "attach_start_projection",
       [](Problem & problem,
-         DistributedProblem * distributed,
          const std::vector<std::string> & velocities,
          const std::string & pressure)
       {
         problem.addStartProjection(
-            [&problem, distributed, velocities, pressure](Vector & solution)
+            [&problem, velocities, pressure](Vector & solution)
             {
               std::vector<int> components;
               for (const auto & name : velocities)
                 components.push_back(problem.variableIndex(name));
               const int p = pressure.empty() ? -1 : problem.variableIndex(pressure);
-              return projectInitialVelocity(problem, distributed, components, p, solution);
+              return projectInitialVelocity(problem, components, p, solution);
             });
       },
       py::arg("problem"),
-      py::arg("distributed"),
       py::arg("velocities"),
       py::arg("pressure"),
       "Start the transient runs of @p problem from the projection of the initial velocity of "

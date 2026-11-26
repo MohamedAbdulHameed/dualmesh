@@ -227,7 +227,6 @@ def flow(**parameters):
         ({"formulation": "penalty"}, "formulation='equal_order'"),
         ({"formulation": "equal_order", "density": 0.0}, "positive density"),
         ({"formulation": "equal_order", "time_order": 4}, "time_order"),
-        ({"formulation": "equal_order", "viscous_form": "stress"}, "takes the laplacian form"),
     ],
 )
 def test_unsupported_settings_are_refused(parameters, message):
@@ -236,8 +235,8 @@ def test_unsupported_settings_are_refused(parameters, message):
 
 
 def test_a_flow_of_the_projection_takes_the_laplacian_form_in_every_solve():
-    """The projection assembles the viscous term as mu grad v, so the physics takes the laplacian
-    form, and its steady solves have the same do-nothing outflow as its steps."""
+    """The pressure of the projection is that of the laplacian form, so a flow of the projection
+    takes it by default, in its steady solves as in its steps, which share the do-nothing outflow."""
     mesh = dualmesh.generate_rectangle_mesh(0.0, 1.0, 0.0, 1.0, 2, 2)
     problem = dualmesh.Problem(mesh, method="fem")
     physics = problem.add_physics(
@@ -246,22 +245,68 @@ def test_a_flow_of_the_projection_takes_the_laplacian_form_in_every_solve():
     assert physics.viscous_form == "laplacian"
 
 
-@pytest.mark.parametrize(
-    "kind, parameters",
-    [
-        ("body_force", {"variable": "velocity_x", "value": 1.0}),
-        ("Neumann", {"variable": "velocity_x", "boundary": "right", "flux": 1.0}),
-    ],
-)
-def test_a_term_the_projection_would_ignore_is_refused(kind, parameters):
-    """The projection time integration assembles the flow itself, so a term added on its own would be dropped silently; it is refused instead."""
+def test_a_term_the_projection_does_not_split_is_refused():
+    """A traction on the boundary would need the pressure of the splitting to follow it, so it is
+    refused rather than dropped."""
     problem = flow(formulation="equal_order")
-    if kind == "body_force":
-        problem.add_kernel(kind, **parameters)
-    else:
-        problem.add_boundary_condition(kind, **parameters)
+    problem.add_boundary_condition("Neumann", variable="velocity_x", boundary="right", flux=1.0)
     with pytest.raises(ValueError, match="acts on the flow"):
         problem.solve_transient(end_time=0.1, time_step=0.05, report="none")
+
+
+def test_an_open_boundary_needs_its_pressure():
+    """The pressure equation of the splitting takes the pressure on a boundary without a
+    prescribed velocity from a condition, so a flow open there without one is refused."""
+    problem = flow(formulation="equal_order")
+    problem.add_boundary_condition(
+        "Dirichlet", ["left", "bottom", "top"], variable="velocity_x", value=0.0
+    )
+    problem.add_boundary_condition(
+        "Dirichlet", ["left", "bottom", "top"], variable="velocity_y", value=0.0
+    )
+    with pytest.raises(ValueError, match="'right' is open"):
+        problem.solve_transient(end_time=0.1, time_step=0.05, report="none")
+
+
+def open_channel(method, viscous_form, time_integration):
+    """A parabolic inflow into a channel of 16 by 8 quadrilaterals with the pressure zero at its
+    open right end, in the steady state: of a steady solve, or of the projection marched to
+    t = 10, ten times the viscous time of the width.  Returns the velocity at the outlet."""
+    mesh = dualmesh.generate_rectangle_mesh(0.0, 2.0, 0.0, 1.0, 16, 8)
+    problem = dualmesh.Problem(mesh, method=method, distributed=False)
+    physics = problem.add_physics(
+        "fluid_dynamics",
+        density=1.0,
+        dynamic_viscosity=0.1,
+        formulation="equal_order",
+        viscous_form=viscous_form,
+        time_integration=time_integration,
+    )
+    physics.add_boundary_condition(["velocity_x = 4*y*(1 - y)", "velocity_y = 0"], boundary="left")
+    physics.add_boundary_condition(["velocity_x = 0", "velocity_y = 0"], boundary=["top", "bottom"])
+    physics.add_boundary_condition("pressure = 0", boundary="right")
+    if time_integration == "projection":
+        problem.solve_transient(end_time=10.0, time_step=0.02, time_stepper="fixed", report="none")
+    else:
+        problem.solve(report="none")
+    nodes = problem.mesh.boundary_nodes("right")
+    return numpy.array([problem.values("velocity_x")[nodes], problem.values("velocity_y")[nodes]])
+
+
+@pytest.mark.parametrize("method", methods)
+def test_the_projection_has_the_outflow_of_its_viscous_form(method):
+    """The stress form, whose natural condition is zero traction, and the laplacian form, whose
+    natural condition is the do-nothing outflow, give outlet velocities that differ by about 0.19
+    of the largest speed.  The steady state of the projection has the outflow of its own form:
+    within 1.3e-2 of the steady solve of that form (measured), the difference that the pressure
+    stabilization of the splitting, of parameter dt / beta_0, makes on this mesh.  A fixed step
+    keeps that parameter one value (docs/theory/fluids.rst, the steady state of the projection)."""
+    for form, other in (("stress", "laplacian"), ("laplacian", "stress")):
+        steady = open_channel(method, form, "monolithic")
+        split = open_channel(method, form, "projection")
+        apart = numpy.abs(steady - open_channel(method, other, "monolithic")).max()
+        assert apart > 0.15
+        assert numpy.abs(split - steady).max() < 0.1 * apart, form
 
 
 def test_the_body_force_of_the_flow_is_applied():
@@ -283,9 +328,9 @@ def test_the_body_force_of_the_flow_is_applied():
     assert numpy.abs(problem.values("velocity_y")).max() < 1e-12
 
 
-@pytest.mark.parametrize("method", methods)
-def test_the_reactions_balance_the_body_force(method):
-    """A body force f drives the flow through a channel periodic in x; at the steady state the walls carry the whole force, so the force on them, minus the sum of the reactions, is f times the area of the channel."""
+def driven_channel(method, **steps):
+    """A body force f = 3 drives the flow through a channel of 8 by 6 triangles, periodic in x, to
+    its steady state at t = 4.  Returns the force on the walls, minus the sum of the reactions."""
     mesh = dualmesh.generate_rectangle_mesh(0.0, 2.0, 0.0, 1.0, 8, 6, element_type="Tri3")
     problem = dualmesh.Problem(mesh, method=method, distributed=False)
     problem.add_physics(
@@ -298,20 +343,26 @@ def test_the_reactions_balance_the_body_force(method):
     )
     problem.add_boundary_condition("periodic", primary="left", secondary="right")
     for name in ("velocity_x", "velocity_y"):
-        problem.add_boundary_condition(
-            "Dirichlet",
-            ["bottom", "top"],
-            variable=name,
-            value=0.0,
-        )
-    problem.solve_transient(end_time=4.0, time_step=0.05, report="none")
-    force = problem.boundary_flux("velocity_x", "bottom") + problem.boundary_flux(
+        problem.add_boundary_condition("Dirichlet", ["bottom", "top"], variable=name, value=0.0)
+    problem.solve_transient(end_time=4.0, report="none", **steps)
+    return problem.boundary_flux("velocity_x", "bottom") + problem.boundary_flux(
         "velocity_x", "top"
     )
-    assert force == pytest.approx(3.0 * 2.0 * 1.0, rel=1e-6)
-    assert -problem.boundary_flux("velocity_y", "bottom") - problem.boundary_flux(
-        "velocity_y", "top"
-    ) == pytest.approx(0.0, abs=1e-8)
+
+
+@pytest.mark.parametrize("method", methods)
+def test_the_steady_state_is_that_of_the_stabilized_flow_below_the_cap(method):
+    """The splitting weighs the divergence in the pressure equation by min(beta_0 / dt, 1 / tau),
+    which is the pressure stabilization of its steady state.  Below dt = beta_0 tau, about 5e-3
+    on this mesh, the weight is 1 / tau whatever the step, so the steady state does not depend on
+    the step (measured: 2e-10 apart at dt = 4e-3 and 2e-3), and the walls carry the body force
+    times the area of the channel within 1e-6 of it (measured 2.4e-7, the momentum that the
+    advection of a velocity with a discrete divergence carries).  Above it the steady state
+    depends on the step (docs/theory/fluids.rst): the steady force balance of a flow is that of
+    the monolithic solve (test_conservation.py)."""
+    forces = [driven_channel(method, time_step=dt, time_stepper="fixed") for dt in (0.004, 0.002)]
+    assert forces[0] == pytest.approx(forces[1], rel=1e-8)
+    assert forces[1] == pytest.approx(3.0 * 2.0 * 1.0, rel=1e-6)
 
 
 # ---------------------------------------------------------------------------
@@ -483,3 +534,69 @@ def test_the_distributed_path_gives_the_serial_answer_across_hanging_nodes(metho
         assert numpy.asarray(distributed.gathered_values(name)) == pytest.approx(
             serial.values(name), abs=1e-9
         )
+
+
+# ---------------------------------------------------------------------------
+# Coordinates and formulations of the problem
+# ---------------------------------------------------------------------------
+def axisymmetric_stagnation(dt, method):
+    """u_r = g r / 2 and u_z = -g z with g = 1 + sin(2 t) / 2, the stagnation flow of a jet on a
+    wall, without divergence (u_r / r + du_r/dr + du_z/dz = 0) and without a viscous term, with the
+    pressure p = -rho ((g' / 4 + g^2 / 8) r^2 + (g^2 - g') z^2 / 2).  Quadratic elements represent
+    it exactly, so its error is that of the time integration alone.  Returns the largest error of
+    the pressure."""
+    mesh = dualmesh.generate_rectangle_mesh(0.0, 1.0, 0.0, 1.0, 3, 3, element_type="Quad9")
+    problem = dualmesh.Problem(mesh, method=method, coordinates="axisymmetric", distributed=False)
+    problem.add_physics(
+        "fluid_dynamics",
+        density=1.0,
+        dynamic_viscosity=0.05,
+        formulation="equal_order",
+        time_integration="projection",
+    )
+    g = "(1+0.5*sin(2*t))"
+    walls = ["left", "right", "bottom", "top"]
+    problem.add_boundary_condition("Dirichlet", walls, variable="velocity_r", value=f"{g}*x/2")
+    problem.add_boundary_condition("Dirichlet", walls, variable="velocity_z", value=f"-{g}*y")
+    problem.initialize()
+    points = numpy.asarray(mesh.points())
+    r, z = points[:, 0], points[:, 1]
+    problem.set_values("velocity_r", r / 2)
+    problem.set_values("velocity_z", -z)
+    problem.solve_transient(end_time=1.0, time_step=dt, time_stepper="fixed", report="none")
+    G, G_p = 1 + 0.5 * numpy.sin(2.0), numpy.cos(2.0)
+    exact = -((G_p / 4 + G * G / 8) * r * r + (G * G - G_p) * z * z / 2)
+    p = problem.values("pressure")
+    return numpy.abs((p - p.mean()) - (exact - exact.mean())).max()
+
+
+@pytest.mark.parametrize("method", methods)
+def test_an_axisymmetric_flow_has_the_order_of_the_time_integration(method):
+    """The operators of the projection are those of the problem, with the coordinate factor 2 pi r
+    and the hoop terms of the axisymmetric flow, so the axisymmetric stagnation flow converges at
+    the second order of BDF2, as the plane one does."""
+    errors = [axisymmetric_stagnation(dt, method) for dt in (0.05, 0.025, 0.0125)]
+    assert rates(errors)[-1] > 1.95, errors
+
+
+def test_the_Taylor_Hood_element_keeps_a_linear_flow_exact():
+    """The accelerating shear flow on quadratic elements with a linear pressure (the Taylor-Hood
+    element), whose pressure equation tests with the linear functions of the corners."""
+    mesh = dualmesh.generate_rectangle_mesh(0.0, 1.0, 0.0, 1.0, 4, 4, element_type="Quad9")
+    problem = dualmesh.Problem(mesh, method="fem", distributed=False)
+    physics = problem.add_physics(
+        "fluid_dynamics", density=1.0, dynamic_viscosity=0.1, time_integration="projection"
+    )
+    assert physics.formulation == "Taylor-Hood"
+    walls = mesh.sideset_names()
+    problem.add_boundary_condition("Dirichlet", walls, variable="velocity_x", value="1+0.5*t+y")
+    problem.add_boundary_condition("Dirichlet", walls, variable="velocity_y", value=0.0)
+    problem.initialize()
+    points = numpy.asarray(mesh.points())
+    x, y = points[:, 0], points[:, 1]
+    problem.set_values("velocity_x", 1.0 + y)
+    problem.solve_transient(end_time=0.5, time_step=0.1, report="none")
+    assert numpy.abs(problem.values("velocity_x") - (1.25 + y)).max() < 1e-7
+    assert numpy.abs(problem.values("velocity_y")).max() < 1e-7
+    p = problem.values("pressure")
+    assert numpy.abs((p - p.mean()) - (-0.5 * x - (-0.5 * x).mean())).max() < 1e-7

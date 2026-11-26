@@ -395,6 +395,17 @@ Parallel computing
    projection splitting of :doc:`theory/fluids` and the exchange methods of
    gslib.
 
+.. [GuermondShen2003] J.-L. Guermond and J. Shen, "Velocity-correction
+   projection methods for incompressible flows", *SIAM Journal on Numerical
+   Analysis*, 41(1):112–134, 2003.  DOI: 10.1137/S0036142901395400.  The
+   rotational form of the pressure equation of the projection splitting.
+
+.. [KarniadakisIsraeliOrszag1991] G. E. Karniadakis, M. Israeli and
+   S. A. Orszag, "High-order splitting methods for the incompressible
+   Navier-Stokes equations", *Journal of Computational Physics*,
+   97(2):414–443, 1991.  DOI: 10.1016/0021-9991(91)90007-8.  The splitting
+   that the projection time integration follows.
+
 Time integration
 ----------------
 

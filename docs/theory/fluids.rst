@@ -483,13 +483,17 @@ therefore first projects the initial velocity onto a field without divergence.
 
 Let :math:`\mathbf{u}_0` be the vector of the initial nodal velocities, which
 holds the values prescribed at the start time, and :math:`\mathbf{M}` the mass
-matrix of each velocity component.  The discrete divergence
-:math:`\mathbf{D}` is that of the mass balance without its stabilization.  Its
-row of node :math:`i` is :math:`(\psi_i, \nabla \cdot \mathbf{v})` for FEM,
-with the shape function :math:`\psi_i` of the pressure and the coordinate
-factor, or the flux :math:`\oint_{\partial V_i} \mathbf{v} \cdot \mathbf{n}
-\,\mathrm{d}S` out of the control domain :math:`V_i` for DMCDM.  The penalty
-formulation, which has no pressure, takes the shape functions of the velocity.
+matrix of the time derivative of the velocity, divided by the density.  The
+discrete divergence :math:`\mathbf{D}` is that of the mass balance without its
+stabilization, assembled by the problem from ``mass_conservation`` and
+``mass_flux``.  Its row of node :math:`i` is
+:math:`(\psi_i, \nabla \cdot \mathbf{v})` for FEM, with the shape function
+:math:`\psi_i` of the pressure and the coordinate factor, or the flux
+:math:`\oint_{\partial V_i} \mathbf{v} \cdot \mathbf{n} \,\mathrm{d}S` out of
+the control domain :math:`V_i` for DMCDM.  The penalty formulation, which has
+no pressure, tests the balance with the functions of the first velocity
+component.  A flow without a time derivative of its velocity, a Stokes flow,
+has no initial velocity of its own, and the start leaves it as it is.
 The projected velocity :math:`\mathbf{u} = \mathbf{u}_0 + \delta\mathbf{u}`
 satisfies :math:`\mathbf{D} \mathbf{u} = 0`, with :math:`\delta\mathbf{u}`
 zero at every prescribed value.  For FEM it is the field nearest to
@@ -510,7 +514,8 @@ saddle point form
    = \begin{bmatrix} \mathbf{0} \\ -\mathbf{D} \mathbf{u}_0 \end{bmatrix} ,
 
 with a direct factorization.  :math:`\mathbf{K}_\lambda` is the Laplacian
-:math:`(\nabla \psi_i, \nabla \psi_j)` of the multiplier, whose spectrum is
+:math:`(\nabla \psi_i, \nabla \psi_j)` of the multiplier, that of a
+``diffusion`` kernel, whose spectrum is
 that of :math:`\mathbf{D} \mathbf{M}^{-1} \mathbf{D}^{\mathsf{T}}` on smooth
 fields, and :math:`\epsilon = 10^{-4}`.  The spurious pressure modes of
 equal-order elements are multipliers that :math:`\mathbf{D}^{\mathsf{T}}` maps
@@ -554,9 +559,13 @@ The projection time integration
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 ``"projection"`` is the splitting of [Fischer2021]_.  It replaces the saddle
-point system by symmetric positive definite problems for FEM, each with its
-own fast solver.  Let :math:`\ell` be the ``time_order`` (1, 2 or 3, default
-2), :math:`b_0, \dots, b_\ell` the dimensionless coefficients of the backward
+point system by a pressure Poisson problem and the problems of the velocity,
+each with its own fast solver.  Its operators come from the problem's own
+assembly of the kernels of the flow, so a step has the coordinates, the
+formulation (equal-order or Taylor-Hood), the viscous form, the hanging nodes,
+the periodic boundaries and the numbering of the monolithic solve.  Let
+:math:`\ell` be the ``time_order`` (1, 2 or 3, default 2),
+:math:`b_0, \dots, b_\ell` the dimensionless coefficients of the backward
 difference formula of order :math:`\ell` (BDF\ :math:`\ell`), and
 :math:`a_1, \dots, a_\ell` those of the extrapolation of order :math:`\ell`
 (EXT\ :math:`\ell`) of the advection.  The superscript :math:`n` marks the
@@ -575,15 +584,32 @@ and the momentum equation at :math:`t^n` reads
    :label: flow-projection-momentum
 
    \frac{\rho\, b_0}{\Delta t} \mathbf{v}^n
-   = \frac{\rho}{\Delta t} \mathbf{v}^* - \nabla p^n + \mu \nabla^2 \mathbf{v}^n .
+   = \frac{\rho}{\Delta t} \mathbf{v}^* - \nabla p^n
+   + \nabla \cdot \boldsymbol{\tau}(\mathbf{v}^n) ,
 
-The coefficients come from the time levels themselves:
-:math:`b_j / \Delta t` is the derivative at :math:`t^n` of the Lagrange
-polynomial of :math:`t^{n-j}` on the levels :math:`t^n, \dots, t^{n-\ell}`, and
-:math:`a_j` the value at :math:`t^n` of the Lagrange polynomial of
-:math:`t^{n-j}` on the levels :math:`t^{n-1}, \dots, t^{n-\ell}`.  A step
-shortened to land on an output time therefore keeps the order.  The first steps
-take the orders below :math:`\ell`.
+with :math:`\boldsymbol{\tau}` the viscous stress of ``viscous_form``:
+:math:`\mu (\nabla \mathbf{v} + \nabla \mathbf{v}^{\mathsf{T}})` or
+:math:`\mu \nabla \mathbf{v}`.  The coefficients come from the time levels
+themselves: :math:`b_j / \Delta t` is the derivative at :math:`t^n` of the
+Lagrange polynomial of :math:`t^{n-j}` on the levels
+:math:`t^n, \dots, t^{n-\ell}`, and :math:`a_j` the value at :math:`t^n` of
+the Lagrange polynomial of :math:`t^{n-j}` on the levels
+:math:`t^{n-1}, \dots, t^{n-\ell}`.  A step shortened to land on an output
+time therefore keeps the order.  The first steps take the orders below
+:math:`\ell`.
+
+**The terms of the momentum equations.**  The step reads the role of every
+kernel of the momentum equations.  The time derivative gives the mass matrix
+:math:`\mathbf{M}` with the density.  The terms written as a flux, the viscous
+stress and the pressure, are taken at :math:`t^n` through their Jacobian at
+rest, which holds for terms linear in the flow: the viscous operator
+:math:`\mathbf{A}` and the pressure gradient :math:`\mathbf{G}`.  The inertia,
+the advection of the velocity, is extrapolated in the non-conservative form of
+:eq:`flow-projection-star`.  Every other source, a body force, is taken at
+:math:`t^n` with the extrapolated velocity, and the momentum stabilization of
+the monolithic solve is left out, since the splitting stabilizes the pressure
+itself.  The density :math:`\rho` and the viscosity :math:`\mu` are those of
+the kernels.
 
 **The pressure.**  Testing :eq:`flow-projection-momentum` with the gradient of
 a test function :math:`\psi` gives an equation for the pressure.  For a
@@ -608,55 +634,77 @@ Here :math:`\mathbf{v}_b` is the velocity on the boundary: the velocity
 extrapolated from the earlier steps, with the prescribed value at :math:`t^n`
 where a condition prescribes it.  The first boundary term comes from
 :math:`-(\rho b_0 / \Delta t)(\nabla \psi, \mathbf{v}^n)`, which is an integral
-over the boundary for a divergence-free :math:`\mathbf{v}^n`.  The second is the curl-curl form of the viscous term, which
-[Fischer2021]_ keeps to control the divergence error at the boundary.  It
-needs only first derivatives of the velocity, so it applies to linear elements.
-Where a condition prescribes the pressure, the equation takes that value.  An
-enclosed flow has its pressure fixed at one node after the right-hand side is
-made to sum to zero, and then shifted to a mean of zero.
+over the boundary for a divergence-free :math:`\mathbf{v}^n`.  The second is the
+viscous term in its rotational form :math:`-\mu \nabla \times \boldsymbol{\omega}`,
+which differs from :math:`\mu \nabla^2 \mathbf{v}` by
+:math:`\mu \nabla (\nabla \cdot \mathbf{v})`.  The pressure then has the
+boundary condition of the momentum equation without the non-physical condition
+:math:`\partial p / \partial n = 0` of the standard form and its numerical
+boundary layer.  The scheme is the velocity-correction scheme in rotational form
+of [GuermondShen2003]_, which they show to be the splitting of
+[KarniadakisIsraeliOrszag1991]_.  It needs only first derivatives of the
+velocity, so it applies to linear elements.  On the Taylor-Green vortex with
+walls on 16 by 16 quadrilaterals, the difference of the solution at
+:math:`t = 0.5` from that of the step :math:`\Delta t = 0.5/512` is 3 to 6
+4 to 8 times smaller in the pressure, and 2.7 to 3.8 times smaller in the
+velocity, than with the standard form, which leaves the viscous term out of the pressure equation
+on linear elements (FEM and DMCDM, steps 0.1 to 0.0125).  The source
+:math:`\mathbf{f}^n / \rho` enters :math:`\mathbf{v}^*` as its projection onto
+the velocity field, the solution of :math:`\mathbf{M} \mathbf{s} = \mathbf{F}`
+for the vector :math:`\mathbf{F}` of the source kernels.  Where a condition
+prescribes the pressure, the equation takes that value.  An enclosed flow has
+its pressure fixed at one node after the right-hand side is made to sum to
+zero, and then shifted to a mean of zero.
 
-**The velocity.**  Each component then solves the Helmholtz equation
+**The velocity.**  The velocity then solves the momentum equations at
+:math:`t^n`,
 
 .. math::
    :label: flow-projection-helmholtz
 
-   \mu (\nabla \psi, \nabla v_i^n) + \frac{\rho\, b_0}{\Delta t} (\psi, v_i^n)
-   = \frac{\rho}{\Delta t} (\psi, v_i^*)
-   - \left( \psi, \frac{\partial p^n}{\partial x_i} \right) ,
+   \frac{b_0}{\Delta t} \mathbf{M} \mathbf{v}^n + \mathbf{A} \mathbf{v}^n
+   = -\frac{1}{\Delta t} \mathbf{M} \sum_{j=1}^{\ell} b_j \mathbf{v}^{n-j}
+   - \rho \left( \psi, \sum_{j=1}^{\ell} a_j (\mathbf{v}^{n-j} \cdot \nabla)
+   \mathbf{v}^{n-j} \right) + \mathbf{F}^n - \mathbf{G} p^n ,
 
-with the prescribed velocity on its boundary and the natural condition
-:math:`\mu\, \partial v_i / \partial n = 0` where the velocity is free.  The
-viscous term is that of the ``"laplacian"`` form.  The step keeps the residual
-of the momentum equations, so the reactions and the force of the fluid on a
-wall are available as after a monolithic step.
+with the prescribed velocity on its boundary.  :math:`\mathbf{G}` is the
+pressure term in its flux form :math:`-(\nabla \cdot \psi, p)`, so a boundary
+where the velocity is free has the natural condition of the viscous form with
+the pressure there, as in the monolithic solve: the do-nothing outflow
+:math:`\mu\, \partial \mathbf{v} / \partial n - p \mathbf{n} = \mathbf{0}`, or
+zero traction.  The ``"laplacian"`` form leaves the components apart, and each
+solves a Helmholtz equation of its own.  The ``"stress"`` form couples them in
+one system.  The step keeps the residual of the momentum equations, so the
+reactions and the force of the fluid on a wall are available as after a
+monolithic step.
 
-**The two methods.**  FEM takes the shape functions as the test functions
-:math:`\psi`.  DMCDM takes the indicator of the control domain :math:`V_i` of
-each node, so that :math:`(\psi, g)` becomes
+**The two methods.**  FEM takes the shape functions of the pressure as the test
+functions :math:`\psi` of the pressure equation, the linear ones of the corners
+for the Taylor-Hood element.  DMCDM takes the indicator of the control domain
+:math:`V_i` of each node, so that :math:`(\psi, g)` becomes
 :math:`\int_{V_i} g \,\mathrm{d}V` and :math:`(\nabla \psi, \mathbf{G})`
 becomes :math:`-\oint_{\partial V_i} \mathbf{G} \cdot \mathbf{n}
 \,\mathrm{d}S` over the interfaces between control domains, for a scalar
-:math:`g` and a vector :math:`\mathbf{G}`.  The mass and gradient terms are
-then integrals over the control domains, and the Laplacian is the flux of the
-gradient out of them.  The curl-curl term keeps the shape functions.  FEM
-integrates with a Gauss rule of one point more per direction than the order of
-the element.  DMCDM integrates with the midpoint rule of every part of a
-control domain and of every interface on linear elements.
+:math:`g` and a vector :math:`\mathbf{G}`.  The Laplacian of the pressure is
+that of a ``diffusion`` kernel on the pressure: the flux of the gradient out of
+the control domains for DMCDM.  The curl-curl term keeps the shape functions.
+The operators take the rules of their kernels.  The right-hand sides take, for
+FEM, a Gauss rule of one point more per direction than the order of the element,
+and for DMCDM the midpoint rule of every part of a control domain and of every
+interface on linear elements.  Every integral carries the coordinate factor,
+:math:`2 \pi r` in axisymmetric coordinates, where the divergence holds
+:math:`v_r / r`.
 
-**Hanging nodes and periodic boundaries.**  On a mesh with hanging nodes
-(:doc:`adaptivity`), each method treats them as its monolithic solve does.  FEM
-makes the value at a hanging node the weighted sum of the values on the side it
-lies on, and a periodic copy takes the value of its primary.  Every matrix
-:math:`\mathbf{A}` of the projection becomes
-:math:`\mathbf{C}^{\mathsf{T}}\mathbf{A}\,\mathbf{C}` and every right-hand
-side :math:`\mathbf{b}` becomes :math:`\mathbf{C}^{\mathsf{T}}\mathbf{b}`,
-with :math:`\mathbf{C}` the matrix that maps the independent values to all
-of them, so a node may hang on a periodic boundary.  The dependent values follow
-from the independent ones after each solve.
-DMCDM keeps a hanging node as an unknown with a control domain of its own.  A
-large cell with nodes hanging on its sides is split as a polygon, whose control
-domains carry the mass and gradient integrals and whose interfaces carry the
-fluxes.
+**Hanging nodes and periodic boundaries.**  The step solves in the unknowns of
+the problem.  A dependent value, at a node hanging under FEM or at a periodic
+copy, is the weighted sum of independent ones: every matrix :math:`\mathbf{A}`
+becomes :math:`\mathbf{C}^{\mathsf{T}}\mathbf{A}\,\mathbf{C}` and every
+right-hand side :math:`\mathbf{b}` becomes :math:`\mathbf{C}^{\mathsf{T}}
+\mathbf{b}`, with :math:`\mathbf{C}` the matrix that maps the independent
+values to all of them, and the dependent values follow each solve.  DMCDM keeps
+a hanging node as an unknown with a control domain of its own: a large cell
+with nodes hanging on its sides is split as a polygon, whose control domains
+carry the integrals and whose interfaces carry the fluxes.
 
 **Equal-order elements at small steps.**  Through
 :math:`(\nabla \psi, \mathbf{v}^*)`, the divergence of the earlier velocities
@@ -683,25 +731,56 @@ its unsteady term.  It adds
 :math:`\Delta t / b_0` exceeds :math:`\tau_P` the scheme is that of
 [Fischer2021]_, and as :math:`\Delta t \to 0` it tends to the stabilized
 discretization of the monolithic solver.  The added term multiplies a
-divergence, so it leaves the exact solution unchanged.  For DMCDM the part
-:math:`\rho (b_0 / \Delta t)(\psi, \delta)` is the flux of
+divergence, so it leaves the exact solution unchanged.  The Taylor-Hood element
+is stable without it and keeps the weight :math:`\rho b_0 / \Delta t`.  For
+DMCDM the part :math:`\rho (b_0 / \Delta t)(\psi, \delta)` is the flux of
 :math:`-\sum_j (b_j / b_0) \mathbf{v}^{n-j}` out of the control domain, as
 :math:`(\nabla \psi, \mathbf{v}^*)` is.  The terms in
 :math:`\rho b_0 / \Delta t` then cancel inside the domain for every velocity
 of the earlier steps, also where the velocity jumps across the side of a cell
 with hanging nodes.
 
-**The solvers.**  The mass, stiffness and gradient matrices and the geometry of
-every integration point are computed once.  The right-hand sides are assembled
-at every step on several threads.  The pressure equation is solved with
-algebraic multigrid (hypre BoomerAMG [FalgoutYang2002]_) and each Helmholtz
-equation with a Jacobi preconditioner, inside the conjugate gradient method for
-FEM, whose matrices are symmetric, and inside the generalized minimal residual
-method (GMRES) for DMCDM, whose matrices are not symmetric in general.  Each
-pressure solve starts from the combination of up to eight earlier pressures
-that is closest to the solution [Fischer1998]_: in the energy norm for FEM, and
-with the smallest residual for DMCDM.  The matrices and their preconditioners
-are kept as long as :math:`b_0 / \Delta t` is unchanged.
+**The steady state.**  At a steady state the terms in :math:`b_0 / \Delta t`
+of the two equations cancel, and the pressure equation states
+:math:`\chi (\psi, \nabla \cdot \mathbf{v})` against the residual of the
+momentum equations: the steady state is that of a pressure stabilization of
+parameter :math:`1 / \chi`.  Below :math:`\Delta t = b_0 \tau_P` it is
+:math:`\tau_P` whatever the step, and the steady state does not depend on the
+step.  Above, the parameter is :math:`\Delta t / b_0`, and the steady state
+depends on the step that reaches it.  The rotational form does not change
+this, since it acts on the boundary condition of the pressure, while the
+dependence comes from the weight of the divergence.  The error control of the
+time step lets the step grow as the flow settles, so a flow marched to its
+steady state ends with a step above the cap.  The discrete velocity then has a
+divergence that grows with the step, and the advection, which carries this
+velocity in the non-conservative form, no longer conserves the momentum
+exactly.  A body force of :math:`3\ \mathrm{N/m^3}` that drives the flow of
+unit density and viscosity through a channel of 8 by 6 triangles, periodic in
+:math:`x`, puts :math:`6\ \mathrm{N/m}` on the walls at the steady state.
+Marched to :math:`t = 4\ \mathrm{s}` by the projection, the force on the walls
+has the relative error :math:`2.4 \times 10^{-7}` for every fixed step up to
+:math:`4 \times 10^{-3}\ \mathrm{s}`, and :math:`4.6 \times 10^{-7}`,
+:math:`9.7 \times 10^{-7}` and :math:`1.4 \times 10^{-6}` with the steps
+0.0125, 0.05 and :math:`0.2\ \mathrm{s}` (FEM and DMCDM alike).  With the error
+control, whose last step is :math:`0.58\ \mathrm{s}` for FEM and
+:math:`1.2\ \mathrm{s}` for DMCDM, it is :math:`1.9 \times 10^{-6}` and
+:math:`2.0 \times 10^{-6}`.  The monolithic solve, whose
+advection carries the velocity that its mass equation conserves
+[HughesWells2005]_, has no splitting, so it computes a steady state best.
+
+**The solvers.**  The mass, viscous, gradient and pressure matrices and the
+geometry of every integration point of the right-hand sides are computed once.
+The right-hand sides are assembled at every step on several threads.  The
+pressure equation is solved with algebraic multigrid (hypre BoomerAMG
+[FalgoutYang2002]_) and the velocity equations with a Jacobi preconditioner,
+inside the conjugate gradient method for FEM, whose matrices are symmetric, and
+inside the generalized minimal residual method (GMRES) for DMCDM, whose
+matrices are not symmetric in general.  Each pressure solve starts from the
+combination of up to eight earlier pressures that is closest to the solution
+[Fischer1998]_: in the energy norm for FEM, and with the smallest residual for
+DMCDM.  The matrices and their preconditioners are kept as long as
+:math:`b_0 / \Delta t` is unchanged.  A source that does not change is
+projected once.
 
 **The time step.**  The default ``"error"`` time stepper of
 ``solve_transient`` compares each step with the polynomial through the last
@@ -712,14 +791,22 @@ each step to keep the Courant number :math:`C = \Delta t \max_e
 :math:`|\mathbf{v}|_e` the largest speed at the nodes of element :math:`e` and
 :math:`h_e` its size.
 
-**Limits.**  The projection time integration needs the ``equal_order``
-formulation, a positive density and Cartesian coordinates.  It takes the
-``"laplacian"`` form of the viscous term, the default of a flow with this time
-integration, and refuses ``viscous_form="stress"``.  The problem may
-hold the velocity and the pressure of the flow alone, and the projection
-refuses any kernel or integrated boundary condition
-on them that the flow did not add.  A body force is the ``body_force`` of
-``fluid_dynamics``.
+**Limits.**  The projection time integration needs a pressure, so it refuses
+the penalty formulation, and a fluid of one positive density.  The problem
+holds the velocity and the pressure of the flow alone.  The viscous and
+pressure operators are assembled at the start of the run, so a viscosity that
+changes in time keeps its value at the start.  A boundary without a prescribed
+velocity needs a prescribed pressure, which the pressure equation takes as its
+condition there, and a traction on the boundary of the momentum equations is
+refused.  The default viscous form is ``"laplacian"``, whose difference from
+the stress form, :math:`\mu \nabla (\nabla \cdot \mathbf{v})`, the rotational
+pressure leaves out.  With ``"stress"`` the step takes that term at the new
+time, where the splitting leaves the velocity a divergence, which costs
+pressure accuracy: on the Taylor-Green vortex with walls the pressure error
+falls by 7.0 instead of 8.7 from 8 to 32 quadrilaterals with FEM, and by 5.5
+instead of 7.4 with DMCDM.  The open channel of
+``test_the_projection_has_the_outflow_of_its_viscous_form`` reaches, with
+either form, the outflow of the steady solve of that form.
 
 Buoyancy and natural convection
 -------------------------------

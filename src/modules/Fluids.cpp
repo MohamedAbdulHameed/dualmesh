@@ -585,11 +585,15 @@ public:
     Kernel::initialSetup(problem);
     // Only the Taylor-Hood element, an inf-sup stable pair, gives a unique pressure without the
     // stabilisation.  Equal-order interpolation has spurious pressure modes without it (the
-    // checkerboard of Q1-Q1).
+    // checkerboard of Q1-Q1).  A balance tested with the functions of a velocity component holds
+    // no pressure to stabilize: the divergence that the start of a flow without a pressure
+    // removes (projectInitialVelocity).
     const auto velocities = _params.getStringList("velocities");
-    _stabilize =
-        !(problem.hasMixedOrder() && problem.variable(variable()).order == VariableOrder::First &&
-          problem.variable(problem.variableIndex(velocities[0])).order != VariableOrder::First);
+    const bool taylor_hood =
+        problem.hasMixedOrder() && problem.variable(variable()).order == VariableOrder::First &&
+        problem.variable(problem.variableIndex(velocities[0])).order != VariableOrder::First;
+    _stabilize = !taylor_hood && std::find(velocities.begin(), velocities.end(), variableName()) ==
+                                     velocities.end();
     _r.setup(problem, name(), velocities, _stabilize);
   }
   bool threadSafe() const override { return Kernel::threadSafe() && _r.threadSafe(); }
@@ -611,7 +615,7 @@ public:
   void computeFlux(const QpContext & ctx, ADVector3 & F) const override
   {
     const int dim = _r.dimension();
-    if (!_stabilize)
+    if (!_stabilize || !ctx.stabilization)
     {
       for (int d = 0; d < dim; ++d)
         F[d] = -ctx.value(_r.velocity(d));

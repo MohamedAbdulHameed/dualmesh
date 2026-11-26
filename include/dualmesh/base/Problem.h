@@ -643,6 +643,15 @@ public:
     /// the fluxes and the sources (Kernel::fluxTermSize).  Its round-off is about the machine
     /// epsilon times it, which is the floor of Newton's test where terms cancel.
     Vector * term_size = nullptr;
+    /// When given, the assembly takes these kernels and integrated boundary conditions in place
+    /// of the problem's, and leaves out its advective boundary fluxes and its nodal loads: the
+    /// operators of some terms (the time integration of a flow), with objects that the problem
+    /// does not hold once they are set up with it.
+    const std::vector<const Kernel *> * kernels = nullptr;
+    const std::vector<const IntegratedBC *> * conditions = nullptr;
+    /// Whether the mass equation of a flow holds its pressure stabilization
+    /// (QpContext::stabilization).
+    bool stabilization = true;
   };
   /// The initial velocity of the second-order variables of a transient run (zero: at rest).
   void setInitialVelocity(const Vector & v) { _initial_velocity = v; }

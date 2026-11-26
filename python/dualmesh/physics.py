@@ -2960,7 +2960,7 @@ class FluidDynamics(Physics):
     )
     formulation: str | None = parameter(
         None,
-        description="equal_order (the velocity and the pressure of the same order, with pressure stabilisation), Taylor-Hood (a quadratic velocity and a linear pressure, stable without stabilisation, which needs method='FEM' and a quadratic mesh) or penalty (the pressure eliminated by p = -gamma div v, which makes the flow slightly compressible). Default: Taylor-Hood when method='FEM' is given on a quadratic mesh with the monolithic time integration, since it needs no stabilisation, and equal_order otherwise.",
+        description="equal_order (the velocity and the pressure of the same order, with pressure stabilisation), Taylor-Hood (a quadratic velocity and a linear pressure, stable without stabilisation, which needs method='FEM' and a quadratic mesh) or penalty (the pressure eliminated by p = -gamma div v, which makes the flow slightly compressible). Default: Taylor-Hood when method='FEM' is given on a quadratic mesh, since it needs no stabilisation, and equal_order otherwise.",
     )
     penalty_parameter: float | None = parameter(
         None,
@@ -2983,11 +2983,11 @@ class FluidDynamics(Physics):
     )
     viscous_form: str | None = parameter(
         None,
-        description="The form of the viscous term: stress, mu (grad v + grad v^T), whose natural boundary condition is a zero traction, or laplacian, mu grad v, which gives the same equations for a constant viscosity and whose natural boundary condition is the do-nothing outflow mu dv/dn - p n = 0. The projection time integration takes the laplacian form only. Default stress, and laplacian with the projection time integration: stress holds for a viscosity that varies, and its natural boundary quantity is the traction, the force of the fluid on the boundary.",
+        description="The form of the viscous term: stress, mu (grad v + grad v^T), whose natural boundary condition is a zero traction, or laplacian, mu grad v, which gives the same equations for a constant viscosity and whose natural boundary condition is the do-nothing outflow mu dv/dn - p n = 0. Every solve of the flow, steady or transient, takes the same form. Default stress, and laplacian with the projection time integration: stress holds for a viscosity that varies, and its natural boundary quantity is the traction, the force of the fluid on the boundary. The pressure of the projection is that of the laplacian form, whose difference from the stress form, the gradient of the divergence, the splitting leaves nonzero, so the stress form costs the projection part of its pressure accuracy.",
     )
     time_integration: str = parameter(
         "monolithic",
-        description="How a transient solve advances the flow: monolithic, Newton's method on the velocity and the pressure together with the time scheme of solve_transient, or projection, a splitting into a pressure Poisson equation and then one Helmholtz equation per velocity component, with the backward differentiation formula (BDF) and the extrapolation of the advection (EXT) of order time_order. The projection takes the equal_order formulation, method 'FEM' or 'DMCDM', and a positive density. Default monolithic: it couples the velocity and the pressure in every step, with no splitting error.",
+        description="How a transient solve advances the flow: monolithic, Newton's method on the velocity and the pressure together with the time scheme of solve_transient, or projection, a splitting into a pressure Poisson equation and then the Helmholtz equations of the velocity, with the backward differentiation formula (BDF) and the extrapolation of the advection (EXT) of order time_order. The projection takes the equal_order or the Taylor-Hood formulation and a positive density. Default monolithic: it couples the velocity and the pressure in every step, with no splitting error.",
     )
     time_order: int = parameter(
         2,
@@ -3006,19 +3006,15 @@ class FluidDynamics(Physics):
                 f"fluid_dynamics: viscous_form is stress or laplacian, not '{self.viscous_form}'."
             )
         if self.time_integration == "projection":
-            if self.viscous_form == "stress":
+            if self.formulation == "penalty":
                 raise InputError(
-                    "fluid_dynamics: the projection time integration takes the laplacian form of the viscous term, mu grad v, whose natural boundary condition is the do-nothing outflow mu dv/dn - p n = 0. Leave viscous_form out, or give viscous_form='laplacian'."
-                )
-            if self.formulation not in (None, "equal_order"):
-                raise InputError(
-                    "fluid_dynamics: the projection time integration needs formulation='equal_order'."
+                    "fluid_dynamics: the projection time integration solves for the pressure, which the penalty formulation eliminates. Give formulation='equal_order' or 'Taylor-Hood'."
                 )
             if self.time_order not in (1, 2, 3):
                 raise InputError("fluid_dynamics: time_order is 1, 2 or 3.")
             if not self.density > 0:
                 raise InputError(
-                    "fluid_dynamics: the projection time integration needs a positive density; a flow without inertia (Stokes flow) has no time derivative to integrate."
+                    "fluid_dynamics: the projection time integration needs a positive density. A flow without inertia (Stokes flow) has no time derivative to integrate."
                 )
         if self.formulation is not None and self.formulation not in FLOW_FORMULATIONS:
             raise InputError(
@@ -3101,7 +3097,6 @@ class FluidDynamics(Physics):
                 problem._automatic_method == "given"
                 and problem.method == "FEM"
                 and _is_quadratic_mesh(problem.mesh)
-                and self.time_integration == "monolithic"
             )
             self.formulation = "Taylor-Hood" if taylor_hood else "equal_order"
         if self.penalty_parameter is not None and self.formulation != "penalty":
@@ -3121,7 +3116,6 @@ class FluidDynamics(Physics):
 
     def _build(self, problem) -> None:
         velocities, restrict = list(self.velocities), self._restriction()
-        existing = set(problem._problem.object_names())
         # The inertia of an equal-order flow takes the streamline stabilisation (SUPG), and the
         # mass equation finds its own pressure stabilisation. The Taylor-Hood element needs neither.
         supg = self.formulation == "equal_order" and self.density != 0.0
@@ -3215,24 +3209,14 @@ class FluidDynamics(Physics):
         # divergence that keeps the prescribed values.
         _core.attach_start_projection(
             problem._problem,
-            problem._distributed,
             velocities,
             self.pressure if self._pressure_formulation else "",
         )
         if self.time_integration == "projection":
-            from .engine import _as_function
-
+            # The projection takes the terms of the flow from its kernels.
             settings = _core.ProjectionSettings()
-            settings.velocities = velocities
-            settings.pressure = self.pressure
-            settings.density = self.density
-            settings.dynamic_viscosity = self.dynamic_viscosity
             settings.order = self.time_order
-            settings.set_body_force([None if f == 0.0 else _as_function(f) for f in force])
-            settings.own_objects = [n for n in problem._problem.object_names() if n not in existing]
-            self._projection = _core.attach_projection(
-                problem._problem, problem._distributed, settings
-            )
+            self._projection = _core.attach_projection(problem._problem, settings)
 
     def _manufactured_terms(self, fields, coordinates, dimension):
         from .mms import _symbols

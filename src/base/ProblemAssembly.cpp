@@ -148,6 +148,7 @@ Problem::assemble(const Vector & U, const AssemblyOptions & opts, Vector & R, Sp
     s.ctx.eigenvalue = _eigenvalue;
     s.ctx.data_fraction = opts.data_fraction;
     s.ctx.inertia = opts.inertia;
+    s.ctx.stabilization = opts.stabilization;
     s.ctx.steady_solve = !opts.include_time_kernels && opts.dt == 0.0;
     s.ctx.theta =
         opts.previous_step ? opts.previous_theta : (opts.include_time_kernels ? opts.theta : 1.0);
@@ -169,6 +170,20 @@ Problem::assemble(const Vector & U, const AssemblyOptions & opts, Vector & R, Sp
                          nthreads);
   }
   const bool mixed = _mixed_order;
+  // The kernels of the assembly in groups of one rule: the problem's, or those of the options.
+  std::vector<Group> chosen;
+  if (opts.kernels)
+    for (const Kernel * k : *opts.kernels)
+    {
+      const QuadratureSpec spec =
+          _eigenvalue_study ? k->eigenvalueStudyQuadrature() : k->quadrature();
+      auto it = std::find_if(
+          chosen.begin(), chosen.end(), [&](const Group & g) { return g.spec == spec; });
+      if (it == chosen.end())
+        it = chosen.insert(chosen.end(), Group{spec, {}});
+      it->kernels.push_back(k);
+    }
+  const std::vector<Group> & groups = opts.kernels ? chosen : _groups;
 
   const auto assembleElement = [&](ThreadScratch & s, Index e)
   {
@@ -194,9 +209,9 @@ Problem::assemble(const Vector & U, const AssemblyOptions & opts, Vector & R, Sp
     ctx.on_boundary = false;
     bool any = false;
 
-    for (const auto & group : _groups)
+    for (const auto & group : groups)
     {
-      const unsigned group_index = static_cast<unsigned>(&group - _groups.data());
+      const unsigned group_index = static_cast<unsigned>(&group - groups.data());
       unsigned point_set = 0;
       std::vector<const Kernel *> & ks = s.kernels;
       ks.clear();
@@ -540,9 +555,16 @@ Problem::assemble(const Vector & U, const AssemblyOptions & opts, Vector & R, Sp
   auto & ctx = s0.ctx;
 
   // ---- integrated boundary conditions ------------------------------------
-  if (opts.include_steady_terms)
+  std::vector<const IntegratedBC *> conditions;
+  if (opts.conditions)
+    conditions = *opts.conditions;
+  else if (!opts.kernels)
     for (const auto & bc : _ibcs)
+      conditions.push_back(bc.get());
+  if (opts.include_steady_terms)
+    for (std::size_t index = 0; index < conditions.size(); ++index)
     {
+      const IntegratedBC * bc = conditions[index];
       if (bc->isConstraint())
       {
         // A constraint holds at the new time only.
@@ -552,7 +574,7 @@ Problem::assemble(const Vector & U, const AssemblyOptions & opts, Vector & R, Sp
         continue;
       }
       const double wfac = steadyWeight(*bc, opts);
-      if (const auto * ib = dynamic_cast<const InterfaceBC *>(bc.get()))
+      if (const auto * ib = dynamic_cast<const InterfaceBC *>(bc))
       {
         assembleInterface(*ib, U, opts, wfac, R, want_jac ? &s0.triplets : nullptr, s0);
         continue;
@@ -563,13 +585,8 @@ Problem::assemble(const Vector & U, const AssemblyOptions & opts, Vector & R, Sp
         if (!bc->activeOnBlock(el.block))
           continue;
         const int ld = gatherLocal(s0, el, U, opts);
-        conditionResidual(*bc,
-                          static_cast<unsigned>(&bc - _ibcs.data()),
-                          side,
-                          wfac,
-                          opts,
-                          want_jac ? ld : 0,
-                          s0);
+        conditionResidual(
+            *bc, static_cast<unsigned>(index), side, wfac, opts, want_jac ? ld : 0, s0);
         scatter(s0.Rloc,
                 s0.dofs,
                 s0.touched,
@@ -593,7 +610,7 @@ Problem::assemble(const Vector & U, const AssemblyOptions & opts, Vector & R, Sp
   // flow is exact on quadratic elements).  The boundary is that of the side sets, which hold the
   // boundary of the whole mesh (the part of a distributed run has none on its interfaces with
   // the other parts).
-  if (dual && opts.include_steady_terms)
+  if (dual && opts.include_steady_terms && !opts.kernels)
   {
     std::vector<const Kernel *> advective;
     for (const auto & k : _kernels)
@@ -672,7 +689,7 @@ Problem::assemble(const Vector & U, const AssemblyOptions & opts, Vector & R, Sp
   }
 
   // ---- concentrated nodal loads ----------------------------------------------
-  if (opts.include_steady_terms)
+  if (opts.include_steady_terms && !opts.kernels)
     for (const auto & load : _loads)
     {
       const int v = load->variable();

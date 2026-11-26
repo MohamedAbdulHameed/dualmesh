@@ -372,6 +372,35 @@ def test_momentum_of_a_closed_flow(method):
 
 
 @pytest.mark.parametrize("method", methods)
+def test_the_walls_of_a_driven_channel_carry_its_body_force(method):
+    """A body force f drives the flow through a channel of 8 by 6 triangles, periodic in x, from
+    rest to its steady state at t = 4: the walls then carry the whole force, so the force on them,
+    minus the sum of the reactions, is f times the area of the channel.  The transient solve of
+    the flow is the monolithic one, whose steady state does not depend on the step (that of the
+    projection does above a step, test_projection.py)."""
+    mesh = dualmesh.generate_rectangle_mesh(0.0, 2.0, 0.0, 1.0, 8, 6, element_type="Tri3")
+    problem = dualmesh.Problem(mesh, method=method, distributed=False)
+    problem.add_physics(
+        "fluid_dynamics",
+        density=1.0,
+        dynamic_viscosity=1.0,
+        formulation="equal_order",
+        body_force=[3.0, 0.0],
+    )
+    problem.add_boundary_condition("periodic", primary="left", secondary="right")
+    for name in ("velocity_x", "velocity_y"):
+        problem.add_boundary_condition("Dirichlet", ["bottom", "top"], variable=name, value=0.0)
+    problem.solve_transient(end_time=4.0, time_step=0.05, report="none")
+    force = problem.boundary_flux("velocity_x", "bottom") + problem.boundary_flux(
+        "velocity_x", "top"
+    )
+    assert force == pytest.approx(3.0 * 2.0 * 1.0, rel=1e-6)
+    assert -problem.boundary_flux("velocity_y", "bottom") - problem.boundary_flux(
+        "velocity_y", "top"
+    ) == pytest.approx(0.0, abs=1e-8)
+
+
+@pytest.mark.parametrize("method", methods)
 @pytest.mark.parametrize("time_scheme", ["backward_Euler", "Crank-Nicolson"])
 def test_momentum_of_a_flow_started_from_rest(method, time_scheme):
     """Over a step the forces of the walls change the momentum of the fluid, rho int dv/dt.  The

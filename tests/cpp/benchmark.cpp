@@ -108,30 +108,51 @@ projection(int n, int steps, int order, int vectors, const std::string & method_
   const Mesh mesh = generateRectangleMesh(x, x, "Quad4");
   DistributedProblem distributed(mesh, method);
   Problem & problem = distributed.local();
+  const std::vector<std::string> velocities = {"u", "v"};
   for (int c = 0; c < 2; ++c)
   {
     auto exact = std::make_shared<TaylorGreen>();
     exact->component = c;
-    const std::string name = c == 0 ? "u" : "v";
-    problem.addVariable(name, {}, exact);
-    problem.addObject("diffusion", name, params("diffusion", {{"variable", name}}));
+    problem.addVariable(velocities[c], {}, exact);
   }
   problem.addVariable("pressure");
-  problem.addObject(
-      "diffusion", "pressure", params("diffusion", {{"variable", std::string("pressure")}}));
+  // The kernels of the fluid_dynamics physics for equal-order velocity and pressure, of unit
+  // density and the viscosity 0.01 of the vortex, with the laplacian form of the viscous term.
+  for (const auto & name : velocities)
+  {
+    problem.addObject("viscous_stress",
+                      name + "_viscous",
+                      params("viscous_stress",
+                             {{"variable", name},
+                              {"velocities", velocities},
+                              {"dynamic_viscosity", 0.01},
+                              {"form", std::string("laplacian")}}));
+    problem.addObject("pressure_gradient",
+                      name + "_pressure",
+                      params("pressure_gradient",
+                             {{"variable", name},
+                              {"velocities", velocities},
+                              {"pressure", std::string("pressure")}}));
+    problem.addObject("advection",
+                      name + "_advection",
+                      params("advection", {{"variable", name}, {"velocity", velocities}}));
+    problem.addObject(
+        "time_derivative", name + "_inertia", params("time_derivative", {{"variable", name}}));
+  }
+  problem.addObject("mass_conservation",
+                    "mass",
+                    params("mass_conservation",
+                           {{"variable", std::string("pressure")}, {"velocities", velocities}}));
   for (const auto & [name, primary, secondary] :
        std::vector<std::tuple<std::string, std::string, std::string>>{
            {"periodic_x", "left", "right"}, {"periodic_y", "bottom", "top"}})
     problem.addObject(
         "periodic", name, params("periodic", {{"primary", primary}, {"secondary", secondary}}));
   ProjectionSettings settings;
-  settings.velocities = {"u", "v"};
-  settings.density = 1.0;
-  settings.dynamic_viscosity = 0.01;
   settings.order = order;
   settings.pressure_projection_vectors = vectors;
   settings.pressure_tolerance = settings.velocity_tolerance = 1e-8;
-  auto solver = std::make_shared<ProjectionSolver>(problem, &distributed, settings);
+  auto solver = std::make_shared<ProjectionSolver>(problem, settings);
   problem.setTimeIntegrator(solver);
   // The step of a Courant number of one half at the largest speed, one.
   const double h = two_pi / n;

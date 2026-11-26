@@ -162,6 +162,39 @@ defineConduction(Problem & problem)
                             {"transfer_coefficient", 15.0},
                             {"ambient_value", 5.0}}));
 }
+/// The incompressible flow of the variables u, v and pressure, of unit density and the dynamic
+/// viscosity @p mu, with the kernels that the fluid_dynamics physics adds for equal-order
+/// velocity and pressure and the laplacian form of the viscous term.
+void
+addFlow(Problem & problem, double mu)
+{
+  const std::vector<std::string> velocities = {"u", "v"};
+  for (const auto & name : velocities)
+  {
+    problem.addObject("viscous_stress",
+                      name + "_viscous",
+                      params("viscous_stress",
+                             {{"variable", name},
+                              {"velocities", velocities},
+                              {"dynamic_viscosity", mu},
+                              {"form", std::string("laplacian")}}));
+    problem.addObject("pressure_gradient",
+                      name + "_pressure",
+                      params("pressure_gradient",
+                             {{"variable", name},
+                              {"velocities", velocities},
+                              {"pressure", std::string("pressure")}}));
+    problem.addObject("advection",
+                      name + "_advection",
+                      params("advection", {{"variable", name}, {"velocity", velocities}}));
+    problem.addObject(
+        "time_derivative", name + "_inertia", params("time_derivative", {{"variable", name}}));
+  }
+  problem.addObject("mass_conservation",
+                    "mass",
+                    params("mass_conservation",
+                           {{"variable", std::string("pressure")}, {"velocities", velocities}}));
+}
 } // namespace
 
 int
@@ -935,12 +968,7 @@ main()
     };
     const double two_pi = 2.0 * M_PI;
     Mesh mesh = generateRectangleMesh(grid(12, 0.0, two_pi), grid(10, 0.0, two_pi), "Quad4");
-    ProjectionSettings settings;
-    settings.velocities = {"u", "v"};
-    settings.pressure = "pressure";
-    settings.density = 1.0;
-    settings.dynamic_viscosity = 0.1;
-    settings.order = 2;
+    const ProjectionSettings settings;
     for (const auto & [method_name, method] : std::vector<std::pair<std::string, Method>>{
              {"fem", Method::FiniteElement}, {"dmcdm", Method::DualMesh}})
       for (const bool periodic : {false, true})
@@ -954,8 +982,6 @@ main()
             const std::string name = field == 0 ? "u" : "v";
             problem.addVariable(name, {}, exact);
             problem.addFunction(name + "_exact", exact);
-            // The projection solver assembles its own operators; a kernel marks the unknowns as active.
-            problem.addObject("diffusion", name, params("diffusion", {{"variable", name}}));
             if (!periodic)
               problem.addObject(
                   "Dirichlet",
@@ -966,9 +992,7 @@ main()
                           {"value", name + "_exact"}}));
           }
           problem.addVariable("pressure");
-          problem.addObject("diffusion",
-                            "pressure",
-                            params("diffusion", {{"variable", std::string("pressure")}}));
+          addFlow(problem, 0.1);
           if (periodic)
             for (const auto & [name, primary, secondary] :
                  std::vector<std::tuple<std::string, std::string, std::string>>{
@@ -985,13 +1009,12 @@ main()
         transient.time_stepper = "fixed";
         Problem reference(std::make_shared<Mesh>(mesh), method);
         define(reference);
-        reference.setTimeIntegrator(
-            std::make_shared<ProjectionSolver>(reference, nullptr, settings));
+        reference.setTimeIntegrator(std::make_shared<ProjectionSolver>(reference, settings));
         reference.solveTransient(transient);
         DistributedProblem distributed(mesh, method);
         define(distributed.local());
         distributed.local().setTimeIntegrator(
-            std::make_shared<ProjectionSolver>(distributed.local(), &distributed, settings));
+            std::make_shared<ProjectionSolver>(distributed.local(), settings));
         const auto result = distributed.solveTransient(transient);
         double worst_velocity = 0, worst_pressure = 0;
         for (const std::string name : {"u", "v"})
