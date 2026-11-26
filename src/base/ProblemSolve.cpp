@@ -404,9 +404,16 @@ Problem::nonlinearSolve(const SolverOptions & o,
       if (steady_old->term_size.size() == term_size.size())
         term_size += steady_old->term_size;
     }
-    for (Vector * v : {&R, &reference, &term_size})
+    // The equation of a hanging node or a periodic copy goes to its primaries on each process
+    // before the processes add their parts, as the Jacobian's does: the solver reads a row from
+    // the process that owns it, which need not hold the constraint that folds into the row.
+    // The last residual keeps the equations of the dependent nodes, for their reactions.
+    Vector folded = R;
+    foldDependents(folded, nullptr);
+    for (Vector * v : {&R, &folded, &reference, &term_size})
       par.addAtNodes(v->data(), numVariables());
     _last_residual = R;
+    R = std::move(folded);
     dirichletRows(R, J);
     const std::vector<char> fixed = constrainedDofs();
     for (Index d = 0; d < reference.size(); ++d)

@@ -373,16 +373,19 @@ class Problem:
         names = list(self._problem.variable_names())
         points = self.node_coordinates()
         velocity = numpy.zeros(len(points) * len(names))
+        # The velocities given by set_gathered_velocities, also those of variables that no physics
+        # defines (a problem made of kernels and boundary conditions).
+        for variable, whole in self._continued_velocity.items():
+            if variable in names:
+                velocity[names.index(variable) :: len(names)] = (
+                    self._distributed.local_node_values(list(whole), 1)
+                    if self._distributed is not None
+                    else whole
+                )
         for physics in self._physics.values():
             for variable in physics.variable_names():
                 index = names.index(variable)
                 if variable in self._continued_velocity:
-                    whole = self._continued_velocity[variable]
-                    velocity[index :: len(names)] = (
-                        self._distributed.local_node_values(list(whole), 1)
-                        if self._distributed is not None
-                        else whole
-                    )
                     continue
                 value = physics._initial_velocity(variable)
                 if value is None:

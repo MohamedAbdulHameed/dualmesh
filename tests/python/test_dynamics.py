@@ -279,6 +279,61 @@ def test_the_support_force_changes_the_momentum():
         assert change == pytest.approx(0.5 * 2e-5 * (force[k] + force[k - 1]), rel=1e-9, abs=1e-12)
 
 
+@pytest.mark.parametrize("hanging", [False, True])
+@pytest.mark.parametrize("motion", ["accelerating", "moving"])
+@pytest.mark.parametrize("method", ["FEM", "DMCDM"])
+@pytest.mark.parametrize("scheme", schemes)
+def test_a_field_linear_in_space_and_quadratic_in_time_is_exact(scheme, method, motion, hanging):
+    """u_tt - lap u = f on the unit square with u = 1 + 2x - 3y + c t^2 (f = 2c, from rest) or
+    u = 1 + 2x - 3y + t (f = 0, starting with the velocity 1, given with
+    set_gathered_velocities), prescribed on the whole boundary.  The field is linear in space,
+    which the elements hold exactly, also across hanging nodes, and its acceleration is constant,
+    which both schemes integrate exactly, so every node is exact to round-off.  The start
+    acceleration takes the prescribed values at the start of the first step: taken at its end,
+    the accelerating boundary has (g(dt + h) - 2 g(0) + g(dt - h)) / h^2, about 2 g(dt) / h^2,
+    in place of 2c."""
+    from dualmesh import _core
+
+    c = 0.75
+    accelerating = motion == "accelerating"
+
+    def exact(x, y, z, t):
+        return 1.0 + 2.0 * x - 3.0 * y + (c * t * t if accelerating else t)
+
+    mesh = dualmesh.generate_rectangle_mesh(0.0, 1.0, 0.0, 1.0, 4, 4, element_type="Quad4")
+    if hanging:
+        hierarchy = _core.Subdivision(mesh)
+        for _ in range(2):
+            points = numpy.asarray(hierarchy.mesh().points())
+            hierarchy.refine(
+                [
+                    int(numpy.allclose(points[list(cell)][0], 0.0))
+                    for _type, cell, _block in hierarchy.mesh().cells()
+                ],
+                5,
+            )
+        mesh = hierarchy.mesh()
+    problem = dualmesh.Problem(mesh, method=method)
+    problem.add_variable("u", initial_condition=lambda x, y, z, t: exact(x, y, z, 0.0))
+    problem.add_kernel("diffusion", variable="u")
+    problem.add_kernel("second_time_derivative", variable="u")
+    if accelerating:
+        problem.add_kernel("body_force", variable="u", value=2.0 * c)
+    problem.add_boundary_condition("Dirichlet", mesh.sideset_names(), variable="u", value=exact)
+    points = numpy.asarray(mesh.points())
+    if not accelerating:
+        problem.set_gathered_velocities({"u": numpy.ones(len(points))})
+    end = 0.3
+    problem.solve_transient(
+        end_time=end, time_step=0.1, time_scheme=scheme, time_stepper="fixed", report="none"
+    )
+    assert problem.values("u") == pytest.approx(
+        exact(points[:, 0], points[:, 1], 0.0, end), abs=1e-10
+    )
+    velocity = 2.0 * c * end if accelerating else 1.0
+    assert problem.gathered_velocities()["u"] == pytest.approx(velocity, abs=1e-9)
+
+
 # ---- input -----------------------------------------------------------------------------------
 def test_the_input_of_dynamics_is_checked():
     mesh = dualmesh.generate_rectangle_mesh(0, 1, 0, 1, 2, 2)

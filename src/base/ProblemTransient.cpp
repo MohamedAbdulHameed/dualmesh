@@ -143,7 +143,20 @@ Problem::ThetaIntegrator::step(
     begin.u = old;
     begin.v = p._initial_velocity.size() == old.size() ? p._initial_velocity
                                                        : Vector(Vector::Zero(old.size()));
-    begin.a = p.initialAcceleration(old, begin.v, dt, _options);
+    // The problem's clock is at the end of the step; the start state belongs to its start, where
+    // the prescribed values give their velocity and acceleration and the loads their size.
+    const double new_time = p._time;
+    p._time = new_time - dt;
+    try
+    {
+      begin.a = p.initialAcceleration(old, begin.v, dt, _options);
+    }
+    catch (...)
+    {
+      p._time = new_time;
+      throw;
+    }
+    p._time = new_time;
     _committed = std::move(begin);
   }
   // The level of the old state: the step just taken when this step continues it, and otherwise
@@ -315,18 +328,23 @@ Problem::initialAcceleration(const Vector & u, Vector & v, double dt, const Solv
   ao.accel_shift = &u;
   Vector R, unused;
   assemble(u, ao, R, nullptr);
+  // The equations of periodic copies and hanging nodes belong to their primaries.  Each process
+  // folds its own part before the processes add them, as it folds its part of M: the solver reads
+  // a row from the process that owns it, which need not hold the constraint that folds into it.
+  foldDependents(R, nullptr);
   par.addAtNodes(R.data(), nv);
   AssemblyOptions mass = ao;
   mass.include_steady_terms = false;
   SparseMatrix M;
   assemble(u, mass, unused, &M);
-  // The equations of periodic copies and hanging nodes belong to their primaries.
   foldDependents(R, &M);
   // The other unknowns keep their acceleration: identity rows and columns.
   std::vector<char> keep(static_cast<std::size_t>(n), 0);
   for (Index d = 0; d < n; ++d)
     keep[d] = !fixed[d] && _second_order_variables[static_cast<std::size_t>(d % nv)];
-  Vector rhs = -R;
+  // The prescribed accelerations move to the right-hand side.  M holds this process's elements
+  // only, so the processes add their parts of M a before the owner of a row reads it.
+  Vector lift = Vector::Zero(n);
   std::vector<Eigen::Triplet<double>> entries;
   for (int k = 0; k < M.outerSize(); ++k)
     for (SparseMatrix::InnerIterator it(M, k); it; ++it)
@@ -334,8 +352,10 @@ Problem::initialAcceleration(const Vector & u, Vector & v, double dt, const Solv
       if (keep[it.row()] && keep[it.col()])
         entries.emplace_back(it.row(), it.col(), it.value());
       else if (keep[it.row()])
-        rhs[it.row()] -= it.value() * a[it.col()];
+        lift[it.row()] += it.value() * a[it.col()];
     }
+  par.addAtNodes(lift.data(), nv);
+  Vector rhs = -R - lift;
   for (Index d = 0; d < n; ++d)
     if (!keep[d])
     {

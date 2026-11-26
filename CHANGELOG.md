@@ -967,6 +967,24 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- **Distributed FEM with hanging nodes.** Each process now folds the equation
+  of a hanging node or a periodic copy into its primaries before the processes
+  add their residuals, as it already did with the Jacobian. Before, the
+  residual was folded after the sum, and the solver read a row from the
+  process that owns it, which need not hold the constraint that folds into
+  the row: the patch test on a mesh refined twice at a corner missed the
+  linear field by 4.0e-3 on 3 processes (simple partition), now exact to
+  round-off on 1 to 6.
+- **The start of a dynamic run.** The start acceleration is taken at the
+  start of the first step: before, the prescribed values were differenced at
+  its end, so a boundary value of u = 1 + 2x - 3y + c t^2 gave the boundary an
+  acceleration of 1.5e6 in place of 2c = 1.5, and the field, exact for both
+  schemes, was missed by 9.6e-3 after three steps; it is now exact to
+  round-off. On several processes the inertia of the prescribed nodes, which
+  each process holds for its own elements only, is added over the processes
+  before the owner of a row reads it, and the start residual is folded before
+  the sum. `set_gathered_velocities` now also sets the velocity of a
+  second-order variable that no physics defines.
 - **The theta method with an equation that has no time derivative.** The
   mass equation of an incompressible flow and the equilibrium of a
   quasi-static solid are now taken at the new time with the weight 1 for

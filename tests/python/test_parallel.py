@@ -649,12 +649,10 @@ def test_the_adaptive_loop_of_the_input_runs_on_every_process():
     assert temperature.max() <= 400.0 + 1e-6
 
 
-@pytest.mark.parametrize("dimension", [2, 3])
-@pytest.mark.parametrize("method", ["fem", "dmcdm"])
-def test_a_distributed_mesh_with_hanging_nodes_passes_the_patch_test(method, dimension):
-    """Every process that holds a hanging node holds the nodes it depends on, and every process
-    that holds a large cell holds the nodes hanging on its sides, so FEM folds its constraints and
-    DMCDM builds its polygon cells on every process, and a linear field stays exact."""
+def refined_toward_the_corner(dimension):
+    """The unit square of 4 by 4 quadrilaterals or the unit cube of 3 by 3 by 3 hexahedra,
+    refined twice at the corner at the origin, which leaves nodes hanging on the sides of the
+    larger cells next to the refined ones."""
     from dualmesh import _core
 
     if dimension == 2:
@@ -669,8 +667,25 @@ def test_a_distributed_mesh_with_hanging_nodes_passes_the_patch_test(method, dim
             for _type, cell, _block in hierarchy.mesh().cells()
         ]
         hierarchy.refine(marked, 5)
-    mesh = hierarchy.mesh()
-    problem = dualmesh.Problem(mesh, method=method, distributed=True)
+    return hierarchy.mesh()
+
+
+# The simple partitioner gives every build the same parts.  With it, on 3 processes, a process
+# owns a node that a constraint folds into without holding the constraint, which the
+# distributed residual has to allow for.
+@pytest.mark.parametrize("partitioner", ["automatic", "simple"])
+@pytest.mark.parametrize("dimension", [2, 3])
+@pytest.mark.parametrize("method", ["fem", "dmcdm"])
+def test_a_distributed_mesh_with_hanging_nodes_passes_the_patch_test(
+    method, dimension, partitioner
+):
+    """Every process that holds a hanging node holds the nodes it depends on, and every process
+    that holds a large cell holds the nodes hanging on its sides, so FEM folds its constraints and
+    DMCDM builds its polygon cells on every process, and a linear field stays exact.  Under FEM
+    the equation of a hanging node goes to its primaries before the processes add their parts:
+    the owner of a primary need not hold the constraint."""
+    mesh = refined_toward_the_corner(dimension)
+    problem = dualmesh.Problem(mesh, method=method, distributed=True, partitioner=partitioner)
     problem.add_variable("u")
     problem.add_kernel("diffusion", variable="u")
     problem.add_boundary_condition(
@@ -683,3 +698,48 @@ def test_a_distributed_mesh_with_hanging_nodes_passes_the_patch_test(method, dim
     points = numpy.asarray(mesh.points())
     expected = 1.0 + 2.0 * points[:, 0] - 3.0 * points[:, 1] + points[:, 2]
     assert numpy.asarray(problem.gathered_values("u")) == pytest.approx(expected, abs=1e-10)
+
+
+@pytest.mark.parametrize("mesh_kind", ["uniform", "hanging-2", "hanging-3"])
+@pytest.mark.parametrize("motion", ["accelerating", "moving"])
+@pytest.mark.parametrize("method", ["fem", "dmcdm"])
+def test_a_distributed_dynamic_run_is_exact_for_a_field_linear_in_space_and_quadratic_in_time(
+    method, motion, mesh_kind
+):
+    """The wave equation u_tt - lap u = f with the solution u = 1 + 2x - 3y + z + c t^2, which
+    needs f = 2c and starts at rest, or u = 1 + 2x - 3y + z + t, which needs f = 0 and starts
+    with the velocity 1, prescribed on the whole boundary.  It is linear in space, so the
+    elements hold it exactly, hanging nodes or not, and its acceleration is constant, so
+    generalized-alpha integrates it exactly: every node takes the exact value and velocity on
+    any number of processes.  The start acceleration comes from the prescribed values at the
+    start of the first step, from the inertia of the prescribed nodes, which every process adds
+    its part of, and from the equations of the hanging nodes, which go to their primaries before
+    the processes add them."""
+    c = 0.75
+    accelerating = motion == "accelerating"
+
+    def exact(x, y, z, t):
+        return 1.0 + 2.0 * x - 3.0 * y + z + (c * t * t if accelerating else t)
+
+    if mesh_kind == "uniform":
+        mesh = dualmesh.generate_rectangle_mesh(0.0, 1.0, 0.0, 1.0, 6, 6, element_type="Quad4")
+    else:
+        mesh = refined_toward_the_corner(int(mesh_kind[-1]))
+    problem = dualmesh.Problem(mesh, method=method, distributed=True, partitioner="simple")
+    problem.add_variable("u", initial_condition=lambda x, y, z, t: exact(x, y, z, 0.0))
+    problem.add_kernel("diffusion", variable="u")
+    problem.add_kernel("second_time_derivative", variable="u")
+    if accelerating:
+        problem.add_kernel("body_force", variable="u", value=2.0 * c)
+    problem.add_boundary_condition("Dirichlet", mesh.sideset_names(), variable="u", value=exact)
+    points = numpy.asarray(mesh.points())
+    if not accelerating:
+        problem.set_gathered_velocities({"u": numpy.ones(len(points))})
+    end = 0.3
+    problem.solve_transient(end_time=end, time_step=0.1, time_stepper="fixed", report="none")
+    x, y, z = points[:, 0], points[:, 1], points[:, 2]
+    assert numpy.asarray(problem.gathered_values("u")) == pytest.approx(
+        exact(x, y, z, end), abs=1e-10
+    )
+    velocity = 2.0 * c * end if accelerating else 1.0
+    assert problem.gathered_velocities()["u"] == pytest.approx(velocity, abs=1e-9)
