@@ -1,0 +1,84 @@
+[build-system]
+requires = ["scikit-build-core>=0.8", "pybind11>=2.11"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "dualmesh-multiphysics"
+version = "0.2.0"
+description = "Coupled heat transfer, solid mechanics and incompressible flow by the finite element method and the dual mesh control domain method"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "LGPL-2.1-or-later" }
+authors = [{ name = "Mohamed AbdulHameed" }]
+keywords = [
+  "dual mesh control domain method",
+  "DMCDM",
+  "finite element method",
+  "finite volume method",
+  "fluid dynamics",
+  "solid mechanics",
+  "heat transfer",
+  "multiphysics",
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: GNU Lesser General Public License v2 or later (LGPLv2+)",
+  "Programming Language :: C++",
+  "Programming Language :: Python :: 3",
+  "Topic :: Scientific/Engineering :: Physics",
+]
+dependencies = ["numpy>=1.20", "pyyaml>=6.0"]
+
+[project.optional-dependencies]
+mesh = ["meshio>=5.0"]
+plot = ["matplotlib>=3.5"]
+mms = ["sympy>=1.9"]
+linalg = ["scipy>=1.7"]
+yaml = ["pyyaml>=6.0"]
+docs = ["sphinx>=7.0", "furo", "myst-parser", "sphinx-copybutton"]
+test = ["pytest>=7.0", "meshio>=5.0", "sympy>=1.9", "scipy>=1.7", "pyyaml>=6.0"]
+all = ["meshio>=5.0", "matplotlib>=3.5", "sympy>=1.9", "scipy>=1.7", "pyyaml>=6.0"]
+
+[project.urls]
+Homepage = "https://github.com/MohamedAbdulHameed/dualmesh"
+Documentation = "https://dualmesh.readthedocs.io"
+Repository = "https://github.com/MohamedAbdulHameed/dualmesh"
+Issues = "https://github.com/MohamedAbdulHameed/dualmesh/issues"
+
+[project.scripts]
+dualmesh = "dualmesh.cli:main"
+
+[tool.scikit-build]
+wheel.packages = ["python/dualmesh"]
+cmake.version = ">=3.18"
+cmake.args = ["-DDUALMESH_BUILD_TESTS=OFF"]
+build-dir = "build/{wheel_tag}"
+
+[tool.pytest.ini_options]
+testpaths = ["tests/python"]
+filterwarnings = [
+  "error::DeprecationWarning",
+  # mpmath 1.4 deprecates bitcount, which sympy 1.14 still calls.
+  "ignore:bitcount function is deprecated:DeprecationWarning",
+]
+
+[tool.ruff]
+# ruff format wraps a long call with one argument on each line.
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.format]
+docstring-code-format = true
+docstring-code-line-length = "dynamic"
+
+[tool.ruff.lint]
+# The names follow scripts/check_names.py, which keeps the capitals of person names and
+# abbreviations, so the naming rules of pep8-naming (N) are not selected.
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM"]
+ignore = [
+  "C408",  # dict(key=value) reads better than a literal for parameter sets
+  "SIM108",  # an if-else block stays a block where a ternary would be long
+  "E501",  # long strings and comments, which ruff format does not split
+]
+

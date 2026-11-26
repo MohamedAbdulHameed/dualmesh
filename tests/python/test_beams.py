@@ -1,0 +1,305 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+"""Verification of the beam models against Chapter 7 of Reddy's book.
+
+Geometry and material of every example: length L = 100 in., width b = 1 in.,
+height h = 1 in., E1 = 30e6 psi (top), E2 = 3e6 psi (bottom), nu = 0.3, shear
+correction factor 5/6.  Only half of the beam is modelled, 0 <= x <= L/2, with
+symmetry conditions at the centre.
+"""
+
+from __future__ import annotations
+
+import dualmesh
+import pytest
+
+length = 100.0
+width = 1.0
+height = 1.0
+modulus_top = 30.0e6
+modulus_bottom = 3.0e6
+Poisson_ratio = 0.3
+distributed_load = 0.5
+
+
+def stiffness(power_law_index):
+    return dualmesh.fgm.beam_stiffness(
+        modulus_top=modulus_top,
+        modulus_bottom=modulus_bottom,
+        power_law_index=power_law_index,
+        height=height,
+        width=width,
+        poissons_ratio=Poisson_ratio,
+    )
+
+
+def test_functionally_graded_stiffness_formulas():
+    """The closed-form FGM stiffnesses agree with numerical integration."""
+    for n in (0.0, 1.0, 2.0, 3.0, 5.0, 10.0, 20.0):
+        s = stiffness(n)
+        a, b, d = dualmesh.fgm.stiffness_by_quadrature(
+            modulus_top, modulus_bottom, n, height, width
+        )
+        assert s.extensional == pytest.approx(a, rel=1e-8)
+        # The coupling stiffness is exactly zero for a homogeneous section
+        # (n = 0), where the quadrature returns round-off whose size depends on
+        # the numpy build.  A relative tolerance on zero cannot pass, so the
+        # tolerance is taken relative to the natural scale of B, which is the
+        # extensional stiffness times the height.
+        assert s.coupling == pytest.approx(b, rel=1e-8, abs=1e-12 * abs(a) * height)
+        assert s.bending == pytest.approx(d, rel=1e-8)
+
+
+def beam_problem(
+    model,
+    num_elements,
+    power_law_index=0.0,
+    support="pinned",
+    method="dmcdm",
+    von_karman=False,
+    load=distributed_load,
+):
+    """Half-beam model; returns (problem, third_variable_name)."""
+    s = stiffness(power_law_index)
+    mesh = dualmesh.generate_line_mesh(start=0.0, end=length / 2, num_elements=num_elements)
+    problem = dualmesh.Problem(mesh, method=method)
+    third = "rotation" if model == "beam_Timoshenko_displacement" else "moment"
+    for name in ("axial_disp", "deflection", third):
+        problem.add_variable(name)
+    common = dict(
+        extensional_stiffness=s.extensional,
+        coupling_stiffness=s.coupling,
+        bending_stiffness=s.bending,
+        transverse_load=load,
+        von_karman=von_karman,
+    )
+    # The Euler-Bernoulli beam has no shear deformation, so it takes no shear stiffness.
+    if model != "beam_Euler-Bernoulli_mixed":
+        common["shear_stiffness"] = s.shear
+    if model == "beam_Timoshenko_displacement":
+        variables = dict(
+            axial_displacement="axial_disp",
+            transverse_displacement="deflection",
+            rotation="rotation",
+        )
+    else:
+        variables = dict(
+            axial_displacement="axial_disp",
+            transverse_displacement="deflection",
+            bending_moment="moment",
+        )
+    for variable in ("axial_disp", "deflection", third):
+        options = dict(common, **variables, variable=variable)
+        if model == "beam_Timoshenko_displacement" and variable == "rotation":
+            # Reduced integration of the shear term removes shear locking.
+            options.update(quadrature="midpoint", reduced_integration=True)
+        problem.add_kernel(model, **options)
+
+    # At x = 0: pinned (w = 0, M = 0) or clamped (w = 0, rotation = 0)
+    problem.add_boundary_condition(
+        "Dirichlet",
+        "left",
+        variable="axial_disp",
+        value=0.0,
+    )
+    problem.add_boundary_condition("Dirichlet", "left", variable="deflection", value=0.0)
+    if support == "pinned" and third == "moment":
+        problem.add_boundary_condition(
+            "Dirichlet",
+            "left",
+            variable="moment",
+            value=0.0,
+        )
+    elif support == "clamped" and third == "rotation":
+        problem.add_boundary_condition(
+            "Dirichlet",
+            "left",
+            variable="rotation",
+            value=0.0,
+        )
+    # At x = L/2: symmetry (u = 0, and the natural conditions V = 0, rotation = 0)
+    problem.add_boundary_condition(
+        "Dirichlet",
+        "right",
+        variable="axial_disp",
+        value=0.0,
+    )
+    if third == "rotation":
+        problem.add_boundary_condition(
+            "Dirichlet",
+            "right",
+            variable="rotation",
+            value=0.0,
+        )
+    return problem, third
+
+
+@pytest.mark.parametrize(
+    "model, expected",
+    [
+        # Table 7.5.1: centre deflection w(L/2) in inches, q0 = 0.5 lb/in
+        ("beam_Euler-Bernoulli_mixed", [0.2588, 0.2600, 0.2603, 0.2604]),
+        ("beam_Timoshenko_displacement", [0.2540, 0.2588, 0.2600, 0.2604]),
+        ("beam_Timoshenko_mixed", [0.2588, 0.2600, 0.2604, 0.2604]),
+    ],
+)
+def test_table_7_5_1_pinned_homogeneous_beam(model, expected):
+    for num_elements, reference in zip((4, 8, 16, 32), expected):
+        problem, _ = beam_problem(model, num_elements)
+        problem.solve()
+        centre = problem.values("deflection")[-1]
+        # The book prints four decimals, so +-1.1e-4 is agreement to the
+        # last published digit.
+        assert centre == pytest.approx(reference, abs=1.1e-4)
+
+
+@pytest.mark.parametrize("model", ["beam_Euler-Bernoulli_mixed", "beam_Timoshenko_mixed"])
+@pytest.mark.parametrize("num_elements", [4, 8, 16, 32])
+def test_table_7_5_2_bending_moment_is_exact(model, num_elements):
+    """The mixed dual mesh models give the exact centre moment q0 L^2 / 8."""
+    problem, _ = beam_problem(model, num_elements)
+    problem.solve()
+    assert problem.values("moment")[-1] == pytest.approx(
+        distributed_load * length**2 / 8.0, rel=1e-10
+    )
+
+
+@pytest.mark.parametrize(
+    "power_law_index, Euler_mixed, Timoshenko_displacement, Timoshenko_mixed",
+    [
+        # Table 7.5.3: w(L/2) Dhat / (q0 L^4) x 10, 16 elements in the half beam
+        (0.0, 0.1302, 0.1300, 0.1302),
+        (1.0, 0.1069, 0.1068, 0.1069),
+        (2.0, 0.0919, 0.0918, 0.0919),
+        (3.0, 0.0879, 0.0878, 0.0879),
+        (5.0, 0.0900, 0.0899, 0.0900),
+        (10.0, 0.1012, 0.1011, 0.1012),
+        (20.0, 0.1141, 0.1140, 0.1142),
+    ],
+)
+def test_table_7_5_3_functionally_graded_pinned_beam(
+    power_law_index, Euler_mixed, Timoshenko_displacement, Timoshenko_mixed
+):
+    s = stiffness(power_law_index)
+    reduced_bending = s.bending - s.coupling**2 / s.extensional
+    references = {
+        "beam_Euler-Bernoulli_mixed": Euler_mixed,
+        "beam_Timoshenko_displacement": Timoshenko_displacement,
+        "beam_Timoshenko_mixed": Timoshenko_mixed,
+    }
+    for model, reference in references.items():
+        problem, _ = beam_problem(model, 16, power_law_index=power_law_index)
+        problem.solve()
+        centre = problem.values("deflection")[-1]
+        normalized = centre * reduced_bending / (distributed_load * length**4) * 10
+        assert normalized == pytest.approx(reference, abs=1.1e-4)
+
+
+@pytest.mark.parametrize(
+    "model, expected",
+    [
+        # Table 7.5.4: w(L/2) Dhat / (q0 L^4) x 100 for clamped-clamped beams
+        ("beam_Euler-Bernoulli_mixed", [0.2685, 0.2624, 0.2609, 0.2605, 0.2604]),
+        ("beam_Timoshenko_displacement", [0.2445, 0.2567, 0.2597, 0.2605, 0.2607]),
+        ("beam_Timoshenko_mixed", [0.2688, 0.2628, 0.2612, 0.2609, 0.2608]),
+    ],
+)
+def test_table_7_5_4_clamped_homogeneous_beam(model, expected):
+    s = stiffness(0.0)
+    reduced_bending = s.bending - s.coupling**2 / s.extensional
+    for num_elements, reference in zip((4, 8, 16, 32, 64), expected):
+        problem, _ = beam_problem(model, num_elements, support="clamped")
+        problem.solve()
+        centre = problem.values("deflection")[-1]
+        normalized = centre * reduced_bending / (distributed_load * length**4) * 100
+        assert normalized == pytest.approx(reference, abs=1.1e-4)
+
+
+def test_reduced_integration_removes_shear_locking():
+    """Full integration of the shear term locks the displacement model."""
+    reduced_problem, _ = beam_problem("beam_Timoshenko_displacement", 8)
+    # The same model again, but with the shear term integrated fully
+    s = stiffness(0.0)
+    mesh = dualmesh.generate_line_mesh(start=0.0, end=length / 2, num_elements=8)
+    problem = dualmesh.Problem(mesh)
+    for name in ("axial_disp", "deflection", "rotation"):
+        problem.add_variable(name)
+    for variable in ("axial_disp", "deflection", "rotation"):
+        problem.add_kernel(
+            "beam_Timoshenko_displacement",
+            variable=variable,
+            axial_displacement="axial_disp",
+            transverse_displacement="deflection",
+            rotation="rotation",
+            extensional_stiffness=s.extensional,
+            coupling_stiffness=s.coupling,
+            bending_stiffness=s.bending,
+            shear_stiffness=s.shear,
+            transverse_load=distributed_load,
+        )
+    problem.add_boundary_condition(
+        "Dirichlet",
+        "left",
+        variable="axial_disp",
+        value=0.0,
+    )
+    problem.add_boundary_condition("Dirichlet", "left", variable="deflection", value=0.0)
+    problem.add_boundary_condition(
+        "Dirichlet",
+        "right",
+        variable="axial_disp",
+        value=0.0,
+    )
+    problem.add_boundary_condition("Dirichlet", "right", variable="rotation", value=0.0)
+    problem.solve()
+    reduced_problem.solve()
+    full_integration = problem.values("deflection")[-1]
+    reduced = reduced_problem.values("deflection")[-1]
+    # The locked solution is far too stiff, the reduced-integration one is not.
+    assert full_integration < 0.2 * reduced
+    assert reduced == pytest.approx(0.2588, abs=1.1e-4)
+
+
+# ---------------------------------------------------------------------------
+# Nonlinear (von Karman) analysis, Section 7.6
+# ---------------------------------------------------------------------------
+nonlinear_reference = {
+    # q0: (DM-TB(D), DM-EB(M), DM-TB(M)) of Table 7.6.1,
+    # tabulated as w(L/2) Dhat / L^4 x 10
+    0.5: (0.0563, 0.0564, 0.0563),
+    1.0: (0.0921, 0.0921, 0.0921),
+    2.0: (0.1364, 0.1364, 0.1364),
+    5.0: (0.2078, 0.2078, 0.2078),
+    10.0: (0.2743, 0.2743, 0.2743),
+    20.0: (0.3547, 0.3547, 0.3547),
+}
+
+
+@pytest.mark.parametrize("load, reference", sorted(nonlinear_reference.items()))
+def test_table_7_6_1_nonlinear_pinned_beam(load, reference):
+    """von Karman bending of a pinned-pinned beam with 16 elements.
+
+    The book uses load increments of 1 lb/in and direct (Picard) iteration with
+    the acceleration parameter 0.35; Newton's method, with the continuation of
+    the solve, reaches the same answer.
+    """
+    s = stiffness(0.0)
+    reduced_bending = s.bending - s.coupling**2 / s.extensional
+    models = ("beam_Timoshenko_displacement", "beam_Euler-Bernoulli_mixed", "beam_Timoshenko_mixed")
+    for model, expected in zip(models, reference):
+        problem, _ = beam_problem(model, 16, von_karman=True, load=load)
+        problem.solve()
+        normalized = problem.values("deflection")[-1] * reduced_bending / length**4 * 10
+        assert normalized == pytest.approx(expected, abs=1.1e-4)
+
+
+def test_nonlinear_beam_direct_iteration_with_acceleration():
+    """Direct iteration with the book's acceleration parameter beta = 0.35."""
+    s = stiffness(0.0)
+    reduced_bending = s.bending - s.coupling**2 / s.extensional
+    problem, _ = beam_problem("beam_Euler-Bernoulli_mixed", 16, von_karman=True, load=10.0)
+    problem.solve(
+        nonlinear_solver="picard",
+        relaxation=0.35,
+    )
+    normalized = problem.values("deflection")[-1] * reduced_bending / length**4 * 10
+    assert normalized == pytest.approx(0.2743, abs=1.1e-4)

@@ -1,0 +1,208 @@
+// SPDX-License-Identifier: LGPL-2.1-or-later
+//
+// Integration points for the dual mesh control domain method and for the
+// finite element method, and evaluation of the element map.
+#pragma once
+
+#include "dualmesh/fe/ReferenceElement.h"
+#include "dualmesh/mesh/Mesh.h"
+
+#include <vector>
+
+namespace dualmesh
+{
+
+/// Geometry of the isoparametric map at one reference point.
+struct MappedPoint
+{
+  Point xi{0, 0, 0};
+  Point x{0, 0, 0};
+  double N[kMaxElementNodes];
+  Point dN[kMaxElementNodes]; ///< physical gradients of the shape functions
+  /// The Jacobian determinant; on a surface or a curve in space (an element
+  /// of lower dimension than the space) the measure sqrt(det(J^T J)), which
+  /// is positive.
+  double detJ = 0;
+  /// The Jacobian dx/dxi: row i is the space direction, column j the
+  /// reference direction.
+  double J[3][3];
+  /// The inverse of J, or on a surface or a curve in space the pseudo-inverse
+  /// (J^T J)^{-1} J^T: the physical gradient of a function is
+  /// grad_i = sum_j Jinv[j][i] d/dxi_j, which is the tangential gradient on a
+  /// surface.
+  double Jinv[3][3];
+  /// The unit normal of a surface element in space (t1 x t2 normalized);
+  /// zero for every other element.
+  Point normal{0, 0, 0};
+  /// The linear shape functions of the element's corners and their physical
+  /// gradients, for a variable interpolated at first order on a quadratic
+  /// element (the pressure of a Taylor-Hood element).  They are filled by
+  /// mapCornerShape; mapPoint resets `num_corners` to zero, so a stale set is never
+  /// used by mistake.
+  static constexpr int kMaxCorners = 8;
+  int num_corners = 0;
+  double corner_shape[kMaxCorners];
+  Point corner_gradient[kMaxCorners];
+};
+
+/// Evaluate the element map, shape functions and physical gradients at xi.
+void mapPoint(const Mesh & mesh, const Element & el, const Point & xi, MappedPoint & mp);
+
+/// Add to a mapped point the shape functions of the linear element with the
+/// same corners (Tri3 for Tri6, Quad4 for Quad9 and Quad8, Tet4 for Tet10, Hex8
+/// for Hex27 and Hex20), evaluated at the same reference point.  Their physical
+/// gradients use the Jacobian of the element's own (quadratic) map,
+/// grad N^c = J^{-T} dN^c/dxi, so a first-order field on a curved quadratic
+/// element is linear in the reference coordinates, which is the standard
+/// Taylor-Hood construction.  The corners are the first nodes of every
+/// quadratic element, in the order of the linear element, so corner a of the
+/// linear element is local node a.
+void mapCornerShape(const Element & el, MappedPoint & mp);
+
+/// The Laplacian of every shape function of @p el at the mapped point @p mp, in @p laplacian, for
+/// an element of the dimension of its space: Hess_x N = A (Hess_xi N - sum_c dN/dx_c Hess_xi x_c)
+/// A^T with A = J^-T, which holds for curved elements too.  The reference Hessians are central
+/// differences of the reference gradients, exact to round-off on the elements up to quadratic
+/// order (a reference gradient is at most quadratic in each reference direction).
+void
+mapLaplacian(const Mesh & mesh, const Element & el, const MappedPoint & mp, double * laplacian);
+
+/// One integration point.
+struct IntegrationPoint
+{
+  Point xi;       ///< reference point for the geometry and test functions
+  Point xi_field; ///< reference point where the solution is evaluated
+  double weight;  ///< |J| times quadrature weight (volume points)
+  Point area;     ///< n dA, oriented from `owner` to `neighbor` / outward
+  int owner;      ///< local node owning the point (-1: all nodes, FEM)
+  int neighbor;   ///< the other node of a dual face (-1 otherwise)
+};
+
+enum class PointSet
+{
+  Volume, ///< DMCDM: control volumes; FEM: element interior
+  Faces,  ///< DMCDM only: interfaces between control volumes
+};
+
+/// A cell of the dual mesh method with nodes hanging on its sides, split as a polygon (polyhedron)
+/// whose sides are the leaf edges (leaf faces).  Its slots are its corners and its hanging nodes,
+/// and it carries the dual mesh of a conforming cell: the control domain of every slot as patches
+/// in the reference coordinates of the element, and the interfaces between slots.  In 2D the
+/// control domain of a slot is the quadrilateral of the slot, the middles of its two leaf edges
+/// and the centre of the cell, and the interface of a leaf edge is the segment from its middle to
+/// the centre.  In 3D, on each leaf face of a slot, it is the pyramid of the slot, the middles of
+/// its two edges of the face and the centre of the face, with its apex at the centre of the cell,
+/// and the interface of an edge of a leaf face is the triangle of its middle, the centre of the
+/// face and the centre of the cell.  The control domains then tile the domain with those of the
+/// small neighbours, whose interfaces meet the side at the same middles.  The fields inside are
+/// those of the cell, so a hanging node owns control domain but adds nothing to the fields of the
+/// cell.
+struct PolygonCell
+{
+  /// The slots of the cell: its corners, then its hanging nodes, by node number and reference
+  /// coordinates in the cell.
+  std::vector<Index> nodes;
+  std::vector<Point> xi;
+  /// The patches of the control domain of every slot, and the interfaces between slots.
+  std::vector<std::vector<Patch>> control;
+  std::vector<DualFace> faces;
+};
+
+/// Build the integration points of element @p e: for the dual mesh method those of the control
+/// domains (PointSet::Volume, owned by a node) or of the interfaces between them (PointSet::Faces),
+/// of the reference element or, for a cell with hanging nodes, of @p polygon, whose slots number
+/// the owners; for the finite element method those of the element.
+///
+/// Building a point maps it to the physical element, and a caller that needs
+/// the mapped point (the shape functions and their physical gradients) can
+/// ask for it through @p mapped instead of mapping the point a second time.
+/// It is filled, one entry per point of @p out, for the Gauss-type rules on
+/// the volume and on the dual faces; for the other rules it is left empty,
+/// and the caller maps the points itself.
+void buildElementPoints(const Mesh & mesh,
+                        Index e,
+                        bool dual_mesh,
+                        PointSet set,
+                        const QuadratureSpec & spec,
+                        std::vector<IntegrationPoint> & out,
+                        std::vector<MappedPoint> * mapped = nullptr,
+                        const PolygonCell * polygon = nullptr);
+
+/// Build the integration points of side @p side (boundary integrals).
+void buildSidePoints(const Mesh & mesh,
+                     const Side & side,
+                     bool dual_mesh,
+                     const QuadratureSpec & spec,
+                     std::vector<IntegrationPoint> & out);
+
+/// The point of a side closest to @p x.
+struct SideProjection
+{
+  Point xi{0, 0, 0}; ///< parent reference coordinates of the closest point
+  Point x{0, 0, 0};  ///< its physical position
+  double distance = 0.0;
+};
+
+/// Project @p x onto the side (element, local side) of the mesh: the closest
+/// point of the side, found by a Gauss-Newton iteration in the side's own
+/// coordinates, restricted to the side.
+SideProjection projectOntoSide(const Mesh & mesh, const Side & side, const Point & x);
+
+/// The local node of the element whose control domain contains the side point
+/// with parent reference coordinates @p xi (the dual mesh control domain
+/// method): the owner of the side control patch that contains it, or the
+/// nearest one.
+int sideControlOwner(const Mesh & mesh, const Side & side, const Point & xi);
+
+/// A symmetric quadrature rule on the reference triangle (dim 2) or
+/// tetrahedron (dim 3) exact to at least @p degree, with points in reference
+/// coordinates and weights that sum to the reference measure.  Returns false
+/// when no tabulated rule reaches the degree.
+bool
+simplexQuadrature(int dim, int degree, std::vector<Point> & points, std::vector<double> & weights);
+
+/// Measure (length/area/volume) of element e.
+double elementMeasure(const Mesh & mesh, Index e);
+
+/// The size h of element e for the stabilization parameters: the length of the side of a cube of the element's measure, corrected for simplices, prisms and pyramids so that the generators' elements of a grid of spacing h all get h, and halved for a quadratic element, whose interpolation resolves half the element.
+double elementSize(const Mesh & mesh, Index e);
+
+/// Measure (length in two dimensions, area in three) of a boundary side,
+/// integrated with the isoparametric map, so that a curved quadratic side is
+/// measured exactly.  In axisymmetric and spherical coordinates the measure
+/// includes the coordinate factor (2 pi r and 4 pi r^2), i.e., it is the area
+/// of the surface of revolution that the side represents.
+double sideMeasure(const Mesh & mesh,
+                   const Side & side,
+                   CoordinateSystem coord = CoordinateSystem::Cartesian);
+
+/// Total measure of the sides of the named side sets.  A side that belongs to
+/// several of them is counted once.
+double sidesetMeasure(const Mesh & mesh,
+                      const std::vector<std::string> & names,
+                      CoordinateSystem coord = CoordinateSystem::Cartesian);
+
+/// The polar moment int |k x (x - c)|^2 dA of the named side sets about the axis through c
+/// along the unit vector k (Cartesian), with each side counted once.
+double sidesetPolarMoment(const Mesh & mesh,
+                          const std::vector<std::string> & names,
+                          const Point & axis,
+                          const Point & center);
+
+/// Find the element containing x and its reference coordinates.
+/// Returns false if no element contains the point.
+class PointLocator
+{
+public:
+  explicit PointLocator(const Mesh & mesh);
+  bool locate(const Point & x, Index & element, Point & xi, double tolerance = 1e-8) const;
+
+private:
+  const Mesh & _mesh;
+  Point _lo, _hi;
+  int _n[3];
+  std::vector<std::vector<Index>> _bins;
+  int binIndex(int i, int j, int k) const { return (k * _n[1] + j) * _n[0] + i; }
+};
+
+} // namespace dualmesh

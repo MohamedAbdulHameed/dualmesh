@@ -1,0 +1,253 @@
+// SPDX-License-Identifier: LGPL-2.1-or-later
+//
+// Unstructured primal mesh: nodes, elements, blocks (subdomains), side sets
+// (boundary faces), and node sets.  The dual mesh of control domains is never
+// stored explicitly; it is generated element by element from the reference
+// element definitions (see ReferenceElement.h).
+#pragma once
+
+#include "dualmesh/core/Types.h"
+
+#include <array>
+#include <functional>
+#include <map>
+#include <string>
+#include <utility>
+#include <vector>
+
+namespace dualmesh
+{
+
+/// The element types the library knows.
+///
+/// The linear family (Edge2, Tri3, Quad4, Tet4, Hex8, Wedge6) and the full
+/// quadratic family (Edge3, Tri6, Quad9, Tet10, Hex27) carry a dual mesh and so
+/// work with every discretisation.  The serendipity elements Quad8 and Hex20
+/// and the pyramid Pyramid5 have no dual mesh and work with the finite element
+/// method only; a Problem refuses them for DMCDM and says why.  Node numbering follows VTK
+/// for every type, so files written and read through VTK need no reordering.
+enum class ElementType
+{
+  Edge2,
+  Tri3,
+  Quad4,
+  Tet4,
+  Hex8,
+  Edge3,
+  Tri6,
+  Quad9,
+  Tet10,
+  Hex27,
+  Quad8,
+  Hex20,
+  Wedge6,
+  Pyramid5
+};
+
+/// The number of element types (Pyramid5 is the last one: keep it last, or
+/// change this count with the list).
+inline constexpr int kNumElementTypes = static_cast<int>(ElementType::Pyramid5) + 1;
+
+/// The largest number of nodes any supported element has (Hex27).
+inline constexpr int kMaxElementNodes = 27;
+
+std::string elementTypeName(ElementType t);
+ElementType elementTypeFromName(const std::string & name);
+int elementNumNodes(ElementType t);
+int elementDimension(ElementType t);
+
+struct Element
+{
+  ElementType type;
+  std::array<Index, kMaxElementNodes> nodes;
+  int block = 0;
+  int numNodes() const { return elementNumNodes(type); }
+  /// The linear element with the same corners, used for geometric queries
+  /// such as point location and for output formats that cannot store the
+  /// higher-order nodes.
+  ElementType cornerType() const;
+  int numCorners() const { return elementNumNodes(cornerType()); }
+};
+
+/// Whether a type carries mid-edge, mid-face or interior nodes.
+bool elementIsQuadratic(ElementType t);
+/// The linear element with the same corners.
+ElementType elementCornerType(ElementType t);
+/// The quadratic element with the same corners, for mesh promotion.
+ElementType elementQuadraticType(ElementType t);
+
+/// The VTK cell type of an element type (VTK_LINE = 3, VTK_TRIANGLE = 5, and
+/// so on), used by the VTU writer and by the meshio bridge.
+int vtkCellType(ElementType t);
+/// The permutation from VTK local node numbering to dualmesh local node
+/// numbering: entry i is the dualmesh node that goes into VTK position i.
+/// dualmesh numbers every element as VTK does, so this is the identity; it is
+/// kept as the one place to change should a type ever need reordering.
+const std::vector<int> & vtkNodeOrder(ElementType t);
+
+/// A boundary side: (element index, local side index).
+using Side = std::pair<Index, int>;
+
+class Mesh
+{
+public:
+  explicit Mesh(int dimension = 2) : _dim(dimension) {}
+
+  // ---- construction ------------------------------------------------------
+  Index addNode(const Point & p);
+  Index addElement(ElementType type, const std::vector<Index> & nodes, int block = 0);
+  void setBlockName(int block, const std::string & name) { _block_names[block] = name; }
+  /// Place the mesh in a space of higher dimension than its elements: 3 for
+  /// a surface (2-D elements, a shell) or a curve in space, 2 for a curve in
+  /// the plane.  By default the space has the dimension of the elements.
+  void setSpaceDimension(int d);
+
+  /// Add (or extend) a side set from a list of boundary faces given by node ids.
+  /// Faces not found on the boundary are reported as an error.
+  void addSidesetFromFaces(const std::string & name, const std::vector<std::vector<Index>> & faces);
+  void addSideset(const std::string & name, const std::vector<Side> & sides);
+  void addNodeset(const std::string & name, const std::vector<Index> & nodes);
+  /// Give an existing side set (and its nodes) an additional name.
+  void aliasSideset(const std::string & existing, const std::string & new_name);
+  /// All exterior sides whose centroid satisfies @p predicate become a side set.
+  void addSidesetByPredicate(const std::string & name,
+                             const std::function<bool(const Point &)> & predicate);
+  /// All nodes that satisfy @p predicate become a node set.
+  void addNodesetByPredicate(const std::string & name,
+                             const std::function<bool(const Point &)> & predicate);
+  /// Apply x -> f(x) to every node (e.g. to bend a rectangle into an annulus).
+  void transformNodes(const std::function<Point(const Point &)> & f);
+  /// Fix element orientation so that every Jacobian determinant is positive.
+  /// On a surface in space, orient the elements consistently instead, so the
+  /// normals of neighbours agree (a surface with one side is refused), and
+  /// choose the side of each connected part: the side most of @p preferred
+  /// (one normal per element) agree with when it is given, otherwise outward
+  /// on a closed surface and, on an open one, the side with the largest
+  /// component of the summed normal positive (+z for a plate in the xy plane).
+  void fixOrientation(const std::vector<Point> & preferred = {});
+  /// Uniformly refine (every element is split into 2^dim children).
+  Mesh refined() const;
+  /// Return the same mesh with quadratic elements: Edge2 becomes Edge3, Tri3
+  /// becomes Tri6, Quad4 becomes Quad9, Tet4 becomes Tet10 and Hex8 becomes
+  /// Hex27.  With @p serendipity, Quad4 becomes Quad8 and Hex8 becomes Hex20
+  /// instead, which work with the finite element method only.  The corner nodes keep their numbers, the geometry is unchanged
+  /// (the added nodes are placed at the midpoints of the edges, faces and
+  /// cells they belong to), and side sets and node sets are carried over.
+  Mesh secondOrder(bool serendipity = false) const;
+
+  // ---- queries -----------------------------------------------------------
+  /// The dimension of the elements: 1, 2 or 3.
+  int dimension() const { return _dim; }
+  /// The dimension of the space the nodes live in: at least dimension().
+  int spaceDimension() const { return _space_dim > _dim ? _space_dim : _dim; }
+  Index numNodes() const { return static_cast<Index>(_nodes.size()); }
+  Index numElements() const { return static_cast<Index>(_elements.size()); }
+  const Point & node(Index i) const { return _nodes[i]; }
+  const std::vector<Point> & nodes() const { return _nodes; }
+  const Element & element(Index e) const { return _elements[e]; }
+  const std::vector<Element> & elements() const { return _elements; }
+  const std::map<std::string, std::vector<Side>> & sidesets() const { return _sidesets; }
+  const std::map<std::string, std::vector<Index>> & nodesets() const { return _nodesets; }
+  const std::map<int, std::string> & blockNames() const { return _block_names; }
+
+  /// A node of a mesh with hanging nodes whose value is a weighted sum of those of other nodes:
+  /// the node in the middle of a side of a larger neighbour takes the value of that side.
+  struct NodeConstraint
+  {
+    Index node = 0;
+    std::vector<std::pair<Index, double>> on;
+  };
+  const std::vector<NodeConstraint> & nodeConstraints() const { return _node_constraints; }
+  /// The hanging nodes decide which sides are inside, so the cached exterior sides go too.
+  void setNodeConstraints(std::vector<NodeConstraint> constraints)
+  {
+    _node_constraints = std::move(constraints);
+    invalidateCaches();
+  }
+  std::vector<int> blockIds() const;
+  /// Resolve a block given by name or by its integer id written as text.
+  int blockId(const std::string & name) const;
+  bool hasBoundary(const std::string & name) const;
+  const std::vector<Side> & sideset(const std::string & name) const;
+  /// Nodes of a node set, or of the sides of a side set with that name.
+  std::vector<Index> boundaryNodes(const std::string & name) const;
+  /// All exterior sides (computed on demand and cached).
+  const std::vector<Side> & exteriorSides() const;
+  /// One flag per node: is the node on the exterior boundary of the domain?
+  const std::vector<char> & boundaryNodeMarkers() const;
+  /// Global node ids of a side.
+  std::vector<Index> sideNodes(const Side & s) const;
+  Point elementCentroid(Index e) const;
+  Point sideCentroid(const Side & s) const;
+  /// Bounding box: {min, max}.
+  std::pair<Point, Point> boundingBox() const;
+  /// Build the default side sets (left/right/bottom/top/back/front) from the
+  /// bounding box for meshes that are aligned with the coordinate axes.  A node is on a face when
+  /// its distance to it is at most @p tolerance times the largest extent of the mesh.
+  void addBoundingBoxSidesets(double tolerance = 1e-10);
+  /// A short report of the mesh: dimensions, counts, element types, blocks,
+  /// side sets and node sets, one item per line.
+  std::string summary() const;
+
+private:
+  /// Orient the elements of a surface in space consistently (fixOrientation).
+  bool orientSurface(const std::vector<Point> * preferred);
+  /// The one place where the cached exterior sides and boundary node markers
+  /// are dropped, whenever the elements change.
+  void invalidateCaches()
+  {
+    _exterior_valid = false;
+    _boundary_valid = false;
+  }
+
+  int _dim;
+  int _space_dim = 0;
+  std::vector<Point> _nodes;
+  std::vector<Element> _elements;
+  std::map<int, std::string> _block_names;
+  std::map<std::string, std::vector<Side>> _sidesets;
+  std::map<std::string, std::vector<Index>> _nodesets;
+  std::vector<NodeConstraint> _node_constraints;
+  mutable std::vector<Side> _exterior_cache;
+  mutable bool _exterior_valid = false;
+  mutable std::vector<char> _boundary_nodes;
+  mutable bool _boundary_valid = false;
+};
+
+/// The members of a node set of @p old once nodes have been added between
+/// nodes of @p old to make @p out (a refinement or a promotion to second
+/// order).  @p added lists every added node with the nodes it was made from.
+/// An added node joins when all the nodes it was made from are members; for
+/// a set that lies on the boundary of @p old it must also lie on the boundary
+/// of @p out, so that the midpoint of a chord between two boundary members
+/// stays out.  The rule is applied until nothing changes, so that nodes made
+/// from added nodes are covered too.
+std::vector<Index> grownNodeset(const Mesh & old,
+                                const Mesh & out,
+                                const std::vector<Index> & members,
+                                const std::vector<std::pair<std::vector<Index>, Index>> & added);
+
+// ---- mesh generators -------------------------------------------------------
+
+/// 1D mesh through the given, increasing node coordinates.
+/// Side sets: "left", "right".
+Mesh generateLineMesh(const std::vector<double> & x);
+
+/// 2D structured mesh on the tensor grid x (columns) by y (rows).
+/// @param element "Quad4" or "Tri3".
+/// @param diagonal for triangles: "right" (/), "left" (\) or "alternate".
+/// Side sets: "left", "right", "bottom", "top".
+Mesh generateRectangleMesh(const std::vector<double> & x,
+                           const std::vector<double> & y,
+                           const std::string & element = "Quad4",
+                           const std::string & diagonal = "alternate");
+
+/// 3D structured mesh on the tensor grid x by y by z.
+/// @param element "Hex8" or "Tet4" (each hexahedron split into 6 tetrahedra).
+/// Side sets: "left", "right", "bottom", "top", "back", "front".
+Mesh generateBoxMesh(const std::vector<double> & x,
+                     const std::vector<double> & y,
+                     const std::vector<double> & z,
+                     const std::string & element = "Hex8");
+
+} // namespace dualmesh

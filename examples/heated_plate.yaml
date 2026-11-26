@@ -1,0 +1,28 @@
+# A steel plate 100 mm long and 20 mm wide, heated inside by 1 MW/m^3, held at 300 K on its left
+# side and cooled on its top side by air at 293 K with a heat transfer coefficient of 25 W/(m^2 K).
+# The other sides are insulated.  The plate is clamped on its left side and expands as it heats.
+# Run it with: dualmesh run heated_plate.yaml
+mesh:
+  rectangle: {size: [0.1 m, 0.02 m], cells: [40, 8]}
+
+physics:
+  heat_conduction: {}
+  solid_mechanics: {formulation: plane_stress}
+
+properties:
+  thermal_conductivity: 20 W/(m*K)
+  volumetric_heat_source: 1 MW/m^3
+  Young_modulus: 200 GPa
+  Poisson_ratio: 0.3
+  linear_expansion_coefficient: 1.2e-5 1/K
+  stress_free_temperature: 293 K
+
+boundary_conditions:
+  left: {temperature: 300 K, displacement_x: 0 m, displacement_y: 0 m}
+  top:
+    convection: {heat_transfer_coefficient: 25 W/(m^2*K), ambient_temperature: 293 K}
+
+postprocessors:
+  heat_through_left: {boundary_flux: heat_flux, boundary: left}
+  heat_through_top: {boundary_flux: heat_flux, boundary: top}
+  peak_temperature: {maximum: temperature}

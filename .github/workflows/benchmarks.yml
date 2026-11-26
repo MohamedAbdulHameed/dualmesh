@@ -1,0 +1,48 @@
+name: Benchmarks
+
+# Runs the benchmarks and keeps their results and figures as an artifact.
+# Start it by hand: gh workflow run Benchmarks --ref <branch> [-f scripts='["run_cavity"]']
+on:
+  workflow_dispatch:
+    inputs:
+      scripts:
+        description: The scripts to run, as a JSON list
+        default: '["run_Kovasznay", "run_cavity", "run_dfg_steady", "run_dfg_unsteady", "run_Cook", "run_NAFEMS_LE1"]'
+
+permissions:
+  contents: read
+
+jobs:
+  flow:
+    name: Benchmark ${{ matrix.script }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        script: ${{ fromJSON(inputs.scripts) }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: ./.github/actions/petsc
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          sudo apt-get update && sudo apt-get install -y libglu1-mesa libxcursor1 libxinerama1 libxft2
+          pip install ".[all,test]" gmsh
+      - name: Run
+        env:
+          SCRIPT: ${{ matrix.script }}
+        run: |
+          set -o pipefail
+          mkdir -p benchmark_output
+          python verification/benchmarks/*/"$SCRIPT.py" benchmark_output 2>&1 | tee "benchmark_output/$SCRIPT.log"
+      - name: Keep the results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ matrix.script }}
+          path: |
+            benchmark_output
+            verification/benchmarks/*/${{ matrix.script }}_cache.npz

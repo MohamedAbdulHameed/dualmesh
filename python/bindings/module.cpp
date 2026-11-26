@@ -1,0 +1,1894 @@
+// SPDX-License-Identifier: LGPL-2.1-or-later
+//
+// pybind11 bindings: the whole framework is usable from Python, including
+// user-defined kernels, boundary conditions, and property objects written in Python.
+#include <algorithm>
+#include <cctype>
+#include <pybind11/functional.h>
+#include <pybind11/numpy.h>
+#include <pybind11/operators.h>
+#include <pybind11/pybind11.h>
+#include <pybind11/stl.h>
+
+#include "dualmesh/base/Factory.h"
+#include "dualmesh/base/Problem.h"
+#include "dualmesh/core/ParsedFunction.h"
+#include "dualmesh/fe/Assembly.h"
+#include "dualmesh/linalg/PetscSolver.h"
+#include "dualmesh/linalg/SaddlePointBlocks.h"
+#include "dualmesh/mesh/Bisection.h"
+#include "dualmesh/mesh/Subdivision.h"
+#include "dualmesh/modules/Framework.h"
+#include "dualmesh/modules/Projection.h"
+#include "dualmesh/parallel/Checkpoint.h"
+#include "dualmesh/parallel/DistributedProblem.h"
+#include "dualmesh/parallel/GatherScatter.h"
+#include "dualmesh/parallel/Partition.h"
+
+#include <array>
+#include <cstdio>
+#include <iostream>
+#include <limits>
+#include <map>
+#include <optional>
+#include <sstream>
+#include <type_traits>
+
+namespace py = pybind11;
+using namespace dualmesh;
+
+namespace
+{
+
+/// A Function backed by a Python callable f(x, y, z, t).
+class PythonFunction : public Function
+{
+public:
+  // Evaluating this object calls back into the interpreter, which needs
+  // the global interpreter lock, so the problem must assemble serially.
+  bool threadSafe() const override { return false; }
+
+  explicit PythonFunction(py::function f) : _f(std::move(f)) {}
+  double value(const Point & x, double t) const override
+  {
+    py::gil_scoped_acquire gil;
+    return py::cast<double>(_f(x[0], x[1], x[2], t));
+  }
+  std::string description() const override { return "python function"; }
+
+private:
+  py::function _f;
+};
+
+FunctionPtr
+toFunction(const py::object & o)
+{
+  // A compiled function is checked first: pybind11's isinstance<function> is
+  // Python's callable() test, which a ParsedFunction (it has __call__) also
+  // passes, and wrapping it as a Python callback would evaluate it through the
+  // interpreter and force the assembly onto one thread.
+  if (py::isinstance<Function>(o))
+    return py::cast<std::shared_ptr<Function>>(o);
+  if (py::isinstance<py::function>(o))
+    return std::make_shared<PythonFunction>(py::cast<py::function>(o));
+  return std::make_shared<ConstantFunction>(py::cast<double>(o));
+}
+
+/// Convert a Python value into a ParameterValue.
+ParameterValue
+toParameter(const py::handle & v)
+{
+  if (py::isinstance<py::bool_>(v))
+    return py::cast<bool>(v);
+  if (py::isinstance<py::int_>(v))
+    return static_cast<long>(py::cast<long long>(v));
+  if (py::isinstance<py::float_>(v))
+    return py::cast<double>(v);
+  if (py::isinstance<py::str>(v))
+    return py::cast<std::string>(v);
+  if (py::isinstance<Function>(v)) // before the callable test; see toFunction
+    return py::cast<std::shared_ptr<Function>>(v);
+  if (py::isinstance<py::function>(v))
+    return std::static_pointer_cast<Function>(
+        std::make_shared<PythonFunction>(py::cast<py::function>(v)));
+  if (py::isinstance<py::dict>(v))
+  {
+    // Names with a value each: numbers give a RealMap, and texts (or numbers among texts) a StringMap.
+    auto d = py::cast<py::dict>(v);
+    bool all_num = true;
+    for (const auto & item : d)
+      all_num = all_num && !py::isinstance<py::bool_>(item.second) &&
+                (py::isinstance<py::int_>(item.second) || py::isinstance<py::float_>(item.second));
+    if (all_num)
+    {
+      RealMap map;
+      for (const auto & item : d)
+        map[py::cast<std::string>(item.first)] = py::cast<double>(item.second);
+      return map;
+    }
+    StringMap map;
+    for (const auto & item : d)
+      map[py::cast<std::string>(item.first)] = py::cast<std::string>(py::str(item.second));
+    return map;
+  }
+  if (py::isinstance<py::sequence>(v) && !py::isinstance<py::str>(v))
+  {
+    auto seq = py::cast<py::sequence>(v);
+    bool all_int = true, all_num = true, all_str = true;
+    for (const auto & item : seq)
+    {
+      all_int = all_int && py::isinstance<py::int_>(item) && !py::isinstance<py::bool_>(item);
+      all_num = all_num && (py::isinstance<py::int_>(item) || py::isinstance<py::float_>(item));
+      all_str = all_str && py::isinstance<py::str>(item);
+    }
+    if (py::len(seq) > 0 && all_str)
+      return py::cast<std::vector<std::string>>(seq);
+    // Numbers and texts together (a vector of expressions, some of them constants): all as texts.
+    bool all_text_or_number = py::len(seq) > 0;
+    for (const auto & item : seq)
+      all_text_or_number = all_text_or_number &&
+                           (py::isinstance<py::str>(item) || py::isinstance<py::int_>(item) ||
+                            py::isinstance<py::float_>(item)) &&
+                           !py::isinstance<py::bool_>(item);
+    if (all_text_or_number && !all_num)
+    {
+      std::vector<std::string> texts;
+      for (const auto & item : seq)
+        texts.push_back(py::cast<std::string>(py::str(item)));
+      return texts;
+    }
+    if (all_int && py::len(seq) > 0)
+      return py::cast<std::vector<long>>(seq);
+    if (all_num)
+      return py::cast<std::vector<double>>(seq);
+  }
+  throw InputError("Unsupported parameter value of type " +
+                   py::cast<std::string>(py::str(py::type::of(v))));
+}
+
+InputParameters
+paramsFromKwargs(InputParameters p, const py::kwargs & kwargs)
+{
+  for (const auto & item : kwargs)
+    p.set(py::cast<std::string>(item.first), toParameter(item.second));
+  return p;
+}
+
+// ---- trampolines ---------------------------------------------------------
+class PyKernel : public Kernel
+{
+public:
+  // Evaluating this object calls back into the interpreter, which needs
+  // the global interpreter lock, so the problem must assemble serially.
+  bool threadSafe() const override { return false; }
+
+  using Kernel::Kernel;
+  void initialSetup(Problem & problem) override
+  {
+    PYBIND11_OVERRIDE_NAME(void, Kernel, "initial_setup", initialSetup, std::ref(problem));
+  }
+  bool hasFlux() const override { PYBIND11_OVERRIDE_NAME(bool, Kernel, "has_flux", hasFlux); }
+  bool hasSource() const override { PYBIND11_OVERRIDE_NAME(bool, Kernel, "has_source", hasSource); }
+  bool isTimeKernel() const override
+  {
+    PYBIND11_OVERRIDE_NAME(bool, Kernel, "is_time_kernel", isTimeKernel);
+  }
+  std::vector<std::string> requiredProperties() const override
+  {
+    PYBIND11_OVERRIDE_NAME(
+        std::vector<std::string>, Kernel, "required_properties", requiredProperties);
+  }
+  void computeFlux(const QpContext & ctx, ADVector3 & F) const override
+  {
+    py::gil_scoped_acquire gil;
+    py::function f = py::get_override(static_cast<const Kernel *>(this), "compute_flux");
+    if (!f)
+      return;
+    py::object r = f(py::cast(&ctx, py::return_value_policy::reference));
+    auto seq = py::cast<py::sequence>(r);
+    for (std::size_t i = 0; i < py::len(seq) && i < 3; ++i)
+      F[i] = py::isinstance<ADReal>(seq[i]) ? py::cast<ADReal>(seq[i])
+                                            : ADReal(py::cast<double>(seq[i]));
+  }
+  ADReal computeSource(const QpContext & ctx) const override
+  {
+    py::gil_scoped_acquire gil;
+    py::function f = py::get_override(static_cast<const Kernel *>(this), "compute_source");
+    if (!f)
+      return ADReal(0.0);
+    py::object r = f(py::cast(&ctx, py::return_value_policy::reference));
+    return py::isinstance<ADReal>(r) ? py::cast<ADReal>(r) : ADReal(py::cast<double>(r));
+  }
+};
+
+class PyIntegratedBC : public IntegratedBC
+{
+public:
+  // Evaluating this object calls back into the interpreter, which needs
+  // the global interpreter lock, so the problem must assemble serially.
+  bool threadSafe() const override { return false; }
+
+  using IntegratedBC::IntegratedBC;
+  void initialSetup(Problem & problem) override
+  {
+    PYBIND11_OVERRIDE_NAME(void, IntegratedBC, "initial_setup", initialSetup, std::ref(problem));
+  }
+  ADReal computeBoundaryFlux(const QpContext & ctx) const override
+  {
+    py::gil_scoped_acquire gil;
+    py::function f =
+        py::get_override(static_cast<const IntegratedBC *>(this), "compute_boundary_flux");
+    if (!f)
+      return ADReal(0.0);
+    py::object r = f(py::cast(&ctx, py::return_value_policy::reference));
+    return py::isinstance<ADReal>(r) ? py::cast<ADReal>(r) : ADReal(py::cast<double>(r));
+  }
+};
+
+class PyNodalBC : public NodalBC
+{
+public:
+  // Evaluating this object calls back into the interpreter, which needs
+  // the global interpreter lock, so the problem must assemble serially.
+  bool threadSafe() const override { return false; }
+
+  using NodalBC::NodalBC;
+  void initialSetup(Problem & problem) override
+  {
+    PYBIND11_OVERRIDE_NAME(void, NodalBC, "initial_setup", initialSetup, std::ref(problem));
+  }
+  double computeValue(const Point & x, double t) const override
+  {
+    PYBIND11_OVERRIDE_PURE_NAME(double, NodalBC, "compute_value", computeValue, x, t);
+  }
+};
+
+class PyProperty : public Property
+{
+public:
+  // Evaluating this object calls back into the interpreter, which needs
+  // the global interpreter lock, so the problem must assemble serially.
+  bool threadSafe() const override { return false; }
+
+  using Property::Property;
+  void initialSetup(Problem & problem) override
+  {
+    PYBIND11_OVERRIDE_NAME(void, Property, "initial_setup", initialSetup, std::ref(problem));
+  }
+  void declareProperties(PropertyRegistry & r) override
+  {
+    PYBIND11_OVERRIDE_PURE_NAME(
+        void, Property, "declare_properties", declareProperties, std::ref(r));
+  }
+  void computeProperties(QpContext & ctx) const override
+  {
+    py::gil_scoped_acquire gil;
+    py::function f = py::get_override(static_cast<const Property *>(this), "compute_properties");
+    if (f)
+      f(py::cast(&ctx, py::return_value_policy::reference));
+  }
+};
+
+Method
+methodFromString(const std::string & given)
+{
+  // The abbreviations keep their capitals, and the lower case is accepted too.
+  std::string s = given;
+  std::transform(s.begin(),
+                 s.end(),
+                 s.begin(),
+                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  if (s == "dmcdm")
+    return Method::DualMesh;
+  if (s == "fem")
+    return Method::FiniteElement;
+  throw InputError("Unknown method '" + given +
+                   "' (use 'FEM', the finite element method, for solids, or 'DMCDM', the dual "
+                   "mesh control domain method, for fluids).");
+}
+
+CoordinateSystem
+coordFromString(const std::string & s)
+{
+  if (s == "cartesian" || s == "xyz")
+    return CoordinateSystem::Cartesian;
+  if (s == "axisymmetric" || s == "rz" || s == "cylindrical")
+    return CoordinateSystem::Axisymmetric;
+  if (s == "spherical")
+    return CoordinateSystem::SphericalRadial;
+  throw InputError("Unknown coordinate system '" + s +
+                   "' (use 'cartesian', 'axisymmetric', or 'spherical').");
+}
+
+} // namespace
+
+namespace
+{
+/// A parameter value as the text a user would type.
+std::string
+parameterText(const ParameterValue & value)
+{
+  std::string text;
+  std::visit(
+      [&text](const auto & v)
+      {
+        using T = std::decay_t<decltype(v)>;
+        if constexpr (std::is_same_v<T, std::monostate>)
+          text = "";
+        else if constexpr (std::is_same_v<T, bool>)
+          text = v ? "true" : "false";
+        else if constexpr (std::is_same_v<T, long>)
+          text = std::to_string(v);
+        else if constexpr (std::is_same_v<T, double>)
+        {
+          std::ostringstream os;
+          os << v;
+          text = os.str();
+        }
+        else if constexpr (std::is_same_v<T, std::string>)
+          text = v;
+        else if constexpr (std::is_same_v<T, std::vector<double>> ||
+                           std::is_same_v<T, std::vector<long>>)
+        {
+          std::ostringstream os;
+          for (std::size_t i = 0; i < v.size(); ++i)
+            os << (i ? ", " : "") << v[i];
+          text = os.str();
+        }
+        else if constexpr (std::is_same_v<T, std::vector<std::string>>)
+        {
+          for (std::size_t i = 0; i < v.size(); ++i)
+            text += (i ? ", " : "") + v[i];
+        }
+        else if constexpr (std::is_same_v<T, RealMap> || std::is_same_v<T, StringMap>)
+        {
+          std::ostringstream os;
+          bool first = true;
+          for (const auto & [key, item] : v)
+          {
+            os << (first ? "" : ", ") << key << ": " << item;
+            first = false;
+          }
+          text = os.str();
+        }
+        else
+          text = "function";
+      },
+      value);
+  return text;
+}
+} // namespace
+
+PYBIND11_MODULE(_core, m)
+{
+  m.doc() = "dualmesh: dual mesh control domain method for computational mechanics (core)";
+
+  py::register_exception<InputError>(m, "InputError", PyExc_ValueError);
+
+  // ---- automatic differentiation -----------------------------------------
+  py::class_<ADReal>(m, "ADReal", "Forward-mode automatic differentiation number.")
+      .def(py::init<double>())
+      .def_property_readonly("value", [](const ADReal & a) { return a.value(); })
+      .def("derivative", &ADReal::derivative)
+      .def("__float__", [](const ADReal & a) { return a.value(); })
+      .def("__repr__", [](const ADReal & a) { return "ADReal(" + std::to_string(a.value()) + ")"; })
+      .def(py::self + py::self)
+      .def(py::self - py::self)
+      .def(py::self * py::self)
+      .def(py::self / py::self)
+      .def(py::self + double())
+      .def(py::self - double())
+      .def(py::self * double())
+      .def(py::self / double())
+      .def(double() + py::self)
+      .def(double() - py::self)
+      .def(double() * py::self)
+      .def(double() / py::self)
+      .def(-py::self)
+      .def("__pow__", [](const ADReal & a, double p) { return pow(a, p); })
+      .def("__pow__", [](const ADReal & a, const ADReal & b) { return pow(a, b); });
+
+  m.def("sqrt", [](const ADReal & a) { return sqrt(a); });
+  m.def("exp", [](const ADReal & a) { return exp(a); });
+  m.def("log", [](const ADReal & a) { return log(a); });
+  m.def("sin", [](const ADReal & a) { return sin(a); });
+  m.def("cos", [](const ADReal & a) { return cos(a); });
+  m.def("tanh", [](const ADReal & a) { return tanh(a); });
+  m.def("abs", [](const ADReal & a) { return abs(a); });
+
+  // ---- expressions -------------------------------------------------------
+  py::class_<ParsedExpression, std::shared_ptr<ParsedExpression>>(
+      m,
+      "Expression",
+      "An expression of named variables, compiled once to C++ and evaluated with plain "
+      "numbers or arrays. It is the expression language of the parsed objects "
+      "(parsed_property, parsed_eigenstrain and the parsed creep of small_strain_stress), "
+      "so a correlation can be checked in Python before it is used in a problem.")
+      .def(py::init<std::string, std::vector<std::string>>(),
+           py::arg("expression"),
+           py::arg("variables"))
+      .def_property_readonly("expression", &ParsedExpression::text)
+      .def_property_readonly("variables", &ParsedExpression::variables)
+      .def_property_readonly(
+          "used_variables",
+          [](const ParsedExpression & e)
+          {
+            std::vector<std::string> used;
+            for (std::size_t k = 0; k < e.variables().size(); ++k)
+              if (e.uses(static_cast<int>(k)))
+                used.push_back(e.variables()[k]);
+            return used;
+          },
+          "The variables the expression actually uses, in the order they were named.")
+      .def(
+          "__call__",
+          [](const ParsedExpression & e, py::kwargs kwargs) -> py::object
+          {
+            const auto & names = e.variables();
+            std::vector<py::array_t<double>> arrays;
+            std::vector<std::string> missing;
+            for (const auto & n : names)
+            {
+              if (!kwargs.contains(n.c_str()))
+              {
+                missing.push_back(n);
+                continue;
+              }
+              arrays.push_back(py::array_t<double>::ensure(kwargs[n.c_str()]));
+            }
+            if (!missing.empty())
+            {
+              std::string text;
+              for (const auto & n : missing)
+                text += (text.empty() ? "" : ", ") + n;
+              throw InputError("Expression \"" + e.text() + "\": no value given for " + text + ".");
+            }
+            for (auto item : kwargs)
+            {
+              const auto key = py::cast<std::string>(item.first);
+              if (e.index(key) < 0)
+                throw InputError("Expression \"" + e.text() + "\" has no variable '" + key + "'.");
+            }
+            // An expression of no variables is a number.
+            if (names.empty())
+              return py::float_(e.value(static_cast<const double *>(nullptr)));
+            // Broadcast every argument to one shape.
+            py::module_ np = py::module_::import("numpy");
+            py::list items;
+            for (auto & a : arrays)
+              items.append(a);
+            py::tuple broadcast = np.attr("broadcast_arrays")(*items);
+            const std::size_t n = names.size();
+            py::array_t<double> first = py::array_t<double>::ensure(broadcast[0]);
+            const py::ssize_t count = first.size();
+            std::vector<py::array_t<double>> flat;
+            for (std::size_t k = 0; k < n; ++k)
+              flat.push_back(py::array_t<double, py::array::c_style | py::array::forcecast>::ensure(
+                  np.attr("ascontiguousarray")(broadcast[k])));
+            py::array_t<double> out(count);
+            auto o = out.mutable_unchecked<1>();
+            std::vector<double> values(n);
+            for (py::ssize_t i = 0; i < count; ++i)
+            {
+              for (std::size_t k = 0; k < n; ++k)
+                values[k] = flat[k].data()[i];
+              o(i) = e.value(values.data());
+            }
+            if (first.ndim() == 0)
+              return py::float_(o(0));
+            return out.attr("reshape")(first.attr("shape"));
+          },
+          "Evaluate with every variable given by name, as a number or an array (the arrays "
+          "broadcast together).");
+
+  // ---- functions ---------------------------------------------------------
+  py::class_<Function, std::shared_ptr<Function>>(m, "Function").def("value", &Function::value);
+  py::class_<ParsedFunction, Function, std::shared_ptr<ParsedFunction>>(m, "ParsedFunction")
+      .def(py::init<std::string>(), py::arg("expression"))
+      .def_property_readonly("expression", &ParsedFunction::expression)
+      .def(
+          "__call__",
+          [](const ParsedFunction & f, double x, double y, double z, double t)
+          { return f.value(Point{x, y, z}, t); },
+          py::arg("x"),
+          py::arg("y") = 0.0,
+          py::arg("z") = 0.0,
+          py::arg("t") = 0.0)
+      .def("__repr__",
+           [](const ParsedFunction & f)
+           { return "<dualmesh.ParsedFunction '" + f.expression() + "'>"; });
+  py::class_<ConstantFunction, Function, std::shared_ptr<ConstantFunction>>(m, "ConstantFunction")
+      .def(py::init<double>());
+  py::class_<PiecewiseLinearFunction, Function, std::shared_ptr<PiecewiseLinearFunction>>(
+      m, "PiecewiseLinearFunction")
+      .def(py::init<std::vector<double>, std::vector<double>, int>(),
+           py::arg("abscissa"),
+           py::arg("ordinate"),
+           py::arg("axis") = 3);
+  py::class_<SettableFunction, Function, std::shared_ptr<SettableFunction>>(
+      m, "SettableFunction", "A constant whose value can be changed between solves with set().")
+      .def(py::init<double>(), py::arg("value") = 0.0)
+      .def("set", &SettableFunction::set, py::arg("value"))
+      .def("get", &SettableFunction::get);
+
+  // ---- mesh --------------------------------------------------------------
+  py::class_<Mesh, std::shared_ptr<Mesh>>(
+      m,
+      "Mesh",
+      "A mesh of finite elements: nodes, elements of any of the fourteen supported types "
+      "(which may be mixed), element blocks, side sets and node sets. Meshes are usually "
+      "made by the generators (generate_rectangle_mesh and the others) or read from a file "
+      "(read_mesh), but can be built node by node with add_node and add_element.")
+      .def(py::init(
+               [](int dimension, int space_dimension)
+               {
+                 Mesh m(dimension);
+                 if (space_dimension)
+                   m.setSpaceDimension(space_dimension);
+                 return m;
+               }),
+           py::arg("dimension") = 2,
+           py::arg("space_dimension") = 0,
+           "An empty mesh whose elements have the given dimension (1, 2 or 3).  "
+           "space_dimension places it in a space of higher dimension: 3 for a surface "
+           "(a shell) or a curve in space; by default the space has the dimension of the "
+           "elements.")
+      .def_property_readonly(
+          "dimension", &Mesh::dimension, "The dimension of the elements, 1, 2 or 3.")
+      .def_property("space_dimension",
+                    &Mesh::spaceDimension,
+                    &Mesh::setSpaceDimension,
+                    "The dimension of the space the nodes live in: 3 for a surface in space, "
+                    "otherwise the dimension of the elements.")
+      .def_property_readonly("num_nodes", &Mesh::numNodes, "The number of nodes.")
+      .def_property_readonly("num_elements", &Mesh::numElements, "The number of elements.")
+      .def(
+          "element_measures",
+          [](const Mesh & mesh)
+          {
+            std::vector<double> out(mesh.numElements());
+            for (Index e = 0; e < mesh.numElements(); ++e)
+              out[e] = elementMeasure(mesh, e);
+            return out;
+          },
+          "The length, area or volume of every element.")
+      .def("add_node",
+           &Mesh::addNode,
+           py::arg("point"),
+           "Add a node at (x, y, z) and return its index.")
+      .def(
+          "add_element",
+          [](Mesh & mesh, const std::string & type, const std::vector<Index> & nodes, int block)
+          { return mesh.addElement(elementTypeFromName(type), nodes, block); },
+          py::arg("element_type"),
+          py::arg("nodes"),
+          py::arg("block") = 0,
+          "Add an element of the named type (for instance 'Quad4') on the given nodes, "
+          "numbered as VTK numbers them, in element block 'block'. Returns its index.")
+      .def("node", &Mesh::node, py::arg("index"), "The coordinates (x, y, z) of a node.")
+      .def(
+          "points",
+          [](const Mesh & mesh)
+          {
+            py::array_t<double> a(
+                {static_cast<py::ssize_t>(mesh.numNodes()), static_cast<py::ssize_t>(3)});
+            auto r = a.mutable_unchecked<2>();
+            for (Index i = 0; i < mesh.numNodes(); ++i)
+              for (int d = 0; d < 3; ++d)
+                r(i, d) = mesh.node(i)[d];
+            return a;
+          },
+          "The coordinates of every node, as an array of shape (num_nodes, 3).")
+      .def(
+          "cells",
+          [](const Mesh & mesh)
+          {
+            py::list out;
+            for (const auto & el : mesh.elements())
+            {
+              py::list conn;
+              for (int k = 0; k < el.numNodes(); ++k)
+                conn.append(el.nodes[k]);
+              out.append(py::make_tuple(elementTypeName(el.type), conn, el.block));
+            }
+            return out;
+          },
+          "Every element as a tuple (type, node indices, block).")
+      .def(
+          "element_nodes",
+          [](const Mesh & mesh, Index e)
+          {
+            std::vector<Index> out;
+            for (int k = 0; k < mesh.element(e).numNodes(); ++k)
+              out.push_back(mesh.element(e).nodes[k]);
+            return out;
+          },
+          py::arg("element"),
+          "The node indices of an element.")
+      .def(
+          "element_type",
+          [](const Mesh & mesh, Index e) { return elementTypeName(mesh.element(e).type); },
+          py::arg("element"),
+          "The type of an element, for instance 'Hex8'.")
+      .def("set_block_name",
+           &Mesh::setBlockName,
+           py::arg("block"),
+           py::arg("name"),
+           "Give an element block a name, by which objects can then be restricted to it.")
+      .def("block_ids", &Mesh::blockIds, "The ids of the element blocks present.")
+      .def("block_names", &Mesh::blockNames, "The names of the named element blocks, by block id.")
+      .def("add_sideset_from_faces",
+           &Mesh::addSidesetFromFaces,
+           py::arg("name"),
+           py::arg("faces"),
+           "Add a side set from faces given by their node indices (a list of node lists); "
+           "each face is matched to the element side with those nodes.")
+      .def("add_nodeset",
+           &Mesh::addNodeset,
+           py::arg("name"),
+           py::arg("nodes"),
+           "Add a node set from a list of node indices.")
+      .def("alias_sideset",
+           &Mesh::aliasSideset,
+           py::arg("name"),
+           py::arg("alias"),
+           "Make 'alias' a second name for the existing side set 'name'.")
+      .def(
+          "add_sideset_by_predicate",
+          [](Mesh & mesh, const std::string & name, const py::function & f)
+          {
+            mesh.addSidesetByPredicate(name,
+                                       [f](const Point & p)
+                                       {
+                                         py::gil_scoped_acquire gil;
+                                         return py::cast<bool>(f(p[0], p[1], p[2]));
+                                       });
+          },
+          py::arg("name"),
+          py::arg("predicate"),
+          "Add a side set of the boundary sides whose centroid satisfies "
+          "predicate(x, y, z).")
+      .def(
+          "add_nodeset_by_predicate",
+          [](Mesh & mesh, const std::string & name, const py::function & f)
+          {
+            mesh.addNodesetByPredicate(name,
+                                       [f](const Point & p)
+                                       {
+                                         py::gil_scoped_acquire gil;
+                                         return py::cast<bool>(f(p[0], p[1], p[2]));
+                                       });
+          },
+          py::arg("name"),
+          py::arg("predicate"),
+          "Add a node set of the nodes that satisfy predicate(x, y, z).")
+      .def(
+          "transform_nodes",
+          [](Mesh & mesh, const py::function & f)
+          {
+            mesh.transformNodes(
+                [f](const Point & p)
+                {
+                  py::gil_scoped_acquire gil;
+                  auto r = py::cast<std::vector<double>>(f(p[0], p[1], p[2]));
+                  Point out{0, 0, 0};
+                  for (std::size_t i = 0; i < r.size() && i < 3; ++i)
+                    out[i] = r[i];
+                  return out;
+                });
+          },
+          py::arg("map"),
+          "Move every node: map(x, y, z) returns the new coordinates. Promote a mesh to "
+          "second order before mapping it onto a curved domain, so that the mid-side nodes "
+          "land on the curve.")
+      .def(
+          "fix_orientation",
+          [](Mesh & mesh, std::optional<py::array_t<double>> preferred)
+          {
+            std::vector<Point> normals;
+            if (preferred)
+            {
+              const auto a = preferred->unchecked<2>();
+              if (a.shape(1) != 3)
+                throw InputError("preferred must have shape (num_elements, 3).");
+              for (py::ssize_t i = 0; i < a.shape(0); ++i)
+                normals.push_back({a(i, 0), a(i, 1), a(i, 2)});
+            }
+            mesh.fixOrientation(normals);
+          },
+          py::arg("preferred") = py::none(),
+          "Wind every element consistently.  A mesh that fills its space gets positive "
+          "Jacobian determinants.  A surface in space is oriented so that the normals of "
+          "neighbours agree (a surface with one side is refused); each connected part then "
+          "takes the side most of ``preferred`` (one normal per element, shape "
+          "(num_elements, 3)) agree with, or, without it, points outward when closed and "
+          "has the largest component of its summed normal positive when open.  The readers "
+          "call it.")
+      .def("refined",
+           &Mesh::refined,
+           "A uniformly refined copy: every element is split into 2^dim children (a pyramid into "
+           "six pyramids and four tetrahedra), and the "
+           "side sets and node sets are carried over. Only linear meshes can be refined; "
+           "refine first and promote to second order afterwards.")
+      .def("second_order",
+           &Mesh::secondOrder,
+           py::arg("serendipity") = false,
+           "A copy of this mesh with quadratic elements. Edge2 becomes Edge3, Tri3 becomes "
+           "Tri6, Quad4 becomes Quad9, Tet4 becomes Tet10 and Hex8 becomes Hex27; with "
+           "serendipity=True, Quad4 becomes Quad8 and Hex8 becomes Hex20 instead, which work "
+           "with the finite element method only. The corner "
+           "nodes keep their numbers and positions, so the geometry of the domain does not "
+           "change; the added nodes sit at the midpoints of the edges, faces and cells they "
+           "belong to. Side sets carry over unchanged and node sets gain the added nodes that "
+           "lie between members.")
+      .def_static(
+          "vtk_node_order",
+          [](const std::string & element_type)
+          { return vtkNodeOrder(elementTypeFromName(element_type)); },
+          py::arg("element_type"),
+          "The permutation from VTK local node numbering to dualmesh local node numbering. "
+          "dualmesh numbers every element as VTK does, so it is the identity.")
+      .def("add_bounding_box_sidesets",
+           &Mesh::addBoundingBoxSidesets,
+           py::arg("tolerance") = 1e-10,
+           "Add side sets named left, right, bottom, top (and front, back in three "
+           "dimensions) from the boundary sides that lie on the faces of the bounding box.")
+      .def("boundary_nodes",
+           &Mesh::boundaryNodes,
+           py::arg("name"),
+           "The nodes of a side set or a node set.")
+      .def(
+          "sideset",
+          [](const Mesh & mesh, const std::string & name)
+          {
+            std::vector<std::pair<Index, int>> out;
+            for (const Side & side : mesh.sideset(name))
+              out.emplace_back(side.first, side.second);
+            return out;
+          },
+          py::arg("name"),
+          "The sides of a side set, as (element, local side) pairs.")
+      .def(
+          "exterior_sides",
+          [](const Mesh & mesh)
+          {
+            std::vector<std::pair<Index, int>> out;
+            for (const Side & side : mesh.exteriorSides())
+              out.emplace_back(side.first, side.second);
+            return out;
+          },
+          "All the sides on the exterior boundary of the domain, as (element, local side) pairs.")
+      .def(
+          "side_nodes",
+          [](const Mesh & mesh, const std::vector<std::pair<Index, int>> & sides)
+          {
+            std::vector<std::vector<Index>> out;
+            out.reserve(sides.size());
+            for (const auto & side : sides)
+              out.push_back(mesh.sideNodes({side.first, side.second}));
+            return out;
+          },
+          py::arg("sides"),
+          "The node indices of each side in a list of (element, local side) pairs. The corner "
+          "nodes come first, in the order of the side's own element type.")
+      .def(
+          "sideset_polar_moment",
+          [](const Mesh & mesh,
+             const std::vector<std::string> & names,
+             const Point & axis,
+             const Point & center) { return sidesetPolarMoment(mesh, names, axis, center); },
+          py::arg("names"),
+          py::arg("axis"),
+          py::arg("center"),
+          "The polar moment int |k x (x - c)|^2 dA of the named side sets about the axis through "
+          "'center' along the unit vector 'axis'.")
+      .def(
+          "sideset_measure",
+          [](const Mesh & mesh, const std::vector<std::string> & names)
+          { return sidesetMeasure(mesh, names); },
+          py::arg("names"),
+          "The total length (in two dimensions) or area (in three) of the named side sets, "
+          "integrated with the isoparametric map of the elements. A side in several of the sets "
+          "is counted once.")
+      .def(
+          "sideset_names",
+          [](const Mesh & mesh)
+          {
+            std::vector<std::string> out;
+            for (const auto & [n, s] : mesh.sidesets())
+              out.push_back(n);
+            return out;
+          },
+          "The names of the side sets.")
+      .def(
+          "nodeset_names",
+          [](const Mesh & mesh)
+          {
+            std::vector<std::string> out;
+            for (const auto & [n, s] : mesh.nodesets())
+              out.push_back(n);
+            return out;
+          },
+          "The names of the node sets.")
+      .def("element_centroid",
+           &Mesh::elementCentroid,
+           py::arg("element"),
+           "The mean of the coordinates of an element's nodes.")
+      .def(
+          "summary",
+          &Mesh::summary,
+          "A short report of the mesh: dimensions, counts, element types, blocks, side sets and node sets.")
+      .def("__repr__", [](const Mesh & mesh) { return "<dualmesh.Mesh " + mesh.summary() + ">"; });
+
+  m.def("generate_line_mesh", &generateLineMesh, py::arg("x"));
+  m.def("generate_rectangle_mesh",
+        &generateRectangleMesh,
+        py::arg("x"),
+        py::arg("y"),
+        py::arg("element_type") = "Quad4",
+        py::arg("diagonal") = "alternate");
+  py::class_<MeshHierarchy>(m, "MeshHierarchy")
+      .def(
+          "mesh", [](const MeshHierarchy & h) { return h.mesh(); }, "The current mesh.")
+      .def(
+          "refine",
+          [](MeshHierarchy & h, const std::vector<int> & marked, int max_level)
+          { return h.refine(std::vector<char>(marked.begin(), marked.end()), max_level); },
+          py::arg("marked"),
+          py::arg("max_level"),
+          "Refine the marked elements below max_level refinements, and those that the "
+          "conformity or the balance needs; return whether the mesh changed.")
+      .def(
+          "coarsen",
+          [](MeshHierarchy & h, const std::vector<int> & marked)
+          { return h.coarsen(std::vector<char>(marked.begin(), marked.end())); },
+          py::arg("marked"),
+          "Coarsen every family whose elements are all marked; return whether the mesh changed.")
+      .def(
+          "adapt",
+          [](MeshHierarchy & h,
+             const std::vector<int> & refine,
+             const std::vector<int> & coarsen,
+             int max_level)
+          {
+            return h.adapt(std::vector<char>(refine.begin(), refine.end()),
+                           std::vector<char>(coarsen.begin(), coarsen.end()),
+                           max_level);
+          },
+          py::arg("refine"),
+          py::arg("coarsen"),
+          py::arg("max_level"),
+          "Coarsen the families whose elements are all marked to coarsen and none to refine, "
+          "then refine, in one change; return whether the mesh changed.")
+      .def(
+          "project",
+          [](MeshHierarchy & h, const std::string & name, const py::function & projection)
+          {
+            h.project(
+                name,
+                [&](const Point & x)
+                {
+                  const auto moved =
+                      projection(py::make_tuple(x[0], x[1], x[2])).cast<std::vector<double>>();
+                  Point out{0, 0, 0};
+                  for (std::size_t k = 0; k < moved.size() && k < 3; ++k)
+                    out[static_cast<int>(k)] = moved[k];
+                  return out;
+                });
+          },
+          py::arg("name"),
+          py::arg("projection"),
+          "Move the nodes of a side set onto a curved boundary, except the hanging nodes: "
+          "projection((x, y, z)) gives the point of each.")
+      .def("levels", &MeshHierarchy::levels)
+      .def("origins", &MeshHierarchy::origins)
+      .def(
+          "transfer",
+          [](MeshHierarchy & h, const std::vector<double> & values, int width)
+          {
+            const Eigen::VectorXd after = h.transfer(
+                Eigen::Map<const Eigen::VectorXd>(values.data(), static_cast<Index>(values.size())),
+                width);
+            return std::vector<double>(after.data(), after.data() + after.size());
+          },
+          py::arg("values"),
+          py::arg("width"),
+          "Values at the nodes of the mesh before the last change, width per node, carried to "
+          "the current mesh.")
+      .def(
+          "restrict",
+          [](MeshHierarchy & h,
+             const std::vector<double> & values,
+             int width,
+             const std::vector<double> & measures)
+          {
+            const Eigen::VectorXd after = h.restrictValues(
+                Eigen::Map<const Eigen::VectorXd>(values.data(), static_cast<Index>(values.size())),
+                width,
+                Eigen::Map<const Eigen::VectorXd>(measures.data(),
+                                                  static_cast<Index>(measures.size())));
+            return std::vector<double>(after.data(), after.data() + after.size());
+          },
+          py::arg("values"),
+          py::arg("width"),
+          py::arg("measures"),
+          "Values at the nodes of the mesh before the last change, width per node, carried to "
+          "the current mesh so that the sum of the values times the measures of the nodes "
+          "before stays: a removed node gives its content to the nodes of its merged element.");
+  py::class_<Subdivision, MeshHierarchy>(m, "Subdivision")
+      .def(py::init<const Mesh &>(), py::arg("mesh"))
+      .def(
+          "hanging",
+          [](const Subdivision & s)
+          {
+            py::list out;
+            for (const auto & h : s.hanging())
+              out.append(py::make_tuple(h.node, h.on));
+            return out;
+          },
+          "The hanging nodes: (node, [(node, weight), ...]) for each.");
+  py::class_<Bisection, MeshHierarchy>(m, "Bisection")
+      .def(py::init<const Mesh &>(), py::arg("mesh"));
+
+  m.def("generate_box_mesh",
+        &generateBoxMesh,
+        py::arg("x"),
+        py::arg("y"),
+        py::arg("z"),
+        py::arg("element_type") = "Hex8");
+
+  // ---- parameters and objects ---------------------------------------------
+  py::class_<InputParameters>(m, "InputParameters")
+      .def(py::init<>())
+      .def("set",
+           [](InputParameters & p, const std::string & n, const py::object & v)
+           { p.set(n, toParameter(v)); })
+      .def("has", &InputParameters::has, py::arg("name"))
+      .def("describe", &InputParameters::describe);
+
+  py::class_<QpContext>(m, "QpContext", "State at one integration point.")
+      .def_readonly("dim", &QpContext::dim)
+      .def_readonly("x", &QpContext::x)
+      .def_readonly("time", &QpContext::time)
+      .def_readonly("dt", &QpContext::dt)
+      .def_readonly("element", &QpContext::element)
+      .def_readonly("block", &QpContext::block)
+      .def_readonly("normal", &QpContext::normal)
+      .def_readonly("on_boundary", &QpContext::on_boundary)
+      .def_readonly("data_fraction", &QpContext::data_fraction)
+      .def("value", &QpContext::value, py::return_value_policy::copy)
+      .def("gradient",
+           [](const QpContext & c, int v)
+           {
+             const auto & g = c.gradient(v);
+             return std::vector<ADReal>{g[0], g[1], g[2]};
+           })
+      .def("coefficient_value", &QpContext::coefficientValue, py::return_value_policy::copy)
+      .def("coefficient_gradient",
+           [](const QpContext & c, int v)
+           {
+             const auto & g = c.coefficientGradient(v);
+             return std::vector<ADReal>{g[0], g[1], g[2]};
+           })
+      .def("old_value", &QpContext::oldValue)
+      .def("old_gradient", [](const QpContext & c, int v) { return c.oldGradient(v); })
+      .def(
+          "property",
+          [](const QpContext & c, int id, int component) { return c.property(id, component); },
+          py::arg("property_id"),
+          py::arg("component") = 0)
+      .def(
+          "set_property",
+          [](QpContext & c, int id, const py::object & v, int component)
+          {
+            c.property(id, component) =
+                py::isinstance<ADReal>(v) ? py::cast<ADReal>(v) : ADReal(py::cast<double>(v));
+          },
+          py::arg("property_id"),
+          py::arg("value"),
+          py::arg("component") = 0)
+      .def_property_readonly(
+          "is_picard", [](const QpContext & c) { return c.mode == LinearizationMode::Picard; });
+
+  py::class_<PropertyRegistry>(m, "PropertyRegistry")
+      .def("declare", &PropertyRegistry::declare, py::arg("name"), py::arg("components") = 1)
+      .def("id", &PropertyRegistry::id);
+
+  py::class_<Object, std::shared_ptr<Object>>(m, "Object")
+      .def_property_readonly("name", &Object::name)
+      .def_property_readonly("type", &Object::type)
+      .def(
+          "parameter_rows",
+          [](const Object & object)
+          {
+            py::list out;
+            for (const auto & [name, info] : object.parameters().all())
+            {
+              if (!name.empty() && name[0] == '_')
+                continue;
+              py::dict row;
+              row["name"] = name;
+              row["value"] = parameterText(info.value);
+              row["is_default"] = !info.set_by_user;
+              row["description"] = info.description;
+              out.append(row);
+            }
+            return out;
+          },
+          "The parameters of this object with their values, and whether each value is the "
+          "default (the user did not give it).")
+      .def("initial_setup", &Object::initialSetup);
+
+  py::class_<ResidualObject, Object, std::shared_ptr<ResidualObject>>(m, "ResidualObject")
+      .def_property_readonly("variable", &ResidualObject::variable)
+      .def_property_readonly("variable_name", &ResidualObject::variableName);
+
+  py::class_<Kernel, ResidualObject, std::shared_ptr<Kernel>, PyKernel>(m, "Kernel")
+      .def(py::init<const InputParameters &>())
+      .def_static("valid_params", &Kernel::validParams)
+      .def("has_flux", &Kernel::hasFlux)
+      .def("has_source", &Kernel::hasSource)
+      .def("is_time_kernel", &Kernel::isTimeKernel);
+
+  py::class_<IntegratedBC, ResidualObject, std::shared_ptr<IntegratedBC>, PyIntegratedBC>(
+      m, "IntegratedBC")
+      .def(py::init<const InputParameters &>())
+      .def_static("valid_params", &IntegratedBC::validParams);
+
+  py::class_<NodalBC, ResidualObject, std::shared_ptr<NodalBC>, PyNodalBC>(m, "NodalBC")
+      .def(py::init<const InputParameters &>())
+      .def_static("valid_params", &NodalBC::validParams);
+
+  py::class_<NodalLoad, ResidualObject, std::shared_ptr<NodalLoad>>(m, "NodalLoad")
+      .def_static("valid_params", &NodalLoad::validParams);
+
+  py::class_<Property, Object, std::shared_ptr<Property>, PyProperty>(m, "Property")
+      .def(py::init<const InputParameters &>())
+      .def_static("valid_params", &Property::validParams);
+
+  // ---- factory introspection ---------------------------------------------
+  m.def("registered_types", [] { return Factory::instance().registeredTypes(); });
+  m.def("object_module", [](const std::string & t) { return Factory::instance().module(t); });
+  m.def("object_category",
+        [](const std::string & t) { return categoryName(Factory::instance().category(t)); });
+  m.def("describe_object",
+        [](const std::string & t) { return Factory::instance().validParams(t).describe(); });
+
+  // ---- solver options ----------------------------------------------------
+  py::class_<SolverOptions>(m, "SolverOptions")
+      .def(py::init<>())
+      .def_readwrite("nonlinear_solver", &SolverOptions::nonlinear_solver)
+      .def_readwrite("max_iterations", &SolverOptions::max_iterations)
+      .def_readwrite("relative_tolerance", &SolverOptions::relative_tolerance)
+      .def_readwrite("relaxation", &SolverOptions::relaxation)
+      .def_readwrite("line_search", &SolverOptions::line_search)
+      .def_readwrite("max_line_search_steps", &SolverOptions::max_line_search_steps)
+      .def_readwrite("petsc_options", &SolverOptions::petsc_options)
+      .def_readwrite("linear_tolerance", &SolverOptions::linear_tolerance)
+      .def_readwrite("verbose", &SolverOptions::verbose)
+      .def_readwrite("error_on_divergence", &SolverOptions::error_on_divergence);
+
+  py::class_<TransientOptions>(m, "TransientOptions")
+      .def(py::init<>())
+      .def_readwrite("start_time", &TransientOptions::start_time)
+      .def_readwrite("end_time", &TransientOptions::end_time)
+      .def_readwrite("dt", &TransientOptions::dt)
+      .def_readwrite("theta", &TransientOptions::theta)
+      .def_readwrite("second_order_scheme", &TransientOptions::second_order_scheme)
+      .def_readwrite("spectral_radius", &TransientOptions::spectral_radius)
+      .def_readwrite("output_times", &TransientOptions::output_times)
+      .def_readwrite("time_stepper", &TransientOptions::time_stepper)
+      .def_readwrite("courant_number", &TransientOptions::courant_number)
+      .def_readwrite("dt_min", &TransientOptions::dt_min)
+      .def_readwrite("dt_max", &TransientOptions::dt_max)
+      .def_readwrite("growth_factor", &TransientOptions::growth_factor)
+      .def_readwrite("cutback_factor", &TransientOptions::cutback_factor)
+      .def_readwrite("error_tolerance", &TransientOptions::error_tolerance)
+      .def_readwrite("optimal_iterations", &TransientOptions::optimal_iterations)
+      .def_readwrite("iteration_window", &TransientOptions::iteration_window)
+      .def_readwrite("max_rejected_steps", &TransientOptions::max_rejected_steps)
+      .def_readwrite("max_steps", &TransientOptions::max_steps)
+      .def_readwrite("checkpoint_file", &TransientOptions::checkpoint_file)
+      .def_readwrite("checkpoint_interval", &TransientOptions::checkpoint_interval)
+      .def_readwrite("restart_file", &TransientOptions::restart_file);
+  m.def(
+      "checkpoint_time",
+      [](const std::string & file, bool distributed)
+      {
+        const auto point = checkpointTime(file, distributed);
+        return py::make_tuple(point.time, point.dt, point.step);
+      },
+      py::arg("file"),
+      py::arg("distributed"),
+      "The time, the step size and the number of steps that a checkpoint records.");
+  m.def("have_checkpoints", &checkpointsAvailable, "Whether this build writes checkpoints.");
+
+  py::class_<IterationRecord>(m, "IterationRecord")
+      .def_readonly("continuation_step", &IterationRecord::continuation_step)
+      .def_readonly("data_fraction", &IterationRecord::data_fraction)
+      .def_readonly("iteration", &IterationRecord::iteration)
+      .def_readonly("residual_norm", &IterationRecord::residual_norm)
+      .def_readonly("step_norm", &IterationRecord::step_norm);
+
+  py::class_<SolveResult>(m, "SolveResult")
+      .def_readonly("converged", &SolveResult::converged)
+      .def_readonly("total_iterations", &SolveResult::total_iterations)
+      .def_readonly("linear_iterations", &SolveResult::linear_iterations)
+      .def_readonly("time_steps", &SolveResult::time_steps)
+      .def_readonly("rejected_steps", &SolveResult::rejected_steps)
+      .def_readonly("step_history", &SolveResult::step_history)
+      .def_readonly("next_time_step", &SolveResult::next_time_step)
+      .def_readonly("start_correction", &SolveResult::start_correction)
+      .def_readonly("history", &SolveResult::history);
+
+  m.def(
+      "flush_output",
+      []()
+      {
+        std::fflush(stdout);
+        std::cout.flush();
+      },
+      "Write the progress lines that the library holds in its buffers, so that "
+      "they come before the next lines of Python.");
+
+  // ---- structured registry introspection (used to generate the docs) -----
+  m.def(
+      "build_information",
+      []()
+      {
+        py::dict info;
+        info["max_ad_derivatives"] = kMaxDerivatives;
+#ifdef _OPENMP
+        info["openmp"] = true;
+#else
+        info["openmp"] = false;
+#endif
+        info["petsc_version"] = petsc::version();
+        return info;
+      },
+      "How this extension was built: the automatic differentiation budget, whether OpenMP is "
+      "on, and the version of PETSc.");
+  m.def(
+      "object_parameters",
+      [](const std::string & type)
+      {
+        const auto params = Factory::instance().validParams(type);
+        py::list out;
+        for (const auto & [name, info] : params.all())
+        {
+          if (!name.empty() && name[0] == '_')
+            continue; // framework-internal
+          py::dict row;
+          row["name"] = name;
+          row["type"] = parameterKindName(info.kind);
+          row["required"] = info.required;
+          row["description"] = info.description;
+          const std::string text = parameterText(info.value);
+          row["default"] = text;
+          out.append(row);
+        }
+        return out;
+      },
+      py::arg("type"),
+      "The declared parameters of a registered type, as a list of dictionaries with "
+      "'name', 'type', 'required', 'default' and 'description'.");
+  m.def(
+      "object_description",
+      [](const std::string & type)
+      { return Factory::instance().validParams(type).classDescription(); },
+      py::arg("type"),
+      "The one-paragraph description of a registered type.");
+
+  // ---- parallel ----------------------------------------------------------
+  m.def("have_gslib",
+        &GatherScatter::haveGslib,
+        "Whether the extension was built with gslib, the gather-scatter of Nek5000.");
+  m.def("petsc_version", &petsc::version, "PETSc's version, or an empty string without PETSc.");
+  m.def("finalize_mpi",
+        &Communicator::finalize,
+        "Shut MPI down if this library started it; registered as an interpreter exit hook by "
+        "dualmesh.parallel, and harmless to call twice.");
+  m.def(
+      "mpi_rank",
+      []() { return Communicator::world().rank(); },
+      "This process's rank, or 0 in a serial run.");
+  m.def(
+      "mpi_sum",
+      [](std::vector<double> values)
+      {
+        Communicator::world().sumInPlace(values);
+        return values;
+      },
+      "The elementwise sum over all processes of a list of numbers.");
+  m.def(
+      "mpi_max",
+      [](double value) { return Communicator::world().max(value); },
+      "The largest value over all processes.");
+  m.def(
+      "mpi_min",
+      [](double value) { return Communicator::world().min(value); },
+      "The smallest value over all processes.");
+  m.def(
+      "mpi_size",
+      []() { return Communicator::world().size(); },
+      "The number of processes, or 1 in a serial run.");
+  m.def(
+      "partition_mesh",
+      [](std::shared_ptr<Mesh> mesh, int num_parts, const std::string & method)
+      {
+        const auto p = partitionMesh(*mesh, num_parts, method);
+        py::dict out;
+        out["element_part"] = p.element_part;
+        out["node_owner"] = p.node_owner;
+        out["edge_cut"] = p.edgeCut(*mesh);
+        const auto [largest, smallest] = p.partSizes();
+        out["largest_part"] = largest;
+        out["smallest_part"] = smallest;
+        return out;
+      },
+      py::arg("mesh"),
+      py::arg("num_parts"),
+      py::arg("method") = "automatic");
+  m.def("available_partitioners",
+        &availablePartitioners,
+        "The partitioners of this build: none without PETSc.");
+  m.def(
+      "sub_mesh",
+      [](std::shared_ptr<Mesh> mesh, const std::vector<Index> & elements)
+      {
+        std::vector<Index> l2g;
+        auto out = std::make_shared<Mesh>(subMesh(*mesh, elements, l2g));
+        return py::make_tuple(out, l2g);
+      },
+      py::arg("mesh"),
+      py::arg("elements"));
+
+  py::class_<DistributedOptions>(m, "DistributedOptions")
+      .def(py::init<>())
+      .def_readwrite("partitioner", &DistributedOptions::partitioner)
+      .def_readwrite("gather_scatter", &DistributedOptions::gather_scatter)
+      .def_readwrite("verbose", &DistributedOptions::verbose);
+
+  py::class_<DistributedProblem>(m, "DistributedProblem")
+      .def(py::init(
+               [](std::shared_ptr<Mesh> mesh,
+                  const std::string & method,
+                  const std::string & coordinates,
+                  const DistributedOptions & options)
+               {
+                 return std::make_unique<DistributedProblem>(
+                     *mesh, methodFromString(method), coordFromString(coordinates), options);
+               }),
+           py::arg("mesh"),
+           py::arg("method") = "dmcdm",
+           py::arg("coordinates") = "cartesian",
+           py::arg("options") = DistributedOptions{})
+      .def(
+          "local",
+          [](DistributedProblem & d) -> Problem & { return d.local(); },
+          py::return_value_policy::reference_internal)
+      .def("rank", &DistributedProblem::rank)
+      .def("num_ranks", &DistributedProblem::numRanks)
+      .def("num_owned_dofs", &DistributedProblem::numOwnedDofs)
+      .def("num_global_dofs", &DistributedProblem::numGlobalDofs)
+      .def("solve_steady", &DistributedProblem::solveSteady, py::arg("options") = SolverOptions{})
+      .def("solve_transient",
+           &DistributedProblem::solveTransient,
+           py::arg("transient"),
+           py::arg("options") = SolverOptions{})
+      .def("gathered_values", &DistributedProblem::gatheredValues, py::arg("variable"))
+      .def("gathered_element_values",
+           &DistributedProblem::gatheredElementValues,
+           py::arg("local"),
+           "The values of every element of the global mesh, on every rank, from one value per "
+           "local element. Collective.")
+      .def("set_gathered_values",
+           &DistributedProblem::setGatheredValues,
+           py::arg("variable"),
+           py::arg("values"),
+           "Set a variable from its values at every node of the global mesh.")
+      .def("gathered_node_values",
+           &DistributedProblem::gatheredNodeValues,
+           py::arg("local"),
+           py::arg("width"),
+           "The values of every node of the global mesh, width per node, on every rank, from "
+           "width values per local node. Collective.")
+      .def("local_node_values",
+           &DistributedProblem::localNodeValues,
+           py::arg("global_values"),
+           py::arg("width"),
+           "The values of the local nodes, width per node, from width values per node of the "
+           "global mesh.")
+      .def("total_outflow",
+           &DistributedProblem::totalOutflow,
+           py::arg("variable"),
+           py::arg("boundary"))
+      .def("write_vtu",
+           &DistributedProblem::writeVTU,
+           py::arg("base"),
+           py::arg("cell_properties") = std::vector<std::string>{},
+           py::arg("fields") = std::vector<std::string>{})
+      .def("summary", &DistributedProblem::summary);
+
+  // ---- the projection time integration of a flow -------------------------
+  py::class_<ProjectionSettings>(m, "ProjectionSettings")
+      .def(py::init<>())
+      .def_readwrite("order", &ProjectionSettings::order);
+  py::class_<ProjectionSolver, std::shared_ptr<ProjectionSolver>>(m, "ProjectionSolver")
+      .def_static(
+          "coefficients",
+          [](const std::vector<double> & times)
+          {
+            std::vector<double> beta, alpha;
+            ProjectionSolver::coefficients(times, beta, alpha);
+            return py::make_tuple(beta, alpha);
+          },
+          py::arg("times"));
+  m.def(
+      "attach_projection",
+      [](Problem & problem, const ProjectionSettings & settings)
+      {
+        auto solver = std::make_shared<ProjectionSolver>(problem, settings);
+        problem.setTimeIntegrator(solver);
+        return solver;
+      },
+      py::arg("problem"),
+      py::arg("settings"),
+      "Advance the transient solves of @p problem with the projection time integration of its "
+      "flow.");
+  m.def(
+      "attach_start_projection",
+      [](Problem & problem,
+         const std::vector<std::string> & velocities,
+         const std::string & pressure)
+      {
+        problem.addStartProjection(
+            [&problem, velocities, pressure](Vector & solution)
+            {
+              std::vector<int> components;
+              for (const auto & name : velocities)
+                components.push_back(problem.variableIndex(name));
+              const int p = pressure.empty() ? -1 : problem.variableIndex(pressure);
+              return projectInitialVelocity(problem, components, p, solution);
+            });
+      },
+      py::arg("problem"),
+      py::arg("velocities"),
+      py::arg("pressure"),
+      "Start the transient runs of @p problem from the projection of the initial velocity of "
+      "the flow of @p velocities onto a field without divergence (an empty @p pressure for a "
+      "flow without a pressure variable).");
+
+  // ---- problem -----------------------------------------------------------
+
+  py::class_<Problem>(m, "Problem")
+      .def(py::init(
+               [](std::shared_ptr<Mesh> mesh,
+                  const std::string & method,
+                  const std::string & coordinates)
+               {
+                 return std::make_unique<Problem>(
+                     std::move(mesh), methodFromString(method), coordFromString(coordinates));
+               }),
+           py::arg("mesh"),
+           py::arg("method") = "dmcdm",
+           py::arg("coordinates") = "cartesian")
+      .def(
+          "set_method",
+          [](Problem & p, const std::string & s) { p.setMethod(methodFromString(s)); },
+          py::arg("method"))
+      .def(
+          "_flow_operators",
+          [](Problem & p, const std::string & preconditioner)
+          {
+            // The operators of a flow preconditioner (SaddlePointBlocks.h) at the current
+            // solution, for the tests: each operator as (rows, columns, values) in the problem's
+            // numbering, and the lumped masses per unknown.
+            const auto approximation = schurApproximation(preconditioner);
+            if (!approximation)
+              throw InputError("_flow_operators takes pressure_mass, pcd or lsc.");
+            SaddlePointBlocks blocks;
+            {
+              py::gil_scoped_release release;
+              p.initialize();
+              p.applyDirichlet(p.solution(), 1.0);
+              Problem::AssemblyOptions options;
+              Vector lagged = p.solution();
+              options.lagged = &lagged;
+              Vector R;
+              SparseMatrix J;
+              p.assemble(p.solution(), options, R, &J);
+              p.dirichletRows(R, &J);
+              J.makeCompressed();
+              blocks = p.saddlePointBlocks(J, *approximation);
+            }
+            const auto triplets = [](const std::vector<Eigen::Triplet<double>> & entries)
+            {
+              std::vector<Index> rows, cols;
+              std::vector<double> values;
+              for (const auto & e : entries)
+              {
+                rows.push_back(e.row());
+                cols.push_back(e.col());
+                values.push_back(e.value());
+              }
+              return py::make_tuple(py::array_t<Index>(rows.size(), rows.data()),
+                                    py::array_t<Index>(cols.size(), cols.data()),
+                                    py::array_t<double>(values.size(), values.data()));
+            };
+            std::vector<int> constrained(blocks.constrained.begin(), blocks.constrained.end());
+            py::dict out;
+            out["pressure_dofs"] =
+                py::array_t<Index>(blocks.pressure_dofs.size(), blocks.pressure_dofs.data());
+            out["other_dofs"] =
+                py::array_t<Index>(blocks.other_dofs.size(), blocks.other_dofs.data());
+            out["constrained"] = py::array_t<int>(constrained.size(), constrained.data());
+            out["lumped_mass"] =
+                py::array_t<double>(blocks.lumped_mass.size(), blocks.lumped_mass.data());
+            out["sign"] = blocks.sign;
+            out["coupling"] = blocks.coupling;
+            out["refusal"] = blocks.refusal;
+            out["mass"] = triplets(blocks.mass);
+            out["stabilization"] = triplets(blocks.stabilization);
+            out["commutator_stabilization"] = triplets(blocks.commutator_stabilization);
+            out["convection_diffusion"] = triplets(blocks.convection_diffusion);
+            return out;
+          },
+          py::arg("preconditioner"))
+      .def("_linearization",
+           [](const Problem & p) { return py::make_tuple(p.linearDt(), p.linearTheta()); })
+      .def("_linear_system",
+           [](Problem & p)
+           {
+             // The steady residual and its Jacobian at the current solution,
+             // with the prescribed values written in and the rows of the
+             // prescribed degrees of freedom replaced, exactly as one Newton
+             // step of solve_steady sees them.
+             Vector R;
+             SparseMatrix J;
+             {
+               py::gil_scoped_release release;
+               p.initialize();
+               p.applyDirichlet(p.solution(), 1.0);
+               Problem::AssemblyOptions options;
+               Vector lagged = p.solution();
+               options.lagged = &lagged;
+               p.assemble(p.solution(), options, R, &J);
+               p.dirichletRows(R, &J);
+               J.makeCompressed();
+             }
+             const auto n = J.rows();
+             py::array_t<double> residual(n, R.data());
+             py::array_t<int> indptr(n + 1, J.outerIndexPtr());
+             py::array_t<int> indices(J.nonZeros(), J.innerIndexPtr());
+             py::array_t<double> values(J.nonZeros(), J.valuePtr());
+             return py::make_tuple(residual, values, indices, indptr);
+           })
+      .def(
+          "_operator",
+          [](Problem & p, bool steady_terms, bool time_kernels, double eigenvalue, int order)
+          {
+            // The Jacobian of the chosen terms at the current solution, with the symbol eigenvalue
+            // at the given value and the time kernels at a time step of 1, so that a time kernel
+            // c (u - u_old) / dt contributes c.
+            // The rows of the prescribed degrees of freedom are not replaced: the caller removes them.
+            Vector R;
+            SparseMatrix J;
+            std::vector<char> constrained;
+            {
+              py::gil_scoped_release release;
+              p.initialize();
+              // A residual-based stabilisation holds the time derivative inside a steady kernel,
+              // which the time kernels of the mass operator do not include.
+              if (time_kernels && !steady_terms)
+                for (const auto & k : p.kernels())
+                  if (k->residualHasTimeDerivative())
+                    throw InputError("The modes have no mass operator for '" + k->name() +
+                                     "', a stabilisation whose residual holds the time "
+                                     "derivative. Solve the modes without it.");
+              const double saved = p.eigenvalue();
+              p.setEigenvalue(eigenvalue);
+              // The operators of an eigenvalue study take its rules: the consistent storage,
+              // where time stepping lumps it (TimeDerivative).
+              struct Study
+              {
+                Problem & problem;
+                ~Study() { problem.setEigenvalueStudy(false); }
+              } study{p};
+              p.setEigenvalueStudy(true);
+              Problem::AssemblyOptions options;
+              Vector lagged = p.solution();
+              Vector old = Vector::Zero(p.solution().size());
+              options.lagged = &lagged;
+              options.old = &old;
+              options.dt = 1.0;
+              options.include_steady_terms = steady_terms;
+              options.include_time_kernels = time_kernels;
+              // The first and the second time derivatives apart: c du/dt contributes c at order
+              // 1 and c d2u/dt2 contributes c at order 2.
+              const auto & second = p.secondOrderVariables();
+              if (std::any_of(second.begin(), second.end(), [](char c) { return c != 0; }))
+              {
+                options.second_order = true;
+                options.rate_scale = order == 1 ? 1.0 : 0.0;
+                options.accel_scale = order == 2 ? 1.0 : 0.0;
+                // The first time derivatives of the other variables take no part in order 2.
+                if (order == 2)
+                  options.dt = 1e300;
+              }
+              else if (order == 2)
+              {
+                // No second time derivative: the operator of order 2 is zero.
+                options.include_steady_terms = false;
+                options.include_time_kernels = false;
+              }
+              p.assemble(p.solution(), options, R, &J);
+              p.setEigenvalue(saved);
+              J.makeCompressed();
+              constrained = p.constrainedDofs();
+            }
+            const auto n = J.rows();
+            py::array_t<int> indptr(n + 1, J.outerIndexPtr());
+            py::array_t<int> indices(J.nonZeros(), J.innerIndexPtr());
+            py::array_t<double> values(J.nonZeros(), J.valuePtr());
+            py::array_t<bool> mask(n);
+            for (Index i = 0; i < n; ++i)
+              mask.mutable_at(i) = constrained[i] != 0;
+            return py::make_tuple(values, indices, indptr, mask);
+          },
+          py::arg("steady_terms"),
+          py::arg("time_kernels"),
+          py::arg("eigenvalue"),
+          py::arg("order") = 1)
+      .def("second_order_variables",
+           [](Problem & p)
+           {
+             p.initialize();
+             std::vector<std::string> names;
+             const auto & flags = p.secondOrderVariables();
+             for (std::size_t v = 0; v < flags.size(); ++v)
+               if (flags[v])
+                 names.push_back(p.variable(static_cast<int>(v)).name);
+             return names;
+           })
+      .def("set_initial_velocity",
+           [](Problem & p, const std::vector<double> & v) {
+             p.setInitialVelocity(Eigen::Map<const Vector>(v.data(), static_cast<Index>(v.size())));
+           })
+      .def("velocity",
+           [](const Problem & p)
+           {
+             const Vector v = p.velocity();
+             return std::vector<double>(v.data(), v.data() + v.size());
+           })
+      .def("set_num_threads", &Problem::setNumThreads, py::arg("num_threads"))
+      .def("num_threads", &Problem::numThreads)
+      .def("effective_threads", &Problem::effectiveThreads)
+      .def("thread_safe", &Problem::threadSafe)
+      .def("extend_variable_blocks",
+           &Problem::extendVariableBlocks,
+           py::arg("name"),
+           py::arg("blocks"),
+           "Let a variable also live on these blocks (an empty list: everywhere).")
+      .def(
+          "add_variable",
+          [](Problem & p,
+             const std::string & name,
+             const std::vector<std::string> & blocks,
+             const py::object & initial_condition,
+             const std::string & order)
+          {
+            // A text is the name of a registered function or an expression of (x, y, z, t).
+            FunctionPtr ic;
+            if (py::isinstance<py::str>(initial_condition))
+            {
+              const auto text = py::cast<std::string>(initial_condition);
+              ic = p.hasFunction(text) ? p.function(text) : std::make_shared<ParsedFunction>(text);
+            }
+            else if (!initial_condition.is_none())
+              ic = toFunction(initial_condition);
+            VariableOrder o;
+            if (order == "mesh")
+              o = VariableOrder::Mesh;
+            else if (order == "first")
+              o = VariableOrder::First;
+            else
+              throw InputError("Unknown variable order '" + order +
+                               "'. Use 'mesh' (the order of the elements) or 'first' (linear "
+                               "on every element, the pressure of a Taylor-Hood element).");
+            return p.addVariable(name, blocks, ic, 1.0, o);
+          },
+          py::arg("name"),
+          py::arg("blocks") = std::vector<std::string>{},
+          py::arg("initial_condition") = py::none(),
+          py::arg("order") = "mesh")
+      .def(
+          "variable_order",
+          [](const Problem & p, const std::string & name)
+          {
+            return p.variable(p.variableIndex(name)).order == VariableOrder::First
+                       ? std::string("first")
+                       : std::string("mesh");
+          },
+          py::arg("name"))
+      .def("set_variable_unit", &Problem::setVariableUnit, py::arg("name"), py::arg("unit"))
+      .def(
+          "variable_unit",
+          [](const Problem & p, const std::string & name)
+          { return p.variable(p.variableIndex(name)).unit; },
+          py::arg("name"))
+      .def("add_function",
+           [](Problem & p, const std::string & name, const py::object & f)
+           { p.addFunction(name, toFunction(f)); })
+      .def("set_element_field",
+           &Problem::setElementField,
+           py::arg("name"),
+           py::arg("values"),
+           "Set a named field with one value per element, read by the property objects.")
+      .def(
+          "element_field",
+          [](Problem & p, const std::string & name) { return p.elementField(name); },
+          py::arg("name"))
+      .def(
+          "add_object",
+          [](Problem & p, const std::string & type, const py::kwargs & kwargs) {
+            return p.addObject(
+                type, "", paramsFromKwargs(Factory::instance().validParams(type), kwargs));
+          },
+          py::arg("type"))
+      .def("add_kernel", &Problem::addKernel)
+      .def("add_integrated_bc", &Problem::addIntegratedBC)
+      .def("add_nodal_bc", &Problem::addNodalBC)
+      .def("add_nodal_load", &Problem::addNodalLoad)
+      .def("add_property", &Problem::addProperty)
+      .def("initialize", &Problem::initialize)
+      .def(
+          "near_nullspace",
+          [](Problem & p)
+          {
+            p.initialize();
+            const Eigen::MatrixXd B = p.nearNullspace();
+            std::vector<std::vector<double>> rows(
+                static_cast<std::size_t>(B.rows()),
+                std::vector<double>(static_cast<std::size_t>(B.cols())));
+            for (Eigen::Index i = 0; i < B.rows(); ++i)
+              for (Eigen::Index j = 0; j < B.cols(); ++j)
+                rows[i][j] = B(i, j);
+            return rows;
+          },
+          "The near null space of the algebraic multigrid preconditioner, one row per degree of "
+          "freedom.")
+      .def("boundary_area",
+           &Problem::boundaryArea,
+           py::arg("boundaries"),
+           "The measure of the named side sets, with the coordinate factor of axisymmetric and "
+           "spherical problems.")
+      .def(
+          "num_active_dofs",
+          [](Problem & p)
+          {
+            p.initialize();
+            Index n = 0;
+            for (char a : p.activeDofs())
+              n += a ? 1 : 0;
+            return n;
+          },
+          "The number of degrees of freedom that carry an equation: every variable at every node "
+          "where a kernel acts on it, and for a first-order variable on a quadratic mesh only the "
+          "corner nodes.")
+      .def_property_readonly("mesh", &Problem::meshPointer)
+      .def_property_readonly("num_variables", &Problem::numVariables)
+      .def("variable_index", &Problem::variableIndex)
+      .def("variable_name", [](const Problem & p, int i) { return p.variable(i).name; })
+      .def("property_id",
+           [](Problem & p, const std::string & n) { return p.propertyRegistry().id(n); })
+      .def_property("time", &Problem::time, &Problem::setTime)
+      .def("values",
+           [](const Problem & p, const std::string & v)
+           {
+             auto vals = p.values(v);
+             return py::array_t<double>(vals.size(), vals.data());
+           })
+      .def("set_values",
+           [](Problem & p, const std::string & v, const std::vector<double> & x)
+           { p.setValues(v, x); })
+      .def("solution",
+           [](const Problem & p)
+           { return py::array_t<double>(p.solution().size(), p.solution().data()); })
+      .def(
+          "set_solution",
+          [](Problem & p, const std::vector<double> & x)
+          {
+            if (static_cast<Index>(x.size()) != p.solution().size())
+              throw InputError("set_solution: " + std::to_string(x.size()) + " values for " +
+                               std::to_string(p.solution().size()) + " unknowns.");
+            for (std::size_t i = 0; i < x.size(); ++i)
+              p.solution()[static_cast<Index>(i)] = x[i];
+          },
+          py::arg("values"))
+      .def("apply_initial_conditions", &Problem::applyInitialConditions)
+      .def("solve_steady", &Problem::solveSteady, py::arg("options") = SolverOptions())
+      .def("add_parameter",
+           &Problem::addParameter,
+           py::arg("name"),
+           py::arg("value"),
+           "Register a named settable constant: a parameter that sensitivities() differentiates "
+           "with respect to. Give its name wherever a coefficient, a source or a boundary value "
+           "takes a function.")
+      .def("set_parameter",
+           &Problem::setParameter,
+           py::arg("name"),
+           py::arg("value"),
+           "Assign a registered parameter; solve() gives the solution of the new value.")
+      .def("parameter_value", &Problem::parameterValue, py::arg("name"))
+      .def(
+          "objective_value",
+          [](const Problem & p, const std::string & variable, const std::string & boundary)
+          {
+            Problem::Objective objective{variable, boundary};
+            return p.objectiveValue(objective);
+          },
+          py::arg("variable"),
+          py::arg("boundary") = "",
+          "The integral of a variable over the whole domain (an empty boundary) or over one "
+          "side set, with the coordinate factor: the value of the objective of sensitivities().")
+      .def(
+          "sensitivities",
+          [](Problem & p,
+             const std::string & variable,
+             const std::string & boundary,
+             const std::vector<std::string> & parameters,
+             const SolverOptions & options)
+          {
+            py::gil_scoped_release release;
+            Problem::Objective objective{variable, boundary};
+            return p.sensitivities(objective, parameters, options);
+          },
+          py::arg("variable"),
+          py::arg("boundary") = "",
+          py::arg("parameters"),
+          py::arg("options") = SolverOptions(),
+          "d(objective)/d(parameter) of every named settable constant, by one adjoint solve "
+          "with the exact Jacobian of the converged solution. The objective is the integral of "
+          "the variable over the whole domain (an empty boundary) or over one side set. The "
+          "problem must hold a converged solution (solve_steady leaves one).")
+      .def("solve_transient",
+           &Problem::solveTransient,
+           py::arg("transient"),
+           py::arg("options") = SolverOptions())
+      .def("project_initial_velocity",
+           &Problem::projectInitialVelocity,
+           "Project the velocity of every flow onto a field without divergence that keeps the "
+           "prescribed values, as a transient run does before its first step, and return the "
+           "largest change of the velocity over the largest speed, or None for a problem "
+           "without a flow. Collective in a distributed problem.")
+      .def("set_time_step_callback",
+           [](Problem & p, const py::function & f)
+           {
+             p.setTimeStepCallback(
+                 [f](double t, Problem & pb)
+                 {
+                   py::gil_scoped_acquire gil;
+                   f(t, py::cast(&pb, py::return_value_policy::reference));
+                 });
+           })
+      .def("set_output_callback",
+           [](Problem & p, const py::object & f)
+           {
+             if (f.is_none())
+             {
+               p.setOutputCallback(nullptr);
+               return;
+             }
+             p.setOutputCallback(
+                 [f](int index)
+                 {
+                   py::gil_scoped_acquire gil;
+                   f(index);
+                 });
+           })
+      .def(
+          "boundary_outflow",
+          [](const Problem & p, const std::string & variable, const std::string & boundary)
+          { return p.boundaryOutflow(variable, boundary); },
+          py::arg("variable"),
+          py::arg("boundary"))
+      .def("total_outflow", &Problem::totalOutflow)
+      .def("sample", &Problem::sample)
+      .def("sample_gradient", &Problem::sampleGradient)
+      .def("gradient_at_centroids", &Problem::gradientAtCentroids)
+      .def("error_indicator",
+           &Problem::errorIndicator,
+           py::arg("variable"),
+           "One error indicator per element, from gradient recovery.")
+      .def("property_at_centroids", &Problem::propertyAtCentroids)
+      .def("property_at_points", &Problem::propertyAtPoints)
+      .def("kernel_flux_at_centroids", &Problem::kernelFluxAtCentroids)
+      .def("section_stress_at_centroids", &Problem::sectionStressAtCentroids)
+      .def("integrate", &Problem::integrate)
+      .def("element_integrals", &Problem::elementIntegrals)
+      .def("node_measures",
+           &Problem::nodeMeasures,
+           "The measure of each node as the nodal rule weighs it: that of its control domain "
+           "(DMCDM) or the integral of its shape function (FEM), with the coordinate factor at "
+           "the node.")
+      .def(
+          "error_norms",
+          [](const Problem & p,
+             const std::string & variable,
+             const py::object & exact,
+             const py::object & gradient,
+             int quadrature_points)
+          {
+            const FunctionPtr u = toFunction(exact);
+            std::array<FunctionPtr, 3> g;
+            std::array<const Function *, 3> gp = {nullptr, nullptr, nullptr};
+            if (!gradient.is_none())
+            {
+              const auto list = py::cast<py::sequence>(gradient);
+              for (std::size_t d = 0; d < 3; ++d)
+              {
+                g[d] =
+                    d < list.size() ? toFunction(list[d]) : std::make_shared<ConstantFunction>(0.0);
+                gp[d] = g[d].get();
+              }
+            }
+            Problem::ErrorNorms norms;
+            {
+              // Python callables take the lock back themselves; everything
+              // else runs without it, on several threads.
+              py::gil_scoped_release release;
+              norms = p.errorNorms(variable, *u, gp, quadrature_points);
+            }
+            return py::make_tuple(norms.l2, norms.h1_seminorm);
+          },
+          py::arg("variable"),
+          py::arg("exact"),
+          py::arg("exact_gradient") = py::none(),
+          py::arg("quadrature_points") = 0,
+          "The L2 norm and the H1 seminorm of the error against an exact solution.")
+      .def("kernel_boundary_flux", &Problem::boundaryFluxIntegral)
+      .def("normal_integral", &Problem::normalIntegral)
+      .def("crack_tip_integrals",
+           [](const Problem & p,
+              const std::vector<std::string> & displacements,
+              const std::vector<double> & tip,
+              double angle,
+              double inner,
+              double outer,
+              double E,
+              double nu,
+              bool plane_strain)
+           {
+             return p.crackTipIntegrals(displacements,
+                                        Point{tip.at(0), tip.at(1), 0.0},
+                                        angle,
+                                        inner,
+                                        outer,
+                                        E,
+                                        nu,
+                                        plane_strain);
+           })
+      .def("_last_residual",
+           [](const Problem & p)
+           {
+             const Vector & R = p.lastResidual();
+             return py::array_t<double>(R.size(), R.data());
+           })
+      .def("write_vtu",
+           &Problem::writeVTU,
+           py::arg("filename"),
+           py::arg("cell_properties") = std::vector<std::string>{},
+           py::arg("fields") = std::vector<std::string>{})
+      .def("summary", &Problem::summary)
+      .def("object_names", &Problem::objectNames)
+      .def("object", &Problem::object, py::arg("name"))
+      .def("variable_names",
+           [](const Problem & p)
+           {
+             std::vector<std::string> names;
+             for (int v = 0; v < p.numVariables(); ++v)
+               names.push_back(p.variable(v).name);
+             return names;
+           });
+}

@@ -1,0 +1,148 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+"""Console reports: what was run, with which inputs, and how it went.
+
+Every report is plain text in aligned columns, so that it reads well in a
+terminal and can be pasted into a log or a report.  Three are provided:
+
+* :func:`header` -- the version, the build and the machine;
+* :func:`problem_report` -- the mesh, the variables and every object with all
+  of its parameters, each marked ``(default)`` when the user did not set it,
+  so that no choice made on the user's behalf goes unannounced;
+* :func:`solve_report` -- the outcome of a solve: convergence, Newton and
+  linear iterations, and the time steps of a transient run.
+
+The values themselves, for post-processing, are written by the problem and by
+the post-processors to CSV files; these reports are for reading.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import contextvars
+import datetime
+import difflib
+import platform
+import socket
+
+from . import _core
+from ._core import InputError
+from .tables import Table
+
+RULE = "-" * 79
+
+#: The levels of the parameter ``report`` of every study.  ``"full"`` (the
+#: default) prints the inputs with their defaults marked, the progress and
+#: the summary.  ``"summary"`` prints one line that names the study and the
+#: summary at the end.  ``"none"`` prints nothing.
+REPORT_LEVELS = ("full", "summary", "none")
+
+_INNER_STUDY = contextvars.ContextVar("dualmesh_inner_study", default=False)
+
+
+def report_level(report: str, where: str) -> str:
+    """The report level that a study prints at.  A study inside a different
+    study (for example, a solve in a convergence study) prints nothing, and
+    in a run on several processes only the first one prints."""
+    if report not in REPORT_LEVELS:
+        raise InputError(
+            f"{where}: report must be one of {', '.join(REPORT_LEVELS)}, not '{report}'."
+        )
+    from . import _core
+
+    return "none" if _INNER_STUDY.get() or _core.mpi_rank() != 0 else report
+
+
+@contextlib.contextmanager
+def inner_study():
+    """The studies in this context print nothing: a study that runs other
+    studies (a convergence study, an adaptive refinement) runs them in it."""
+    token = _INNER_STUDY.set(True)
+    try:
+        yield
+    finally:
+        _INNER_STUDY.reset(token)
+
+
+def suggestion(word, choices, listing: bool = True) -> str:
+    """The end of a message that refuses a misspelled ``word``: the nearest of ``choices``, as
+    " Did you mean 'x'?", or the list of the choices when none is near and ``listing`` holds."""
+    choices = sorted(str(choice) for choice in choices)
+    nearest = difflib.get_close_matches(str(word), choices, n=1)
+    if nearest:
+        return f" Did you mean '{nearest[0]}'?"
+    if not choices or not listing:
+        return ""
+    return " The valid names are " + ", ".join(f"'{choice}'" for choice in choices) + "."
+
+
+def header(title: str = "dualmesh") -> str:
+    """The version, the build options and the machine."""
+    from . import __version__
+
+    build = _core.build_information()
+    features = [
+        f"OpenMP {'on' if build['openmp'] else 'off'}",
+        f"PETSc {build['petsc_version']}",
+        f"automatic differentiation budget {build['max_ad_derivatives']} slots",
+    ]
+    lines = [
+        RULE,
+        f"{title}  (dualmesh {__version__})",
+        f"build:   {', '.join(features)}",
+        f"python:  {platform.python_version()} on {platform.system()} {platform.machine()}",
+        f"host:    {socket.gethostname()}",
+        f"started: {datetime.datetime.now().isoformat(timespec='seconds')}",
+        RULE,
+    ]
+    return "\n".join(lines)
+
+
+def problem_report(problem, parameters: bool = True) -> str:
+    """The problem, its mesh, variables and objects.  With ``parameters`` every
+    parameter of every object is listed with its value, marked ``(default)``
+    when the user did not set it."""
+    core = problem._problem
+    mesh = problem.mesh
+    lines = [
+        "Problem",
+        f"  method:       {problem.method}",
+        f"  coordinates:  {problem.coordinates}",
+        f"  unknowns:     {problem.num_active_dofs()} carrying an equation",
+        "Mesh",
+        "  " + mesh.summary().strip().replace("\n", "\n  "),
+        "Variables",
+    ]
+    rows = [[name, problem.variable_order(name)] for name in core.variable_names()]
+    lines.append(Table(["name", "order"], rows=rows).format(indent=2))
+    lines.append("Objects")
+    for name in core.object_names():
+        obj = core.object(name)
+        lines.append(f"  {name}  ({obj.type})")
+        if not parameters:
+            continue
+        rows = []
+        for row in obj.parameter_rows():
+            value = row["value"] if row["value"] != "" else "(none)"
+            rows.append([row["name"], value, "(default)" if row["is_default"] else "given"])
+        if rows:
+            lines.append(Table(["parameter", "value", "source"], rows=rows).format(indent=6))
+    return "\n".join(lines)
+
+
+def solve_report(result, wall_time: float | None = None) -> str:
+    """The outcome of a solve, in a few aligned lines."""
+    rows = [
+        ["converged", bool(result.converged)],
+        ["nonlinear iterations", int(result.total_iterations)],
+        ["linear iterations", int(result.linear_iterations)],
+    ]
+    if result.time_steps:
+        rows.append(["time steps accepted", int(result.time_steps)])
+        rows.append(["time steps rejected", int(result.rejected_steps)])
+    if result.start_correction is not None:
+        rows.append(["initial velocity correction", float(result.start_correction)])
+    if result.history:
+        rows.append(["final residual", float(result.history[-1].residual_norm)])
+    if wall_time is not None:
+        rows.append(["wall time (s)", float(wall_time)])
+    return "Solve\n" + Table(["quantity", "value"], rows=rows).format(indent=2)

@@ -1,0 +1,30 @@
+cff-version: 1.2.0
+title: "dualmesh: coupled heat transfer, solid mechanics and incompressible flow by the finite element method and the dual mesh control domain method"
+message: "If you use this software, please cite it as below."
+type: software
+version: 0.2.0
+license: LGPL-2.1-or-later
+repository-code: "https://github.com/MohamedAbdulHameed/dualmesh"
+url: "https://github.com/MohamedAbdulHameed/dualmesh"
+abstract: >-
+  dualmesh solves coupled problems of heat transfer, solid
+  mechanics and incompressible flow, and partial differential equations
+  written as text. It discretizes a problem by the finite element method
+  (FEM), and a problem with a flow by the dual mesh control domain method
+  (DMCDM), which conserves the transported quantity in every control domain. Coupled
+  problems are solved together by Newton's method, with exact Jacobians from
+  automatic differentiation. The core is written in C++17 with PETSc and MPI,
+  and it is driven from Python or from YAML case files.
+keywords:
+  - dual mesh control domain method
+  - finite element method
+  - fluid dynamics
+  - solid mechanics
+  - heat transfer
+  - partial differential equations
+  - multiphysics
+authors:
+  - family-names: AbdulHameed
+    given-names: Mohamed
+    orcid: "https://orcid.org/0009-0009-5882-3345"
+    affiliation: "Nuclear Innovation Centre, UNSW Sydney"

@@ -1,0 +1,17 @@
+name: MPI and PETSc
+description: >-
+  Install MPI, PETSc with hypre and MUMPS, Eigen and pkg-config, which every build of
+  dualmesh needs. Linux takes the Ubuntu packages, macOS those of Homebrew.
+runs:
+  using: composite
+  steps:
+    - name: Install on Linux
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libopenmpi-dev openmpi-bin libpetsc-real-dev pkg-config libeigen3-dev
+    - name: Install on macOS
+      if: runner.os == 'macOS'
+      shell: bash
+      run: brew install open-mpi petsc pkg-config eigen

@@ -1,0 +1,229 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+"""Benchmark F5: the lid-driven cavity at Re = 1000, against the centerline
+velocities of Erturk, Corke and Gokcol [Erturk2005] on a 601 x 601 grid.
+
+The unit cavity has its lid y = 1 moving at u = 1, the density Re and the
+viscosity 1, so that the Reynolds number is Re.  The script solves it on
+uniform meshes of 32, 64 and 128 elements per side and records the largest
+difference of the velocity u along x = 0.5 and of v along y = 0.5 from the
+tabulated values, for
+
+* the stabilized pressure-velocity formulation with dmcdm and fem,
+  by Newton's method with the lid speed raised in load steps;
+* the Taylor-Hood element (fem on Quad9 elements);
+* the projection time integration (dmcdm, fem), marched from rest to
+  the steady state.
+
+    python run_cavity.py [output directory] [--plot-only]
+"""
+
+import sys
+import time
+from pathlib import Path
+
+import numpy
+
+here = Path(__file__).resolve().parent
+sys.path.insert(0, str(here.parents[0]))
+sys.path.insert(0, str(here))
+import erturk2005 as reference  # noqa: E402
+import plotstyle  # noqa: E402
+
+re = 1000.0
+default_levels = [32, 64, 128]
+# The cell-centered method has no converged solution on 32 x 32 cells at this Reynolds number (Newton's method diverges, also with ten load steps), and is compared on the two finer meshes; 256 x 256 cells take more than ten minutes with the serial direct solver.
+methods = ["dmcdm", "fem"]
+projection_methods = ["dmcdm", "fem"]
+projection_level = 64
+default_out = here.parents[2] / "docs" / "_static" / "figures" / "fluids"
+
+
+def cavity(n, method, element_type="Quad4", formulation="equal_order", projection=False):
+    import dualmesh
+
+    mesh = dualmesh.generate_rectangle_mesh(0, 1, 0, 1, n, n, element_type=element_type)
+    problem = dualmesh.Problem(mesh, method=method.upper(), distributed=False)
+    parameters = dict(
+        dynamic_viscosity=1.0,
+        density=re,
+        formulation=formulation,
+    )
+    if projection:
+        parameters["time_integration"] = "projection"
+    flow = problem.add_physics("fluid_dynamics", **parameters)
+    flow.add_boundary_condition(["velocity_x = 1", "velocity_y = 0"], boundary="top")
+    # The walls are added last, so that the two top corners belong to the walls and the lid does not leak.
+    flow.add_boundary_condition(
+        ["velocity_x = 0", "velocity_y = 0"], boundary=["left", "right", "bottom"]
+    )
+    return problem
+
+
+def profiles(problem):
+    y, x = numpy.asarray(reference.Y), numpy.asarray(reference.X)
+    u = problem.sample("velocity_x", numpy.column_stack([numpy.full_like(y, 0.5), y]))
+    v = problem.sample("velocity_y", numpy.column_stack([x, numpy.full_like(x, 0.5)]))
+    return u, v
+
+
+def steady(n, method, element_type="Quad4", formulation="equal_order"):
+    problem = cavity(n, method, element_type, formulation)
+    problem.solve(report="none")
+    return profiles(problem)
+
+
+def projected(n, method):
+    """From rest to the steady state: the run stops when the velocity changes by less than 1e-7 per unit time."""
+    problem = cavity(n, method, projection=True)
+    last = {}
+    total = 0.0
+    while True:
+        problem.solve_transient(
+            start_time=total,
+            end_time=total + 10.0,
+            time_step=1e-3 if total == 0.0 else 0.5 / n,
+            time_stepper="cfl",
+            courant_number=0.5,
+            report="none",
+        )
+        total += 10.0
+        u = problem.values("velocity_x").copy()
+        if "u" in last and numpy.abs(u - last["u"]).max() / 10.0 < 1e-7:
+            break
+        last["u"] = u
+        if total >= 400.0:
+            break
+    return (*profiles(problem), total)
+
+
+def compute():
+    data = {}
+    U, V = numpy.asarray(reference.U), numpy.asarray(reference.V)
+    for method in methods:
+        start = time.perf_counter()
+        du, dv, curves = [], [], []
+        levels = default_levels
+        for n in levels:
+            u, v = steady(n, method)
+            du.append(numpy.abs(u - U).max())
+            dv.append(numpy.abs(v - V).max())
+            curves.append((u, v))
+        data[method] = {
+            "n": numpy.asarray(levels),
+            "du": numpy.asarray(du),
+            "dv": numpy.asarray(dv),
+            "u": curves[-1][0],
+            "v": curves[-1][1],
+        }
+        print(
+            f"{method}: max |u - u_ref| {du}, max |v - v_ref| {dv}, {time.perf_counter() - start:.0f} s",
+            flush=True,
+        )
+    du, dv = [], []
+    for n in default_levels:
+        u, v = steady(n // 2, "fem", "Quad9", "Taylor-Hood")
+        du.append(numpy.abs(u - U).max())
+        dv.append(numpy.abs(v - V).max())
+    data["fem, Taylor-Hood"] = {
+        "n": numpy.asarray(default_levels),
+        "du": numpy.asarray(du),
+        "dv": numpy.asarray(dv),
+        "u": u,
+        "v": v,
+    }
+    print(
+        f"Taylor-Hood (Quad9, n/2 elements): max |u - u_ref| {du}, max |v - v_ref| {dv}", flush=True
+    )
+    for method in projection_methods:
+        start = time.perf_counter()
+        u, v, end = projected(projection_level, method)
+        data[f"projection {method}"] = {
+            "n": numpy.asarray([projection_level]),
+            "du": numpy.asarray([numpy.abs(u - U).max()]),
+            "dv": numpy.asarray([numpy.abs(v - V).max()]),
+            "u": u,
+            "v": v,
+            "end_time": numpy.asarray([end]),
+        }
+        print(
+            f"projection {method} ({projection_level}^2, steady at t = {end:.0f}): "
+            f"max |u - u_ref| {data[f'projection {method}']['du'][0]:.4f}, "
+            f"max |v - v_ref| {data[f'projection {method}']['dv'][0]:.4f}, {time.perf_counter() - start:.0f} s",
+            flush=True,
+        )
+    return data
+
+
+def plot(data, out):
+    for key, coordinate, values, label, name in (
+        ("u", reference.Y, reference.U, "u at x = 0.5", "cavity_re1000_u.png"),
+        ("v", reference.X, reference.V, "v at y = 0.5", "cavity_re1000_v.png"),
+    ):
+        fig, ax = plotstyle.new_figure()
+        for method, (color, _marker) in plotstyle.method_style.items():
+            if method in data:
+                along = numpy.asarray(coordinate)
+                order = numpy.argsort(along)
+                ax.plot(
+                    along[order],
+                    data[method][key][order],
+                    "-",
+                    color=color,
+                    lw=1.8,
+                    label=(
+                        f"{method}, {int(data[method]['n'][-1]) // 2} x {int(data[method]['n'][-1]) // 2} Quad9"
+                        if method == "fem, Taylor-Hood"
+                        else f"{method}, {int(data[method]['n'][-1])} x {int(data[method]['n'][-1])}"
+                    ),
+                )
+        ax.plot(
+            coordinate,
+            values,
+            "o",
+            color=plotstyle.ink,
+            ms=5,
+            mfc="white",
+            label="Erturk et al. (601 x 601)",
+        )
+        plotstyle.style(ax, "y" if key == "u" else "x", label)
+        plotstyle.legend_below(ax, ncol=2)
+        plotstyle.save(fig, out / name)
+    fig, ax = plotstyle.new_figure()
+    for method, (color, marker) in plotstyle.method_style.items():
+        if method in data:
+            d = data[method]
+            ax.loglog(
+                1.0 / d["n"],
+                numpy.maximum(d["du"], d["dv"]),
+                marker + "-",
+                color=color,
+                lw=2,
+                ms=7,
+                label=method,
+            )
+    plotstyle.style(
+        ax,
+        "element size h (Taylor-Hood: half its element)",
+        "largest difference from Erturk et al.",
+    )
+    plotstyle.legend_below(ax, ncol=2)
+    plotstyle.save(fig, out / "cavity_re1000_difference.png")
+
+
+def table(data):
+    for method, d in data.items():
+        print(
+            f"{method:24s} n {list(d['n'])}: u {numpy.round(d['du'], 4)}, v {numpy.round(d['dv'], 4)}"
+        )
+
+
+if __name__ == "__main__":
+    out, plot_only = plotstyle.parse_arguments(sys.argv[1:], default_out)
+    cache = plotstyle.cache_path(__file__)
+    if plot_only:
+        data = plotstyle.load_cache(cache)
+    else:
+        data = compute()
+        plotstyle.save_cache(cache, data)
+    table(data)
+    plot(data, out)
