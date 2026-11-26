@@ -791,8 +791,7 @@ Problem::evaluatePoint(ThreadScratch & s,
     fp = &s.fld;
   }
   const bool lagged = opts.mode == LinearizationMode::Picard && opts.lagged;
-  fillContext(
-      s.ctx, el, *fp, s.cur, lagged ? &s.lag : nullptr, opts.old ? &s.old : nullptr, nd);
+  fillContext(s.ctx, el, *fp, s.cur, lagged ? &s.lag : nullptr, opts.old ? &s.old : nullptr, nd);
   if (opts.rate_shift)
     fillShifts(s.ctx, el, *fp, s.rate_shift, s.accel_shift);
   s.ctx.x = geo.x;
@@ -2087,9 +2086,8 @@ Problem::relativeStep(const Vector & after, const Vector & before) const
     if (!(sizes.change[var] > 0.0))
       continue;
     const double range = sizes.range[var] > 0.0 ? sizes.range[var] : sizes.magnitude[var];
-    largest = std::max(largest,
-                       range > 0.0 ? sizes.change[var] / range
-                                   : std::numeric_limits<double>::infinity());
+    largest = std::max(
+        largest, range > 0.0 ? sizes.change[var] / range : std::numeric_limits<double>::infinity());
   }
   return largest;
 }

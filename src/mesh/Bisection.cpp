@@ -146,8 +146,7 @@ Bisection::coarsenElements(const std::vector<char> & coarsen, std::vector<char> 
 bool
 Bisection::refineElements(const std::vector<char> & refine, int max_level)
 {
-  return _dimension == 3 ? refineTetrahedra(refine, max_level)
-                         : refineTriangles(refine, max_level);
+  return _dimension == 3 ? refineTetrahedra(refine, max_level) : refineTriangles(refine, max_level);
 }
 
 void

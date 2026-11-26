@@ -278,7 +278,8 @@ struct GlobalRows
 /// Returns, for every joined id other than its group's representative, the representative: the
 /// smallest member that is a primary only.  A group whose every member is a secondary was joined
 /// in a loop, which is an InputError.
-std::unordered_map<Index, Index> joinedRepresentatives(const std::vector<std::pair<Index, Index>> & pairs);
+std::unordered_map<Index, Index>
+joinedRepresentatives(const std::vector<std::pair<Index, Index>> & pairs);
 
 /// What the solvers of a Problem need from the processes that share it.  The
 /// default is the serial identity: one process holds the whole problem.  A

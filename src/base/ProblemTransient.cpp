@@ -120,11 +120,8 @@ Problem::ThetaIntegrator::start(const Vector & solution, double time)
 }
 
 SolveResult
-Problem::ThetaIntegrator::step(Vector & solution,
-                               const Vector & old,
-                               double time,
-                               double dt,
-                               bool continues)
+Problem::ThetaIntegrator::step(
+    Vector & solution, const Vector & old, double time, double dt, bool continues)
 {
   // The nonlinear solve advances the problem's own solution at the problem's time.
   (void) solution;
@@ -209,9 +206,8 @@ Problem::ThetaIntegrator::step(Vector & solution,
   }
   // An explicit step still takes the equations without a time derivative at the new time.
   base.include_steady_terms =
-      _theta > 0 || std::any_of(p._new_time_only.begin(),
-                                p._new_time_only.end(),
-                                [](char c) { return c != 0; });
+      _theta > 0 ||
+      std::any_of(p._new_time_only.begin(), p._new_time_only.end(), [](char c) { return c != 0; });
   SolveResult result = p.nonlinearSolve(_options, base, _theta < 1.0 ? &old_residual : nullptr);
   if (!result.converged)
     return result;
@@ -438,8 +434,8 @@ Problem::runTransient(TimeIntegrator & integrator,
       if ((!differential.empty() && !differential[v]) || !(step[v] > 0.0))
         continue;
       const double s = scale[static_cast<std::size_t>(equation_of[v])];
-      estimate = std::max(estimate,
-                          s > 0.0 ? step[v] / s : std::numeric_limits<double>::infinity());
+      estimate =
+          std::max(estimate, s > 0.0 ? step[v] / s : std::numeric_limits<double>::infinity());
     }
     return estimate;
   };
@@ -697,8 +693,7 @@ Problem::solveTransient(const TransientOptions & transient, const SolverOptions 
   // reached the state, and the velocity and acceleration there).  Otherwise the initial velocity
   // of a flow is projected onto a field without divergence, unless the run restarts from a
   // checkpoint.
-  const bool continues =
-      !par.any(!(_transient_end.size() == _U.size() && _transient_end == _U));
+  const bool continues = !par.any(!(_transient_end.size() == _U.size() && _transient_end == _U));
   std::optional<double> start_correction;
   if (tr.restart_file.empty() && !continues)
     start_correction = projectInitialVelocity();

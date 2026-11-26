@@ -24,8 +24,7 @@ MeshHierarchy::MeshHierarchy(const Mesh & initial,
     throw InputError(
         "Local refinement and coarsening need a mesh of one element type: Tri3, Tri6, Tet4 or "
         "Tet10, refined by bisection, or Quad4 or Hex8, refined by subdivision.");
-  _side_corners =
-      _dimension == 2 ? 2 : (elementNumNodes(elementCornerType(type)) == 4 ? 3 : 4);
+  _side_corners = _dimension == 2 ? 2 : (elementNumNodes(elementCornerType(type)) == 4 ? 3 : 4);
   _points = initial.nodes();
   for (const auto & [name, sides] : initial.sidesets())
     for (const Side & side : sides)

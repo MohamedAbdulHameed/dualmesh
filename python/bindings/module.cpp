@@ -927,7 +927,8 @@ PYBIND11_MODULE(_core, m)
             return out;
           },
           "The hanging nodes: (node, [(node, weight), ...]) for each.");
-  py::class_<Bisection, MeshHierarchy>(m, "Bisection").def(py::init<const Mesh &>(), py::arg("mesh"));
+  py::class_<Bisection, MeshHierarchy>(m, "Bisection")
+      .def(py::init<const Mesh &>(), py::arg("mesh"));
 
   m.def("generate_box_mesh",
         &generateBoxMesh,

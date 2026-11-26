@@ -671,11 +671,10 @@ Problem::nonlinearSolve(const SolverOptions & o,
       bool equations_converged = true;
       for (std::size_t e = 0; e < norms.size(); ++e)
         equations_converged =
-            equations_converged &&
-            std::sqrt(equation_norm[e]) <=
-                std::max(o.relative_tolerance * std::sqrt(equation_size[e]),
-                         64.0 * std::numeric_limits<double>::epsilon() *
-                             std::sqrt(equation_level[e]));
+            equations_converged && std::sqrt(equation_norm[e]) <=
+                                       std::max(o.relative_tolerance * std::sqrt(equation_size[e]),
+                                                64.0 * std::numeric_limits<double>::epsilon() *
+                                                    std::sqrt(equation_level[e]));
       if (equations_converged)
       {
         out.converged = true;
@@ -740,8 +739,7 @@ Problem::nonlinearSolve(const SolverOptions & o,
           nonlinear.eisenstat_walker = !must_converge && !linear;
           nonlinear.options = user.nonlinear;
           linear_before = 0;
-          const petsc::NonlinearResult solve =
-              petsc::solveNonlinear(problem, solver, x, nonlinear);
+          const petsc::NonlinearResult solve = petsc::solveNonlinear(problem, solver, x, nonlinear);
           result.linear_iterations += solve.linear_iterations;
           result.total_iterations += solve.iterations;
           steps_before += solve.iterations;

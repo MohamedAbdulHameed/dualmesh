@@ -134,7 +134,7 @@ public:
     return p;
   }
   explicit TableProperty(const InputParameters & p)
-    : Property(p), _points(p.getRealList("points")), _values(p.getRealList("values"))
+      : Property(p), _points(p.getRealList("points")), _values(p.getRealList("values"))
   {
     if (_points.size() < 2 || _points.size() != _values.size())
       throw InputError("'" + name() + "': a table takes at least two points and one value per " +
@@ -178,8 +178,8 @@ private:
     if (region != _block_names.end())
       os << " in the region " << region->second;
     os << " reads " << _params.getString("argument") << " = " << a
-       << ", outside the range of the table, from " << _points.front() << " to "
-       << _points.back() << ".";
+       << ", outside the range of the table, from " << _points.front() << " to " << _points.back()
+       << ".";
     return os.str();
   }
 
