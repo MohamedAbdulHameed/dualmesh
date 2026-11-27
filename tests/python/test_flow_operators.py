@@ -3,19 +3,20 @@
 
 The iteration counts of test_saddle_point.py show that the preconditioners work, but a wrong
 scale of an operator can hide in them: a lumped mass off by a constant factor changes the count by
-a few iterations only.  These tests check each operator assembled by Problem.saddlePointBlocks
-against what it must be, whatever the method that assembled the system:
+a few iterations only.  These tests check each operator assembled by FlowSystem::saddlePointBlocks
+against what it must be, whatever the method that assembled the system.
 
-* the lumped masses Q_p and Q_v sum to the measure of the domain (with 2 pi r in axisymmetric
-  coordinates), and every entry is positive, also for quadratic elements;
-* the mass matrix of pressure_mass sums to the integral of 1/mu;
-* C_1 is symmetric, positive semidefinite, and zero on a constant pressure; it is present for
-  the stabilised element and absent for Taylor-Hood; its size follows from the element itself, so
-  it scales with the unit of length as the pressure Laplacian does;
-* C_2 is C_1 times theta mu / h^2 on a uniform mesh;
-* F_p is zero on a constant pressure in an enclosed flow, and on a channel it sums to the inflow
-  term rho U H of its Robin condition;
-* no operator has an entry at a prescribed pressure.
+* The lumped masses Q_p and Q_v sum to the measure of the domain (with 2 pi r in axisymmetric
+  coordinates), and every entry is positive, also for quadratic elements.
+* The mass matrix of pressure_mass sums to the integral of 1/mu.
+* C_1 is symmetric, positive semidefinite and zero on a constant pressure.  It is present for the
+  stabilised element and absent for Taylor-Hood.  Its size follows from the element itself, so it
+  scales with the unit of length as the pressure Laplacian does.
+* C_2 is the C_1 of lsc times theta mu / h^2 on a uniform mesh, with theta the weight of the
+  steady terms and h the size of an element.
+* F_p is zero on a constant pressure away from the inflow, and on a channel it sums to the inflow
+  term rho U H of its Robin condition.
+* No operator has an entry at a prescribed pressure.
 """
 
 from __future__ import annotations
@@ -98,9 +99,10 @@ def test_the_lumped_masses_sum_to_the_measure_of_the_domain(
         assert numpy.all(velocity > 0)
 
 
-def _channel(element_type, formulation, density=50.0, viscosity=1.0):
-    """A channel 4 x 1 with the uniform inflow U = 1 on the left and a free outflow on the right;
-    the walls hold the corner nodes of the inflow at rest.  Four elements across."""
+def _channel(element_type, formulation, density=50.0, viscosity=1.0, outlet_pressure=False):
+    """A channel 4 x 1 with the uniform inflow U = 1 on the left and a free outflow on the right,
+    or the pressure 0 there with outlet_pressure.  The walls hold the corner nodes of the inflow
+    at rest.  Four elements across."""
     mesh = dualmesh.generate_rectangle_mesh(
         x=[0, 4], y=[0, 1], num_elements=[16, 4], element_type=element_type
     )
@@ -110,6 +112,8 @@ def _channel(element_type, formulation, density=50.0, viscosity=1.0):
     )
     flow.add_boundary_condition(["velocity_x = 1", "velocity_y = 0"], boundary="left")
     flow.add_boundary_condition(["velocity_x = 0", "velocity_y = 0"], boundary=["top", "bottom"])
+    if outlet_pressure:
+        flow.add_boundary_condition("pressure = 0", boundary="right")
     return problem
 
 
@@ -156,6 +160,51 @@ def test_the_stabilisation_scales_with_the_unit_of_length_like_a_laplacian():
     assert numpy.allclose(
         millimetres, 1e-3 * metres, rtol=1e-10, atol=1e-13 * numpy.abs(metres).max()
     )
+
+
+def test_the_stabilisation_is_present_for_equal_order_and_absent_for_Taylor_Hood():
+    """Taylor-Hood is stable, so it has neither C_1 nor C_2."""
+    for element_type, formulation, present in (
+        ("Quad4", "equal_order", True),
+        ("Quad9", "Taylor-Hood", False),
+    ):
+        ops = _operators(_cavity(element_type, formulation), "lsc")
+        for name in ("stabilization", "commutator_stabilization"):
+            values = numpy.asarray(ops[name][2])
+            assert (values.size > 0 and numpy.abs(values).max() > 0) == present, (formulation, name)
+
+
+def test_the_commutator_stabilisation_is_the_stabilisation_times_theta_mu_over_h_squared():
+    """A steady solve has theta = 1.  On the uniform 6 x 6 mesh of the unit square h^2 = 1/36,
+    so with mu = 2 the factor theta mu / h^2 is 72."""
+    ops = _operators(_cavity("Quad4", "equal_order", n=6, viscosity=2.0), "lsc")
+    c1, _ = _pressure_block(ops, "stabilization")
+    c2, _ = _pressure_block(ops, "commutator_stabilization")
+    assert numpy.abs(c1).max() > 0
+    assert numpy.allclose(c2, 72.0 * c1, rtol=1e-12, atol=1e-12 * numpy.abs(c2).max())
+
+
+@pytest.mark.parametrize(
+    "preconditioner, names",
+    [
+        ("pressure_mass", ("mass",)),
+        ("pcd", ("stabilization", "convection_diffusion")),
+        ("lsc", ("stabilization", "commutator_stabilization")),
+    ],
+)
+def test_no_operator_has_an_entry_at_a_prescribed_pressure(preconditioner, names):
+    """The pressure 0 on the outlet prescribes the pressure unknowns there."""
+    problem = _channel("Quad4", "equal_order", outlet_pressure=True)
+    problem._build_physics()
+    ops = _operators(problem, preconditioner)
+    constrained = numpy.asarray(ops["constrained"], dtype=bool)
+    prescribed = numpy.asarray(ops["pressure_dofs"])[constrained[ops["pressure_dofs"]]]
+    assert prescribed.size > 0
+    for name in names:
+        rows, cols, values = ops[name]
+        assert len(values) > 0, name
+        assert not numpy.isin(rows, prescribed).any(), name
+        assert not numpy.isin(cols, prescribed).any(), name
 
 
 @pytest.mark.parametrize(

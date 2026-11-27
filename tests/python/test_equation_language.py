@@ -1,25 +1,31 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 """The equation language of general_form_PDE and the conversion of expressions to SymPy and back.
 
-The equation front end of dualmesh.model.parse reads an equation as it is printed and sorts its
+The equation front end of dualmesh.model.syntax reads an equation as it is printed and sorts its
 terms into a conservation law. Each check evaluates a term of the law at chosen numbers and
 compares it with the value of that term worked out by hand from the equation. The converter
 writes an expression in SymPy and reads SymPy back into the engine's language, and each check
-compares a value at a point with the value worked out by hand.
+compares a value at a point with the value worked out by hand. The symbolic derivative of
+dualmesh.model.calculus is checked against its closed form at chosen numbers.
 """
 
-import importlib
 import math
 
 import pytest
 from dualmesh import mms
-from dualmesh._core import ParsedFunction
-from dualmesh.input.lower import write_expression
-from dualmesh.input.units import base, input_error
-from dualmesh.model import equation_scope, parse, read_condition, read_equations
-from dualmesh.model.parse import parse_in_scope
-
-graph = importlib.import_module("dualmesh.model.expression")
+from dualmesh._core import Expression, InputError, ParsedFunction, expression_functions
+from dualmesh.model import (
+    differentiate,
+    equation_scope,
+    graph,
+    parse,
+    read_condition,
+    read_equations,
+)
+from dualmesh.model.engine_form import write_expression
+from dualmesh.model.sympy_form import from_sympy, to_sympy
+from dualmesh.model.syntax import parse_in_scope
+from dualmesh.units import base, dimensionless
 
 
 def value(node, numbers: dict) -> float:
@@ -85,9 +91,10 @@ def test_the_fields_of_a_system_follow_the_time_derivative_and_the_field_left_ov
 
 
 def test_the_flux_of_a_vector_equation_is_the_tensor_inside_its_divergence():
-    """div(2*sym(grad(U))) = 0: the flux is F = 2 sym(grad U), with F_xy = dU_x/dy + dU_y/dx."""
+    """div(2*symmetric(grad(U))) = 0: the flux is F = 2 symmetric(grad U), with
+    F_xy = dU_x/dy + dU_y/dx."""
     scope = equation_scope({"U": 1}, 2)
-    components = read_equations(["div(2*sym(grad(U))) = 0"], [""], scope)["U"].components(2)
+    components = read_equations(["div(2*symmetric(grad(U))) = 0"], [""], scope)["U"].components(2)
     gradient = {
         "grad(U_x)[0]": 1.0,
         "grad(U_x)[1]": 2.0,
@@ -110,7 +117,7 @@ def test_an_axisymmetric_divergence_in_place_carries_the_factor_of_the_radius():
 def test_x_in_axisymmetric_coordinates_is_refused():
     """The coordinates of an axisymmetric problem are r and z. The engine would read x as r, so
     a manufactured source that took x for a constant would differ from the solved equation."""
-    with pytest.raises(input_error, match="'x' is not a coordinate of this problem"):
+    with pytest.raises(InputError, match="'x' is not a coordinate of this problem"):
         scalar_terms("-div((1 + x)*grad(u)) = 1", "axisymmetric")
 
 
@@ -128,7 +135,7 @@ def test_x_in_axisymmetric_coordinates_is_refused():
 )
 def test_an_equation_that_cannot_be_sorted_is_refused(equation, message):
     scope = equation_scope({"u": 0}, 2)
-    with pytest.raises(input_error, match=message):
+    with pytest.raises(InputError, match=message):
         read_equations([equation], [""], scope)
 
 
@@ -136,14 +143,14 @@ def test_two_equations_that_could_govern_either_field_take_keys():
     """u = 1 and v = 2 hold no time derivative and no flux, so a key names the field of each.
     Under the keys v and u, the source of the equation of v is 1 - u."""
     scope = equation_scope({"u": 0, "v": 0}, 2)
-    with pytest.raises(input_error, match="could govern any of the fields u, v"):
+    with pytest.raises(InputError, match="could govern any of the fields u, v"):
         read_equations(["u = 1", "v = 2"], ["", ""], scope)
     (terms,) = read_equations(["u = 1", "v = 2"], ["v", "u"], scope)["v"].components(2)
     assert value(terms.source, {"u": 4.0}) == pytest.approx(-3.0)
 
 
 def test_a_definition_reads_only_the_definitions_before_it():
-    with pytest.raises(input_error, match="'k0' is defined after this expression"):
+    with pytest.raises(InputError, match="'k0' is defined after this expression"):
         equation_scope({"u": 0}, 2, "cartesian", {"k": "2*k0", "k0": 1.0})
     scope = equation_scope({"u": 0}, 2, "cartesian", {"k0": 1.5, "k": "2*k0"})
     assert value(scope["k"], {}) == pytest.approx(3.0)
@@ -165,7 +172,7 @@ def test_a_flux_written_out_with_du_dn_is_the_normal_flux_of_the_equation():
     ((name, component, flux, node),) = read_condition("-k*du/dn = h*(u - 1)", scope, laws)
     assert (name, component, flux) == ("u", (), True)
     assert value(node, {"u": 3.0}) == pytest.approx(8.0)
-    with pytest.raises(input_error, match="is not the normal flux of the equation of u"):
+    with pytest.raises(InputError, match="is not the normal flux of the equation of u"):
         read_condition("k*du/dn = 1", scope, laws)
 
 
@@ -177,29 +184,54 @@ def test_a_field_on_the_left_prescribes_its_value_and_normal_flux_names_the_flux
     assert flux and value(node, {}) == 5.0
     two = equation_scope({"u": 0, "v": 0}, 2)
     laws = read_equations(["-laplacian(u) = v", "-laplacian(v) = 1"], ["", ""], two)
-    with pytest.raises(input_error, match="could be the flux of u, v"):
+    with pytest.raises(InputError, match="could be the flux of u, v"):
         read_condition("normal_flux = 1", two, laws)
 
 
 # ---------------------------------------------------------------------------
 # One formula language
 # ---------------------------------------------------------------------------
-def test_the_short_spellings_are_aliases_of_one_function_table():
-    """sym, dev, det, ddot and if build the very graph of symmetric, deviatoric, determinant,
-    inner and conditional, since the graph is hash-consed."""
+@pytest.mark.parametrize(
+    "text, name",
+    [
+        ("sym(grad(U))", "symmetric"),
+        ("dev(grad(U))", "deviatoric"),
+        ("det(grad(U))", "determinant"),
+        ("ddot(grad(U), grad(U))", "inner"),
+        ("if(U_x < 1, 2, 3)", "conditional"),
+    ],
+)
+def test_each_function_has_one_name(text, name):
+    """A second spelling, such as sym for symmetric, is an unknown function, and the one name
+    reads the same text."""
     scope = equation_scope({"U": 1}, 2)
-    pairs = [
-        ("sym(grad(U))", "symmetric(grad(U))"),
-        ("dev(grad(U))", "deviatoric(grad(U))"),
-        ("det(grad(U))", "determinant(grad(U))"),
-        ("ddot(grad(U), grad(U))", "inner(grad(U), grad(U))"),
-        ("if(U_x < 1, 2, 3)", "conditional(U_x < 1, 2, 3)"),
-    ]
-    for short, long in pairs:
-        assert parse_in_scope(short, scope, equation=False) is parse_in_scope(
-            long, scope, equation=False
-        )
-    assert parse("if(less(x, [1 m]), 2, 3)") is parse("conditional(less(x, [1 m]), 2, 3)")
+    written = text.split("(")[0]
+    with pytest.raises(InputError, match=rf"unknown function '{written}'"):
+        parse_in_scope(text, scope, equation=False)
+    parse_in_scope(name + text[len(written) :], scope, equation=False)
+
+
+@pytest.mark.parametrize("name, argument_count", expression_functions())
+def test_every_function_of_the_engine_parses_and_lowers_in_the_model_language(name, argument_count):
+    """Each function of the table of the engine is a call of the model language of the same name.
+    At u = 0.3 and v = 0.7 the call of numbers folds to the value of the engine, the call of
+    fields lowers back onto the engine with that value, and its symbolic derivative by u matches
+    the central difference of the engine."""
+    names = ["u", "v"][:argument_count]
+    at = dict(zip(names, [0.3, 0.7]))
+    engine = Expression(f"{name}({', '.join(names)})", names)
+    expected = engine(**at)
+    folded = parse(f"{name}({', '.join(map(str, at.values()))})")
+    assert folded.kind == "number" and folded.value == pytest.approx(expected, rel=1e-14)
+    fields = {key: graph.field_component(key, physical_dimension=dimensionless) for key in names}
+    node = parse(f"{name}({', '.join(names)})", fields)
+    assert Expression(write_expression(node, "test"), names)(**at) == pytest.approx(
+        expected, rel=1e-15
+    )
+    slope = Expression(write_expression(differentiate(node, fields["u"]), "test"), names)
+    step = 1e-6
+    above, below = (engine(**{**at, "u": at["u"] + shift}) for shift in (step, -step))
+    assert slope(**at) == pytest.approx((above - below) / (2.0 * step), rel=1e-6, abs=1e-8)
 
 
 def test_square_brackets_hold_a_quantity_or_the_items_of_a_vector():
@@ -217,7 +249,7 @@ def test_square_brackets_hold_a_quantity_or_the_items_of_a_vector():
         ("(1 < 2) or (3 > 4)", 1.0),
         ("2 <= 2", 1.0),
         ("2 != 2", 0.0),
-        ("if(1 >= 2, 5, 7)", 7.0),
+        ("conditional(1 >= 2, 5, 7)", 7.0),
         ("2**3**2", 512.0),
     ],
 )
@@ -226,12 +258,32 @@ def test_comparisons_and_logic_reach_the_engine_as_one_or_zero(text, expected):
 
 
 # ---------------------------------------------------------------------------
+# Derivatives
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "exponent, base_value, expected",
+    [(1.5, 0.0, 0.0), (1.0, 0.0, 1.0), (1.5, 0.4, 1.5 * math.sqrt(0.4))],
+)
+def test_a_power_with_a_named_exponent_takes_the_power_rule(exponent, base_value, expected):
+    """d(u^n)/du = n u^(n - 1) for a named constant n, finite at the zero base u = 0."""
+    u = graph.field_component("u", physical_dimension=dimensionless)
+    slope = differentiate(u ** graph.constant("n", exponent), u)
+    assert value(slope, {str(u): base_value}) == pytest.approx(expected, abs=1e-15)
+
+
+def test_a_power_whose_exponent_reads_the_variable_takes_the_logarithm():
+    """d(u^u)/du = u^u (log(u) + 1), which is 0.5^0.5 (1 - log(2)) at u = 0.5."""
+    u = graph.field_component("u", physical_dimension=dimensionless)
+    slope = differentiate(u**u, u)
+    expected = math.sqrt(0.5) * (1.0 - math.log(2.0))
+    assert value(slope, {str(u): 0.5}) == pytest.approx(expected, rel=1e-14)
+
+
+# ---------------------------------------------------------------------------
 # SymPy
 # ---------------------------------------------------------------------------
 def test_an_expression_converts_to_sympy():
     sympy = pytest.importorskip("sympy")
-    from dualmesh.model.sympy_form import to_sympy
-
     scope = equation_scope({"u": 0}, 2)
     text = "x^2*sin(y) + atan2(u, 2) + abs(x - 1)"
     node = graph.expand(parse_in_scope(text, scope, equation=False), 2)
@@ -256,8 +308,6 @@ def test_sympy_output_reaches_the_engine_through_the_one_printer():
 
 def test_a_graph_survives_the_round_trip_through_sympy():
     sympy = pytest.importorskip("sympy")
-    from dualmesh.model.sympy_form import from_sympy, to_sympy
-
     scope = equation_scope({}, 1)
     text = "exp(-x)*cosh(x) + log10(1 + x^2) + erf(x)"
     node = graph.expand(parse_in_scope(text, scope, equation=False), 1)

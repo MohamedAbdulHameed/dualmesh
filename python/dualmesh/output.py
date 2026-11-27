@@ -26,6 +26,7 @@ from pathlib import Path
 
 import numpy
 
+from . import _core
 from ._core import InputError
 from .parameters import keyword_checked, parameter
 
@@ -68,7 +69,7 @@ class Output:
     )
     checkpoint_interval: int | None = parameter(
         None,
-        description="A transient study writes a checkpoint every this many accepted steps, and after its last step, to the file of the name with the extension .chk (one file, replaced each time), from which solve_transient(restart=...) continues the run on any number of processes. Default None: no checkpoint.",
+        description="A transient study writes a checkpoint every this many accepted steps of the run, counted from its start or its restart, and after its last step, to the file of the name with the extension .chk (one file, replaced each time), from which solve_transient(restart=...) continues the run on any number of processes. Default None: no checkpoint.",
     )
     formats: Sequence[str] = parameter(
         ("vtu",),
@@ -167,8 +168,6 @@ class Series:
     def write_collection(self, extension: str) -> str:
         """Writes the ParaView collection (``.pvd``) of the files, which ParaView opens as one
         time series.  The first process writes it."""
-        from . import _core
-
         lines = [
             '<?xml version="1.0"?>',
             '<VTKFile type="Collection" version="0.1">',

@@ -74,48 +74,37 @@ from typing import Callable
 import numpy
 
 from . import _core
+from ._core import InputError
 from .console import header, inner_study, report_level
 from .engine import Problem
+from .model.engine_form import write_expression
+from .model.sympy_form import (
+    coordinate_symbols,
+    from_sympy,
+    sympy_expression,
+    sympy_gradient,
+    sympy_module,
+)
+from .physics import Physics, unique_name
+from .physics import create as create_physics
+from .tables import ResultTables, Table
 
-__all__ = ["ConvergenceResult", "ManufacturedSolution"]
-
-
-def _sympy():
-    try:
-        import sympy
-    except ImportError as error:  # pragma: no cover - depends on the environment
-        raise ImportError(
-            "dualmesh.mms needs SymPy to derive the manufactured sources; install it with 'pip install sympy'."
-        ) from error
-    return sympy
-
-
-def _symbols():
-    sp = _sympy()
-    return sp.symbols("x y z t", real=True)
+__all__ = ["ConvergenceResult", "ManufacturedSolution", "convergence_rates"]
 
 
-def _expr(value):
-    """A number, a string or a SymPy expression, as a SymPy expression in the
-    symbols x, y, z, t."""
-    sp = _sympy()
-    x, y, z, t = _symbols()
-    if isinstance(value, str):
-        return sp.sympify(value, locals={"x": x, "y": y, "z": z, "t": t, "pi": sp.pi, "e": sp.E})
-    return sp.sympify(value)
+def convergence_rates(sizes: Sequence[float], errors: Sequence[float]) -> list:
+    """The observed order between consecutive refinements,
+    :math:`\\log(e_{k}/e_{k+1}) / \\log(h_{k}/h_{k+1})`, with :math:`h_k` the size of
+    refinement :math:`k`, such as its element size or its time step, and :math:`e_k` its error."""
+    return [
+        math.log(errors[k] / errors[k + 1]) / math.log(sizes[k] / sizes[k + 1])
+        for k in range(len(errors) - 1)
+    ]
 
 
 def _text(expression) -> str:
     """A SymPy expression in the engine's expression language, written by the one printer."""
-    from .input.lower import write_expression
-    from .model.sympy_form import from_sympy
-
     return write_expression(from_sympy(expression), "the manufactured solution")
-
-
-def _gradient(u):
-    x, y, z, _t = _symbols()
-    return [u.diff(x), u.diff(y), u.diff(z)]
 
 
 # ---------------------------------------------------------------------------
@@ -136,11 +125,8 @@ class ConvergenceResult:
     errors: dict = field(default_factory=dict)  # (variable, norm) -> list
 
     def rates(self, variable: str, norm: str = "l2") -> list:
-        """Observed order between consecutive meshes,
-        :math:`\\log(e_{k}/e_{k+1}) / \\log(h_{k}/h_{k+1})`."""
-        e = self.errors[(variable, norm)]
-        h = self.sizes
-        return [math.log(e[k] / e[k + 1]) / math.log(h[k] / h[k + 1]) for k in range(len(e) - 1)]
+        """Observed order between consecutive meshes (:func:`convergence_rates`)."""
+        return convergence_rates(self.sizes, self.errors[(variable, norm)])
 
     def order(self, variable: str, norm: str = "l2", last: int = 2) -> float:
         """Least-squares slope of :math:`\\log e` against :math:`\\log h` over
@@ -166,18 +152,12 @@ class ConvergenceResult:
             "orders": {f"{v} {n}": self.rates(v, n) for v, n in keys},
         }
 
-    def write_json(self, path) -> None:
-        """Write :meth:`to_dict` to a JSON file."""
-        from .parameters import write_json_numbers
-
-        write_json_numbers(self.to_dict(), path)
+    write_json = ResultTables.write_json
 
     @property
     def tables(self) -> dict:
         """``errors``: one row per mesh, with the element size, the unknowns
         and the errors."""
-        from .tables import Table
-
         keys = sorted(self.errors)
         rows = [
             [float(h), int(self.num_dofs[i]), *(float(self.errors[k][i]) for k in keys)]
@@ -194,8 +174,6 @@ class ConvergenceResult:
 
     def write_csv(self, path, table: str | None = None) -> None:
         """Write the table ``errors`` to a CSV file."""
-        from .tables import ResultTables
-
         ResultTables.write_csv(self, path, table)
 
     def table(self) -> str:
@@ -256,7 +234,7 @@ class ManufacturedSolution:
         coordinates: str = "cartesian",
         flux_boundaries: dict | None = None,
     ):
-        self.fields = {name: _expr(value) for name, value in fields.items()}
+        self.fields = {name: sympy_expression(value) for name, value in fields.items()}
         self.dimension = int(dimension)
         self.coordinates = coordinates
         self.flux_boundaries = {
@@ -269,18 +247,16 @@ class ManufacturedSolution:
         """Add a physics to the equations, with the type name and the
         parameters of :meth:`dualmesh.Problem.add_physics`.  Every variable
         of the physics needs an exact field."""
-        from . import physics as _physics
-
-        name = _physics.unique_name(physics, [n for n, _t, _p, _i in self._physics])
-        instance = _physics.create(physics, name, dict(parameters))
-        if not isinstance(instance, _physics.Physics):
-            raise _physics.InputError(
+        name = unique_name(physics, [n for n, _t, _p, _i in self._physics])
+        instance = create_physics(physics, name, dict(parameters))
+        if not isinstance(instance, Physics):
+            raise InputError(
                 f"'{physics}' is a coupling. A manufactured solution takes physics only."
             )
         instance._resolve(self.coordinates, self.dimension)
         missing = [v for v in instance.variable_names() if v not in self.fields]
         if missing:
-            raise _physics.InputError(
+            raise InputError(
                 f"{physics}: give the exact field of {', '.join(missing)} in 'fields'."
             )
         self._physics.append((name, physics, dict(parameters), instance))
@@ -298,7 +274,7 @@ class ManufacturedSolution:
 
     # ---- symbolic ---------------------------------------------------------
     def _divergence(self, flux):
-        x, y, z, _t = _symbols()
+        x, y, z, _t = coordinate_symbols()
         axes = (x, y, z)
         if self.coordinates == "axisymmetric":
             return (
@@ -308,7 +284,7 @@ class ManufacturedSolution:
             )
         if self.coordinates == "spherical":
             return (x**2 * flux[0]).diff(x) / x**2
-        return sum(_expr(flux[d]).diff(axes[d]) for d in range(self.dimension))
+        return sum(sympy_expression(flux[d]).diff(axes[d]) for d in range(self.dimension))
 
     def flux(self, variable: str) -> list:
         """The exact flux :math:`\\mathbf{F}` of ``variable``'s equation, summed
@@ -317,7 +293,7 @@ class ManufacturedSolution:
         total = [0, 0, 0]
         for parts in self._terms():
             if variable in parts:
-                total = [a + _expr(b) for a, b in zip(total, parts[variable][0])]
+                total = [a + sympy_expression(b) for a, b in zip(total, parts[variable][0])]
         return total
 
     def forcing(self) -> dict:
@@ -329,10 +305,11 @@ class ManufacturedSolution:
             source = dict.fromkeys(self.fields, 0)
             for parts in self._terms():
                 for variable, (F, S) in parts.items():
-                    flux[variable] = [a + _expr(b) for a, b in zip(flux[variable], F)]
-                    source[variable] = source[variable] + _expr(S)
+                    flux[variable] = [a + sympy_expression(b) for a, b in zip(flux[variable], F)]
+                    source[variable] = source[variable] + sympy_expression(S)
             forcing = {
-                v: -self._divergence([_expr(c) for c in flux[v]]) + source[v] for v in self.fields
+                v: -self._divergence([sympy_expression(c) for c in flux[v]]) + source[v]
+                for v in self.fields
             }
             if self.coordinates != "cartesian":
                 # The curvilinear divergence and the hoop terms divide by r,
@@ -340,7 +317,7 @@ class ManufacturedSolution:
                 # cancel. Brought over one denominator they do so
                 # symbolically, and the forcing can then be evaluated on the
                 # axis itself.
-                sympy = _sympy()
+                sympy = sympy_module()
                 forcing = {
                     v: sympy.cancel(sympy.together(sympy.expand(f))) for v, f in forcing.items()
                 }
@@ -351,7 +328,7 @@ class ManufacturedSolution:
         return _text(self.fields[variable])
 
     def exact_gradient(self, variable: str) -> list:
-        return [_text(g) for g in _gradient(self.fields[variable])]
+        return [_text(g) for g in sympy_gradient(self.fields[variable])]
 
     # ---- numerical ----------------------------------------------------------
     def build(
@@ -382,7 +359,7 @@ class ManufacturedSolution:
         boundaries = list(boundary) if boundary is not None else list(mesh.sideset_names())
         walls = [b for b in boundaries if b not in self.flux_boundaries]
         for variable, f in self.forcing().items():
-            if variable not in served and not (variable in pressures and _expr(f) == 0):
+            if variable not in served and not (variable in pressures and sympy_expression(f) == 0):
                 problem.add_kernel(
                     "body_force",
                     variable=variable,

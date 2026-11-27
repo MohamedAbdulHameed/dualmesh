@@ -2,19 +2,19 @@
 //
 // Tests of the mesh partitioners and of the distributed solver.
 //
-// Build without MPI, this program checks the partitioners and runs the
-// distributed solver on a single rank, where it must reproduce the serial
-// answer exactly.  Built with MPI (-DDUALMESH_ENABLE_MPI=ON) and launched with
+// On one rank, this program checks the partitioners and runs the distributed
+// solver, which must reproduce the serial answer exactly.  Launched with
 //
 //     mpirun -n 4 dualmesh_parallel_tests
 //
-// it additionally checks that the answer does not depend on the number of
-// ranks: every rank computes the reference serial solution on the whole mesh
-// and compares it, node by node, with the distributed one.
+// it also checks that the answer does not depend on the number of ranks:
+// every rank computes the reference serial solution on the whole mesh and
+// compares it, node by node, with the distributed one.
+#include "dualmesh/base/Checkpoint.h"
 #include "dualmesh/base/Problem.h"
 #include "dualmesh/linalg/PetscSolver.h"
 #include "dualmesh/modules/Projection.h"
-#include "dualmesh/parallel/Checkpoint.h"
+#include "dualmesh/modules/Registry.h"
 #include "dualmesh/parallel/DistributedProblem.h"
 #include "dualmesh/parallel/GatherScatter.h"
 #include "dualmesh/parallel/Partition.h"
@@ -48,6 +48,14 @@ check(bool condition, const std::string & what)
     std::cout << "[ FAIL ] " << what << "\n";
     ++g_failures;
   }
+}
+
+/// The larger of the worst difference so far and a new one, NaN once either is NaN, so that a
+/// solution with a NaN fails the check (std::max drops a NaN second argument).
+double
+worse(double worst, double difference)
+{
+  return std::isnan(worst) || std::isnan(difference) ? std::nan("") : std::max(worst, difference);
 }
 
 std::vector<double>
@@ -133,6 +141,26 @@ distortedQuadrilaterals(int nx, int ny)
   return mesh;
 }
 
+/// The mesh with its nodes numbered in reverse: the same nodes, elements and side sets under another numbering of the nodes.
+Mesh
+withReversedNodes(const Mesh & mesh)
+{
+  Mesh out(mesh.dimension());
+  const Index last = mesh.numNodes() - 1;
+  for (Index n = last; n >= 0; --n)
+    out.addNode(mesh.node(n));
+  for (const Element & element : mesh.elements())
+  {
+    std::vector<Index> nodes;
+    for (int k = 0; k < element.numNodes(); ++k)
+      nodes.push_back(last - element.nodes[k]);
+    out.addElement(element.type, nodes, element.block);
+  }
+  for (const auto & [name, sides] : mesh.sidesets())
+    out.addSideset(name, sides);
+  return out;
+}
+
 /// Steady heat conduction with a source on the unit square, with a mixture of
 /// prescribed temperature and convection boundary conditions, so that both
 /// kinds of boundary term are exercised.
@@ -200,6 +228,7 @@ addFlow(Problem & problem, double mu)
 int
 main()
 {
+  registerAllObjects();
   auto & comm = Communicator::world();
   if (comm.isRoot())
     std::cout << "dualmesh parallel tests: " << comm.size() << " rank"
@@ -342,7 +371,7 @@ main()
           "the gathered values hold one value per node of the whole mesh");
     double worst = 0;
     for (Index n = 0; n < whole.numNodes(); ++n)
-      worst = std::max(worst, std::abs(got[n] - expected[n]));
+      worst = worse(worst, std::abs(got[n] - expected[n]));
     std::ostringstream label;
     label << "a mesh held by the root alone gives the serial solution (worst difference " << worst
           << ")";
@@ -451,7 +480,7 @@ main()
                 "the gathered values hold one value per node of the whole mesh");
           double worst = 0;
           for (Index n = 0; n < mesh.numNodes(); ++n)
-            worst = std::max(worst, std::abs(got[n] - expected[n]));
+            worst = worse(worst, std::abs(got[n] - expected[n]));
           std::ostringstream label;
           label << name << ": distributed solution matches the serial one (" << partitioner << ", "
                 << preconditioner << ", worst difference " << worst << ")";
@@ -496,7 +525,7 @@ main()
           "the gathered values hold one value per node of the whole mesh");
     double worst = 0;
     for (Index n = 0; n < mesh.numNodes(); ++n)
-      worst = std::max(worst, std::abs(got[n] - expected[n]));
+      worst = worse(worst, std::abs(got[n] - expected[n]));
     std::ostringstream label;
     label << "a concentrated load is applied once, not once per rank (worst difference " << worst
           << ")";
@@ -561,7 +590,7 @@ main()
               "the gathered values hold one value per node of the whole mesh");
         for (Index n = 0; n < mesh.numNodes(); ++n)
         {
-          worst = std::max(worst, std::abs(got[n] - expected[n]));
+          worst = worse(worst, std::abs(got[n] - expected[n]));
           scale = std::max(scale, std::abs(expected[n]));
         }
       }
@@ -684,7 +713,7 @@ main()
               "the gathered values hold one value per node of the whole mesh");
         for (Index n = 0; n < mesh.numNodes(); ++n)
         {
-          worst = std::max(worst, std::abs(got[n] - expected[n]));
+          worst = worse(worst, std::abs(got[n] - expected[n]));
           scale = std::max(scale, std::abs(expected[n]));
         }
       }
@@ -774,7 +803,7 @@ main()
             const auto got = distributed->gatheredValues("u");
             double worst = got.size() == expected.size() ? 0.0 : 1e300;
             for (std::size_t n = 0; n < got.size() && n < expected.size(); ++n)
-              worst = std::max(worst, std::abs(got[n] - expected[n]));
+              worst = worse(worst, std::abs(got[n] - expected[n]));
             std::ostringstream label;
             label << name << (doubly ? ", doubly periodic" : ", periodic in x") << ", " << partition
                   << " partition, gather-scatter " << gather_scatter
@@ -863,7 +892,7 @@ main()
       double worst = got.size() == expected.size() ? 0.0 : 1e300, scale = 0;
       for (std::size_t n = 0; n < got.size() && n < expected.size(); ++n)
       {
-        worst = std::max(worst, std::abs(got[n] - expected[n]));
+        worst = worse(worst, std::abs(got[n] - expected[n]));
         scale = std::max(scale, std::abs(expected[n]));
       }
       std::ostringstream label;
@@ -875,7 +904,6 @@ main()
 
   // ---- checkpoint and restart -------------------------------------------------
   // A run stopped half way and restarted from its checkpoint, with another partition of the mesh, ends where an uninterrupted run ends.
-  if (checkpointsAvailable())
   {
     struct Bump : Function
     {
@@ -938,13 +966,37 @@ main()
       const auto got = restarted.gatheredValues("u");
       double worst = got.size() == expected.size() ? 0.0 : 1e300;
       for (std::size_t n = 0; n < got.size() && n < expected.size(); ++n)
-        worst = std::max(worst, std::abs(got[n] - expected[n]));
+        worst = worse(worst, std::abs(got[n] - expected[n]));
       std::ostringstream label;
       label << name
             << ": a run restarted from its checkpoint on another partition ends where an "
                "uninterrupted run ends ("
             << result.time_steps << " steps after the restart, worst difference " << worst << ")";
       check(worst < 1e-12 && result.time_steps == 10, label.str());
+
+      // The checkpoint holds a fingerprint of its mesh: a restart on a mesh with the same numbers
+      // of nodes and elements, whose nodes moved or were numbered again, stops on every process.
+      Mesh moved = mesh;
+      moved.transformNodes([](const Point & x)
+                           { return Point{x[0] + 0.05 * x[0] * (1.0 - x[0]), x[1], x[2]}; });
+      for (const auto & [change, other_mesh] : std::vector<std::pair<std::string, Mesh>>{
+               {"moved", moved}, {"numbered in reverse", withReversedNodes(mesh)}})
+      {
+        DistributedProblem other(other_mesh, method, CoordinateSystem::Cartesian, other_options);
+        define(other.local());
+        bool refused = false;
+        try
+        {
+          other.solveTransient(second_half);
+        }
+        catch (const InputError & error)
+        {
+          refused = std::string(error.what()).find("the nodes of the mesh") != std::string::npos;
+        }
+        check(!comm.any(!refused),
+              name + ": a restart on a mesh with the same counts whose nodes are " + change +
+                  " is refused");
+      }
       comm.barrier();
       if (comm.isRoot())
         std::remove(file.c_str());
@@ -1022,7 +1074,7 @@ main()
           const auto got = distributed.gatheredValues(name);
           const auto expected = reference.values(name);
           for (std::size_t n = 0; n < got.size(); ++n)
-            worst_velocity = std::max(worst_velocity, std::abs(got[n] - expected[n]));
+            worst_velocity = worse(worst_velocity, std::abs(got[n] - expected[n]));
         }
         const auto got = distributed.gatheredValues("pressure");
         const auto expected = reference.values("pressure");
@@ -1033,8 +1085,8 @@ main()
           expected_mean += expected[n] / static_cast<double>(got.size());
         }
         for (std::size_t n = 0; n < got.size(); ++n)
-          worst_pressure = std::max(worst_pressure,
-                                    std::abs((got[n] - got_mean) - (expected[n] - expected_mean)));
+          worst_pressure =
+              worse(worst_pressure, std::abs((got[n] - got_mean) - (expected[n] - expected_mean)));
         std::ostringstream label;
         label << "projection (" << method_name << "), Taylor-Green vortex "
               << (periodic ? "in a periodic box" : "with walls")
@@ -1093,7 +1145,7 @@ main()
           "the gathered values hold one value per node of the whole mesh");
     double worst = 0;
     for (Index n = 0; n < mesh.numNodes(); ++n)
-      worst = std::max(worst, std::abs(got[n] - expected[n]));
+      worst = worse(worst, std::abs(got[n] - expected[n]));
     std::ostringstream label;
     label << "a transient distributed solve matches the serial one (worst difference " << worst
           << ")";

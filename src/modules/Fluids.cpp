@@ -41,12 +41,11 @@
 #include "dualmesh/base/Kernel.h"
 #include "dualmesh/base/Problem.h"
 #include "dualmesh/base/Property.h"
-#include "dualmesh/fe/Assembly.h"
+#include "dualmesh/core/Coordinates.h"
+#include "dualmesh/modules/FluidSystem.h"
 #include "dualmesh/modules/Framework.h"
 
 #include <algorithm>
-#include <cmath>
-#include <functional>
 
 namespace dualmesh
 {
@@ -117,16 +116,28 @@ addPenaltyParam(InputParameters & p)
                 "in that range for a dynamic viscosity from 10^-4 to 10^4 Pa s.");
 }
 
-/// div v of the velocity @p v, with the term v_r / r in axisymmetric coordinates.
+/// div v of the velocity @p v in the coordinate system @p coord, with its hoop term, at the point
+/// where the velocity is evaluated.  The hoop term n v_r / r takes the radius r of that point
+/// (QpContext::x_field) along with v_r.  Under the reduced rule of the penalty term that point is
+/// the centroid of the element, so every point of the element, a face or a volume point of DMCDM
+/// as well as the single point of FEM, has the same divergence: the element carries one penalty
+/// pressure, which the face fluxes and the hoop stresses share and penalty_pressure reports.
 ADReal
-velocityDivergence(const QpContext & ctx, const std::vector<int> & v, bool axisymmetric)
+velocityDivergence(const QpContext & ctx, const std::vector<int> & v, CoordinateSystem coord)
 {
   ADReal div(0.0);
   for (std::size_t d = 0; d < v.size(); ++d)
     div += ctx.gradient(v[d])[d];
-  if (axisymmetric && ctx.x[0] != 0.0)
-    div += ctx.value(v[0]) / ctx.x[0];
+  div += hoopDivergence(coord, ctx.value(v[0]), ctx.x_field[0]);
   return div;
+}
+
+/// The hoop factor of the momentum equation of the velocity component @p component: that of the
+/// coordinate system for the radial component 0, and 0 for the others.
+int
+momentumHoopFactor(const Problem & problem, int component)
+{
+  return component == 0 ? hoopFactor(problem.coordinateSystem()) : 0;
 }
 
 /// Viscous stress of a Newtonian fluid: mu (grad v + grad v^T), or its Laplacian form mu grad v.
@@ -143,7 +154,8 @@ public:
         "viscosity and v the velocity. In two dimensions the flux of the x component is "
         "-(2 mu dv_x/dx, mu (dv_x/dy + dv_y/dx)). In axisymmetric coordinates the radial "
         "equation also has the hoop term 2 mu v_r / r^2 on its left side, with r the radius "
-        "and v_r the radial velocity, or mu v_r / r^2 in the laplacian form.");
+        "and v_r the radial velocity, or mu v_r / r^2 in the laplacian form. In spherical "
+        "coordinates, with their two hoop directions, the hoop term is twice as large.");
     addVelocitiesParam(p);
     p.addOptional("dynamic_viscosity",
                   ParameterKind::Function,
@@ -182,10 +194,10 @@ public:
     _v =
         resolveVelocities(problem, _params.getStringList("velocities"), problem.mesh().dimension());
     _mu = getFunction(problem, "dynamic_viscosity");
-    _hoop = problem.coordinateSystem() == CoordinateSystem::Axisymmetric && _component == 0;
+    _hoop = momentumHoopFactor(problem, _component);
   }
   bool hasFlux() const override { return true; }
-  bool hasSource() const override { return _hoop; }
+  bool hasSource() const override { return _hoop > 0; }
   /// The dynamic viscosity mu at the point of @p ctx.
   double viscosity(const QpContext & ctx) const { return _mu->value(ctx.x, ctx.time); }
   void computeFlux(const QpContext & ctx, ADVector3 & F) const override
@@ -195,37 +207,40 @@ public:
     for (int d = 0; d < ctx.dim; ++d)
       F[d] = _laplacian ? mu * gi[d] : mu * (gi[d] + ctx.gradient(_v[d])[_component]);
   }
-  // The term - mu (Laplacian(v) - v_r / r^2 e_r)_i of the strong residual, which quadratic
-  // elements give.  It vanishes inside a linear element, whose residual therefore leaves it out
+  // The term - mu (Laplacian(v) - n v_r / r^2 e_r)_i of the strong residual, with n the hoop
+  // factor, which quadratic elements give.  It vanishes inside a linear element, whose residual therefore leaves it out
   // (see Problem::fillContext).  It is div(2 mu eps(v)) for an incompressible flow with a
   // viscosity uniform in space, and for one that varies it lacks the term
   // grad mu . (grad v + grad v^T).  The radial component of the vector Laplacian of an
-  // axisymmetric flow without swirl is the scalar Laplacian of v_r less v_r / r^2.
+  // axisymmetric flow without swirl is the scalar Laplacian of v_r less v_r / r^2, and that of a
+  // spherically symmetric flow the scalar Laplacian of v_r less 2 v_r / r^2.
   bool inStrongResidual() const override { return true; }
   bool oldStateFromFields() const override { return true; }
   ADReal strongResidual(const QpContext & ctx) const override
   {
     if (ctx.laplacian.empty())
       return ADReal(0.0);
-    const double hoop = _hoop && ctx.x[0] > 0.0 ? 1.0 / (ctx.x[0] * ctx.x[0]) : 0.0;
+    const double hoop = _hoop > 0 && ctx.x[0] > 0.0 ? _hoop / (ctx.x[0] * ctx.x[0]) : 0.0;
     return -viscosity(ctx) * (ctx.laplacian[_v[_component]] - hoop * ctx.value(_v[_component]));
   }
   // In axisymmetric coordinates (r, z) without swirl, the radial equation
   // carries the hoop stress: -(div sigma)_r = -div_rz(sigma_r.) + sigma_tt / r,
   // and the viscous part of sigma_tt is 2 mu u_r / r.  The radial component of
   // the vector Laplacian carries - u_r / r^2 instead, so the Laplacian form has
-  // the source mu u_r / r^2.
+  // the source mu u_r / r^2.  In spherical coordinates the two hoop stresses
+  // sigma_tt = sigma_pp double each source.
   ADReal computeSource(const QpContext & ctx) const override
   {
     const double r = ctx.x[0];
     if (r == 0.0)
       return ADReal(0.0);
-    return ((_laplacian ? 1.0 : 2.0) * viscosity(ctx) / (r * r)) * ctx.value(_v[0]);
+    return ((_laplacian ? 1.0 : 2.0) * _hoop * viscosity(ctx) / (r * r)) * ctx.value(_v[0]);
   }
 
 private:
   int _component;
-  bool _hoop = false;
+  /// The hoop factor of the equation (see momentumHoopFactor).
+  int _hoop = 0;
   bool _laplacian = false;
   std::vector<int> _v;
   FunctionPtr _mu;
@@ -245,7 +260,7 @@ public:
         "parameter, v the velocity and e_i the unit vector of component i. In axisymmetric "
         "coordinates the divergence includes v_r / r, with r the radius and v_r the radial "
         "velocity, and the radial equation also has the hoop term gamma (div v) / r on its left "
-        "side. The term must be integrated with a reduced rule, which is the default here, "
+        "side. In spherical coordinates both terms are twice as large. The term must be integrated with a reduced rule, which is the default here, "
         "because a rule with more points locks the velocity field.");
     addVelocitiesParam(p);
     addPenaltyParam(p);
@@ -259,8 +274,10 @@ public:
     p.addOptional("reduced_integration",
                   ParameterKind::Boolean,
                   true,
-                  "Selective reduced integration: evaluate the velocity gradients at the centroid "
-                  "of the element, while the rule named by 'quadrature' integrates the term. "
+                  "Selective reduced integration: evaluate the velocity, its gradients and so the "
+                  "divergence, with its hoop term in axisymmetric and spherical coordinates, at "
+                  "the centroid of the element, while the rule named by 'quadrature' integrates "
+                  "the term. "
                   "Default true, unlike the other objects, because turning it off locks the "
                   "incompressibility constraint.");
     return p;
@@ -275,30 +292,39 @@ public:
     Kernel::initialSetup(problem);
     _v =
         resolveVelocities(problem, _params.getStringList("velocities"), problem.mesh().dimension());
-    _axisymmetric = problem.coordinateSystem() == CoordinateSystem::Axisymmetric;
+    _coord = problem.coordinateSystem();
+    _hoop = momentumHoopFactor(problem, _component);
   }
   bool hasFlux() const override { return true; }
-  bool hasSource() const override { return _axisymmetric && _component == 0; }
+  bool hasSource() const override { return _hoop > 0; }
   void computeFlux(const QpContext & ctx, ADVector3 & F) const override
   {
-    const ADReal div = velocityDivergence(ctx, _v, _axisymmetric);
+    const ADReal div = velocityDivergence(ctx, _v, _coord);
     for (int d = 0; d < ctx.dim; ++d)
       F[d] = d == _component ? _gamma * div : ADReal(0.0);
   }
   // The penalty pressure enters the hoop stress of the radial equation as
-  // well: S = sigma_tt / r, whose pressure part is -p = gamma div v.
+  // well: S = n sigma_tt / r, with n the hoop factor, whose pressure part is
+  // -p = gamma div v.  The factor n / r belongs to the geometry of the balance law and takes the
+  // radius of the integration point.  Its product with the coordinate factor, 2 pi in
+  // axisymmetric and 8 pi r in spherical coordinates, is linear in r, so the midpoint rule
+  // integrates it exactly.  The pressure takes the divergence of the field point (see
+  // velocityDivergence), so a pressure uniform in the element balances its face fluxes exactly in
+  // each control domain.
   ADReal computeSource(const QpContext & ctx) const override
   {
     const double r = ctx.x[0];
     if (r == 0.0)
       return ADReal(0.0);
-    return (_gamma / r) * velocityDivergence(ctx, _v, _axisymmetric);
+    return (_hoop * _gamma / r) * velocityDivergence(ctx, _v, _coord);
   }
 
 private:
   int _component;
   double _gamma;
-  bool _axisymmetric = false;
+  CoordinateSystem _coord = CoordinateSystem::Cartesian;
+  /// The hoop factor of the equation (see momentumHoopFactor).
+  int _hoop = 0;
   std::vector<int> _v;
 };
 
@@ -399,8 +425,9 @@ private:
 /// element it vanishes (simplices, and bilinear elements on parallelograms) or nearly so, and
 /// leaving it out keeps the optimal first order in the energy norm.  The densities rho of the
 /// convection and rho_t of the time derivative and the viscosity mu are the coefficients of the
-/// advection, time_derivative and viscous_stress kernels of the first velocity, and zero
-/// without one.
+/// advection, time_derivative and viscous_stress kernels of the first velocity that act on the
+/// block of the point, and zero without one there.  So each block of a layered flow takes its
+/// own fluid in tau.
 class MomentumResidual
 {
 public:
@@ -415,19 +442,19 @@ public:
     _equations.assign(stabilized ? velocities.size() : 0, {});
     for (std::size_t i = 0; i < _equations.size(); ++i)
       _equations[i].setup(problem, velocities[i], owner);
-    _advection = nullptr;
-    _storage = nullptr;
-    _viscous = nullptr;
+    _advection.clear();
+    _storage.clear();
+    _viscous.clear();
     for (const auto & k : problem.kernels())
     {
       if (k->variableName() != velocities[0])
         continue;
-      if (!_advection)
-        _advection = dynamic_cast<const Advection *>(k.get());
-      if (!_storage)
-        _storage = dynamic_cast<const TimeDerivative *>(k.get());
-      if (!_viscous)
-        _viscous = dynamic_cast<const ViscousStress *>(k.get());
+      if (const auto * a = dynamic_cast<const Advection *>(k.get()))
+        _advection.push_back(a);
+      if (const auto * t = dynamic_cast<const TimeDerivative *>(k.get()))
+        _storage.push_back(t);
+      if (const auto * v = dynamic_cast<const ViscousStress *>(k.get()))
+        _viscous.push_back(v);
     }
   }
 
@@ -443,17 +470,20 @@ public:
   /// steady flow (QpContext::inertia).
   double density(const QpContext & ctx) const
   {
-    return _advection ? _advection->coefficient(ctx).value() : 0.0;
+    const Advection * a = onBlock(_advection, ctx);
+    return a ? a->coefficient(ctx).value() : 0.0;
   }
   /// The density of the time derivative at the point.
   double timeDensity(const QpContext & ctx) const
   {
-    return _storage ? _storage->coefficient(ctx).value() : 0.0;
+    const TimeDerivative * t = onBlock(_storage, ctx);
+    return t ? t->coefficient(ctx).value() : 0.0;
   }
   /// The dynamic viscosity at the point.
   double viscosity(const QpContext & ctx) const
   {
-    return _viscous ? _viscous->viscosity(ctx) : 0.0;
+    const ViscousStress * v = onBlock(_viscous, ctx);
+    return v ? v->viscosity(ctx) : 0.0;
   }
 
   ADReal tau(const QpContext & ctx) const
@@ -481,14 +511,28 @@ public:
   }
 
   /// Whether the residual holds the time derivative rho_t dv/dt (a transient flow).
-  bool hasTimeTerm() const { return _storage != nullptr; }
+  bool hasTimeTerm() const { return !_storage.empty(); }
 
 private:
+  /// The first of @p kernels that acts on the block of the point, or null.  A probe of the whole
+  /// problem, a context without an element (the coefficients that the projection time
+  /// integration reads), has no block and takes the first kernel.
+  template <typename K>
+  static const K * onBlock(const std::vector<const K *> & kernels, const QpContext & ctx)
+  {
+    if (ctx.element < 0)
+      return kernels.empty() ? nullptr : kernels.front();
+    for (const K * k : kernels)
+      if (k->activeOnBlock(ctx.block))
+        return k;
+    return nullptr;
+  }
+
   std::vector<int> _v;
   std::vector<StrongResidual> _equations;
-  const Advection * _advection = nullptr;
-  const TimeDerivative * _storage = nullptr;
-  const ViscousStress * _viscous = nullptr;
+  std::vector<const Advection *> _advection;
+  std::vector<const TimeDerivative *> _storage;
+  std::vector<const ViscousStress *> _viscous;
 };
 
 /// The pressure term of a momentum equation, in flux form.
@@ -506,7 +550,8 @@ public:
         "(sigma n)_i, with sigma the Cauchy stress and n the outward unit normal, so a boundary "
         "without a condition is free of traction, as an open outlet is. A step of the theta "
         "method takes the term at the new time. In axisymmetric coordinates the radial equation "
-        "also has the hoop term -p / r on its left side, with r the radius.");
+        "also has the hoop term -p / r on its left side, with r the radius, and in spherical "
+        "coordinates the hoop term -2 p / r.");
     p.addRequired("pressure", ParameterKind::String, "Name of the pressure variable.");
     addVelocitiesParam(p);
     return p;
@@ -519,10 +564,10 @@ public:
   {
     Kernel::initialSetup(problem);
     _p = coupledVariable(problem, "pressure");
-    _hoop = problem.coordinateSystem() == CoordinateSystem::Axisymmetric && _component == 0;
+    _hoop = momentumHoopFactor(problem, _component);
   }
   bool hasFlux() const override { return true; }
-  bool hasSource() const override { return _hoop; }
+  bool hasSource() const override { return _hoop > 0; }
   bool atNewTime() const override { return true; }
   void computeFlux(const QpContext & ctx, ADVector3 & F) const override
   {
@@ -539,17 +584,18 @@ public:
     const double r = ctx.x[0];
     if (r == 0.0)
       return ADReal(0.0);
-    return (-1.0 / r) * ctx.value(_p);
+    return (-_hoop / r) * ctx.value(_p);
   }
 
 private:
   int _component;
   int _p = -1;
-  bool _hoop = false;
+  /// The hoop factor of the equation (see momentumHoopFactor).
+  int _hoop = 0;
 };
 
 /// Conservation of mass for an incompressible flow, on the pressure variable.
-class MassConservation : public Kernel
+class MassConservation : public MassEquation
 {
 public:
   static InputParameters validParams()
@@ -579,7 +625,7 @@ public:
     addVelocitiesParam(p);
     return p;
   }
-  explicit MassConservation(const InputParameters & p) : Kernel(p) {}
+  explicit MassConservation(const InputParameters & p) : MassEquation(p) {}
   void initialSetup(Problem & problem) override
   {
     Kernel::initialSetup(problem);
@@ -598,10 +644,9 @@ public:
   }
   bool threadSafe() const override { return Kernel::threadSafe() && _r.threadSafe(); }
   bool hasFlux() const override { return true; }
-  bool isMassConservation() const override { return true; }
   bool needsLaplacian() const override { return _stabilize; }
   bool residualHasTimeDerivative() const override { return _stabilize && _r.hasTimeTerm(); }
-  bool flowCoefficients(const QpContext & ctx, FlowCoefficients & c) const override
+  void flowCoefficients(const QpContext & ctx, FlowCoefficients & c) const override
   {
     c.viscosity = _r.viscosity(ctx);
     c.stabilized = _stabilize;
@@ -610,7 +655,6 @@ public:
     c.num_velocities = _r.dimension();
     for (int d = 0; d < c.num_velocities; ++d)
       c.velocities[d] = _r.velocity(d);
-    return true;
   }
   void computeFlux(const QpContext & ctx, ADVector3 & F) const override
   {
@@ -625,7 +669,7 @@ public:
     for (int d = 0; d < dim; ++d)
       F[d] = tau * _r.residual(ctx, d) - ctx.value(_r.velocity(d));
   }
-  bool conservedVelocity(const QpContext & ctx, ADVector3 & w) const override
+  void conservedVelocity(const QpContext & ctx, ADVector3 & w) const override
   {
     // The flux of this kernel is -w.  The step takes it at the new time with the weight 1, so the
     // time derivative in r_m has the weight 1 at the new time and none at the old one, whatever
@@ -640,7 +684,6 @@ public:
       if (_stabilize)
         w[d] -= tau * _r.residual(ctx, d, time_weight);
     }
-    return true;
   }
 
 private:
@@ -753,8 +796,10 @@ public:
         "Declares the property 'pressure' = -gamma div v, the pressure that the penalty "
         "relation recovers from the velocity v, with gamma the penalty parameter of the "
         "penalty_incompressibility kernels of the velocities. In axisymmetric coordinates the "
-        "divergence includes v_r / r, with r the radius and v_r the radial velocity. Evaluate "
-        "it at element centroids, the points of the reduced rule, where it is most accurate.");
+        "divergence includes v_r / r, with r the radius and v_r the radial velocity, and in "
+        "spherical coordinates 2 v_r / r. Evaluate it at element centroids, where the reduced "
+        "rule of penalty_incompressibility evaluates the divergence: there it is the pressure "
+        "of the discrete equations.");
     addVelocitiesParam(p);
     addPenaltyParam(p);
     return p;
@@ -768,17 +813,17 @@ public:
     Property::initialSetup(problem);
     _v =
         resolveVelocities(problem, _params.getStringList("velocities"), problem.mesh().dimension());
-    _axisymmetric = problem.coordinateSystem() == CoordinateSystem::Axisymmetric;
+    _coord = problem.coordinateSystem();
   }
   void declareProperties(PropertyRegistry & r) override { _pressure = r.declare("pressure", 1); }
   void computeProperties(QpContext & ctx) const override
   {
-    ctx.property(_pressure) = -_gamma * velocityDivergence(ctx, _v, _axisymmetric);
+    ctx.property(_pressure) = -_gamma * velocityDivergence(ctx, _v, _coord);
   }
 
 private:
   double _gamma;
-  bool _axisymmetric = false;
+  CoordinateSystem _coord = CoordinateSystem::Cartesian;
   std::vector<int> _v;
   int _pressure = -1;
 };
@@ -797,6 +842,7 @@ registerFluidObjects(Factory & f)
   f.add<MomentumStabilization>("momentum_stabilization", ObjectCategory::Kernel, m);
   f.add<MassFluxBC>("mass_flux", ObjectCategory::BoundaryCondition, m);
   f.add<PenaltyPressure>("penalty_pressure", ObjectCategory::Property, m);
+  f.setFlowSystem(makeFluidSystem);
 }
 
 } // namespace dualmesh

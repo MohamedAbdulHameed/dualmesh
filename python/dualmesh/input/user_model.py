@@ -1,30 +1,26 @@
 """Lowers the models of your own of the input onto the objects of the engine.
 
 A model is the balance law dm/dt + div F = s of one scalar unknown u, with internal states q
-that follow the rate laws dq/dt = g at each point (`dualmesh.model.conservation_law`). The
+that follow the rate laws dq/dt = g at each point (`dualmesh.model.conservation`). The
 properties of each region are substituted into its terms, which are then expanded into scalar
-components, differentiated where the engine needs a derivative (`dualmesh.model.differentiate`)
-and written in the syntax of the engine (`lower.write_expression`). `add_law` lowers the law on
-each region where its properties differ, or on the whole mesh where they do not, as it lowers the
-equations of general_form_PDE, and `add_boundary_condition` lowers a condition on the unknown or
-its flux_name. A parsed_tensor property of one component holds each expression of the model that
-a postprocessor reads.
+components, differentiated where the engine needs a derivative (`dualmesh.model.calculus`)
+and written in the syntax of the engine (`engine_form.write_expression`). `engine_form.add_law`
+lowers the law on each region where its properties differ, or on the whole mesh where they do
+not, as it lowers the equations of general_form_PDE. A boundary condition on the unknown or its
+flux_name goes through `engine_form.add_boundary_condition`. A parsed_tensor property of one
+component holds each expression of the model that a postprocessor reads.
 """
 
 import collections
-import importlib
 from collections.abc import Mapping
 
-from dualmesh.input import units
-from dualmesh.input.lower import formula_node, write_expression
+from dualmesh import units
+from dualmesh._core import InputError
 from dualmesh.input.schema import context, eigenvalue_symbol, generated_region, join
-from dualmesh.input.units import fail, input_error
-from dualmesh.model import conservation_law_from_input, differentiate, parse
+from dualmesh.model import conservation_law_from_input, differentiate, graph, parse
 from dualmesh.model.dimensions import is_zero
-
-# import_module returns the module itself, which dualmesh.model hides behind the class of the
-# same name.
-graph = importlib.import_module("dualmesh.model.expression")
+from dualmesh.model.engine_form import add_law, formula_node, write_expression
+from dualmesh.units import fail
 
 # The leaves that a model of your own does not take: the step and the cell size are numbers of
 # the discretisation, and the normal exists on a boundary only.
@@ -94,7 +90,7 @@ class property_symbols(Mapping):
             else:
                 try:
                     node = formula_node(value, self, self.coordinate_system)
-                except input_error as error:
+                except InputError as error:
                     raise type(error)(f"{path}: {error}") from None
         finally:
             self.building.pop()
@@ -163,9 +159,6 @@ class lowered_model:
     @property
     def flux_unit(self) -> str:
         return units.SI_unit_text(self.law.flux.dimension)
-
-    def initial_states(self) -> list:
-        return [node.initial for node in self.law.states()]
 
 
 def prepare(validated: dict, engine_mesh) -> list:
@@ -349,107 +342,6 @@ def graph_leaves(nodes) -> set:
     for node in nodes:
         found |= graph.leaves(node)
     return found
-
-
-def add_law(problem, law, variables: dict, dimension: int, transient: bool, restriction, where):
-    """Adds the objects of the engine of one conservation law, on the blocks of restriction.
-
-    This is the one lowering of a conservation law, for the models of the input and the
-    equations of general_form_PDE alike. `variables` maps each field to the engine's names of
-    its variables, and `where` names the law in messages. The law becomes:
-
-    - a parsed_state property object, which integrates the states at each integration point by
-      the backward Euler method and holds each as the property of its name;
-    - for each scalar component of the unknown, with the terms of `conservation_law.components`:
-      a second_time_derivative kernel with the coefficient of the inertia, a time_derivative
-      kernel with the capacity c of a storage written as an antiderivative (the rate form
-      c du/dt) or, in a transient problem, with any other storage m (the difference
-      (m - m_old)/dt), and a parsed_kernel with the flux and the source.
-    """
-
-    def write(node) -> str:
-        return write_expression(node, where, variables)
-
-    states = law.states()
-    state_object = None
-    if states:
-        components = [graph.state_component(node.name, (), node.dimension) for node in states]
-        rates = [graph.expand(law.state_rates[node], dimension) for node in states]
-        derivatives = [differentiate(rate, component) for rate in rates for component in components]
-        state_object = problem.add_property(
-            "parsed_state",
-            states=[node.name for node in states],
-            rates=[write(rate) for rate in rates],
-            rate_derivatives=[write(entry) for entry in derivatives],
-            initial_values=[float(node.initial) for node in states],
-            **restriction,
-        )
-    names = variables[law.unknown.name]
-    for variable, terms in zip(names, law.components(dimension), strict=True):
-        if terms.mass is not None:
-            problem.add_kernel(
-                "second_time_derivative",
-                variable=variable,
-                coefficient=write(terms.mass),
-                **restriction,
-            )
-        if terms.capacity is not None:
-            problem.add_kernel(
-                "time_derivative",
-                variable=variable,
-                coefficient=write(terms.capacity),
-                **restriction,
-            )
-        if transient and terms.storage is not None:
-            storage = {"variable": variable, "storage": write(terms.storage), **restriction}
-            if state_object is not None:
-                storage["state_object"] = state_object.name
-            problem.add_kernel("time_derivative", **storage)
-        kernel = {}
-        if terms.flux is not None:
-            kernel["flux"] = [write(component) for component in terms.flux]
-        if terms.source is not None:
-            kernel["source"] = write(terms.source)
-        if kernel:
-            advective = _advective(terms.flux or [], terms.source, terms.unknown)
-            problem.add_kernel(
-                "parsed_kernel", variable=variable, **kernel, advective=advective, **restriction
-            )
-
-
-def add_boundary_condition(
-    problem, boundary, variable: str, value: str, flux: bool, **parameters
-) -> None:
-    """Adds the condition of one variable on a boundary: its value, or with flux the outward
-    normal flux F . n of its law. Both the models of the input and general_form_PDE take it."""
-    if flux:
-        # Neumann takes the flux entering the body, -F . n.
-        problem.add_boundary_condition(
-            "Neumann", boundary, variable=variable, flux=f"-({value})", **parameters
-        )
-    else:
-        problem.add_boundary_condition(
-            "Dirichlet", boundary, variable=variable, value=value, **parameters
-        )
-
-
-def _advective(flux: list, source, unknown) -> bool:
-    """Whether the term carries the unknown: a flux left where the gradient of the unknown is zero,
-    or a source that reads that gradient."""
-    if source is not None and any(
-        leaf.kind == "gradient_component" and leaf.name == unknown.name
-        for leaf in graph.leaves(source)
-    ):
-        return True
-    for component in flux:
-        gradients = {
-            leaf: graph.number(0.0, leaf.dimension)
-            for leaf in graph.leaves(component)
-            if leaf.kind == "gradient_component" and leaf.name == unknown.name
-        }
-        if not is_zero(graph.substitute(component, gradients)):
-            return True
-    return False
 
 
 def formula_symbols(validated: dict) -> Mapping:

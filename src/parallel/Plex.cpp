@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
-#ifdef DUALMESH_HAVE_PETSC
 
 #include "Plex.h"
 #include "dualmesh/core/InputParameters.h"
 #include "dualmesh/linalg/PetscSolver.h"
+#include "dualmesh/parallel/Partition.h"
 
 #include <vector>
 
@@ -85,14 +85,7 @@ cornerTopology(const Mesh & mesh, MPI_Comm comm, bool holds)
 std::string
 partitionerType(const std::string & name)
 {
-  std::vector<std::string> available;
-#ifdef PETSC_HAVE_PTSCOTCH
-  available.push_back("ptscotch");
-#endif
-#ifdef PETSC_HAVE_PARMETIS
-  available.push_back("parmetis");
-#endif
-  available.push_back("simple");
+  const std::vector<std::string> available = availablePartitioners();
   if (name == "automatic")
     return available.front();
   for (const auto & type : available)
@@ -107,5 +100,3 @@ partitionerType(const std::string & name)
 
 } // namespace plex
 } // namespace dualmesh
-
-#endif

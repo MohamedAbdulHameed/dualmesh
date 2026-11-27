@@ -21,14 +21,13 @@ single thread.  A compiled expression does neither.
 The grammar is the usual one.  ``+ - * /`` have their usual precedence, ``^``
 and ``**`` both mean exponentiation and bind tighter than a unary minus, and
 comparisons ``< > <= >= == !=`` give 1 or 0.  The names in scope are ``x``,
-``y``, ``z``, ``t``, the constants ``pi`` and ``e``, and the functions ``sin``,
-``cos``, ``tan``, ``asin``, ``acos``, ``atan``, ``sinh``, ``cosh``, ``tanh``,
-``exp``, ``log``, ``log10``, ``sqrt``, ``abs``, ``floor``, ``ceil``, ``erf``,
-``sign``, ``atan2``, ``pow``, ``hypot``, ``min``, ``max`` and
-``if(condition, a, b)``.  A SymPy expression reaches this language through
-the printer of the model language, as ``dualmesh.mms`` writes its
-manufactured sources: ``write_expression(from_sympy(e), where)`` of
-``dualmesh.input.lower`` and ``dualmesh.model.sympy_form``.
+``y``, ``z``, ``t``, the constants ``pi`` and ``e``, ``if(condition, a, b)``,
+and the functions of a formula of the input other than ``less``, ``greater``
+and ``conditional``, which the user guide lists in its section on formulas.
+A SymPy expression reaches this language through the printer of the model
+language, as ``dualmesh.mms`` writes its manufactured sources:
+``write_expression(from_sympy(e), where)`` of
+``dualmesh.model.engine_form`` and ``dualmesh.model.sympy_form``.
 
 :class:`Expression` is the same language with any variable names.  It is the
 language of the parsed objects (``parsed_property``, ``parsed_eigenstrain``

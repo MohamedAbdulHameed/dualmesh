@@ -56,6 +56,59 @@ def test_sideset_measure_of_flat_and_curved_boundaries():
     assert quadratic.sideset_measure(["outer"]) == pytest.approx(math.pi / 2, rel=1e-5)
 
 
+@pytest.mark.parametrize("element_type", ["Quad4", "Tri3", "Quad9"])
+def test_an_annular_sector_names_its_sides_by_the_annulus(element_type):
+    """A sector 0.5 < r < 1 from 30 to 120 degrees has the side sets inner, outer, start and end
+    alone, and each holds the nodes of its edge: radius 0.5 or 1, or angle 30 or 120 degrees."""
+    mesh = dualmesh.generate_annulus_mesh(
+        0.5, 1.0, 3, 6, start_angle=30.0, end_angle=120.0, element_type=element_type
+    )
+    assert sorted(mesh.sideset_names()) == ["end", "inner", "outer", "start"]
+    points = numpy.asarray(mesh.points())
+    radius = numpy.hypot(points[:, 0], points[:, 1])
+    angle = numpy.degrees(numpy.arctan2(points[:, 1], points[:, 0]))
+    on_edge = {
+        "inner": numpy.isclose(radius, 0.5, rtol=1e-12),
+        "outer": numpy.isclose(radius, 1.0, rtol=1e-12),
+        "start": numpy.isclose(angle, 30.0, rtol=1e-12),
+        "end": numpy.isclose(angle, 120.0, rtol=1e-12),
+    }
+    for name, edge in on_edge.items():
+        assert sorted(mesh.boundary_nodes(name)) == list(numpy.flatnonzero(edge)), name
+    # The straight edges are 0.5 long, and the arcs of a quadratic mesh are close to r pi / 2.
+    assert mesh.sideset_measure(["start"]) == pytest.approx(0.5, rel=1e-12)
+    assert mesh.sideset_measure(["end"]) == pytest.approx(0.5, rel=1e-12)
+    if element_type == "Quad9":
+        assert mesh.sideset_measure(["outer"]) == pytest.approx(math.pi / 2, rel=1e-4)
+
+
+radial = {"inner_radius": 0.5, "outer_radius": 1.0, "num_radial_elements": 2}
+
+
+@pytest.mark.parametrize(
+    "arguments, message",
+    [
+        ({**radial, "inner_radius": 0.0}, "positive"),
+        ({**radial, "outer_radius": 0.4}, "increase"),
+        ({"radial_coordinates": [0.5, 0.7, 1.0], "inner_radius": 0.5}, "not both"),
+        ({"radial_coordinates": [0.5, 0.7, 1.0], "radial_bias": 1.2}, "radial_bias"),
+        ({"inner_radius": 0.5, "outer_radius": 1.0}, "num_radial_elements"),
+        ({**radial, "end_angle": 0.0}, r"\(0, 360\]"),
+        ({**radial, "start_angle": -90.0, "end_angle": 300.0}, r"\(0, 360\]"),
+    ],
+)
+def test_an_annular_sector_refuses_wrong_arguments(arguments, message):
+    with pytest.raises(ValueError, match=message):
+        dualmesh.generate_annulus_mesh(num_angular_elements=4, **arguments)
+
+
+def test_an_annular_sector_needs_its_angular_elements():
+    with pytest.raises(ValueError, match="num_angular_elements"):
+        dualmesh.generate_annulus_mesh(0.5, 1.0, 2)
+    with pytest.raises(ValueError, match="at least 1"):
+        dualmesh.generate_annulus_mesh(0.5, 1.0, 2, 0)
+
+
 def test_boundary_measure_includes_the_coordinate_factor():
     radius, length = 0.3, 2.0
     mesh = dualmesh.generate_rectangle_mesh(

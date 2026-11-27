@@ -164,7 +164,7 @@ def test_a_flux_of_the_wrong_unit_is_refused_with_its_key():
     )
     slab.boundary_conditions("left", solute="1 mol/m^3")
     with pytest.raises(
-        dualmesh.input_error, match=r"^models\.trapping: .*the terms disagree in dimension"
+        dualmesh.InputError, match=r"^models\.trapping: .*the terms disagree in dimension"
     ):
         slab.solve(report="none")
 
@@ -179,7 +179,7 @@ def test_a_rate_of_the_wrong_unit_is_refused_with_its_key():
     )
     slab.boundary_conditions("left", solute="1 mol/m^3")
     with pytest.raises(
-        dualmesh.input_error, match=r"^models\.trapping: .*the rate of state 'trapped'"
+        dualmesh.InputError, match=r"^models\.trapping: .*the rate of state 'trapped'"
     ):
         slab.solve(report="none")
 

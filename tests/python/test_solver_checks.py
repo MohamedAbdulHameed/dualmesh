@@ -60,11 +60,22 @@ def test_options_of_the_nonlinear_solver_reach_it():
 
 def test_relaxation_damps_every_step_after_the_first():
     """Direct iteration with the relaxation gamma takes U + (1 - gamma) dU from its second step on,
-    and reaches the solution of the full steps."""
+    and reaches the solution of the full steps.  Near the solution a full step shrinks the error,
+    and so the residual, by the factor mu of the iteration, so a relaxed step shrinks it by
+    gamma + (1 - gamma) mu.  At gamma = 0.3 that factor differs from 0.7 + 0.3 mu, the factor of
+    the step U + gamma dU."""
+    gamma = 0.3
     full = bratu(1.0)
     full_result = full.solve(nonlinear_solver="picard", report="none")
     relaxed = bratu(1.0)
-    relaxed_result = relaxed.solve(nonlinear_solver="picard", relaxation=0.5, report="none")
+    relaxed_result = relaxed.solve(nonlinear_solver="picard", relaxation=gamma, report="none")
+
+    def last_factor(result):
+        norms = [record.residual_norm for record in result.history]
+        return norms[-1] / norms[-2]
+
+    mu = last_factor(full_result)
+    assert last_factor(relaxed_result) == pytest.approx(gamma + (1.0 - gamma) * mu, rel=0.05)
     assert relaxed_result.total_iterations > full_result.total_iterations
     assert numpy.abs(relaxed.values("u") - full.values("u")).max() < 1e-8
 

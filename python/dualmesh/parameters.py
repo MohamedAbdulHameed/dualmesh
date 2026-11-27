@@ -5,13 +5,17 @@ The physics, the couplings and the input groups such as :class:`~dualmesh.Output
 parameters as dataclass fields made by :func:`parameter`, with a unit and a description, which
 ends with the reason for the default.  The same declaration validates the keywords
 (:func:`check_keywords`, :func:`keyword_checked`) and prints the reference of a type
-(:func:`describe_fields`), in the format of the objects of the C++ library.
+(:func:`describe_fields`), in the format of the objects of the C++ library.  A message that
+refuses a misspelled name ends with the nearest valid name, from :func:`suggestion`.
 """
 
 from __future__ import annotations
 
 import dataclasses
+import difflib
 import functools
+import json
+import math
 import re
 from dataclasses import field
 
@@ -25,8 +29,21 @@ __all__ = [
     "describe_fields",
     "keyword_checked",
     "parameter",
+    "suggestion",
     "write_json_numbers",
 ]
+
+
+def suggestion(word, choices, listing: bool = True) -> str:
+    """The end of a message that refuses a misspelled ``word``: the nearest of ``choices``, as
+    " Did you mean 'x'?", or the list of the choices when none is near and ``listing`` holds."""
+    choices = sorted(str(choice) for choice in choices)
+    nearest = difflib.get_close_matches(str(word), choices, n=1)
+    if nearest:
+        return f" Did you mean '{nearest[0]}'?"
+    if not choices or not listing:
+        return ""
+    return " The valid names are " + ", ".join(f"'{choice}'" for choice in choices) + "."
 
 
 def parameter(default=dataclasses.MISSING, unit: str = "", description: str = "", **kwargs):
@@ -45,8 +62,6 @@ def _names(cls) -> list[str]:
 def check_keywords(where: str, cls, keywords) -> None:
     """Refuse a keyword that is not a parameter of the dataclass ``cls``, with
     the closest parameter name, or the list of the accepted ones."""
-    from .console import suggestion
-
     names = _names(cls)
     for key in keywords:
         if key not in names:
@@ -132,8 +147,6 @@ def _type_name(annotation) -> str:
 def jsonable(value):
     """Convert a nested structure of dicts, sequences, arrays and numbers to
     one that :mod:`json` writes, with a non-finite number written as null."""
-    import math
-
     if isinstance(value, dict):
         return {str(k): jsonable(v) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
@@ -150,7 +163,5 @@ def jsonable(value):
 
 def write_json_numbers(numbers: dict, path) -> None:
     """Write the dict of a result to a JSON file."""
-    import json
-
     with open(path, "w") as stream:
         json.dump(jsonable(numbers), stream, indent=2)

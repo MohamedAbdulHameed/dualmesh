@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import argparse
 
-from . import __version__, list_objects
+from . import __version__, list_objects, problem
 from . import describe as describe_object
 from .meshing import read_mesh, sideset_summary, write_sidesets
 
@@ -67,8 +67,6 @@ def main(argv: list[str] | None = None) -> int:
 
     arguments = parser.parse_args(argv)
     if arguments.command == "run":
-        from .problem import problem
-
         try:
             problem.from_file(arguments.case_file).solve()
         except ValueError as error:

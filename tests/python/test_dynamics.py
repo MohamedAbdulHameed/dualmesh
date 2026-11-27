@@ -53,6 +53,30 @@ def test_the_natural_frequencies_of_a_string_converge_to_k_over_2():
     assert max(modes.residual_norms) < 1e-10
 
 
+@pytest.mark.parametrize("method", ["FEM", "DMCDM"])
+def test_a_periodic_string_vibrates_at_the_frequencies_of_a_ring(method):
+    """u_tt = u_xx on [0, 1] with u(0) = u(1): a ring of unit length, whose modes cos(2 pi k x)
+    and sin(2 pi k x) vibrate at k Hz, each twice.  The periodic copy is a dependent unknown,
+    whose equation the operators fold into its primary before it is removed, so a lost coupling
+    would move the frequencies."""
+    mesh = dualmesh.generate_line_mesh(start=0.0, end=1.0, num_elements=100)
+    problem = dualmesh.Problem(mesh, method=method)
+    problem.add_variable("u")
+    problem.add_kernel("diffusion", variable="u")
+    problem.add_kernel("second_time_derivative", variable="u")
+    problem.add_boundary_condition("periodic", primary="left", secondary="right")
+    modes = problem.solve_eigenvalue(num_modes=4, near=3.0 * numpy.pi, report="none")
+    assert numpy.sort(modes.frequencies) == pytest.approx([1.0, 1.0, 2.0, 2.0], rel=2e-3)
+
+
+def test_near_selects_the_vibration_modes_closest_to_an_angular_frequency():
+    """The string vibrates at k / 2 Hz, the angular frequencies pi k.  Near 4.2 pi the closest
+    modes are k = 4, 5 and 3, in that order.  With 100 elements the discrete frequencies of these
+    modes are within 2e-3 of k / 2 (measured: 6.5e-4 at k = 4)."""
+    modes = string(100).solve_eigenvalue(num_modes=3, near=4.2 * numpy.pi, report="none")
+    assert modes.frequencies == pytest.approx([2.0, 2.5, 1.5], rel=2e-3)
+
+
 def test_newmark_keeps_the_energy_of_a_linear_system():
     """The average acceleration rule conserves 1/2 v.M v + 1/2 u.K u of a linear undamped
     system exactly (to round-off), at any step."""

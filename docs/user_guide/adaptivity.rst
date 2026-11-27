@@ -132,8 +132,10 @@ cycles, which the report ``"summary"`` prints alone.
 The transient loop
 ~~~~~~~~~~~~~~~~~~
 
-With a ``time`` section, the run repeats these steps until it reaches the
-end time:
+With a ``time`` section, the run calls
+:func:`~dualmesh.solve_transient_with_adaptive_refinement` (see `Run the
+transient loop`_) with the problem of the input on each mesh, and repeats
+these steps until it reaches the end time:
 
 #. It takes ``interval`` accepted time steps.
 #. It computes the indicators of the state it reached.
@@ -143,6 +145,10 @@ end time:
    problem again on it from the input.
 #. It goes on from the time it reached, with the time step that the step
    control chose before the change.
+
+Each interval is a new transient solve, so the step control restarts at each
+change of the mesh: it keeps the step it chose, and no history of the steps
+before.
 
 The history of the post-processors and the output files run on across the
 meshes, in one table, one numbering of the files and one collection.  The runs
@@ -211,7 +217,8 @@ input.  The method of the problem decides how the values are carried:
   nodes, it interpolates them as FEM does.
 
 The steady loop of the input and of Python carries the solution in the same
-way, as the start of the next solve.
+way, as the start of the next solve.  The transient loop of Python is the
+transient loop of the input, so it carries the same state.
 
 Adapt the mesh from Python
 --------------------------
@@ -300,6 +307,85 @@ problem and the mesh of the last cycle, and one entry per cycle in
 ``num_elements``, ``num_dofs`` and ``estimated_error``.
 :meth:`~dualmesh.AdaptivityResult.summary` formats them as a table, and
 :meth:`~dualmesh.AdaptivityResult.write_json` writes them to a file.
+
+Run the transient loop
+~~~~~~~~~~~~~~~~~~~~~~
+
+:func:`~dualmesh.solve_transient_with_adaptive_refinement` runs the transient
+loop at the object level.  It takes the function that builds the problem on a
+given mesh, as the steady loop does, and adapts the mesh after every
+``interval`` accepted time steps.  This unit square, insulated on every side
+and solved with DMCDM, starts with a sharp front at :math:`x = 0.5\ \mathrm{m}`
+between :math:`300\ \mathrm{K}` on its left and :math:`400\ \mathrm{K}` on
+its right.  The front spreads, the mesh follows it, and the plate keeps its
+heat through every change of mesh (from ``tests/python/test_adaptivity.py``):
+
+.. code-block:: python
+
+   import dualmesh
+
+
+   def plate(mesh):
+       problem = dualmesh.Problem(mesh, method="DMCDM")
+       problem.add_physics(
+           "heat_conduction",
+           thermal_conductivity=1.0,
+           density=2.0,
+           specific_heat=3.0,
+           initial_condition="350 + 50*tanh((x - 0.5)/0.01)",
+       )
+       return problem
+
+
+   mesh = dualmesh.generate_rectangle_mesh(0.0, 1.0, 0.0, 1.0, 16, 16, element_type="Tri3")
+   result = dualmesh.solve_transient_with_adaptive_refinement(
+       plate,
+       mesh,
+       "temperature",
+       end_time=0.015,
+       time_step=0.0015,
+       interval=2,
+       coarsen_fraction=0.05,
+       maximum_refinement_level=2,
+       time_stepper="fixed",
+   )
+   print(result.summary())
+   problem = result.problem
+
+The loop takes the steps of `The transient loop`_.  It takes the parameters
+``build_problem``, ``mesh``, ``variable``, ``marker``, ``callback``,
+``report``, ``coarsen_fraction`` and ``maximum_refinement_level`` of the
+steady loop (see `Run the loop`_), with these differences:
+
+``end_time``, ``time_step`` and ``start_time`` (default 0)
+   The run goes from ``start_time`` to ``end_time``, in s, and
+   ``time_step`` is its first step, in s.
+
+``interval``
+   The number of accepted time steps between two changes of the mesh, at
+   least 1.
+
+``callback`` (default ``None``)
+   ``callback(interval_index, problem, indicators)`` runs after each
+   interval, before the change of the mesh.
+
+``report`` (default ``"full"``)
+   ``"full"`` prints a line at the start, a line at each change of the mesh
+   and a line at the end, ``"summary"`` the lines at the start and the end,
+   and ``"none"`` nothing.  The runs inside the loop print nothing.
+
+``output`` (default ``None``)
+   An :class:`~dualmesh.Output` group that every interval writes to, so the
+   files of all the meshes form one numbering and one collection.
+
+The other keyword arguments are the options of
+:meth:`~dualmesh.Problem.solve_transient`, such as ``time_stepper``, and its
+solver options, for every interval.  The loop returns a
+:class:`~dualmesh.TransientAdaptivityResult` with ``problem`` and ``mesh`` at
+the end time, the times of the accepted steps in ``times``, the history of
+the post-processors across all the meshes in ``history``, and one entry per
+interval in ``interval_end_times``, ``num_elements``, ``num_dofs`` and
+``estimated_error``.
 
 Choose the marking rule
 ~~~~~~~~~~~~~~~~~~~~~~~
@@ -390,5 +476,3 @@ The adaptive loops run on several processes (see :doc:`solving`).  Every process
 the whole mesh and its refinement history, and marks it from the indicators
 of the whole mesh, which :meth:`~dualmesh.Problem.gathered_error_indicator`
 returns.  Every process therefore adapts the mesh in the same way.
-
-A transient adaptive run is available from the input only.

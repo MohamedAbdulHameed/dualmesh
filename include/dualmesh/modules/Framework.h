@@ -77,14 +77,13 @@ private:
 
 /// The storage term c dm/dt of a balance law, as c (m - m_old) / dt over a step, with the
 /// storage m an expression (the variable u by default) and c a coefficient (1 by default).
-class TimeDerivative : public Kernel
+class TimeDerivative : public StorageKernel
 {
 public:
   explicit TimeDerivative(const InputParameters & p);
   static InputParameters validParams();
   void initialSetup(Problem & problem) override;
   bool hasSource() const override { return true; }
-  bool isTimeKernel() const override { return true; }
   ADReal computeSource(const QpContext & ctx) const override;
   double sourceTermSize(const QpContext & ctx, const ADReal & source) const override;
   /// The coefficient c at the point of @p ctx.
@@ -111,14 +110,13 @@ private:
 
 /// The second time derivative c d2u/dt2 (inertia), which a transient run integrates by the
 /// generalized-alpha method.
-class SecondTimeDerivative : public Kernel
+class SecondTimeDerivative : public StorageKernel
 {
 public:
   explicit SecondTimeDerivative(const InputParameters & p);
   static InputParameters validParams();
   void initialSetup(Problem & problem) override;
   bool hasSource() const override { return true; }
-  bool isTimeKernel() const override { return true; }
   bool isSecondOrder() const override { return true; }
   ADReal computeSource(const QpContext & ctx) const override;
 
@@ -130,7 +128,7 @@ private:
 /// heat rho c_p v . grad T that a flow carries, the inertia rho (v . grad) v_i of a flow, and any
 /// other advection.  The velocity is prescribed, or the unknown velocity of a flow, whose mass
 /// equation the transport then conserves (Hughes and Wells 2005).
-class Advection : public Kernel
+class Advection : public AdvectiveKernel
 {
 public:
   explicit Advection(const InputParameters & p);
@@ -153,7 +151,6 @@ public:
   bool inStrongResidual() const override { return !_conservative; }
   ADReal strongResidual(const QpContext & ctx) const override;
   bool oldStateFromFields() const override;
-  bool advectingNormalVelocity(const QpContext & ctx, double & velocity) const override;
   void computeFlux(const QpContext & ctx, ADVector3 & F) const override;
   ADReal computeSource(const QpContext & ctx) const override;
   /// The coefficient c at the point of @p ctx, with the factor QpContext::inertia of the inertia
@@ -178,7 +175,7 @@ private:
   std::array<FieldCoefficient, 3> _v;
   std::vector<int> _velocities;
   /// The mass equation whose conserved velocity the term carries (conservingMassEquation).
-  const Kernel * _mass = nullptr;
+  const MassEquation * _mass = nullptr;
 };
 
 class CoupledForce : public Kernel
@@ -262,21 +259,21 @@ private:
 };
 
 /// Periodic boundary condition: every node of the secondary boundary is the node of the primary boundary that a translation maps it onto.
-class PeriodicBC : public Constraint
+class PeriodicBC : public PeriodicConstraint
 {
 public:
   explicit PeriodicBC(const InputParameters & p);
   static InputParameters validParams();
   void initialSetup(Problem & problem) override;
 
-  std::string primaryBoundary() const { return _params.getString("primary"); }
-  std::string secondaryBoundary() const { return _params.getString("secondary"); }
+  std::string primaryBoundary() const override { return _params.getString("primary"); }
+  std::string secondaryBoundary() const override { return _params.getString("secondary"); }
   /// The periodic variables: every variable of @p problem unless the parameter 'variable' names some.
-  std::vector<int> periodicVariables(const Problem & problem) const;
+  std::vector<int> periodicVariables(const Problem & problem) const override;
   /// For every point of @p secondary, the index of the point of @p primary that the translation maps it onto.
   /// The translation is the parameter, or else the vector between the centroids of the two point sets; a point without a match is an InputError.
   std::vector<Index> match(const std::vector<Point> & primary,
-                           const std::vector<Point> & secondary) const;
+                           const std::vector<Point> & secondary) const override;
 };
 
 } // namespace dualmesh

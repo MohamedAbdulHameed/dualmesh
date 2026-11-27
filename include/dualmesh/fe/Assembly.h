@@ -4,9 +4,11 @@
 // finite element method, and evaluation of the element map.
 #pragma once
 
-#include "dualmesh/fe/ReferenceElement.h"
+#include "dualmesh/core/Coordinates.h"
 #include "dualmesh/mesh/Mesh.h"
+#include "dualmesh/mesh/ReferenceElement.h"
 
+#include <optional>
 #include <vector>
 
 namespace dualmesh
@@ -76,7 +78,26 @@ struct IntegrationPoint
   Point area;     ///< n dA, oriented from `owner` to `neighbor` / outward
   int owner;      ///< local node owning the point (-1: all nodes, FEM)
   int neighbor;   ///< the other node of a dual face (-1 otherwise)
+  /// The measure of a lumped point in axisymmetric or spherical coordinates, with the coordinate
+  /// factor integrated over the region the point stands for.  A lumped point is a point of the
+  /// nodal or interface rule in the volume, or a point that a lumped rule on a side collapses
+  /// onto its node.  Its region is the control domain of its node (DMCDM), the support of the
+  /// shape function of its node weighted by it (FEM), or the part of the side in the control
+  /// domain.  The coordinate factor at the point itself would weight that region by its value at
+  /// one point, which is zero at a node on the axis.  Unset for every other point and in
+  /// Cartesian coordinates, where the measure is `weight` times the coordinate factor at the
+  /// point (see pointMeasure).
+  std::optional<double> coordinate_measure;
 };
+
+/// The measure of the integration point @p ip in the coordinate system, given the coordinate
+/// factor @p factor at the point: its coordinate measure when it has one (a lumped point), and
+/// otherwise its weight times the factor.
+inline double
+pointMeasure(const IntegrationPoint & ip, double factor)
+{
+  return ip.coordinate_measure ? *ip.coordinate_measure : ip.weight * factor;
+}
 
 enum class PointSet
 {
@@ -119,6 +140,10 @@ struct PolygonCell
 /// It is filled, one entry per point of @p out, for the Gauss-type rules on
 /// the volume and on the dual faces; for the other rules it is left empty,
 /// and the caller maps the points itself.
+///
+/// In axisymmetric and spherical coordinates @p coord gives every lumped point (the nodal and
+/// interface rules in the volume) its IntegrationPoint::coordinate_measure.  The weights are
+/// those of Cartesian coordinates in every coordinate system.
 void buildElementPoints(const Mesh & mesh,
                         Index e,
                         bool dual_mesh,
@@ -126,14 +151,20 @@ void buildElementPoints(const Mesh & mesh,
                         const QuadratureSpec & spec,
                         std::vector<IntegrationPoint> & out,
                         std::vector<MappedPoint> * mapped = nullptr,
-                        const PolygonCell * polygon = nullptr);
+                        const PolygonCell * polygon = nullptr,
+                        CoordinateSystem coord = CoordinateSystem::Cartesian);
 
-/// Build the integration points of side @p side (boundary integrals).
+/// Build the integration points of side @p side (boundary integrals).  Under DMCDM a lumped
+/// rule (nodal, interface or control_domain_trapezoid) collapses the points of the part of the
+/// side in the control domain of each node onto the node, and in axisymmetric and spherical
+/// coordinates @p coord gives that point the coordinate measure of the part
+/// (IntegrationPoint::coordinate_measure).
 void buildSidePoints(const Mesh & mesh,
                      const Side & side,
                      bool dual_mesh,
                      const QuadratureSpec & spec,
-                     std::vector<IntegrationPoint> & out);
+                     std::vector<IntegrationPoint> & out,
+                     CoordinateSystem coord = CoordinateSystem::Cartesian);
 
 /// The point of a side closest to @p x.
 struct SideProjection

@@ -35,9 +35,6 @@ The tests check
 
 from __future__ import annotations
 
-import importlib.util
-from pathlib import Path
-
 import dualmesh
 import numpy
 import pytest
@@ -45,8 +42,7 @@ import pytest
 sympy = pytest.importorskip("sympy")
 scipy_linalg = pytest.importorskip("scipy.linalg")
 from dualmesh import mms  # noqa: E402
-
-_root = Path(__file__).resolve().parents[2]
+from helpers import Ghia_differences, lid_driven_cavity  # noqa: E402
 
 # A divergence-free velocity (from a stream function) and a pressure with no
 # symmetry.
@@ -290,51 +286,43 @@ def test_equal_order_pairs_fail_the_inf_sup_condition(promote):
 # ---------------------------------------------------------------------------
 # Physics and the interface
 # ---------------------------------------------------------------------------
-def _cavity(n):
-    mesh = dualmesh.generate_rectangle_mesh(0, 1, 0, 1, n, n, element_type="Quad9")
-    problem = dualmesh.Problem(mesh, method="fem")
-    problem.add_physics(
-        "fluid_dynamics",
-        dynamic_viscosity=1.0,
-        density=100.0,
-        formulation="Taylor-Hood",
-    )
-    problem.add_boundary_condition(
-        "Dirichlet",
-        "top",
-        variable="velocity_x",
-        value=1.0,
-    )
-    problem.add_boundary_condition("Dirichlet", "top", variable="velocity_y", value=0.0)
-    for variable in ("velocity_x", "velocity_y"):
-        problem.add_boundary_condition(
-            "Dirichlet",
-            ["left", "right", "bottom"],
-            variable=variable,
-            value=0.0,
-        )
-    problem.solve()
-    return problem
-
-
 def test_cavity_matches_ghia():
     """Re = 100 on 16 by 16 Quad9 elements (the nodes of a 32 by 32 linear
     mesh): the centreline velocities agree with Ghia, Ghia and Shin (1982)
     within 0.01."""
-    spec = importlib.util.spec_from_file_location(
-        "compare_cavity", _root / "verification" / "openfoam" / "compare_cavity.py"
+    problem = lid_driven_cavity(
+        "fem",
+        16,
+        element_type="Quad9",
+        dynamic_viscosity=1.0,
+        density=100.0,
+        formulation="Taylor-Hood",
     )
-    reference = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(reference)
-    problem = _cavity(16)
-    u = problem.sample(
-        "velocity_x", numpy.column_stack([numpy.full_like(reference.ghia_y, 0.5), reference.ghia_y])
+    problem.solve()
+    u_difference, v_difference = Ghia_differences(problem)
+    assert u_difference < 0.01
+    assert v_difference < 0.01
+
+
+@pytest.mark.parametrize("element_type", ["Quad9", "Tri6"])
+def test_the_pressure_is_reported_at_the_non_corner_nodes(element_type):
+    """Poiseuille flow u = 4 y (1 - y), v = 0, p = 8 (4 - x) in a channel 4 x 1 with mu = 1 and a
+    do-nothing outlet lies in the Taylor-Hood space.  The mid-side and centre nodes carry no
+    pressure unknown and report the linear interpolant of the corners, here the exact p."""
+    mesh = dualmesh.generate_rectangle_mesh(0, 4, 0, 1, 8, 2, element_type=element_type)
+    problem = dualmesh.Problem(mesh, method="fem")
+    flow = problem.add_physics(
+        "fluid_dynamics",
+        density=1.0,
+        dynamic_viscosity=1.0,
+        formulation="Taylor-Hood",
+        viscous_form="laplacian",
     )
-    v = problem.sample(
-        "velocity_y", numpy.column_stack([reference.ghia_x, numpy.full_like(reference.ghia_x, 0.5)])
-    )
-    assert numpy.max(numpy.abs(u - reference.ghia_u)) < 0.01
-    assert numpy.max(numpy.abs(v - reference.ghia_v)) < 0.01
+    flow.add_boundary_condition(["velocity_x = 4*y*(1 - y)", "velocity_y = 0"], boundary="left")
+    flow.add_boundary_condition(["velocity_x = 0", "velocity_y = 0"], boundary=["top", "bottom"])
+    problem.solve(report="none")
+    x = problem.node_coordinates()
+    assert numpy.abs(problem.values("pressure") - 8.0 * (4.0 - x[:, 0])).max() < 1e-9
 
 
 def test_Taylor_hood_needs_a_quadratic_mesh_and_the_finite_element_method():

@@ -71,19 +71,18 @@ struct Element
 
 /// Whether a type carries mid-edge, mid-face or interior nodes.
 bool elementIsQuadratic(ElementType t);
+/// Whether a type is a serendipity element (Quad8, Hex20): quadratic, with mid-edge nodes and no
+/// face or interior node.
+bool elementIsSerendipity(ElementType t);
 /// The linear element with the same corners.
 ElementType elementCornerType(ElementType t);
 /// The quadratic element with the same corners, for mesh promotion.
 ElementType elementQuadraticType(ElementType t);
 
 /// The VTK cell type of an element type (VTK_LINE = 3, VTK_TRIANGLE = 5, and
-/// so on), used by the VTU writer and by the meshio bridge.
+/// so on), used by the VTU writer.  dualmesh numbers the nodes of every
+/// element as VTK numbers them, so the writer copies the connectivity as it is.
 int vtkCellType(ElementType t);
-/// The permutation from VTK local node numbering to dualmesh local node
-/// numbering: entry i is the dualmesh node that goes into VTK position i.
-/// dualmesh numbers every element as VTK does, so this is the identity; it is
-/// kept as the one place to change should a type ever need reordering.
-const std::vector<int> & vtkNodeOrder(ElementType t);
 
 /// A boundary side: (element index, local side index).
 using Side = std::pair<Index, int>;
@@ -125,14 +124,17 @@ public:
   /// on a closed surface and, on an open one, the side with the largest
   /// component of the summed normal positive (+z for a plate in the xy plane).
   void fixOrientation(const std::vector<Point> & preferred = {});
-  /// Uniformly refine (every element is split into 2^dim children).
+  /// Uniformly refine (every element is split into 2^dim children).  A mesh with hanging nodes
+  /// is refused, since the copy would carry no constraints for them.
   Mesh refined() const;
   /// Return the same mesh with quadratic elements: Edge2 becomes Edge3, Tri3
   /// becomes Tri6, Quad4 becomes Quad9, Tet4 becomes Tet10 and Hex8 becomes
   /// Hex27.  With @p serendipity, Quad4 becomes Quad8 and Hex8 becomes Hex20
   /// instead, which work with the finite element method only.  The corner nodes keep their numbers, the geometry is unchanged
   /// (the added nodes are placed at the midpoints of the edges, faces and
-  /// cells they belong to), and side sets and node sets are carried over.
+  /// cells they belong to), and side sets and node sets are carried over.  A
+  /// linear mesh with hanging nodes is refused, since the copy would carry no
+  /// constraints for them.
   Mesh secondOrder(bool serendipity = false) const;
 
   // ---- queries -----------------------------------------------------------

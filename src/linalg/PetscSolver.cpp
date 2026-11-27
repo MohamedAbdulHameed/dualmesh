@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 #include "dualmesh/linalg/PetscSolver.h"
 
-#include "dualmesh/parallel/Communicator.h"
+#include "dualmesh/linalg/Communicator.h"
 
 #include <petscsnes.h>
 
@@ -100,18 +100,12 @@ private:
   PetscOptions _options = nullptr;
 };
 
+/// The options of the default solve: GMRES with a direct factorisation, which takes MUMPS when
+/// PETSc has it (LinearSolver).
 std::string
-defaultOptions(bool parallel)
+defaultOptions()
 {
-  // The solver takes MUMPS for a factorisation that names no package (LinearSolver).
-#ifdef PETSC_HAVE_MUMPS
-  (void) parallel;
   return "-ksp_type gmres -pc_type lu";
-#else
-  if (!parallel)
-    return "-ksp_type gmres -pc_type lu";
-  return "-ksp_type gmres -pc_type bjacobi -sub_pc_type ilu";
-#endif
 }
 
 /// Check a solve that PETSc reports converged by its true residual |b - A x|.  PETSc measures
@@ -560,6 +554,16 @@ version()
   return s.str();
 }
 
+bool
+haveMumps()
+{
+#ifdef PETSC_HAVE_MUMPS
+  return true;
+#else
+  return false;
+#endif
+}
+
 void
 initialize()
 {
@@ -596,12 +600,17 @@ struct LinearSolver::Impl
   KSP ksp = nullptr;
   Vec b = nullptr, x = nullptr, r = nullptr, w = nullptr;
   double relative_tolerance = 1e-12;
-  /// The projected earlier solutions, orthonormal in the energy norm, and their products with the matrix.
+  /// The largest number of earlier solutions kept for the projection.
   int capacity = 0;
+  /// Whether the matrix is symmetric positive definite, so that the projection uses its energy norm.
   bool symmetric = true;
-  /// The positions of the entries of the matrix, followed by the diagonal of every owned row.
+  /// The positions of the num_entries entries of the matrix, followed by the diagonal of every
+  /// owned row.
   std::vector<PetscInt> coo_rows, coo_cols;
   std::size_t num_entries = 0;
+  /// The projected earlier solutions and their products with the matrix.  The solutions are
+  /// orthonormal in the energy norm of a symmetric matrix, and the products are orthonormal
+  /// otherwise.
   std::vector<Vec> basis, images;
   /// The splits of a field split preconditioner, the Schur complement
   /// preconditioner of pressure_mass, and the shell of pcd and lsc.
@@ -617,7 +626,7 @@ struct LinearSolver::Impl
 
   ~Impl()
   {
-    // A solver may outlive PETSc at the exit of a program; there is then nothing left to free.
+    // A solver may outlive PETSc at the exit of a program.  There is then nothing left to free.
     if (!PetscInitializeCalled || PetscFinalizeCalled)
     {
       (void) shell.release();
@@ -714,7 +723,7 @@ struct LinearSolver::Impl
       shell = makeSchurShell(ksp, matrix, splits[0], splits[1], *blocks);
   }
 
-  /// Add the direction @p v (with its product @p av with the matrix) to the basis, orthogonalized against it and normalized in the energy norm; a full basis starts again from @p restart.
+  /// Add the direction @p v (with its product @p av with the matrix) to the basis, orthogonalized against it and normalized in the energy norm.  A full basis starts again from @p restart.
   void remember(Vec v, Vec av, Vec restart)
   {
     if (static_cast<int>(basis.size()) == capacity)
@@ -767,8 +776,6 @@ LinearSolver::LinearSolver(bool distributed,
   initialize();
   Impl & s = *_impl;
   s.comm = distributed ? PETSC_COMM_WORLD : PETSC_COMM_SELF;
-  int size = 1;
-  MPI_Comm_size(s.comm, &size);
   s.first_row = first_row;
   s.n_local = num_owned;
 
@@ -807,18 +814,23 @@ LinearSolver::LinearSolver(bool distributed,
   // The options are read, and the preconditioner is built, while this solver's options are the
   // default database.  The options of a block preconditioner refine its defaults (the later
   // value of an option wins); otherwise they replace the default.
-  std::string text = settings.options.empty() ? defaultOptions(size > 1) : settings.options;
+  std::string text;
   if (settings.schur)
     text = schurOptions(settings.schur->approximation) + " " + settings.options;
   else if (!settings.physics_blocks.empty())
     text = physicsBlockOptions(settings.physics_blocks.size()) + " " + settings.options;
+  else
+    text = settings.options.empty() ? defaultOptions() : settings.options;
   s.options = text;
   const ScopedOptions scope(text);
   DM_PETSC(KSPCreate(s.comm, &s.ksp));
   DM_PETSC(KSPSetOperators(s.ksp, s.matrix, s.matrix));
+  // The absolute tolerance is zero, so that the Krylov solve stops on the relative tolerance
+  // alone.  A Newton correction has the units and the size of the solution, and a fixed absolute
+  // tolerance would end the solve of a small correction at its first iteration.
   DM_PETSC(KSPSetTolerances(s.ksp,
                             settings.relative_tolerance,
-                            settings.absolute_tolerance,
+                            0.0,
                             PETSC_DEFAULT,
                             static_cast<PetscInt>(settings.max_iterations)));
   PC pc;

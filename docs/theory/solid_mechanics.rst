@@ -302,16 +302,25 @@ The coupling ``thermal_expansion`` of a ``solid_mechanics`` and a
 .. math::
    :label: solid-thermal
 
-   \boldsymbol{\varepsilon}_{\mathrm{th}} = \alpha\,(T - T_0)\,\mathbf{I} ,
+   \boldsymbol{\varepsilon}_{\mathrm{th}} = \alpha(T)\,(T - T_0)\,\mathbf{I} ,
 
 with :math:`\alpha` the linear expansion coefficient
 (:math:`\mathrm{1/K}`, ``linear_expansion_coefficient``) and :math:`T_0` the
 temperature at which the solid is free of thermal strain (K,
-``stress_free_temperature``).  The property object
-``thermal_expansion_eigenstrain`` computes :eq:`solid-thermal` on the three
-normal components, and the stress object subtracts it in :eq:`solid-hooke`.  An
-isotropic expansion has no shear part.  :math:`T_0` has no default, because no
-value is right for every problem.
+``stress_free_temperature``).  The coefficient :math:`\alpha` is the secant
+coefficient, the mean strain per kelvin between :math:`T_0` and :math:`T`, which
+is the default definition of Abaqus [Abaqus2016]_ with :math:`T_0` as its
+reference temperature.  It may be a constant, a function or an expression of the
+temperature, the other fields and the coordinates.  A coefficient
+:math:`\alpha(T) = a + bT` with constants :math:`a` (:math:`\mathrm{1/K}`) and
+:math:`b` (:math:`\mathrm{1/K^2}`) therefore gives the strain
+:math:`(a + bT)(T - T_0)`.  A tabulated instantaneous coefficient
+:math:`\alpha_t(T) = \mathrm{d}\varepsilon/\mathrm{d}T` gives the secant one
+:math:`\alpha(T) = \frac{1}{T - T_0}\int_{T_0}^{T} \alpha_t\,\mathrm{d}T'`.
+The property object ``thermal_expansion_eigenstrain`` computes
+:eq:`solid-thermal` on the three normal components, and the stress object
+subtracts it in :eq:`solid-hooke`.  An isotropic expansion has no shear part.
+:math:`T_0` has no default, because no value is right for every problem.
 
 A body heated above :math:`T_0` and restrained in its plane is in compression.
 In plane strain, where the out-of-plane strain is zero as well, it carries
@@ -323,8 +332,8 @@ The temperature is the field of the ``heat_conduction`` physics.  When that fiel
 is an unknown of the same problem, the stress depends on it, and the automatic
 differentiation carries :math:`\partial\boldsymbol{\sigma}/\partial T` into the
 Jacobian.  Newton's method then converges at its usual rate on the coupled
-system.  In a beam or a plate, the section integrates a thermal strain that is
-uniform through the thickness into a thermal force and a thermal moment.
+system.  In a beam, a plate or a shell, the section integrates a thermal strain
+that is uniform through the thickness into a thermal force and a thermal moment.
 
 Finite strain
 -------------
@@ -1052,9 +1061,18 @@ or by its section stiffnesses for a laminated or graded section:
 Here :math:`z` (m) is the position through the thickness from the mid-surface,
 and :math:`K_s` (dimensionless) is the shear correction factor, 5/6 by default.
 Plate stiffnesses are per unit width and carry the factor
-:math:`1/(1-\nu^2)`.  A section given by its material integrates the law at
-Gauss points through the thickness, so :math:`E(z)` gives a functionally graded
-section.  A beam section is ``{"width": ..., "height": ...}``, a rectangle, or
+:math:`1/(1-\nu^2)`.  Poisson's ratio :math:`\nu` has no default where it
+enters the law of a section: every plate and circular plate needs
+``poissons_ratio``, and so does a Timoshenko beam given by its material, whose
+shear modulus is :math:`G = E/[2(1+\nu)]`.  An Euler-Bernoulli beam, and a beam
+given by its section stiffnesses, do not use it.  A section given by its
+material integrates the law at Gauss points through the thickness, so :math:`E(z)` gives a functionally graded
+section.  With a thermal strain :eq:`solid-thermal`, the same points give the
+thermal force :math:`N_T` and the thermal moment :math:`M_T`, the integrals of
+the thermal stress :math:`E\alpha(T - T_0)` (:math:`E\alpha(T - T_0)/(1 - \nu)`
+in a plate) and of its moment about the mid-surface, so :math:`\alpha(z)`
+bends a free section.  Beams, plates and shells integrate one section law.  A
+beam section is ``{"width": ..., "height": ...}``, a rectangle, or
 ``{"area": ..., "second_moment": ...}``, and a Timoshenko beam of the second
 form needs its ``shear_correction``.
 
@@ -1184,14 +1202,28 @@ indices :math:`a, b` over the two in-plane axes:
    \gamma_a = \partial_a w_l + \phi_a , \qquad
    \omega = \vartheta_{l3} - \tfrac{1}{2}\left(\partial_1 u_{l,2} - \partial_2 u_{l,1}\right) ,
 
-with :math:`w_l` the displacement along :math:`\mathbf{e}_3`.  The resultants are
-:math:`\mathbf{N} = A_m[(1-\nu)\boldsymbol{\varepsilon} + \nu\operatorname{tr}\boldsymbol{\varepsilon}\,\mathbf{I}]`,
-:math:`\mathbf{M} = D[(1-\nu)\boldsymbol{\chi} + \nu\operatorname{tr}\boldsymbol{\chi}\,\mathbf{I}]`
-and :math:`\mathbf{Q} = K_s G H\boldsymbol{\gamma}`, with
-:math:`A_m = EH/(1-\nu^2)` and :math:`D = EH^3/[12(1-\nu^2)]`.  The drilling
-strain :math:`\omega` ties the rotation about the normal to the rotation of the
+with :math:`w_l` the displacement along :math:`\mathbf{e}_3`.  With
+:math:`[\mathbf{e}] = (1-\nu)\mathbf{e} + \nu\operatorname{tr}\mathbf{e}\,\mathbf{I}`
+for a tensor :math:`\mathbf{e}` of the plane, the resultants are
+
+.. math::
+
+   \mathbf{N} = A[\boldsymbol{\varepsilon}] + B[\boldsymbol{\chi}] - N_T\mathbf{I} , \qquad
+   \mathbf{M} = B[\boldsymbol{\varepsilon}] + D[\boldsymbol{\chi}] - M_T\mathbf{I} , \qquad
+   \mathbf{Q} = S\boldsymbol{\gamma} ,
+
+with the section :math:`A`, :math:`B`, :math:`D`, :math:`S`, :math:`N_T` and
+:math:`M_T` of a plate given by its material (`Sections`_), integrated through
+the thickness along :math:`\mathbf{e}_3`.  The modulus and the expansion
+coefficient are evaluated at the point :math:`\mathbf{x} + z\,\mathbf{e}_3`, with
+:math:`\mathbf{x}` the point of the mid-surface, so on a flat shell in the plane
+:math:`z = 0` an expression of :math:`z` gives the graded section of a plate.
+For a homogeneous section :math:`A = EH/(1-\nu^2)`, :math:`B = 0`,
+:math:`D = EH^3/[12(1-\nu^2)]` and :math:`S = K_s G H`.  The drilling strain
+:math:`\omega` ties the rotation about the normal to the rotation of the
 membrane, as in the continuum [HughesBrezzi1989]_, with the moment
-:math:`G H\omega`.  Where elements meet at an angle, this gives the six unknowns
+:math:`\tfrac{1}{2}(1-\nu)A\,\omega`, which is :math:`G H\omega` in a
+homogeneous section.  Where elements meet at an angle, this gives the six unknowns
 of a node a stiffness.  The virtual work of the four resultants gives the flux
 and the source of each global equation.  Trusses and shells are linear elastic
 and static.

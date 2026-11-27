@@ -12,23 +12,52 @@ Layout
 .. code-block:: text
 
    include/dualmesh/      the public C++ headers
-     base/                Object, Kernel, Property, Factory, Problem, QpContext
-     core/                ADReal, InputParameters, Function, ParsedFunction, Types
-     fe/                  ReferenceElement (with the dual mesh geometry), Assembly
-     linalg/              the PETSc solvers and their choice
-     mesh/                Mesh, its bisection, its subdivision and its hierarchy
-     modules/             the headers of the physics modules
+     base/                Object, Kernel, Property, Factory, Problem, QpContext, Checkpoint,
+                          and FlowSystem and SolidSystem, the hooks that modules implement
+     core/                ADReal, InputParameters, Function, ParsedFunction, Types, and
+                          Coordinates, the measure and hoop terms of each coordinate system
+     fe/                  Assembly: the quadrature points and the map of each element
+     linalg/              the PETSc solvers, their choice and the MPI communicator
+     mesh/                Mesh, ReferenceElement (with the dual mesh geometry), the bisection,
+                          the subdivision and the hierarchy of a mesh
+     modules/             the headers of the physics modules, and Registry.h, whose
+                          registerAllObjects() registers their objects
      parallel/            the distributed problem, its partition and its gather-scatter
    src/                   the implementations, in the folders of include/
-   python/bindings/       the pybind11 module
+   python/bindings/       the pybind11 module, one file per subsystem: conversions,
+                          functions, mesh, objects, problem and parallel
    python/dualmesh/       the Python package
-     input/               the input: its schema, its standard names and its build
+     units.py             the units, the dimensions and the standard names
+     model/               the model language: its syntax, its expression graph, its calculus,
+                          the conservation laws and their engine form
+     physics/             the physics level: heat, solid, fluid, general_form, couplings and
+                          base, the base classes and the registry
+     engine.py            Problem, the object level
+     input/               the input: its schema and its build
+     case.py              problem, the input in Python
+     solution.py          results, the result of the input
    tests/cpp/             the C++ tests
    tests/python/          the Python tests
    verification/          the verification and benchmark scripts
    examples/              the example scripts and case files
    scripts/               the checks, the benchmarks and the release script
    docs/                  this documentation
+
+The C++ directories include in one direction.  Each of ``core``, ``mesh``,
+``fe``, ``linalg`` and ``base`` includes only directories that come before it in
+this list.  ``modules`` and ``parallel`` sit on top: they include ``base`` and
+the levels below it, and not each other.  When ``base`` needs work that a module does, it calls a virtual function that the
+module implements: a virtual of ``Kernel`` or of one of its interfaces, such as ``MassEquation::flowCoefficients``, or of
+the systems ``FlowSystem`` and ``SolidSystem`` that a module registers in the
+``Factory``.
+
+The modules of the Python package import in one direction, from the top of each file.
+``_core``, the compiled module, and ``units`` import no other module of the package.
+The package ``model`` imports these two and ``parameters``.  The package ``physics``
+imports ``model``, and ``engine`` imports ``physics``.  The package ``input`` and
+the module ``case``, which holds :class:`dualmesh.problem`, import all of them.  When a
+module needs code from a module above it, move that code down a level instead of
+importing inside a function.
 
 The levels of the code
 ----------------------
@@ -162,6 +191,17 @@ supplies:
      double _c;
    };
 
+``Kernel`` holds the hooks that every kernel needs.  A kernel of one family
+derives from the interface of that family instead, which adds its hooks:
+
+* ``StorageKernel``, a time derivative of the variable.
+* ``MassEquation``, the mass equation of an incompressible flow, which gives
+  the block preconditioners their coefficients and the advection the velocity
+  that it conserves.
+* ``AdvectiveKernel``, a term that carries the variable with a velocity.
+* ``SectionKernel``, in the solid mechanics module, a beam or a plate whose
+  stress varies over the height of its section.
+
 Register the kernel in the registration function of its module, for example
 ``registerHeatTransferObjects`` in ``src/modules/HeatTransfer.cpp``:
 
@@ -171,7 +211,10 @@ Register the kernel in the registration function of its module, for example
 
 The kernel is then available by its name from Python and in ``dualmesh list``.
 Each module registers its objects by an explicit call, so a static link of the
-library keeps every object.
+library keeps every object.  ``registerAllObjects`` in
+``include/dualmesh/modules/Registry.h`` calls the registration function of every
+module.  The Python module calls it when it is imported.  A C++ program calls
+it once before it makes a ``Problem``, as the C++ tests do in ``main``.
 
 Write a kernel correctly
 ~~~~~~~~~~~~~~~~~~~~~~~~

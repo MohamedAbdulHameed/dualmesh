@@ -22,15 +22,10 @@ from __future__ import annotations
 import dualmesh
 import numpy
 import pytest
+from helpers import unit_square
 
 methods = ("fem", "dmcdm")
 laplacian = numpy.pi**2 * numpy.array([2.0, 5.0, 5.0, 8.0])
-
-
-def unit_square(n):
-    return dualmesh.generate_rectangle_mesh(
-        x_min=0.0, x_max=1.0, y_min=0.0, y_max=1.0, num_x_elements=n, num_y_elements=n
-    )
 
 
 def clamp(problem, variables=("u",)):
@@ -98,13 +93,23 @@ def test_the_eigenvalue_as_a_symbol_is_the_eigenvalue_of_the_time_derivative(met
 
 
 def test_a_quadratic_symbol_gives_the_square_roots():
-    """-div grad u = eigenvalue^2 u: the eigenvalues closest to 4 are pi sqrt(2),
-    pi sqrt(5) twice and pi sqrt(8), and the study solves the companion form."""
+    """-div grad u = eigenvalue^2 u: the eigenvalues are lambda = +- pi sqrt(m^2 + n^2),
+    and near is a value of lambda itself. Closest to 4 are pi sqrt(2), pi sqrt(5) twice
+    and pi sqrt(8). Closest to 8.9 is the simple eigenvalue 2 sqrt(2) pi = 8.886 of the
+    mode m = n = 2, the fourth from the lowest, and closest to -8.9 is -2 sqrt(2) pi. A
+    near read as an angular frequency, as the square of lambda, or not read at all
+    would select pi sqrt(2) = 4.443 instead."""
     _p, linear = laplacian_modes("fem", 24)
     _p, quadratic = laplacian_modes("fem", 24, source="eigenvalue^2*u", near=4.0)
     assert quadratic.quadratic
+    assert not quadratic.vibration
     roots = numpy.sqrt(numpy.sort(linear.eigenvalues))
     assert numpy.sort(quadratic.eigenvalues) == pytest.approx(roots, rel=1e-8)
+    # The fourth root is that of the mode m = n = 2, to the error of the mesh.
+    assert roots[3] == pytest.approx(2.0 * numpy.sqrt(2.0) * numpy.pi, rel=2e-2)
+    for near in (8.9, -8.9):
+        _p, chosen = laplacian_modes("fem", 24, source="eigenvalue^2*u", near=near, num_modes=1)
+        assert chosen.eigenvalues == pytest.approx([numpy.sign(near) * roots[3]], rel=1e-8)
 
 
 @pytest.mark.parametrize("method", methods)

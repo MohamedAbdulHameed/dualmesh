@@ -6,11 +6,13 @@ right components, and its errors say what to do."""
 from __future__ import annotations
 
 import math
+import re
 
 import dualmesh
 import numpy
 import pytest
 from dualmesh._core import InputError
+from helpers import unit_square
 
 
 def largest_difference(a, b, variables):
@@ -192,12 +194,6 @@ def test_symmetry_condition_refuses_an_inclined_side_set():
 
 # ---- the registry and the errors -------------------------------------------------
 # ---- coefficient form PDE ---------------------------------------------------------
-def unit_square(n=8):
-    return dualmesh.generate_rectangle_mesh(
-        x_min=0.0, x_max=1.0, y_min=0.0, y_max=1.0, num_x_elements=n, num_y_elements=n
-    )
-
-
 @pytest.mark.parametrize(
     "definitions, message",
     [
@@ -210,7 +206,7 @@ def unit_square(n=8):
     ],
 )
 def test_definitions_of_the_general_form_are_checked(definitions, message):
-    problem = dualmesh.Problem(unit_square(), method="fem")
+    problem = dualmesh.Problem(unit_square(8), method="fem")
     with pytest.raises(InputError, match=message):
         problem.add_physics(
             "general_form_PDE",
@@ -223,7 +219,7 @@ def test_definitions_of_the_general_form_are_checked(definitions, message):
 
 
 def test_an_unused_definition_is_refused():
-    problem = dualmesh.Problem(unit_square(), method="fem")
+    problem = dualmesh.Problem(unit_square(8), method="fem")
     PDE = problem.add_physics(
         "general_form_PDE", variables="u", equations="-laplacian(u) = 1", h=2.0
     )
@@ -241,7 +237,7 @@ def test_an_unused_definition_is_refused():
     ],
 )
 def test_boundary_conditions_as_text_are_checked(condition, message):
-    problem = dualmesh.Problem(unit_square(), method="fem")
+    problem = dualmesh.Problem(unit_square(8), method="fem")
     PDE = problem.add_physics(
         "general_form_PDE", variables="u", k=2.0, equations="-div(k*grad(u)) = 1"
     )
@@ -385,3 +381,33 @@ def test_a_traction_that_depends_on_the_displacement_has_an_exact_Jacobian():
     assert 0.0 < supported < free.sample("disp_x", [[1.0, 0.5]])[0]
     _, Jacobian = problem.linear_system()
     assert compare(Jacobian.toarray(), finite_difference_Jacobian(problem)) < 1e-7
+
+
+# ---- refusals of the front end ---------------------------------------------------------------
+def test_a_physics_type_registered_twice_is_refused():
+    """A second class under the name of a registered physics would replace it unseen."""
+
+    class SecondHeatConduction:
+        type_name = "heat_conduction"
+
+    with pytest.raises(TypeError, match="'heat_conduction' is registered twice"):
+        dualmesh.physics.register(SecondHeatConduction)
+    assert dualmesh.physics._REGISTRY["heat_conduction"] is dualmesh.physics.HeatConduction
+
+
+@pytest.mark.parametrize("value, written", [("hot", "hot"), (True, "True"), ([1.0], "[1.0]")])
+def test_a_mapping_of_names_takes_a_number_for_each_name(value, written):
+    """A mapping such as the properties of a constant property object holds numbers: a text, a
+    boolean or a list is refused with the value."""
+    problem = dualmesh.Problem(dualmesh.generate_rectangle_mesh(0, 1, 0, 1, 2, 2))
+    message = "A mapping of names takes a number for each name, not " + re.escape(f"'{written}'")
+    with pytest.raises(InputError, match=message):
+        problem.add_property("constant", properties={"thermal_conductivity": value})
+
+
+@pytest.mark.parametrize("coordinates", ["rz", "xyz", "cylindrical"])
+def test_a_coordinate_system_has_one_name(coordinates):
+    """The coordinate systems are cartesian, axisymmetric and spherical, with no other names."""
+    mesh = dualmesh.generate_rectangle_mesh(0, 1, 0, 1, 2, 2)
+    with pytest.raises(InputError, match=f"Unknown coordinate system '{coordinates}'"):
+        dualmesh.Problem(mesh, coordinates=coordinates)

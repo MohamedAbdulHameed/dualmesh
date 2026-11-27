@@ -20,7 +20,6 @@ from __future__ import annotations
 import contextlib
 import contextvars
 import datetime
-import difflib
 import platform
 import socket
 
@@ -47,8 +46,6 @@ def report_level(report: str, where: str) -> str:
         raise InputError(
             f"{where}: report must be one of {', '.join(REPORT_LEVELS)}, not '{report}'."
         )
-    from . import _core
-
     return "none" if _INNER_STUDY.get() or _core.mpi_rank() != 0 else report
 
 
@@ -63,20 +60,9 @@ def inner_study():
         _INNER_STUDY.reset(token)
 
 
-def suggestion(word, choices, listing: bool = True) -> str:
-    """The end of a message that refuses a misspelled ``word``: the nearest of ``choices``, as
-    " Did you mean 'x'?", or the list of the choices when none is near and ``listing`` holds."""
-    choices = sorted(str(choice) for choice in choices)
-    nearest = difflib.get_close_matches(str(word), choices, n=1)
-    if nearest:
-        return f" Did you mean '{nearest[0]}'?"
-    if not choices or not listing:
-        return ""
-    return " The valid names are " + ", ".join(f"'{choice}'" for choice in choices) + "."
-
-
 def header(title: str = "dualmesh") -> str:
     """The version, the build options and the machine."""
+    # The package sets __version__ after it imports this module, so the import waits for the call.
     from . import __version__
 
     build = _core.build_information()

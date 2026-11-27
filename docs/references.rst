@@ -281,6 +281,11 @@ Structures
    72(1):105–121, 1989.  The rotation about the normal of a shell, tied to the
    rotation of its membrane.
 
+.. [Abaqus2016] Dassault Systèmes, *Abaqus 2016 Analysis User's Guide*,
+   section 26.1.2, "Thermal expansion".  The secant (total) expansion
+   coefficient, measured from a reference temperature, which is its default
+   definition.
+
 Linear and nonlinear solvers
 ----------------------------
 

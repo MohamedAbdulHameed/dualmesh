@@ -918,9 +918,13 @@ _add(
 dimensions: membrane, Mindlin bending and transverse shear in the axes of
 each facet, with the rotation about the normal tied to the rotation of the
 membrane.  The unknowns are the displacements and the rotations about the
-global axes.  The second instance integrates the transverse shear alone at
-the centre of the element, which removes shear locking.  The physics level
-adds both with ``formulation="shell"``:
+global axes.  The section is that of ``plate_first_order`` given by its
+material, so a ``youngs_modulus`` that is an expression of the height ``z``
+gives a graded section, and ``temperature``, ``linear_expansion_coefficient``
+and ``stress_free_temperature`` give a thermal strain.  The second instance
+integrates the transverse shear alone at the centre of the element, which
+removes shear locking.  The physics level adds both with
+``formulation="shell"``:
 
 .. code-block:: python
 
@@ -971,18 +975,23 @@ level adds it with ``phase_field_fracture={"toughness": ..., "length": ...}``:
 _add(
     "thermal_expansion_eigenstrain",
     r"""
-``thermal_expansion_eigenstrain`` is the thermal strain of a material of
-constant expansion coefficient,
-:math:`\boldsymbol{\varepsilon}_{\mathrm{th}} = \alpha (T - T_0) \mathbf{I}`,
+``thermal_expansion_eigenstrain`` is the thermal strain of an isotropic
+material,
+:math:`\boldsymbol{\varepsilon}_{\mathrm{th}} = \alpha(T) (T - T_0) \mathbf{I}`,
 with the linear expansion coefficient :math:`\alpha` in :math:`\mathrm{1/K}`,
-the temperature :math:`T`, the stress-free temperature :math:`T_0` and the
-identity :math:`\mathbf{I}`.  It is stored as a property under
-``eigenstrain_name``, so that ``small_strain_stress`` subtracts it from the
-total strain:
+the temperature :math:`T` in K, the stress-free temperature :math:`T_0` in K
+and the identity :math:`\mathbf{I}`.  The coefficient is the secant (mean)
+coefficient between :math:`T_0` and :math:`T`: a constant, a function, or an
+expression of the temperature, the other fields and the coordinates.  It is
+stored as a property under ``eigenstrain_name``, so that
+``small_strain_stress`` subtracts it from the total strain:
 
 .. code-block:: python
 
    problem.add_property("thermal_expansion_eigenstrain", temperature="T", linear_expansion_coefficient=1.0e-5, stress_free_temperature=293.15, eigenstrain_name="thermal_strain")
+
+   # A coefficient that grows with the temperature.
+   problem.add_property("thermal_expansion_eigenstrain", temperature="T", linear_expansion_coefficient="1.0e-5 + 4.0e-9*T", stress_free_temperature=293.15, eigenstrain_name="hot_strain")
 """,
 )
 
@@ -1047,9 +1056,10 @@ _add(
     "parsed_eigenstrain",
     """
 ``parsed_eigenstrain`` is an eigenstrain, a stress-free strain such as
-thermal expansion or swelling, given by an expression, for the
-``eigenstrain_names`` of ``small_strain_stress``.  A volumetric swelling that
-grows with the temperature, zero at 293.15 K:
+swelling or a measured thermal strain curve, given by an expression, for the
+``eigenstrain_names`` of ``small_strain_stress``.  A thermal strain given by
+its expansion coefficient is ``thermal_expansion_eigenstrain``.  A volumetric
+swelling that grows with the temperature, zero at 293.15 K:
 
 .. code-block:: python
 

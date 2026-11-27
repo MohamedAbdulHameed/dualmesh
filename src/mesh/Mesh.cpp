@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 #include "dualmesh/mesh/Mesh.h"
 #include "dualmesh/core/InputParameters.h"
-#include "dualmesh/fe/ReferenceElement.h"
+#include "dualmesh/mesh/ReferenceElement.h"
 
 #include <algorithm>
 #include <cmath>
@@ -53,33 +53,33 @@ elementTypeName(ElementType t)
 ElementType
 elementTypeFromName(const std::string & n)
 {
-  if (n == "Edge2" || n == "EDGE2" || n == "line" || n == "Line2")
+  if (n == "Edge2")
     return ElementType::Edge2;
-  if (n == "Tri3" || n == "TRI3" || n == "triangle")
+  if (n == "Tri3")
     return ElementType::Tri3;
-  if (n == "Quad4" || n == "QUAD4" || n == "quad")
+  if (n == "Quad4")
     return ElementType::Quad4;
-  if (n == "Tet4" || n == "TET4" || n == "tetra")
+  if (n == "Tet4")
     return ElementType::Tet4;
-  if (n == "Hex8" || n == "HEX8" || n == "hexahedron")
+  if (n == "Hex8")
     return ElementType::Hex8;
-  if (n == "Edge3" || n == "EDGE3" || n == "line3" || n == "Line3")
+  if (n == "Edge3")
     return ElementType::Edge3;
-  if (n == "Tri6" || n == "TRI6" || n == "triangle6")
+  if (n == "Tri6")
     return ElementType::Tri6;
-  if (n == "Quad9" || n == "QUAD9" || n == "quad9")
+  if (n == "Quad9")
     return ElementType::Quad9;
-  if (n == "Tet10" || n == "TET10" || n == "tetra10")
+  if (n == "Tet10")
     return ElementType::Tet10;
-  if (n == "Hex27" || n == "HEX27" || n == "hexahedron27")
+  if (n == "Hex27")
     return ElementType::Hex27;
-  if (n == "Quad8" || n == "QUAD8" || n == "quad8")
+  if (n == "Quad8")
     return ElementType::Quad8;
-  if (n == "Hex20" || n == "HEX20" || n == "hexahedron20")
+  if (n == "Hex20")
     return ElementType::Hex20;
-  if (n == "Wedge6" || n == "WEDGE6" || n == "wedge" || n == "Prism6" || n == "prism")
+  if (n == "Wedge6")
     return ElementType::Wedge6;
-  if (n == "Pyramid5" || n == "PYRAMID5" || n == "pyramid")
+  if (n == "Pyramid5")
     return ElementType::Pyramid5;
   throw InputError("Unsupported element type '" + n +
                    "'. Supported: Edge2, Tri3, Quad4, Tet4, Hex8, Wedge6, Pyramid5, Edge3, "
@@ -139,6 +139,12 @@ elementIsQuadratic(ElementType t)
   default:
     return false;
   }
+}
+
+bool
+elementIsSerendipity(ElementType t)
+{
+  return t == ElementType::Quad8 || t == ElementType::Hex20;
 }
 
 ElementType
@@ -221,27 +227,6 @@ vtkCellType(ElementType t)
   return 0;
 }
 
-const std::vector<int> &
-vtkNodeOrder(ElementType t)
-{
-  // Every element type is numbered exactly as VTK numbers it, so the
-  // permutation is the identity.  It is kept as a function so that a type
-  // numbered differently in some future format has one place to say so.
-  static const std::map<int, std::vector<int>> identity = []
-  {
-    std::map<int, std::vector<int>> m;
-    for (int n = 1; n <= kMaxElementNodes; ++n)
-    {
-      std::vector<int> v(n);
-      for (int i = 0; i < n; ++i)
-        v[i] = i;
-      m[n] = v;
-    }
-    return m;
-  }();
-  return identity.at(elementNumNodes(t));
-}
-
 ElementType
 Element::cornerType() const
 {
@@ -322,6 +307,51 @@ Mesh::sideNodes(const Side & s) const
   return out;
 }
 
+namespace
+{
+/// Mark the open sides that lie inside the domain on a mesh with hanging nodes.  Each open side
+/// is given by its sorted nodes and its side.  The side of a large cell faces the smaller sides
+/// of its neighbours, which hold the nodes that hang on it.  A side whose nodes are all corners
+/// of another element's side or hang on that side lies inside it, and both are inside the domain.
+std::vector<char>
+sidesInsideDomain(const std::vector<std::pair<std::vector<Index>, Side>> & open,
+                  const std::vector<Mesh::NodeConstraint> & constraints)
+{
+  std::vector<char> inside(open.size(), 0);
+  if (constraints.empty())
+    return inside;
+  std::map<Index, const std::vector<std::pair<Index, double>> *> hangs;
+  for (const auto & c : constraints)
+    hangs[c.node] = &c.on;
+  std::map<Index, std::vector<std::size_t>> by_node;
+  for (std::size_t i = 0; i < open.size(); ++i)
+    for (Index n : open[i].first)
+      by_node[n].push_back(i);
+  // Whether node n is one of the sorted corners or hangs on them only.
+  const auto hangsOnSide = [&](Index n, const std::vector<Index> & corners)
+  {
+    if (std::binary_search(corners.begin(), corners.end(), n))
+      return true;
+    const auto h = hangs.find(n);
+    if (h == hangs.end())
+      return false;
+    for (const auto & primary : *h->second)
+      if (!std::binary_search(corners.begin(), corners.end(), primary.first))
+        return false;
+    return true;
+  };
+  for (std::size_t i = 0; i < open.size(); ++i)
+    for (Index n : open[i].first)
+      for (std::size_t j : by_node[n])
+        if (j != i && open[j].second.first != open[i].second.first &&
+            std::all_of(open[i].first.begin(),
+                        open[i].first.end(),
+                        [&](Index m) { return hangsOnSide(m, open[j].first); }))
+          inside[i] = inside[j] = 1;
+  return inside;
+}
+} // namespace
+
 const std::vector<Side> &
 Mesh::exteriorSides() const
 {
@@ -347,43 +377,7 @@ Mesh::exteriorSides() const
   for (const auto & [key, v] : count)
     if (v.second == 1)
       open.emplace_back(key, v.first);
-  // With hanging nodes the side of a large cell faces the smaller sides of its neighbours, which
-  // hold the nodes that hang on it.  A side whose nodes are all corners of another element's side
-  // or hang on that side lies inside it, and both are inside the domain.
-  std::vector<char> inside(open.size(), 0);
-  if (!_node_constraints.empty())
-  {
-    std::map<Index, const std::vector<std::pair<Index, double>> *> hangs;
-    for (const auto & c : _node_constraints)
-      hangs[c.node] = &c.on;
-    std::map<Index, std::vector<std::size_t>> by_node;
-    for (std::size_t i = 0; i < open.size(); ++i)
-      for (Index n : open[i].first)
-        by_node[n].push_back(i);
-    const auto onSide = [&](Index n, const std::vector<Index> & corners)
-    {
-      if (std::binary_search(corners.begin(), corners.end(), n))
-        return true;
-      const auto h = hangs.find(n);
-      if (h == hangs.end())
-        return false;
-      for (const auto & [primary, weight] : *h->second)
-      {
-        (void) weight;
-        if (!std::binary_search(corners.begin(), corners.end(), primary))
-          return false;
-      }
-      return true;
-    };
-    for (std::size_t i = 0; i < open.size(); ++i)
-      for (Index n : open[i].first)
-        for (std::size_t j : by_node[n])
-          if (j != i && open[j].second.first != open[i].second.first &&
-              std::all_of(open[i].first.begin(),
-                          open[i].first.end(),
-                          [&](Index m) { return onSide(m, open[j].first); }))
-            inside[i] = inside[j] = 1;
-  }
+  const std::vector<char> inside = sidesInsideDomain(open, _node_constraints);
   _exterior_cache.clear();
   for (std::size_t i = 0; i < open.size(); ++i)
     if (!inside[i])
@@ -537,7 +531,7 @@ flipElement(Element & el)
     std::swap(el.nodes[1], el.nodes[3]);
     std::swap(el.nodes[5], el.nodes[7]);
     break;
-  // The quadratic elements are flipped by the same corner swap; the
+  // The quadratic elements are flipped by the same corner swap.  The
   // mid-edge, mid-face and interior nodes follow their corners, so the
   // nodes that sit on edges or faces that the swap exchanges are exchanged
   // with them.
@@ -612,7 +606,7 @@ Mesh::fixOrientation(const std::vector<Point> & preferred)
   bool changed = false;
   if (spaceDimension() > _dim)
   {
-    // A curve in space has no orientation to fix; a surface is oriented
+    // A curve in space has no orientation to fix.  A surface is oriented
     // consistently.
     if (_dim == 2)
       changed = orientSurface(preferred.empty() ? nullptr : &preferred);
@@ -683,7 +677,7 @@ Mesh::orientSurface(const std::vector<Point> * preferred)
   }
   // neighbours[e]: (f, the two must have opposite flips).  An edge with more
   // than two elements is a junction (a stiffener, a folded plate) and does
-  // not tie the orientations; an edge with one is on the boundary.
+  // not tie the orientations.  An edge with one is on the boundary.
   std::vector<std::vector<std::pair<Index, bool>>> neighbours(ne);
   std::vector<char> on_boundary(ne, 0), at_junction(ne, 0);
   for (const auto & [key, users] : edges)
@@ -725,7 +719,7 @@ Mesh::orientSurface(const std::vector<Point> * preferred)
                            "A shell needs a surface with two sides.");
       }
     // Choose the side: outward on a closed surface (the enclosed volume
-    // sum x.n dA / 3 positive); on an open one the largest component of the
+    // sum x.n dA / 3 positive).  On an open one the largest component of the
     // summed normal positive, or, when the normals cancel (an open tube),
     // outward from the centroid of the part.
     bool closed = true;
@@ -1004,6 +998,20 @@ Mesh::summary() const
   return os.str();
 }
 
+namespace
+{
+/// Add to out, the uniform refinement or the promotion of mesh, each node set of mesh grown by
+/// the added nodes between its members.  created maps the sorted parents of each added node to
+/// that node.
+void
+addGrownNodesets(const Mesh & mesh, Mesh & out, const std::map<std::vector<Index>, Index> & created)
+{
+  const std::vector<std::pair<std::vector<Index>, Index>> added(created.begin(), created.end());
+  for (const auto & [name, ids] : mesh.nodesets())
+    out.addNodeset(name, grownNodeset(mesh, out, ids, added));
+}
+} // namespace
+
 // ----------------------------------------------------------------------------
 // Promotion to second order
 // ----------------------------------------------------------------------------
@@ -1022,6 +1030,12 @@ Mesh::secondOrder(bool serendipity) const
     anything_to_do = anything_to_do || !elementIsQuadratic(el.type);
   if (!anything_to_do)
     return *this;
+  if (!_node_constraints.empty())
+    throw InputError("A mesh with hanging nodes cannot be promoted to second order: the new "
+                     "nodes on the sides that hold a hanging node would have no constraint, and "
+                     "the mesh would not conform. Promote the mesh to second order before "
+                     "adapting it. Bisection adapts quadratic triangles and tetrahedra, and "
+                     "subdivision adapts linear quadrilaterals and hexahedra only.");
 
   Mesh out(_dim);
   out._space_dim = _space_dim;
@@ -1065,7 +1079,7 @@ Mesh::secondOrder(bool serendipity) const
     std::vector<Index> nodes(el.nodes.begin(), el.nodes.begin() + nc);
     for (int k = nc; k < target_reference.numNodes(); ++k)
     {
-      // The new node sits at a point of the reference element; the corner
+      // The new node sits at a point of the reference element.  The corner
       // shape functions evaluated there give both the parents (those with a
       // non-zero weight) and the physical position.
       double N[kMaxElementNodes];
@@ -1085,25 +1099,225 @@ Mesh::secondOrder(bool serendipity) const
   }
 
   // The element and side numbering is unchanged, so the side sets carry over
-  // as they are; a quadratic side simply lists more nodes than its linear
+  // as they are.  A quadratic side lists more nodes than its linear
   // counterpart did.
   for (const auto & [name, sides] : _sidesets)
     out.addSideset(name, sides);
   // A node set gains the added nodes between its members (grownNodeset), so
   // that a boundary condition applied through a node set still covers the
   // whole boundary.
-  const std::vector<std::pair<std::vector<Index>, Index>> added(created.begin(), created.end());
-  for (const auto & [name, ids] : _nodesets)
-    out.addNodeset(name, grownNodeset(*this, out, ids, added));
+  addGrownNodesets(*this, out, created);
   return out;
 }
 
 // ----------------------------------------------------------------------------
 // Uniform refinement
 // ----------------------------------------------------------------------------
+namespace
+{
+/// Add the children of one linear element to the uniform refinement of its mesh.
+/// nodeFor(parents) returns the node at the mean of the parent nodes and adds it on first use.
+/// add(type, nodes) adds one child.
+template <class NodeFor, class Add>
+void
+subdivideElement(const Element & el, NodeFor && nodeFor, Add && add)
+{
+  const auto n = [&](int i) { return el.nodes[i]; };
+  switch (el.type)
+  {
+  case ElementType::Edge2:
+  {
+    Index m = nodeFor({n(0), n(1)});
+    add(el.type, {n(0), m});
+    add(el.type, {m, n(1)});
+    break;
+  }
+  case ElementType::Tri3:
+  {
+    Index m01 = nodeFor({n(0), n(1)}), m12 = nodeFor({n(1), n(2)}), m20 = nodeFor({n(2), n(0)});
+    add(el.type, {n(0), m01, m20});
+    add(el.type, {m01, n(1), m12});
+    add(el.type, {m20, m12, n(2)});
+    add(el.type, {m01, m12, m20});
+    break;
+  }
+  case ElementType::Quad4:
+  {
+    Index m01 = nodeFor({n(0), n(1)}), m12 = nodeFor({n(1), n(2)}), m23 = nodeFor({n(2), n(3)}),
+          m30 = nodeFor({n(3), n(0)}), c = nodeFor({n(0), n(1), n(2), n(3)});
+    add(el.type, {n(0), m01, c, m30});
+    add(el.type, {m01, n(1), m12, c});
+    add(el.type, {c, m12, n(2), m23});
+    add(el.type, {m30, c, m23, n(3)});
+    break;
+  }
+  case ElementType::Tet4:
+  {
+    Index m01 = nodeFor({n(0), n(1)}), m02 = nodeFor({n(0), n(2)}), m03 = nodeFor({n(0), n(3)}),
+          m12 = nodeFor({n(1), n(2)}), m13 = nodeFor({n(1), n(3)}), m23 = nodeFor({n(2), n(3)});
+    add(el.type, {n(0), m01, m02, m03});
+    add(el.type, {m01, n(1), m12, m13});
+    add(el.type, {m02, m12, n(2), m23});
+    add(el.type, {m03, m13, m23, n(3)});
+    add(el.type, {m01, m02, m03, m13});
+    add(el.type, {m01, m02, m12, m13});
+    add(el.type, {m02, m03, m13, m23});
+    add(el.type, {m02, m12, m13, m23});
+    break;
+  }
+  case ElementType::Hex8:
+  {
+    // Local grid of 27 points indexed by (i,j,k) in {0,1,2}.
+    static const int corner[8][3] = {
+        {0, 0, 0}, {2, 0, 0}, {2, 2, 0}, {0, 2, 0}, {0, 0, 2}, {2, 0, 2}, {2, 2, 2}, {0, 2, 2}};
+    const auto cornerId = [&](int i, int j, int k)
+    {
+      for (int c = 0; c < 8; ++c)
+        if (corner[c][0] == i && corner[c][1] == j && corner[c][2] == k)
+          return c;
+      return -1;
+    };
+    const auto gridNode = [&](int i, int j, int k) -> Index
+    {
+      // parents = corners spanned by the (i,j,k) position
+      std::vector<Index> parents;
+      for (int a : (i == 1 ? std::vector<int>{0, 2} : std::vector<int>{i}))
+        for (int b : (j == 1 ? std::vector<int>{0, 2} : std::vector<int>{j}))
+          for (int c : (k == 1 ? std::vector<int>{0, 2} : std::vector<int>{k}))
+            parents.push_back(n(cornerId(a, b, c)));
+      if (parents.size() == 1)
+        return parents[0];
+      return nodeFor(parents);
+    };
+    for (int k = 0; k < 2; ++k)
+      for (int j = 0; j < 2; ++j)
+        for (int i = 0; i < 2; ++i)
+        {
+          std::vector<Index> c;
+          for (int q = 0; q < 8; ++q)
+            c.push_back(gridNode(i + corner[q][0] / 2, j + corner[q][1] / 2, k + corner[q][2] / 2));
+          add(el.type, c);
+        }
+    break;
+  }
+  case ElementType::Wedge6:
+  {
+    // The triangle is refined into four and the height into two, giving
+    // eight prisms.  The nodes on the mid-height plane are the midpoints of
+    // the vertical edges and the centres of the quadrilateral faces.
+    const Index a = n(0), b = n(1), c = n(2), d = n(3), e = n(4), f = n(5);
+    const Index mab = nodeFor({a, b}), mbc = nodeFor({b, c}), mca = nodeFor({c, a});
+    const Index mde = nodeFor({d, e}), mef = nodeFor({e, f}), mfd = nodeFor({f, d});
+    const Index mad = nodeFor({a, d}), mbe = nodeFor({b, e}), mcf = nodeFor({c, f});
+    const Index qab = nodeFor({a, b, e, d}), qbc = nodeFor({b, c, f, e}),
+                qca = nodeFor({c, a, d, f});
+    const std::vector<std::array<Index, 3>> bottom = {
+        {a, mab, mca}, {mab, b, mbc}, {mca, mbc, c}, {mab, mbc, mca}};
+    const std::vector<std::array<Index, 3>> middle = {
+        {mad, qab, qca}, {qab, mbe, qbc}, {qca, qbc, mcf}, {qab, qbc, qca}};
+    const std::vector<std::array<Index, 3>> top = {
+        {d, mde, mfd}, {mde, e, mef}, {mfd, mef, f}, {mde, mef, mfd}};
+    for (int t = 0; t < 4; ++t)
+    {
+      add(el.type,
+          {bottom[t][0], bottom[t][1], bottom[t][2], middle[t][0], middle[t][1], middle[t][2]});
+      add(el.type, {middle[t][0], middle[t][1], middle[t][2], top[t][0], top[t][1], top[t][2]});
+    }
+    break;
+  }
+  case ElementType::Pyramid5:
+  {
+    // The standard subdivision of a pyramid: four half-size pyramids at the
+    // base corners, one at the apex, an inverted one between them, and four
+    // tetrahedra filling what is left.  The children are a mix of types, which
+    // the mesh allows.  Their volumes are 4 x 1/8 + 1/8 + 1/8 + 4 x 1/16 of
+    // the parent's.
+    Index v[4] = {n(0), n(1), n(2), n(3)};
+    const Index apex = n(4);
+    Index m[4], l[4];
+    for (int i = 0; i < 4; ++i)
+    {
+      m[i] = nodeFor({v[i], v[(i + 1) % 4]});
+      l[i] = nodeFor({v[i], apex});
+    }
+    const Index centre = nodeFor({v[0], v[1], v[2], v[3]});
+    for (int i = 0; i < 4; ++i)
+      add(ElementType::Pyramid5, {v[i], m[i], centre, m[(i + 3) % 4], l[i]});
+    add(ElementType::Pyramid5, {l[0], l[1], l[2], l[3], apex});
+    add(ElementType::Pyramid5, {l[0], l[3], l[2], l[1], centre});
+    for (int i = 0; i < 4; ++i)
+      add(ElementType::Tet4, {m[i], l[i], l[(i + 1) % 4], centre});
+    break;
+  }
+  default:
+    throw InputError("Uniform refinement is not implemented for " + elementTypeName(el.type) +
+                     " elements.");
+  }
+}
+
+/// Carry the side sets of a mesh over to its uniform refinement out: a child side is on a side
+/// set when it is exterior and lies on a parent side of the set.  children holds the children of
+/// each element, and created maps the sorted parents of each added node to that node.
+void
+transferSidesets(const Mesh & mesh,
+                 Mesh & out,
+                 const std::vector<std::vector<Index>> & children,
+                 const std::map<std::vector<Index>, Index> & created)
+{
+  std::map<std::vector<Index>, Side> child_lookup;
+  for (const auto & s : out.exteriorSides())
+  {
+    auto key = out.sideNodes(s);
+    std::sort(key.begin(), key.end());
+    child_lookup[key] = s;
+  }
+  // A node lies on a parent side when it is one of the side's nodes or was
+  // made from them only (every added node is made from nodes of the parent mesh).
+  std::vector<const std::vector<Index> *> made_from(out.numNodes(), nullptr);
+  for (const auto & [parents, id] : created)
+    made_from[id] = &parents;
+  const auto madeFromSide = [&](Index k, const std::vector<Index> & side_nodes)
+  {
+    const auto has = [&](Index n)
+    { return std::find(side_nodes.begin(), side_nodes.end(), n) != side_nodes.end(); };
+    if (!made_from[k])
+      return has(k);
+    return std::all_of(made_from[k]->begin(), made_from[k]->end(), has);
+  };
+  for (const auto & [name, sides] : mesh.sidesets())
+  {
+    std::vector<Side> list;
+    for (const auto & ps : sides)
+    {
+      const auto pn = mesh.sideNodes(ps);
+      for (Index c : children[ps.first])
+      {
+        const auto & ref = ReferenceElement::get(out.element(c).type);
+        for (int s = 0; s < ref.numSides(); ++s)
+        {
+          auto key = out.sideNodes({c, s});
+          const bool inside =
+              std::all_of(key.begin(), key.end(), [&](Index k) { return madeFromSide(k, pn); });
+          if (!inside)
+            continue;
+          std::sort(key.begin(), key.end());
+          if (child_lookup.count(key))
+            list.push_back({c, s});
+        }
+      }
+    }
+    out.addSideset(name, list);
+  }
+}
+} // namespace
+
 Mesh
 Mesh::refined() const
 {
+  if (!_node_constraints.empty())
+    throw InputError("A mesh with hanging nodes cannot be refined uniformly: the new nodes on the "
+                     "sides that hold a hanging node would have no constraint, and the mesh "
+                     "would not conform. Refine the mesh uniformly before adapting it.");
   for (const auto & el : _elements)
     if (elementIsQuadratic(el.type))
       throw InputError("Uniform refinement of a quadratic mesh is not supported directly. "
@@ -1133,197 +1347,21 @@ Mesh::refined() const
   for (Index e = 0; e < numElements(); ++e)
   {
     const auto & el = _elements[e];
-    const auto n = [&](int i) { return el.nodes[i]; };
-    const auto add = [&](ElementType t, const std::vector<Index> & c)
-    { children[e].push_back(out.addElement(t, c, el.block)); };
-    switch (el.type)
-    {
-    case ElementType::Edge2:
-    {
-      Index m = nodeFor({n(0), n(1)});
-      add(el.type, {n(0), m});
-      add(el.type, {m, n(1)});
-      break;
-    }
-    case ElementType::Tri3:
-    {
-      Index m01 = nodeFor({n(0), n(1)}), m12 = nodeFor({n(1), n(2)}), m20 = nodeFor({n(2), n(0)});
-      add(el.type, {n(0), m01, m20});
-      add(el.type, {m01, n(1), m12});
-      add(el.type, {m20, m12, n(2)});
-      add(el.type, {m01, m12, m20});
-      break;
-    }
-    case ElementType::Quad4:
-    {
-      Index m01 = nodeFor({n(0), n(1)}), m12 = nodeFor({n(1), n(2)}), m23 = nodeFor({n(2), n(3)}),
-            m30 = nodeFor({n(3), n(0)}), c = nodeFor({n(0), n(1), n(2), n(3)});
-      add(el.type, {n(0), m01, c, m30});
-      add(el.type, {m01, n(1), m12, c});
-      add(el.type, {c, m12, n(2), m23});
-      add(el.type, {m30, c, m23, n(3)});
-      break;
-    }
-    case ElementType::Tet4:
-    {
-      Index m01 = nodeFor({n(0), n(1)}), m02 = nodeFor({n(0), n(2)}), m03 = nodeFor({n(0), n(3)}),
-            m12 = nodeFor({n(1), n(2)}), m13 = nodeFor({n(1), n(3)}), m23 = nodeFor({n(2), n(3)});
-      add(el.type, {n(0), m01, m02, m03});
-      add(el.type, {m01, n(1), m12, m13});
-      add(el.type, {m02, m12, n(2), m23});
-      add(el.type, {m03, m13, m23, n(3)});
-      add(el.type, {m01, m02, m03, m13});
-      add(el.type, {m01, m02, m12, m13});
-      add(el.type, {m02, m03, m13, m23});
-      add(el.type, {m02, m12, m13, m23});
-      break;
-    }
-    case ElementType::Hex8:
-    {
-      // Local grid of 27 points indexed by (i,j,k) in {0,1,2}.
-      static const int corner[8][3] = {
-          {0, 0, 0}, {2, 0, 0}, {2, 2, 0}, {0, 2, 0}, {0, 0, 2}, {2, 0, 2}, {2, 2, 2}, {0, 2, 2}};
-      const auto cornerId = [&](int i, int j, int k)
-      {
-        for (int c = 0; c < 8; ++c)
-          if (corner[c][0] == i && corner[c][1] == j && corner[c][2] == k)
-            return c;
-        return -1;
-      };
-      const auto gridNode = [&](int i, int j, int k) -> Index
-      {
-        // parents = corners spanned by the (i,j,k) position
-        std::vector<Index> parents;
-        for (int a : (i == 1 ? std::vector<int>{0, 2} : std::vector<int>{i}))
-          for (int b : (j == 1 ? std::vector<int>{0, 2} : std::vector<int>{j}))
-            for (int c : (k == 1 ? std::vector<int>{0, 2} : std::vector<int>{k}))
-              parents.push_back(n(cornerId(a, b, c)));
-        if (parents.size() == 1)
-          return parents[0];
-        return nodeFor(parents);
-      };
-      for (int k = 0; k < 2; ++k)
-        for (int j = 0; j < 2; ++j)
-          for (int i = 0; i < 2; ++i)
-          {
-            std::vector<Index> c;
-            for (int q = 0; q < 8; ++q)
-              c.push_back(
-                  gridNode(i + corner[q][0] / 2, j + corner[q][1] / 2, k + corner[q][2] / 2));
-            add(el.type, c);
-          }
-      break;
-    }
-    case ElementType::Wedge6:
-    {
-      // The triangle is refined into four and the height into two, giving
-      // eight prisms.  The nodes on the mid-height plane are the midpoints of
-      // the vertical edges and the centres of the quadrilateral faces.
-      const Index a = n(0), b = n(1), c = n(2), d = n(3), e = n(4), f = n(5);
-      const Index mab = nodeFor({a, b}), mbc = nodeFor({b, c}), mca = nodeFor({c, a});
-      const Index mde = nodeFor({d, e}), mef = nodeFor({e, f}), mfd = nodeFor({f, d});
-      const Index mad = nodeFor({a, d}), mbe = nodeFor({b, e}), mcf = nodeFor({c, f});
-      const Index qab = nodeFor({a, b, e, d}), qbc = nodeFor({b, c, f, e}),
-                  qca = nodeFor({c, a, d, f});
-      const std::vector<std::array<Index, 3>> bottom = {
-          {a, mab, mca}, {mab, b, mbc}, {mca, mbc, c}, {mab, mbc, mca}};
-      const std::vector<std::array<Index, 3>> middle = {
-          {mad, qab, qca}, {qab, mbe, qbc}, {qca, qbc, mcf}, {qab, qbc, qca}};
-      const std::vector<std::array<Index, 3>> top = {
-          {d, mde, mfd}, {mde, e, mef}, {mfd, mef, f}, {mde, mef, mfd}};
-      for (int t = 0; t < 4; ++t)
-      {
-        add(el.type,
-            {bottom[t][0], bottom[t][1], bottom[t][2], middle[t][0], middle[t][1], middle[t][2]});
-        add(el.type, {middle[t][0], middle[t][1], middle[t][2], top[t][0], top[t][1], top[t][2]});
-      }
-      break;
-    }
-    case ElementType::Pyramid5:
-    {
-      // The standard subdivision of a pyramid: four half-size pyramids at the
-      // base corners, one at the apex, an inverted one between them, and four
-      // tetrahedra filling what is left.  The children are a mix of types, which
-      // the mesh allows; their volumes are 4 x 1/8 + 1/8 + 1/8 + 4 x 1/16 of
-      // the parent's.
-      Index v[4] = {n(0), n(1), n(2), n(3)};
-      const Index apex = n(4);
-      Index m[4], l[4];
-      for (int i = 0; i < 4; ++i)
-      {
-        m[i] = nodeFor({v[i], v[(i + 1) % 4]});
-        l[i] = nodeFor({v[i], apex});
-      }
-      const Index centre = nodeFor({v[0], v[1], v[2], v[3]});
-      for (int i = 0; i < 4; ++i)
-        add(ElementType::Pyramid5, {v[i], m[i], centre, m[(i + 3) % 4], l[i]});
-      add(ElementType::Pyramid5, {l[0], l[1], l[2], l[3], apex});
-      add(ElementType::Pyramid5, {l[0], l[3], l[2], l[1], centre});
-      for (int i = 0; i < 4; ++i)
-        add(ElementType::Tet4, {m[i], l[i], l[(i + 1) % 4], centre});
-      break;
-    }
-    default:
-      throw InputError("Uniform refinement is not implemented for " + elementTypeName(el.type) +
-                       " elements.");
-    }
+    subdivideElement(el,
+                     nodeFor,
+                     [&](ElementType t, const std::vector<Index> & c)
+                     { children[e].push_back(out.addElement(t, c, el.block)); });
   }
-  // The subdivisions above keep the orientation of the parent for every child
-  // except possibly the tetrahedra of a pyramid, whose vertex order depends on
-  // the parent's; one pass of the orientation check settles all of them.  A
+  // The subdivisions keep the orientation of the parent for every child except
+  // possibly the tetrahedra of a pyramid, whose vertex order depends on the
+  // parent's.  One pass of the orientation check settles all of them.  A
   // surface keeps the orientation its elements were given (a generator's
   // outward normals), which every subdivision preserves.
   if (spaceDimension() == _dim)
     out.fixOrientation();
 
-  // Side sets: child sides that are exterior and lie on a parent side.
-  std::map<std::vector<Index>, Side> child_lookup;
-  for (const auto & s : out.exteriorSides())
-  {
-    auto key = out.sideNodes(s);
-    std::sort(key.begin(), key.end());
-    child_lookup[key] = s;
-  }
-  // A node lies on a parent side when it is one of the side's nodes or was
-  // made from them only (every added node is made from nodes of this mesh).
-  std::vector<const std::vector<Index> *> made_from(out.numNodes(), nullptr);
-  for (const auto & [parents, id] : created)
-    made_from[id] = &parents;
-  const auto onSide = [&](Index k, const std::vector<Index> & side_nodes)
-  {
-    const auto has = [&](Index n)
-    { return std::find(side_nodes.begin(), side_nodes.end(), n) != side_nodes.end(); };
-    if (!made_from[k])
-      return has(k);
-    return std::all_of(made_from[k]->begin(), made_from[k]->end(), has);
-  };
-  for (const auto & [name, sides] : _sidesets)
-  {
-    std::vector<Side> list;
-    for (const auto & ps : sides)
-    {
-      const auto pn = sideNodes(ps);
-      for (Index c : children[ps.first])
-      {
-        const auto & ref = ReferenceElement::get(out._elements[c].type);
-        for (int s = 0; s < ref.numSides(); ++s)
-        {
-          auto key = out.sideNodes({c, s});
-          const bool inside =
-              std::all_of(key.begin(), key.end(), [&](Index k) { return onSide(k, pn); });
-          if (!inside)
-            continue;
-          std::sort(key.begin(), key.end());
-          if (child_lookup.count(key))
-            list.push_back({c, s});
-        }
-      }
-    }
-    out.addSideset(name, list);
-  }
-  const std::vector<std::pair<std::vector<Index>, Index>> added(created.begin(), created.end());
-  for (const auto & [name, ids] : _nodesets)
-    out.addNodeset(name, grownNodeset(*this, out, ids, added));
+  transferSidesets(*this, out, children, created);
+  addGrownNodesets(*this, out, created);
   return out;
 }
 

@@ -63,6 +63,7 @@ The solution
    Problem.sample_gradient
    Problem.gradient_at_centroids
    Problem.property_at_centroids
+   Problem.property_at_points
    Problem.kernel_flux_at_centroids
    Problem.element_field
    Problem.maximum
@@ -87,6 +88,7 @@ and ``flow_rate`` of :class:`~dualmesh.physics.FluidDynamics`, and
    Problem.integrate
    Problem.element_integrals
    Problem.element_volumes
+   Problem.node_measures
    Problem.block_volume
    Problem.domain_volume
    Problem.boundary_area
@@ -142,6 +144,7 @@ Mesh entities and variables
    :toctree: generated/
 
    Problem.mesh
+   Problem.method
    Problem.node_coordinates
    Problem.nodes_where
    Problem.node_at
@@ -170,6 +173,7 @@ methods work on the whole mesh, on every process.
    Problem.gathered_values
    Problem.set_gathered_values
    Problem.gathered_node_coordinates
+   Problem.gathered_node_measures
    Problem.gathered_error_indicator
    Problem.gathered_velocities
    Problem.set_gathered_velocities

@@ -35,6 +35,7 @@ from pathlib import Path
 import dualmesh
 import numpy
 import pytest
+from dualmesh._core import InputError
 
 _example = (
     Path(__file__).resolve().parents[2]
@@ -100,6 +101,8 @@ def measure(problem):
         "nusselt": -problem.boundary_flux("temperature", "left"),
         "u_max": float(numpy.nanmax(u)),
         "v_max": float(numpy.nanmax(v)),
+        "u_max_height": float(s[numpy.nanargmax(u)]),
+        "v_max_position": float(s[numpy.nanargmax(v)]),
     }
 
 
@@ -119,6 +122,9 @@ def test_natural_convection_matches_de_vahl_davis(method, Rayleigh_number):
     assert computed["nusselt"] == pytest.approx(reference["nusselt"], rel=5e-3)
     assert computed["u_max"] == pytest.approx(reference["u_max"], rel=2e-2)
     assert computed["v_max"] == pytest.approx(reference["v_max"], rel=2e-2)
+    # The buoyancy lifts the fluid at the hot left wall, which then flows right along the top.
+    # A buoyancy of the wrong sign mirrors the flow, with the same maxima and Nusselt number.
+    assert computed["v_max_position"] < 0.5 and computed["u_max_height"] > 0.5
     # Energy balance: the heat entering through the hot wall leaves through
     # the cold one, because the top and bottom are adiabatic.
     assert -problem.boundary_flux("temperature", "right") == pytest.approx(
@@ -159,3 +165,34 @@ def test_natural_convection_without_streamline_stabilisation_of_the_heat(method)
     assert computed["nusselt"] == pytest.approx(reference["nusselt"], rel=2e-3)
     assert computed["u_max"] == pytest.approx(reference["u_max"], rel=1e-2)
     assert computed["v_max"] == pytest.approx(reference["v_max"], rel=1e-2)
+
+
+@pytest.mark.parametrize(
+    "flow_density, gravity, message",
+    [
+        (0.0, [0.0, -1.0], "needs the density of the fluid"),
+        (1.0, [0.0, -1.0, 0.0], "gravity has 3 components and the flow 2 velocities"),
+        (1.0, [-1.0], "gravity has 1 components and the flow 2 velocities"),
+    ],
+)
+def test_a_buoyancy_without_the_density_or_a_gravity_per_velocity_is_refused(
+    flow_density, gravity, message
+):
+    """The buoyancy force rho beta (T - T_0) g takes the density of the fluid and one component
+    of gravity per velocity: a Stokes flow without its density, or a gravity of another length
+    than the velocity, is refused."""
+    mesh = dualmesh.generate_rectangle_mesh(0, 1, 0, 1, 2, 2)
+    problem = dualmesh.Problem(mesh)
+    flow = problem.add_physics("fluid_dynamics", density=flow_density, dynamic_viscosity=1.0)
+    heat = problem.add_physics(
+        "heat_conduction", thermal_conductivity=1.0, density=1.0, specific_heat=1.0
+    )
+    problem.add_coupling(
+        "nonisothermal_flow",
+        heat_conduction=heat,
+        fluid_dynamics=flow,
+        gravity=gravity,
+        volumetric_expansion_coefficient=1.0,
+    )
+    with pytest.raises(InputError, match=message):
+        problem.solve(report="none")

@@ -41,57 +41,13 @@ _MESHIO_TO_DUALMESH = {
     "hexahedron27": "Hex27",
 }
 _DUALMESH_TO_MESHIO = {v: k for k, v in _MESHIO_TO_DUALMESH.items()}
-_DIMENSION = {
-    "Edge2": 1,
-    "Edge3": 1,
-    "Tri3": 2,
-    "Quad4": 2,
-    "Tri6": 2,
-    "Quad8": 2,
-    "Quad9": 2,
-    "Tet4": 3,
-    "Hex8": 3,
-    "Wedge6": 3,
-    "Pyramid5": 3,
-    "Tet10": 3,
-    "Hex20": 3,
-    "Hex27": 3,
-}
-#: Element types whose nodes carry the quadratic interpolation.
-_QUADRATIC = {"Edge3", "Tri6", "Quad8", "Quad9", "Tet10", "Hex20", "Hex27"}
-#: The quadratic types reached by the serendipity promotion.
-_SERENDIPITY = {"Quad8", "Hex20"}
-#: The linear element with the same corners, for the generators, which build a
-#: linear mesh first and promote it afterwards.
-_CORNER_TYPE = {
-    "Edge3": "Edge2",
-    "Tri6": "Tri3",
-    "Quad8": "Quad4",
-    "Quad9": "Quad4",
-    "Tet10": "Tet4",
-    "Hex20": "Hex8",
-    "Hex27": "Hex8",
-}
-
-
-def _corner_type(element_type: str) -> str:
-    """The linear element a generator should build for a requested type."""
-    return _CORNER_TYPE.get(element_type, element_type)
 
 
 def _promote(mesh: Mesh, element_type: str) -> Mesh:
-    """Promote to second order when a quadratic element type was asked for."""
-    if element_type not in _QUADRATIC:
+    """Promote a linear mesh to second order when a quadratic element type was asked for."""
+    if not _core.element_is_quadratic(element_type):
         return mesh
-    return mesh.second_order(serendipity=element_type in _SERENDIPITY)
-
-
-def _meshio_permutation(element_type: str):
-    """The permutation between meshio's node order, which is VTK's, and
-    dualmesh's.  dualmesh follows VTK for every element, so this is the
-    identity; it is kept so that the reader and the writer have one place to
-    change should that ever stop being true."""
-    return Mesh.vtk_node_order(element_type)
+    return mesh.second_order(serendipity=_core.element_is_serendipity(element_type))
 
 
 def graded_coordinates(
@@ -230,7 +186,7 @@ def generate_rectangle_mesh(
     y_min, y_max = _bounds(y, y_min, y_max, "y", where)
     x = _axis_coordinates(x_coordinates, x_min, x_max, num_x_elements, x_bias, "x")
     y = _axis_coordinates(y_coordinates, y_min, y_max, num_y_elements, y_bias, "y")
-    linear = _core.generate_rectangle_mesh(x, y, _corner_type(element_type), diagonal)
+    linear = _core.generate_rectangle_mesh(x, y, _core.element_corner_type(element_type), diagonal)
     return _promote(linear, element_type)
 
 
@@ -279,55 +235,86 @@ def generate_box_mesh(
     x = _axis_coordinates(x_coordinates, x_min, x_max, num_x_elements, x_bias, "x")
     y = _axis_coordinates(y_coordinates, y_min, y_max, num_y_elements, y_bias, "y")
     z = _axis_coordinates(z_coordinates, z_min, z_max, num_z_elements, z_bias, "z")
-    linear = _core.generate_box_mesh(x, y, z, _corner_type(element_type))
+    linear = _core.generate_box_mesh(x, y, z, _core.element_corner_type(element_type))
     return _promote(linear, element_type)
 
 
 def generate_annulus_mesh(
-    inner_radius: float,
-    outer_radius: float,
-    num_radial_elements: int,
-    num_angular_elements: int,
+    inner_radius: float | None = None,
+    outer_radius: float | None = None,
+    num_radial_elements: int | None = None,
+    num_angular_elements: int | None = None,
     start_angle: float = 0.0,
     end_angle: float = 90.0,
     element_type: str = "Quad4",
     radial_bias: float = 1.0,
     radial_coordinates: Sequence[float] | None = None,
 ) -> Mesh:
-    """Mesh of an annular sector (angles in degrees, measured from the x axis).
+    """Mesh of an annular sector, with the angles in degrees from the x axis.
 
-    Side sets: ``"inner"`` (r = inner_radius), ``"outer"`` (r = outer_radius),
-    ``"start"`` (the start_angle edge) and ``"end"`` (the end_angle edge).
-    This is the mesh used for thick pressurized cylinders and for the classical
-    plate-with-a-hole problem.
+    The side sets are ``"inner"`` and ``"outer"``, the arcs of radius
+    ``inner_radius`` and ``outer_radius``, and ``"start"`` and ``"end"``, the
+    straight edges at ``start_angle`` and ``end_angle``.  The radii of the
+    nodes are ``radial_coordinates``, or ``inner_radius``, ``outer_radius``,
+    ``num_radial_elements`` and ``radial_bias``.  The radii are positive and
+    increase, and ``end_angle - start_angle`` is greater than 0 and at most
+    360.  A sector of 360 degrees keeps the nodes of its two straight edges
+    apart.
     """
-    radii = (
-        [float(r) for r in radial_coordinates]
-        if radial_coordinates is not None
-        else graded_coordinates(inner_radius, outer_radius, num_radial_elements, radial_bias)
+    where = "generate_annulus_mesh"
+    if radial_coordinates is not None:
+        if any(v is not None for v in (inner_radius, outer_radius, num_radial_elements)):
+            raise ValueError(
+                f"{where}: give radial_coordinates or (inner_radius, outer_radius, num_radial_elements), not both: the coordinates hold the radii and the elements."
+            )
+        if radial_bias != 1.0:
+            raise ValueError(
+                f"{where}: radial_bias grades the radii of inner_radius, outer_radius and num_radial_elements, and radial_coordinates hold the radii."
+            )
+        radii = [float(r) for r in radial_coordinates]
+    elif inner_radius is None or outer_radius is None or num_radial_elements is None:
+        raise ValueError(
+            f"{where}: give radial_coordinates or (inner_radius, outer_radius, num_radial_elements)."
+        )
+    else:
+        radii = graded_coordinates(inner_radius, outer_radius, num_radial_elements, radial_bias)
+    if len(radii) < 2 or not radii[0] > 0.0 or any(b <= a for a, b in zip(radii, radii[1:])):
+        raise ValueError(
+            f"{where}: the radii must be positive and increase, from the inner to the outer radius, got {radii}."
+        )
+    if num_angular_elements is None or int(num_angular_elements) != num_angular_elements:
+        raise ValueError(f"{where}: give num_angular_elements, a whole number of elements.")
+    if num_angular_elements < 1:
+        raise ValueError(
+            f"{where}: num_angular_elements must be at least 1, got {num_angular_elements}."
+        )
+    if not 0.0 < end_angle - start_angle <= 360.0:
+        raise ValueError(
+            f"{where}: end_angle - start_angle must be in (0, 360] degrees, got start_angle {start_angle} and end_angle {end_angle}."
+        )
+    angles = numpy.linspace(
+        numpy.radians(start_angle), numpy.radians(end_angle), int(num_angular_elements) + 1
     )
-    angle_start, angle_end = numpy.radians(start_angle), numpy.radians(end_angle)
-    angles = numpy.linspace(angle_start, angle_end, num_angular_elements + 1)
-    mesh = _core.generate_rectangle_mesh(radii, list(angles), _corner_type(element_type), "right")
-    # The promotion happens while the mesh is still a rectangle in the (r,
-    # theta) plane, so that the added mid-side nodes are mapped onto the true
-    # circle by the transformation below rather than onto the straight chord
-    # between their corners.  This is what makes a quadratic annulus mesh
-    # isoparametric: the element edges follow the boundary.
-    mesh = _promote(mesh, element_type)
-    mesh.transform_nodes(lambda r, theta, z: [r * numpy.cos(theta), r * numpy.sin(theta), 0.0])
-    mesh.fix_orientation()
-
-    # The rectangle generator produced the side sets in (r, theta) space;
-    # give them their geometric names.
-    for source, name in (
-        ("left", "inner"),
-        ("right", "outer"),
-        ("bottom", "start"),
-        ("top", "end"),
-    ):
-        mesh.alias_sideset(source, name)
-    return mesh
+    plane = _core.generate_rectangle_mesh(
+        radii, list(angles), _core.element_corner_type(element_type), "right"
+    )
+    # The promotion happens while the mesh is still a rectangle in the (r, theta) plane, so that
+    # the transformation below maps the mid-side nodes onto the circles, which makes a quadratic
+    # mesh isoparametric: the element edges follow the boundary.
+    plane = _promote(plane, element_type)
+    plane.transform_nodes(lambda r, theta, z: [r * numpy.cos(theta), r * numpy.sin(theta), 0.0])
+    plane.fix_orientation()
+    # The rectangle names its sides by the (r, theta) plane. The sector copies its nodes and
+    # elements and names the same sides by the geometry of the annulus.
+    sector = Mesh(2)
+    for point in plane.points():
+        sector.add_node([float(c) for c in point])
+    for cell_type, nodes, block in plane.cells():
+        sector.add_element(cell_type, list(nodes), block)
+    sides = (("left", "inner"), ("right", "outer"), ("bottom", "start"), ("top", "end"))
+    for source, name in sides:
+        sector.add_sideset_from_faces(name, plane.side_nodes(plane.sideset(source)))
+    return sector
 
 
 def _space_dimension(points, dim: int) -> int:
@@ -391,7 +378,7 @@ def mesh_from_arrays(
             raise ValueError("Give element_type when cells is a plain connectivity array.")
         cell_groups = [(element_type, numpy.asarray(cells, dtype=numpy.int64))]
 
-    dim = max(_DIMENSION[t] for t, _ in cell_groups)
+    dim = max(_core.element_dimension(t) for t, _ in cell_groups)
     space = _space_dimension(points, dim)
     if dimension is not None:
         if not dim <= dimension <= 3:
@@ -435,7 +422,7 @@ def read_mesh(
     volume_types = {}
     for block in m.cells:
         if block.type in _MESHIO_TO_DUALMESH:
-            volume_types[block.type] = _DIMENSION[_MESHIO_TO_DUALMESH[block.type]]
+            volume_types[block.type] = _core.element_dimension(_MESHIO_TO_DUALMESH[block.type])
     if not volume_types:
         raise ValueError(
             f"{filename}: no supported cells found. dualmesh supports "
@@ -463,12 +450,12 @@ def read_mesh(
         tags = None
         if tag_arrays is not None and block_index < len(tag_arrays):
             tags = numpy.asarray(tag_arrays[block_index]).ravel()
-        permutation = _meshio_permutation(element_type)
-        if _DIMENSION[element_type] == dim:
+        element_dimension = _core.element_dimension(element_type)
+        if element_dimension == dim:
             for row_index, row in enumerate(block.data):
                 block_id = int(tags[row_index]) if tags is not None else 0
-                mesh.add_element(element_type, [int(row[k]) for k in permutation], block_id)
-        elif _DIMENSION[element_type] == dim - 1:
+                mesh.add_element(element_type, [int(i) for i in row], block_id)
+        elif element_dimension == dim - 1:
             for row_index, row in enumerate(block.data):
                 tag = int(tags[row_index]) if tags is not None else 0
                 # A side is identified by its node set, so its order is
@@ -511,9 +498,8 @@ def write_mesh(mesh: Mesh, filename: str, file_format: str | None = None, **poin
     cells: dict[str, list[list[int]]] = {}
     blocks: dict[str, list[int]] = {}
     for element_type, connectivity, block in mesh.cells():
-        permutation = _meshio_permutation(element_type)
         kind = _DUALMESH_TO_MESHIO[element_type]
-        cells.setdefault(kind, []).append([int(connectivity[k]) for k in permutation])
+        cells.setdefault(kind, []).append([int(i) for i in connectivity])
         blocks.setdefault(kind, []).append(block)
     meshio_mesh = meshio.Mesh(
         points=numpy.asarray(mesh.points()),

@@ -2,8 +2,8 @@
 
 import numpy
 
-from dualmesh.console import suggestion
-from dualmesh.input.units import input_error
+from dualmesh._core import InputError
+from dualmesh.parameters import suggestion
 
 
 class results:
@@ -32,17 +32,18 @@ class results:
         Every field varies in time as u e^(-lambda t), so a vibration has the imaginary
         eigenvalues lambda = i omega, with omega the angular frequency in rad/s."""
         if self._study is None:
-            raise input_error("the results of a steady or transient run hold no eigenvalues.")
+            raise InputError("the results of a steady or transient run hold no eigenvalues.")
         return numpy.asarray(self._study.eigenvalues)
 
     @property
     def frequencies(self) -> numpy.ndarray:
         """The natural frequencies f = |Im lambda| / (2 pi) in Hz of a vibration, a problem whose
-        only time term is a second time derivative."""
+        only time term is a second time derivative and in which no term uses eigenvalue."""
         if self._study is None or not self._study.vibration:
-            raise input_error(
+            raise InputError(
                 "natural frequencies belong to a vibration, an eigenvalue study whose only time "
-                "term is a second time derivative, and these results are not one."
+                "term is a second time derivative and in which no term uses eigenvalue, and these "
+                "results are not one."
             )
         return self._study.frequencies
 
@@ -88,5 +89,5 @@ class results:
     @staticmethod
     def _known(name: str, names, what: str) -> str:
         if name not in names:
-            raise input_error(f"the results hold no {what} '{name}'." + suggestion(name, names))
+            raise InputError(f"the results hold no {what} '{name}'." + suggestion(name, names))
         return name

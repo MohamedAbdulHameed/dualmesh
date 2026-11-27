@@ -234,7 +234,8 @@ Solver (MUMPS) [Amestoy2001]_ when PETSc has it, on one process and on
 several.  MUMPS pivots, so it factorises the saddle point systems of the
 Taylor-Hood element, which have zeros on the diagonal.  Without MUMPS, the solver
 takes PETSc's own lower-upper (LU) factorisation on one process, which does
-not pivot, and block Jacobi with incomplete LU on several processes.  A
+not pivot, and refuses a direct solve on several processes with an
+``InputError`` that names MUMPS.  A
 direct solve that you choose with ``-pc_type lu`` also takes MUMPS, unless
 ``-pc_factor_mat_solver_type`` names another package.
 
@@ -584,12 +585,17 @@ first one.  The input names of ``step_control.by`` are in brackets.
    problem without a time derivative measures the change of every variable.
 
 ``"fixed"`` (``fixed``)
-   The step stays at ``time_step``.  The last step shortens to end exactly at
-   ``end_time``, and a step shortens to land on an output time.  A step that
-   fails to converge is retried at ``cutback_factor`` times its size, and the
-   steps after it grow by ``growth_factor`` each until they reach
-   ``time_step`` again.  Use this stepper when the steps themselves matter,
-   such as in a study of the convergence in the step.
+   The step stays at ``time_step``, and the steps land on every output time
+   and on ``end_time``.  A target less than one step away takes one step,
+   and a target less than two steps away takes two equal steps, each between
+   half a step and a full one, so no short step is left before the target.
+   A step that fails to converge is retried at ``cutback_factor`` times its
+   size, and the steps after it grow by ``growth_factor`` each until they
+   reach ``time_step`` again.  Every step has the size ``time_step`` only
+   when ``time_step`` divides each interval between the start, the output
+   times and ``end_time``.  Use this stepper with such a ``time_step`` when
+   the steps themselves matter, such as in a study of the convergence in the
+   step.
 
 ``"iteration"`` (``iterations``)
    The step follows the number of nonlinear iterations of the last step.  A

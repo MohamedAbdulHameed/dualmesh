@@ -277,20 +277,22 @@ The side sets are ``left`` and ``right`` (normal to :math:`x`), ``bottom`` and `
        radial_bias=0.85,
    )
    print(annulus.sideset_names())
-   # ['bottom', 'end', 'inner', 'left', 'outer', 'right', 'start', 'top']
+   # ['end', 'inner', 'outer', 'start']
 
 The annulus generator meshes a sector of an annulus, such as a thick cylinder under pressure or a
 quarter plate with a central hole. ``inner_radius`` and ``outer_radius`` bound the sector, and
 ``num_radial_elements`` cuts the radial span. ``start_angle`` and ``end_angle`` are in degrees
-from the :math:`x` axis, with defaults of 0 and 90. ``num_angular_elements`` cuts the arc into
-equal angles. ``radial_bias`` grades the radial direction, and ``radial_coordinates`` gives the
-radii of the nodes instead. ``element_type`` takes the five types of the rectangle generator.
+from the :math:`x` axis, with defaults of 0 and 90, and their difference is at most 360.
+``num_angular_elements`` cuts the arc into equal angles. ``radial_bias`` grades the radial
+direction. ``radial_coordinates`` gives the radii of the nodes in place of ``inner_radius``,
+``outer_radius``, ``num_radial_elements`` and ``radial_bias``. The radii must be positive.
+``element_type`` takes the five types of the rectangle generator.
 
 The side sets ``inner``, ``outer``, ``start`` (the straight edge at ``start_angle``) and ``end``
-name the edges of the sector. The generator maps a rectangle in the plane of the radius and the
-angle onto the sector, and the rectangle's names ``left``, ``right``, ``bottom`` and ``top`` stay
-as second names of the same edges. The generator promotes a quadratic mesh before the mapping, so
-the mid-side nodes of a ``Quad9`` annulus lie on the circles. :ref:`transforming` explains why
+name the edges of the sector. A sector of 360 degrees keeps the nodes of ``start`` and ``end``
+apart. The generator maps a rectangle in the plane of the radius and the angle onto the sector,
+and promotes a quadratic mesh before the mapping, so the mid-side nodes of a ``Quad9`` annulus
+lie on the circles. :ref:`transforming` explains why
 the order matters.
 
 .. _surface-meshes:
@@ -671,6 +673,7 @@ so the conditions of the coarse mesh apply to the fine one, and the original mes
 
    quadratic = fine.second_order()
    print(quadratic.element_type(0), quadratic.num_elements, quadratic.num_nodes)  # Quad9 16 81
+   print(quadratic.element_types())  # {'Quad9'}, the types that the mesh holds
 
 :meth:`~dualmesh.Mesh.refined` refuses a quadratic mesh. Refine the linear mesh, and then promote
 the result.

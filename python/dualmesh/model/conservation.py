@@ -28,16 +28,11 @@ general form of the engine, for FEM and DMCDM.
 """
 
 import dataclasses
-import importlib
 
-from dualmesh.input.units import base, input_error
+from dualmesh._core import InputError
+from dualmesh.model import calculus, dimensions, graph
+from dualmesh.units import base
 
-# The modules are loaded by their full name. The package dualmesh.model binds
-# the names `expression` and `differentiate` to the class and the function of
-# the same name, which hides the modules of those names.
-graph = importlib.import_module("dualmesh.model.expression")
-dimensions = importlib.import_module("dualmesh.model.dimensions")
-differentiation = importlib.import_module("dualmesh.model.differentiate")
 dimension_error = dimensions.dimension_error
 # The number zero stands for a term the law does not have.
 is_absent = dimensions.is_zero
@@ -46,14 +41,6 @@ length = base("length")
 time_dimension = base("time")
 cell_term = "cell"
 cell_term_parts = ("storage", "inertia", "flux", "source")
-
-
-def sorted_unique_by_name(nodes) -> list:
-    """Return nodes sorted by name, one node per name."""
-    by_name = {}
-    for node in sorted(nodes, key=lambda node: (node.name, repr(node.value))):
-        by_name.setdefault(node.name, node)
-    return [by_name[name] for name in sorted(by_name)]
 
 
 class conservation_law:
@@ -72,12 +59,12 @@ class conservation_law:
         flux_name: str | None = None,
     ):
         if not isinstance(name, str) or not name.isidentifier():
-            raise input_error(
+            raise InputError(
                 f"the name of a conservation law must be a word of letters, digits "
                 f"and underscores, got {name!r}"
             )
         if not isinstance(unknown, graph.expression) or unknown.kind != "field":
-            raise input_error(
+            raise InputError(
                 f"the unknown of conservation law '{name}' must be a field, got {unknown!r}"
             )
         self.name = name
@@ -89,7 +76,7 @@ class conservation_law:
         self.state_rates = {}
         for state_node, rate in (state_rates or {}).items():
             if not isinstance(state_node, graph.expression) or state_node.kind != "state":
-                raise input_error(
+                raise InputError(
                     f"conservation law '{name}': each key of state_rates must be a state, "
                     f"got {state_node!r}"
                 )
@@ -101,7 +88,7 @@ class conservation_law:
                 or not boundary_flux_name.isidentifier()
                 or boundary_flux_name == cell_term
             ):
-                raise input_error(
+                raise InputError(
                     f"conservation law '{name}': a boundary flux name must be a word "
                     f"other than '{cell_term}', got {boundary_flux_name!r}"
                 )
@@ -109,33 +96,10 @@ class conservation_law:
         if flux_name is not None and (
             not isinstance(flux_name, str) or not flux_name.isidentifier()
         ):
-            raise input_error(
+            raise InputError(
                 f"conservation law '{name}': the flux name must be a word, got {flux_name!r}"
             )
         self.flux_name = flux_name
-
-    def substitute(self, replacements: dict) -> "conservation_law":
-        """Return a copy of this law with every key of replacements replaced by its value.
-
-        The unknown and the states stay. Each term is checked again as it is rebuilt.
-        """
-
-        def replaced(node):
-            return graph.substitute(node, replacements)
-
-        return conservation_law(
-            self.name,
-            self.unknown,
-            storage=replaced(self.storage),
-            inertia=replaced(self.inertia),
-            flux=replaced(self.flux),
-            source=replaced(self.source),
-            state_rates={
-                state_node: replaced(rate) for state_node, rate in self.state_rates.items()
-            },
-            boundary_fluxes={name: replaced(node) for name, node in self.boundary_fluxes.items()},
-            flux_name=self.flux_name,
-        )
 
     @staticmethod
     def term_expression(value):
@@ -146,26 +110,19 @@ class conservation_law:
         """Return every expression of the cell term: storage, inertia, flux, source and state rates."""
         return [self.storage, self.inertia, self.flux, self.source, *self.state_rates.values()]
 
-    def term_expressions(self, term: str) -> list:
-        """Return the expressions of term, which is "cell" or a boundary flux name."""
-        if term == cell_term:
-            return self.cell_expressions()
-        if term not in self.boundary_fluxes:
-            known = ", ".join([cell_term, *self.boundary_fluxes])
-            raise input_error(
-                f"conservation law '{self.name}' has no term '{term}'. Its terms are {known}"
-            )
-        return [self.boundary_fluxes[term]]
-
-    def terms(self) -> list[str]:
-        """Return "cell", then the boundary flux names in sorted order."""
-        return [cell_term, *sorted(self.boundary_fluxes)]
-
     def check(self) -> None:
         """Raise dimension_error when the ranks or dimensions of the terms disagree.
 
-        Raise input_error when a term reads a state that has no rate in state_rates.
+        Raise InputError when a term reads a state that has no rate in state_rates.
         """
+        self._check_states_read()
+        rate_dimensions = self._term_rate_dimensions()
+        self._check_state_rates()
+        if rate_dimensions:
+            self._check_boundary_fluxes(next(iter(rate_dimensions.values())) * length)
+
+    def _check_states_read(self) -> None:
+        """Raise InputError when a term or a boundary flux reads a state with no rate."""
         with_rate = {state_node.name for state_node in self.state_rates}
         read = {
             node.name
@@ -176,10 +133,14 @@ class conservation_law:
         }
         without_rate = sorted(read - with_rate)
         if without_rate:
-            raise input_error(
+            raise InputError(
                 f"conservation law '{self.name}' reads the state {', '.join(without_rate)} "
                 f"with no rate. Give each state its rate in state_rates"
             )
+
+    def _term_rate_dimensions(self) -> dict:
+        """Return the dimension of the source that each present cell term gives, the rate of the
+        conserved amount, after checking the rank of each term and that the dimensions agree."""
         unknown_rank = self.unknown.rank
         expected_rank = {
             "storage": unknown_rank,
@@ -187,7 +148,6 @@ class conservation_law:
             "flux": unknown_rank + 1,
             "source": unknown_rank,
         }
-        # Each present term gives the dimension of the source, the rate of the conserved amount.
         rate_dimensions = {}
         for part in cell_term_parts:
             node = getattr(self, part)
@@ -215,6 +175,11 @@ class conservation_law:
                 f"conservation law '{self.name}': the terms disagree in dimension. The storage over time, "
                 f"the inertia over time squared, the flux over length and the source must agree, but {listed}"
             )
+        return rate_dimensions
+
+    def _check_state_rates(self) -> None:
+        """Raise dimension_error when the rate of a state has not its rank, or not its
+        dimension over time."""
         for state_node, rate in self.state_rates.items():
             if rate.rank != state_node.rank:
                 raise dimension_error(
@@ -226,9 +191,11 @@ class conservation_law:
                     f"conservation law '{self.name}': the rate of state '{state_node.name}' has the dimension "
                     f"{rate.dimension}, but the state over time has {state_node.dimension / time_dimension}"
                 )
-        if not rate_dimensions:
-            return
-        flux_dimension = next(iter(rate_dimensions.values())) * length
+
+    def _check_boundary_fluxes(self, flux_dimension) -> None:
+        """Raise dimension_error when a boundary flux has not the rank of the unknown, or not
+        flux_dimension, the dimension of the flux of the law."""
+        unknown_rank = self.unknown.rank
         for flux_name, boundary_flux in self.boundary_fluxes.items():
             if is_absent(boundary_flux):
                 continue
@@ -249,26 +216,9 @@ class conservation_law:
             found |= graph.leaves(node)
         return found
 
-    def fields_of(self, expressions) -> list[str]:
-        """Return the unknown name first, then the names of the other fields that expressions read, sorted."""
-        names = {node.name for node in self.leaves_of(expressions) if node.kind == "field"}
-        names.discard(self.unknown.name)
-        return [self.unknown.name, *sorted(names)]
-
-    def fields(self) -> list[str]:
-        """Return the unknown first, then every other field that any term reads, sorted."""
-        return self.fields_of(self.cell_expressions() + list(self.boundary_fluxes.values()))
-
     def states(self) -> list:
         """Return the state nodes, sorted by name."""
         return sorted(self.state_rates, key=lambda node: node.name)
-
-    def constants(self, term: str) -> list:
-        """Return the constants of term, "cell" or a boundary flux name, sorted by name."""
-        expressions = self.term_expressions(term)
-        return sorted_unique_by_name(
-            node for node in self.leaves_of(expressions) if node.kind == "constant"
-        )
 
     def components(self, space_dimension: int) -> list:
         """Return the scalar terms of each scalar component of the unknown, in a space of
@@ -292,11 +242,11 @@ class conservation_law:
             if node is None:
                 return None
             if node.kind != "antiderivative":
-                raise input_error(
+                raise InputError(
                     f"conservation law '{self.name}': the {what} '{node}' is lowered as the "
                     f"antiderivative of its coefficient only"
                 )
-            return differentiation.differentiate(node, leaf)
+            return calculus.differentiate(node, leaf)
 
         result = []
         for leaf, storage, inertia, flux, source in zip(
@@ -313,7 +263,7 @@ class conservation_law:
                 source = None
             capacity = None
             if storage is not None and storage.kind == "antiderivative":
-                capacity, storage = differentiation.differentiate(storage, leaf), None
+                capacity, storage = calculus.differentiate(storage, leaf), None
             result.append(
                 scalar_terms(
                     unknown=leaf,

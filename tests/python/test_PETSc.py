@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import dualmesh
 import pytest
+from helpers import lid_driven_cavity_conditions
 
 
 def _cavity(problem, Reynolds_number=50.0, formulation="equal_order"):
@@ -17,15 +18,7 @@ def _cavity(problem, Reynolds_number=50.0, formulation="equal_order"):
         density=Reynolds_number,
         formulation=formulation,
     )
-    problem.add_boundary_condition("Dirichlet", "top", variable="velocity_x", value=1.0)
-    problem.add_boundary_condition("Dirichlet", "top", variable="velocity_y", value=0.0)
-    for variable in ("velocity_x", "velocity_y"):
-        problem.add_boundary_condition(
-            "Dirichlet",
-            ["left", "right", "bottom"],
-            variable=variable,
-            value=0.0,
-        )
+    lid_driven_cavity_conditions(problem)
 
 
 @pytest.mark.parametrize("method", ["fem", "dmcdm"])

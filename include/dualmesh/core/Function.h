@@ -68,18 +68,4 @@ private:
   int _axis;
 };
 
-/// Polynomial in time multiplied by a spatial function: g(t) * f(x).
-class ProductFunction : public Function
-{
-public:
-  ProductFunction(FunctionPtr a, FunctionPtr b) : _a(std::move(a)), _b(std::move(b)) {}
-  double value(const Point & x, double t) const override
-  {
-    return _a->value(x, t) * _b->value(x, t);
-  }
-
-private:
-  FunctionPtr _a, _b;
-};
-
 } // namespace dualmesh

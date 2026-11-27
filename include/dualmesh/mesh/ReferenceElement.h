@@ -198,6 +198,9 @@ struct QuadratureSpec
   /// integration, used to avoid shear/membrane locking and for penalty terms).
   bool reduced = false;
 
+  /// The rule that a quadrature name gives: automatic, gauss1 to gauss20, midpoint, trapezoid,
+  /// simpson, nodal, interface or control_domain_trapezoid, matched with case.  Throws InputError
+  /// for any other name.
   static QuadratureSpec parse(const std::string & text, bool reduced = false);
   std::string str() const;
   bool operator<(const QuadratureSpec & o) const

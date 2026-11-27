@@ -277,7 +277,8 @@ The flux through a face shared by two control domains leaves one and enters the
 other, so DMCDM conserves the balanced quantity in every control domain.
 
 Without a ``method``, a problem with a ``fluid_dynamics`` of the
-``equal_order`` formulation takes DMCDM, and every other problem takes FEM.
+``equal_order`` formulation takes DMCDM, with any solid or heat conduction
+beside the flow, and every other problem takes FEM.
 The ``method`` section, or a ``method`` key of a physics or of a model, chooses the method,
 and one problem takes one method.  DMCDM refuses the serendipity elements
 ``Quad8`` and ``Hex20`` and the pyramid ``Pyramid5``, for which the code builds

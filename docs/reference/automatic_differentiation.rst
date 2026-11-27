@@ -5,7 +5,8 @@ Automatic differentiation
 
 An object written in Python computes with :class:`ADReal` numbers, which
 carry their derivatives with respect to the unknowns.  The functions below
-act on these numbers and carry the derivatives through.
+act on these numbers and carry the derivatives through.  The operator ``**``
+raises a number or an :class:`ADReal` number to a power.
 
 .. autosummary::
    :toctree: generated/
@@ -23,4 +24,3 @@ act on these numbers and carry the derivatives through.
    cos
    tanh
    abs
-   pow

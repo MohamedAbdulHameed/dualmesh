@@ -207,7 +207,7 @@ Messages
 ~~~~~~~~
 
 Every key is checked before the solve starts. A wrong input raises
-``dualmesh.input_error`` with a message that starts with the path of the key,
+``dualmesh.InputError`` with a message that starts with the path of the key,
 such as ``properties.thermal_conductivity``. A misspelled key or name comes
 with the nearest valid one.
 
@@ -274,7 +274,7 @@ Standard names
 Every field, property and boundary quantity has a standard name with a fixed
 unit and shape. The input takes the unit of a name from this vocabulary, so a
 property is written ``density: 7850 kg/m^3`` without a separate unit key. The
-vocabulary is the file ``python/dualmesh/input/standard_names.toml``.
+vocabulary is the file ``python/dualmesh/standard_names.toml``.
 
 .. list-table:: The standard names
    :header-rows: 1
@@ -501,14 +501,9 @@ A formula of a property or of a boundary value calls these functions:
    * - ``less(a, b)``, ``greater(a, b)``
      - the conditions :math:`a < b` and :math:`a > b`, for two values of
        the same dimension
-   * - ``conditional(c, a, b)``, or ``if(c, a, b)``
+   * - ``conditional(c, a, b)``
      - ``a`` where the condition ``c`` holds and ``b`` elsewhere, with ``a``
        and ``b`` of the same dimension
-
-``if`` is the short spelling of ``conditional``. The tensor functions have short
-spellings too: ``sym`` for ``symmetric``, ``dev`` for ``deviatoric``, ``det``
-for ``determinant`` and ``ddot`` for ``inner``. Each short spelling means the
-same function as its long one.
 
 The input checks the dimension of every formula against the unit of its key.
 A sum, ``max``, ``min``, ``hypot``, ``atan2``, a comparison and the two
@@ -751,7 +746,8 @@ A physics or a model can also name it with its own key ``method``. A problem
 takes one method, so the input refuses two different methods at the second.
 
 Without a method, a problem with a ``fluid_dynamics`` of the ``equal_order``
-formulation takes DMCDM, and every other problem takes FEM.
+formulation takes DMCDM, with any solid or heat conduction beside the flow,
+and every other problem takes FEM.
 
 .. code-block:: yaml
 
@@ -959,7 +955,14 @@ The input couples its physics from the physics and the properties it holds:
 - ``heat_conduction`` with ``solid_mechanics`` and the properties
   ``linear_expansion_coefficient`` and ``stress_free_temperature`` gives a
   thermal expansion of the solid. The solve takes the two properties
-  together, and refuses them without ``heat_conduction``.
+  together, and refuses them without ``heat_conduction``. The thermal strain
+  is :math:`\alpha(T)\,(T - T_0)` in every direction, with :math:`\alpha` the
+  ``linear_expansion_coefficient`` in :math:`\mathrm{K^{-1}}`, :math:`T` the
+  temperature in K and :math:`T_0` the ``stress_free_temperature`` in K.
+  :math:`\alpha(T)` is the secant (mean) coefficient between :math:`T_0` and
+  :math:`T`, so a formula such as
+  ``"[1.0e-5 1/K] + [4.0e-9 1/K^2]*temperature"`` gives the strain of a
+  coefficient that grows with the temperature.
 - ``heat_conduction`` with ``fluid_dynamics`` gives a heated flow, which
   carries the heat.
 - A heated flow under gravity takes the Boussinesq buoyancy
@@ -1017,7 +1020,8 @@ vocabulary, so a ``unit`` key on a standard name is refused.
    * - ``linear_expansion_coefficient``
      - ``1/K``
      - ``solid_mechanics`` with ``heat_conduction``, when given
-     - one constant
+     - one constant or one formula of ``temperature``, the other fields
+       and the coordinates
    * - ``stress_free_temperature``
      - ``K``
      - ``solid_mechanics`` with ``heat_conduction``, when given
@@ -1524,8 +1528,10 @@ boundary conditions are zero in a mode. Both keys are optional.
 
 ``near``
    The value that the eigenvalues are closest to, in the unit of
-   :math:`\lambda`. Default 0, so the study finds the slowest modes, or the
-   smallest :math:`\lambda`.
+   :math:`\lambda`, or the angular frequency :math:`\omega` in
+   :math:`\mathrm{rad/s}` that the modes of a vibration are closest to.
+   Default 0, so the study finds the slowest modes, or the smallest
+   :math:`|\lambda|`.
 
 The eigenvalues of a cooling body, whose time term is the storage of heat,
 are its rates of decay. A vibration is a problem whose only time term is an
@@ -1596,9 +1602,10 @@ A steady run solves, marks and adapts in cycles through
 solution of the last mesh. The cycles stop when no marked cell can be refined
 further, or after :math:`4 d\,n_\mathrm{max} + 1` cycles, with :math:`d` the
 dimension of the mesh and :math:`n_\mathrm{max}` the maximum refinement
-level. A transient run adapts the mesh after every ``interval`` accepted steps
-and goes on from the time reached, with the solution carried to the new mesh
-and the step that the controller chose. :doc:`/user_guide/adaptivity`
+level. A transient run adapts the mesh through
+:func:`~dualmesh.solve_transient_with_adaptive_refinement` after every
+``interval`` accepted steps, and goes on from the time reached, with the
+solution carried to the new mesh and the step that the controller chose. :doc:`/user_guide/adaptivity`
 describes adaptive refinement.
 
 .. code-block:: yaml

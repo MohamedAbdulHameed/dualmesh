@@ -816,7 +816,8 @@ same on several processes (``tests/cpp/parallel_tests.cpp``):
 * plane elasticity and a gap between bodies on different processes, to a
   relative :math:`10^{-8}` and :math:`10^{-9}`,
 * a transient run restarted from its checkpoint on another partition, to
-  :math:`10^{-12}` after ten steps,
+  :math:`10^{-12}` after ten steps, and refused on a mesh with the same numbers
+  of nodes and elements whose nodes moved or were numbered in reverse,
 * the projection time integration of the Taylor-Green vortex, to
   :math:`10^{-7}` in the velocity and the pressure.
 

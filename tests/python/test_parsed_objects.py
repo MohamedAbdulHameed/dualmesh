@@ -12,6 +12,7 @@ from __future__ import annotations
 import dualmesh
 import numpy
 import pytest
+from dualmesh._core import InputError
 
 
 def test_the_expression_evaluates_arrays_and_names_its_errors():
@@ -24,6 +25,21 @@ def test_the_expression_evaluates_arrays_and_names_its_errors():
         e(a=1.0, x=1.0, b=2.0)
     with pytest.raises(Exception, match="the variables are a and x"):
         dualmesh.Expression("a + y", ["a", "x"])
+
+
+def test_a_name_already_in_use_is_refused_for_a_function_or_a_parameter():
+    """Objects resolve the functions they name at setup, so a function is never replaced."""
+    p = dualmesh.Problem(dualmesh.generate_line_mesh(0.0, 1.0, 4))
+    p.add_variable("temperature")
+    p.add_function("k", 2.0)
+    with pytest.raises(InputError, match="already a registered function"):
+        p.add_function("k", 3.0)
+    with pytest.raises(InputError, match="already a registered function"):
+        p.add_parameter("k", 3.0)
+    with pytest.raises(InputError, match="already a variable"):
+        p.add_function("temperature", 1.0)
+    with pytest.raises(InputError, match="already a variable"):
+        p.add_parameter("temperature", 1.0)
 
 
 def _conduction(conductivity):
@@ -182,6 +198,42 @@ def test_parsed_eigenstrain_matches_thermal_expansion(strain_type):
     u = _free_bar(parsed)
     assert u == pytest.approx(_free_bar(built_in), rel=1e-10)
     assert u == pytest.approx(numpy.full(3, alpha * (800.0 - t0)), rel=1e-8)
+
+
+def test_a_stress_free_state_refuses_an_expression_that_reads_a_property():
+    """The shift evaluates the expression with the temperature at its stress-free value, and a
+    property of the temperature that the expression reads keeps its value at the current
+    temperature: alpha(T) T - alpha(T) T0 in place of alpha(T) T - alpha(T0) T0.  The input is
+    refused, and the same strain written in one expression gives the closed form."""
+    t0 = 300.0
+
+    def through_a_property(p):
+        p.add_property("parsed", property_name="alpha", expression="1e-5 + 1e-8*temperature")
+        p.add_property(
+            "parsed_eigenstrain",
+            expression="alpha * temperature",
+            strain_type="linear",
+            eigenstrain_name="expansion",
+            stress_free_state={"temperature": t0},
+        )
+
+    with pytest.raises(InputError, match="with 'stress_free_state' the expression reads no"):
+        _free_bar(through_a_property)
+
+    def in_one_expression(p):
+        p.add_property(
+            "parsed_eigenstrain",
+            expression="(1e-5 + 1e-8*temperature) * temperature",
+            strain_type="linear",
+            eigenstrain_name="expansion",
+            stress_free_state={"temperature": t0},
+        )
+
+    def alpha(t):
+        return 1e-5 + 1e-8 * t
+
+    strain = alpha(800.0) * 800.0 - alpha(t0) * t0
+    assert _free_bar(in_one_expression) == pytest.approx(numpy.full(3, strain), rel=1e-8)
 
 
 def test_an_axial_parsed_eigenstrain_stretches_only_along_the_axis():

@@ -12,8 +12,8 @@ import csv
 import dualmesh
 import numpy
 import pytest
+from dualmesh._core import InputError
 from dualmesh.input import schema
-from dualmesh.input.units import input_error
 
 
 def test_a_graded_segment_that_starts_at_its_origin_has_cells_in_the_ratio_of_its_grading():
@@ -54,7 +54,7 @@ def test_a_graded_rectangle_grades_each_axis_by_its_own_ratio():
 
 
 def test_an_axisymmetric_mesh_that_starts_below_the_axis_is_refused():
-    with pytest.raises(input_error, match=r"mesh\.rectangle\.origin: .*r = 0 m"):
+    with pytest.raises(InputError, match=r"mesh\.rectangle\.origin: .*r = 0 m"):
         dualmesh.problem(
             mesh={
                 "rectangle": {"size": ["1 m", "1 m"], "cells": [2, 2], "origin": ["-1 m", "0 m"]},
@@ -113,7 +113,7 @@ def test_a_line_without_the_output_section_is_refused(tmp_path, monkeypatch):
     slab = conducting_slab(tmp_path, monkeypatch)
     tree = slab.to_tree()
     del tree["output"]
-    with pytest.raises(input_error, match=r"postprocessors\.across: .*output section"):
+    with pytest.raises(InputError, match=r"postprocessors\.across: .*output section"):
         schema.validate(tree)
 
 
@@ -172,9 +172,9 @@ def test_planes_of_symmetry_of_a_channel_let_a_uniform_flow_slip(method):
 def test_symmetry_takes_no_other_condition_on_its_boundary():
     slab = dualmesh.problem(mesh={"segment": {"length": "1 m", "cells": 2}})
     slab.boundary_conditions("left", "symmetry")
-    with pytest.raises(input_error, match=r"boundary_conditions\.left: the word symmetry"):
+    with pytest.raises(InputError, match=r"boundary_conditions\.left: the word symmetry"):
         slab.boundary_conditions("left", temperature="300 K")
-    with pytest.raises(input_error, match=r"boundary_conditions\.right: .*the word symmetry"):
+    with pytest.raises(InputError, match=r"boundary_conditions\.right: .*the word symmetry"):
         slab.boundary_conditions("right", "symetry")
 
 
@@ -196,7 +196,7 @@ def test_the_eigenvalues_of_a_cooling_rod_are_its_decay_rates():
     exact = diffusivity * (numpy.arange(1, 4) * numpy.pi / 0.1) ** 2
     # Linear elements with the consistent capacity overestimate lambda_n by (n pi h / L)^2 / 12.
     assert numpy.sort(numpy.real(solution.eigenvalues)) == pytest.approx(exact, rel=1e-3)
-    with pytest.raises(input_error, match="natural frequencies belong to a vibration"):
+    with pytest.raises(InputError, match="natural frequencies belong to a vibration"):
         _ = solution.frequencies
 
 
@@ -223,11 +223,11 @@ def test_the_natural_frequencies_of_a_bar_are_those_of_its_axial_waves():
 def test_an_eigenvalue_study_takes_no_time_section_and_no_postprocessors():
     rod = dualmesh.problem(mesh={"segment": {"length": "1 m", "cells": 4}})
     rod.eigenvalues(count=2, near="1 1/s")
-    with pytest.raises(input_error, match=r"^time: an eigenvalue study"):
+    with pytest.raises(InputError, match=r"^time: an eigenvalue study"):
         rod.time(end_time="1 s", initial_time_step="0.1 s")
-    with pytest.raises(input_error, match=r"postprocessors\.hot: .*no postprocessors"):
+    with pytest.raises(InputError, match=r"postprocessors\.hot: .*no postprocessors"):
         rod.postprocessor("hot", maximum="temperature")
-    with pytest.raises(input_error, match=r"initial_conditions: an eigenvalue study"):
+    with pytest.raises(InputError, match=r"initial_conditions: an eigenvalue study"):
         rod.initial_conditions(temperature="300 K")
 
 
@@ -288,7 +288,7 @@ def test_an_eigenvalue_with_a_storage_is_a_rate(method):
 
 def test_an_eigenvalue_outside_the_source_or_the_study_is_refused():
     slab = slab_core("FEM")
-    with pytest.raises(input_error, match=r"models\.neutrons\.source: .*eigenvalues section"):
+    with pytest.raises(InputError, match=r"models\.neutrons\.source: .*eigenvalues section"):
         slab.solve(report="none")
     slab.model(
         "neutrons",
@@ -297,9 +297,9 @@ def test_an_eigenvalue_outside_the_source_or_the_study_is_refused():
         source="-absorption*neutron_flux",
     )
     slab.eigenvalues(count=1)
-    with pytest.raises(input_error, match=r"models\.neutrons\.flux: .*in the source of a model"):
+    with pytest.raises(InputError, match=r"models\.neutrons\.flux: .*in the source of a model"):
         slab.solve(report="none")
-    with pytest.raises(input_error, match=r"properties\.eigenvalue: .*other than"):
+    with pytest.raises(InputError, match=r"properties\.eigenvalue: .*other than"):
         slab.properties(eigenvalue={"unit": "1", "value": 1.0})
 
 
@@ -324,7 +324,7 @@ def test_an_initial_temperature_given_by_a_formula_starts_the_run():
 
 def test_an_initial_condition_reads_the_coordinates_only():
     slab = dualmesh.problem(mesh={"segment": {"length": "1 m", "cells": 2}})
-    with pytest.raises(input_error, match=r"initial_conditions\.temperature: .*reads time"):
+    with pytest.raises(InputError, match=r"initial_conditions\.temperature: .*reads time"):
         slab.initial_conditions(temperature="[300 K] + [1 K/s]*time")
 
 
@@ -384,7 +384,7 @@ def test_a_plastic_solid_at_finite_strain_is_refused_with_the_limit():
     block.physics("solid_mechanics", formulation="plane_strain", kinematics="finite")
     block.properties(Young_modulus="200 GPa", Poisson_ratio=0.3, yield_stress="250 MPa")
     block.boundary_conditions("left", "symmetry")
-    with pytest.raises(input_error, match=r"properties\.yield_stress: a plastic solid .*small"):
+    with pytest.raises(InputError, match=r"properties\.yield_stress: a plastic solid .*small"):
         block.solve(report="none")
 
 
@@ -420,9 +420,9 @@ def test_the_traction_over_a_boundary_is_the_load_there_and_the_reaction_of_a_su
 def test_a_traction_needs_a_solid_and_takes_the_components_of_the_mesh():
     slab = conducting_slab_problem()
     slab.postprocessor("force", boundary_flux="traction_x", boundary="left")
-    with pytest.raises(input_error, match=r"postprocessors\.force: .*needs solid_mechanics"):
+    with pytest.raises(InputError, match=r"postprocessors\.force: .*needs solid_mechanics"):
         slab.solve(report="none")
-    with pytest.raises(input_error, match=r"postprocessors\.force\.boundary_flux: "):
+    with pytest.raises(InputError, match=r"postprocessors\.force\.boundary_flux: "):
         slab.postprocessor("force", boundary_flux="traction_z", boundary="left")
 
 
@@ -452,5 +452,5 @@ def test_the_von_Mises_stress_of_a_pulled_bar(method, formulation, factor):
 def test_a_von_Mises_stress_is_a_value_at_points():
     bar = pulled_bar("FEM", "plane_stress")
     bar.postprocessor("largest", maximum="von_Mises_stress")
-    with pytest.raises(input_error, match=r"postprocessors\.largest: a stress is available at"):
+    with pytest.raises(InputError, match=r"postprocessors\.largest: a stress is available at"):
         bar.solve(report="none")

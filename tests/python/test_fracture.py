@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
-"""Fracture mechanics: the J-integral and the stress intensity factors of a crack tip."""
+"""Fracture mechanics: the J-integral and the stress intensity factors of a crack tip, and
+phase-field fracture with its tension and compression split."""
 
 from __future__ import annotations
 
@@ -125,3 +126,43 @@ def test_phase_field_damage_of_a_uniform_bar_is_the_closed_form_and_does_not_hea
             expected = peak_damage
         assert damage == pytest.approx(expected, rel=1e-9)
         assert stress == pytest.approx((1 - expected) ** 2 * e1 * strain, rel=1e-9)
+
+
+def test_the_strain_split_of_Miehe_damages_a_plate_in_tension_and_not_in_compression():
+    """A plate in plane strain held at its top and bottom, stretched or compressed along x to
+    the uniaxial strain e = +-1e-3: the principal strains are e and 0.  The split of Miehe,
+    Welschinger and Hofacker (2010, Int. J. Numer. Meth. Engng 83, 1273) degrades only the energy
+    of the positive principal strains and of a positive trace, psi+ = mu <e>^2 + Lame_lambda/2
+    <e>^2 with <e> = max(e, 0), and the history H = max psi+ drives the damage (Miehe, Hofacker
+    and Welschinger 2010, Comput. Methods Appl. Mech. Engrg 199, 2765).  The uniform damage is the
+    root of the AT2 equation (Gc/l) d = 2 (1 - d) H without its gradient term, d = 2 H / (Gc/l +
+    2 H).  In tension H = (Lame_lambda/2 + mu) e^2 and the stress sigma_xx = (1 - d)^2
+    (Lame_lambda + 2 mu) e is degraded.  In compression H = 0, so the damage stays zero and the
+    plate keeps its full stiffness, sigma_xx = (Lame_lambda + 2 mu) e."""
+    e1, G_c, length, strain = 1e9, 100.0, 0.01, 1e-3
+    Lame_lambda = e1 * nu / ((1 + nu) * (1 - 2 * nu))
+    shear_modulus = e1 / (2 * (1 + nu))
+    for sign in (1.0, -1.0):
+        problem = dualmesh.Problem(dualmesh.generate_rectangle_mesh(0, 1, 0, 1, 2, 2))
+        solid = problem.add_physics(
+            "solid_mechanics",
+            formulation="plane_strain",
+            youngs_modulus=e1,
+            poissons_ratio=nu,
+            phase_field_fracture={"toughness": G_c, "length": length},
+        )
+        solid.add_boundary_condition("disp_x = 0", boundary="left")
+        solid.add_boundary_condition("disp_y = 0", boundary=["bottom", "top"])
+        solid.add_boundary_condition(f"disp_x = {sign * strain!r}*t", boundary="right")
+        problem.solve_transient(end_time=1.0, time_step=0.5, time_stepper="fixed", report="none")
+        e = sign * strain
+        H = (Lame_lambda / 2 + shear_modulus) * max(e, 0.0) ** 2
+        damage = 2 * H / (G_c / length + 2 * H)
+        assert problem.property_at_centroids("fracture_driving_energy")[:, 0] == pytest.approx(
+            H, rel=1e-9, abs=1e-12 * Lame_lambda * strain**2
+        )
+        assert problem.values("damage") == pytest.approx(damage, rel=1e-9, abs=1e-12)
+        stress = problem.property_at_centroids("stress")
+        assert stress[:, 0] == pytest.approx(
+            (1 - damage) ** 2 * (Lame_lambda + 2 * shear_modulus) * e, rel=1e-9
+        )

@@ -361,27 +361,37 @@ control volume method the rule is part of the discretization: a lumped source
 and a Gauss-integrated source are two discretizations of the same equation.
 The rules are one-dimensional rules applied as tensor products on each patch of
 a control domain, an interface or an element, except where a symmetric rule for
-the whole element is cheaper (below).  The names are matched without regard to
-case.
+the whole element is cheaper (below).  The names are case-sensitive.
 
 ``gauss1`` to ``gauss20``
     Gauss-Legendre with that many points per direction, exact for polynomials
-    of degree :math:`2n - 1` with :math:`n` the number of points.  ``gauss``
-    alone means ``gauss2``.
+    of degree :math:`2n - 1` with :math:`n` the number of points.
 
-``midpoint`` (alias ``centroid``)
+``midpoint``
     One point at the centre of the patch, the same rule as ``gauss1``.
 
-``trapezoid`` (alias ``trapezoidal``) and ``simpson``
+``trapezoid`` and ``simpson``
     The corner rule with the points :math:`\{-1, +1\}` and the weights
     :math:`\{1, 1\}`, and Simpson's rule with the points :math:`\{-1, 0, +1\}`
     and the weights :math:`\{\tfrac13, \tfrac43, \tfrac13\}`, per direction.
 
-``nodal`` (alias ``lumped``)
-    One point at the owning node.  Its weight is the measure of the node's
-    control domain in the element for DMCDM, and
-    :math:`\int_e N_a \, \mathrm{d}V` over the element :math:`e` for FEM, which
-    is row-sum lumping.  With it, a capacity or mass term is lumped.
+``nodal``
+    One point at the owning node :math:`a`, with the weight
+    :math:`\int_{\Omega_a \cap e} \mathrm{d}V` for DMCDM, the measure of the
+    control domain :math:`\Omega_a` of the node in the element :math:`e`, and
+    :math:`\int_e N_a \, \mathrm{d}V` for FEM, which is row-sum lumping.  With
+    it, a capacity or mass term is lumped.  The volume element is
+    :math:`\mathrm{d}V = \chi \, \mathrm{d}A`, with :math:`\chi` the coordinate factor
+    of :doc:`foundations` (1 in Cartesian coordinates, :math:`2 \pi r` in m in
+    axisymmetric and :math:`4 \pi r^2` in :math:`\mathrm{m^2}` in spherical
+    coordinates, with :math:`r` the radius in m) and :math:`\mathrm{d}A` the
+    measure element of the mesh, such as :math:`\mathrm{d}r \, \mathrm{d}z` on an
+    :math:`(r, z)` mesh.  The weight integrates :math:`\chi` over the element, so a
+    node on the axis :math:`r = 0` keeps a positive weight, which the factor at
+    the node alone would set to zero.  On ``Edge3``, ``Quad9`` and ``Hex27`` the
+    integrals of :math:`N_a` are positive.  On ``Tri6`` the integral of a corner
+    function is zero, and on ``Tet10``, ``Quad8`` and ``Hex20`` it is negative,
+    so FEM refuses ``nodal`` and ``interface`` on these four elements.
 
 ``interface``
     One point at the corner of the control domain nearest the element centroid,
@@ -392,7 +402,7 @@ case.
     measures.  The elements without control domains, ``Quad8``, ``Hex20`` and
     ``Pyramid5``, refuse this rule and ``control_domain_trapezoid``.
 
-``control_domain_trapezoid`` (alias ``cd_trapezoid``)
+``control_domain_trapezoid``
     The trapezoidal rule over the whole control domain.  For an interior node in
     one dimension it gives
     :math:`\tfrac{\Delta x}{2}\,[f(x_A) + f(x_B)]`, with :math:`f` the
@@ -401,7 +411,7 @@ case.
     half the weight at its interface and half at the node.  This is the
     classical source rule of the finite volume method.
 
-``automatic`` (alias ``auto``, the default)
+``automatic`` (the default)
     Gauss-Legendre with one more point per direction than the polynomial order
     of the mesh, which integrates a product of two shape functions exactly on
     an affine element: two points per direction on a linear mesh and three on a
@@ -421,8 +431,9 @@ Gauss rule exact to a given degree on the element needs one more point per
 direction on the collapsed patch, and the code adds it.  For FEM, which
 integrates over the whole element, a cheaper rule exists on triangles,
 tetrahedra and prisms: a symmetric rule whose points form orbits of the
-symmetry group of the simplex.  For :math:`n` from 1 to 3, ``gauss`` with
-:math:`n` points takes the symmetric rule exact to degree :math:`2n - 1`: 1, 6
+symmetry group of the simplex.  For :math:`n` from 1 to 3, the rule
+``gauss1``, ``gauss2`` or ``gauss3`` takes the symmetric rule exact to degree
+:math:`2n - 1`: 1, 6
 and 7 points on a triangle, the last two those of [Dunavant1985]_, 1, 8 and 15
 points on a tetrahedron, and on a prism the triangle rule times the Gauss rule
 along the prism axis.  These rules have positive weights and interior points.
@@ -431,8 +442,11 @@ along the prism axis.  These rules have positive weights and interior points.
 ``control_domain_trapezoid`` place their points by reference to a node-centred
 control domain, so they apply to volume terms.  On an interface between control
 domains they are replaced by ``gauss2``, and on an element side by ``gauss3``.
-On a side, ``nodal`` then gathers the points onto the node with their total area
-vector, so a constant flux through the side stays exact.
+On a side under DMCDM, these rules then gather the points of the part of the
+side in the control domain of each node onto the node, with their total area
+vector, so a constant flux through the side stays exact.  The gathered point is
+weighted by the measure of that part, with the coordinate factor integrated over
+it as in the volume.
 
 The accuracy on quadratic elements
 ----------------------------------

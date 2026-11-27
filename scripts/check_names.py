@@ -58,7 +58,7 @@ import tomllib
 repository = pathlib.Path(__file__).resolve().parent.parent
 # The directories that follow the rules so far; the others join as they are rewritten.
 source_directories = ("tests/python", "examples", "verification", "scripts")
-standard_names_file = repository / "python" / "dualmesh" / "input" / "standard_names.toml"
+standard_names_file = repository / "python" / "dualmesh" / "standard_names.toml"
 cpp_suffixes = {".h", ".cpp"}
 python_suffixes = {".py"}
 checked_file_suffixes = cpp_suffixes | python_suffixes | {".toml", ".yaml", ".yml"}

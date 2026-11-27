@@ -20,8 +20,6 @@ class Function;
 
 /// A mapping from names to numbers, such as the values of named constants.
 using RealMap = std::map<std::string, double>;
-/// A mapping from names to texts, such as the functions of named properties.
-using StringMap = std::map<std::string, std::string>;
 
 /// A value that an input parameter can hold.
 using ParameterValue = std::variant<std::monostate,
@@ -33,8 +31,7 @@ using ParameterValue = std::variant<std::monostate,
                                     std::vector<long>,
                                     std::vector<std::string>,
                                     std::shared_ptr<Function>,
-                                    RealMap,
-                                    StringMap>;
+                                    RealMap>;
 
 /// The kind of value a parameter is declared to take.
 enum class ParameterKind
@@ -44,16 +41,13 @@ enum class ParameterKind
   Real,
   String,
   RealList,
-  IntegerList,
   StringList,
   /// A constant, the name of a Function object, or a Function instance.
   Function,
   /// One name or a list of names, stored as a list (the variables of an object).
   Names,
   /// Names with a number each.
-  RealMap,
-  /// Names with a text each; a number given as a value is kept as its text.
-  StringMap
+  RealMap
 };
 
 std::string parameterKindName(ParameterKind kind);
@@ -97,6 +91,11 @@ public:
   /// An instance added without 'variable' is added once for every variable these parameters name.
   void setModelVariables(std::vector<std::string> names) { _model_variables = std::move(names); }
   const std::vector<std::string> & modelVariables() const { return _model_variables; }
+  /// Declare a nodal condition on the component of a vector normal to its boundary (a plane of
+  /// symmetry).  It is given every component in 'variable', in the order of the coordinate axes,
+  /// and a Problem adds it once, for the component along the axis normal to the boundary.
+  void setNormalComponent() { _normal_component = true; }
+  bool normalComponent() const { return _normal_component; }
 
   // ---- assignment (from Python) --------------------------------------------
   /// Assign a value; performs lenient conversions (int->real, scalar->list).
@@ -125,10 +124,8 @@ public:
   double getReal(const std::string & name) const;
   std::string getString(const std::string & name) const;
   std::vector<double> getRealList(const std::string & name) const;
-  std::vector<long> getIntList(const std::string & name) const;
   std::vector<std::string> getStringList(const std::string & name) const;
   RealMap getRealMap(const std::string & name) const;
-  StringMap getStringMap(const std::string & name) const;
   /// Raw access (Function-valued parameters are resolved by the Problem).
   const ParameterValue & getRaw(const std::string & name) const;
 
@@ -140,6 +137,7 @@ private:
   std::map<std::string, ParameterInfo> _params;
   std::string _class_description;
   std::vector<std::string> _model_variables;
+  bool _normal_component = false;
 };
 
 /// Error type used throughout dualmesh for user-facing input errors.

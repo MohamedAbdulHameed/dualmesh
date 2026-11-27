@@ -244,6 +244,21 @@ def test_control_domain_rules_refuse_elements_without_control_domains(quadrature
         problem.solve()
 
 
+@pytest.mark.parametrize(
+    "quadrature",
+    ["auto", "lumped", "trapezoidal", "Nodal", "GAUSS2", "gauss", "gauss02", "gauss21"],
+)
+def test_a_quadrature_outside_the_listed_names_is_refused(quadrature):
+    """The rules have one name each, matched with case, and a Gauss rule writes out its points
+    per direction from gauss1 to gauss20."""
+    mesh = dualmesh.generate_line_mesh(start=0.0, end=1.0, num_elements=2)
+    problem = dualmesh.Problem(mesh, method="fem")
+    problem.add_variable("u")
+    with pytest.raises(InputError, match="Unknown quadrature"):
+        problem.add_kernel("diffusion", variable="u", quadrature=quadrature)
+        problem.solve()
+
+
 def test_interface_rule_under_FEM_weights_each_node_by_its_shape_function():
     """-u'' = 2 with u(0) = u(1) = 0 has the solution u = x (1 - x).  Under the
     finite element method the interface rule weights its point by the integral
@@ -258,3 +273,81 @@ def test_interface_rule_under_FEM_weights_each_node_by_its_shape_function():
     problem.solve()
     x = numpy.linspace(0.0, 1.0, 9)
     assert problem.values("u") == pytest.approx(x * (1.0 - x), abs=1e-10)
+
+
+def _node_measures(mesh, method, coordinates):
+    """The node measures of the nodal (lumped) rule of a diffusion problem on the mesh."""
+    problem = dualmesh.Problem(mesh, method=method, coordinates=coordinates)
+    problem.add_variable("u")
+    problem.add_kernel("diffusion", variable="u")
+    return problem.node_coordinates(), problem.node_measures()
+
+
+@pytest.mark.parametrize("method", methods)
+@pytest.mark.parametrize("element_type", ["Quad4", "Tri3"])
+def test_the_lumped_measures_of_a_body_of_revolution_integrate_the_radius(method, element_type):
+    """The nodal rule on the cylinder 0 <= r <= 1, 0 <= z <= 1 in axisymmetric coordinates, whose
+    coordinate factor is 2 pi r: each node measure integrates 2 pi r over the region of the node,
+    so it is positive on the axis r = 0, where the factor at the node is zero, and the measures
+    sum to int 2 pi r dr dz = 2 pi * 1/2 = pi.
+
+    On the Quad4 grid of spacing h = k = 1/4, the control domain of the node (r, z) under DMCDM
+    is the rectangle [r_lo, r_hi] x [z_lo, z_hi], with r_lo = max(0, r - h/2),
+    r_hi = min(1, r + h/2) and the same in z, so its measure is
+    pi (r_hi^2 - r_lo^2) (z_hi - z_lo).  Under FEM the shape function of the node is the
+    product L(r) M(z) of two hat functions, and its measure is 2 pi R Z with Z = int M dz, which
+    is k inside and k/2 at z = 0 and z = 1, and R = int L r dr.  On an element [r0, r0 + h] the
+    hat of the node at r0 gives int_0^h (1 - s/h)(r0 + s) ds = r0 h/2 + h^2/6, and that of the
+    node at r0 + h gives r0 h/2 + h^2/3.  So R = r h for a node inside, h^2/6 on the axis and
+    h/2 - h^2/6 at r = 1."""
+    n = 4
+    h = 1.0 / n
+    mesh = dualmesh.generate_rectangle_mesh(0, 1, 0, 1, n, n, element_type=element_type)
+    points, measures = _node_measures(mesh, method, "axisymmetric")
+    r, z = points[:, 0], points[:, 1]
+    assert numpy.all(measures > 0)
+    assert numpy.all(measures[numpy.isclose(r, 0.0)] > 0)
+    assert measures.sum() == pytest.approx(numpy.pi, rel=1e-12)
+    if element_type != "Quad4":
+        return
+    if method == "dmcdm":
+        r_lo, r_hi = numpy.maximum(0, r - h / 2), numpy.minimum(1, r + h / 2)
+        z_lo, z_hi = numpy.maximum(0, z - h / 2), numpy.minimum(1, z + h / 2)
+        expected = numpy.pi * (r_hi**2 - r_lo**2) * (z_hi - z_lo)
+    else:
+        outer = numpy.where(numpy.isclose(r, 1.0), h / 2 - h**2 / 6, r * h)
+        R = numpy.where(numpy.isclose(r, 0.0), h**2 / 6, outer)
+        Z = numpy.where(numpy.isclose(z, 0.0) | numpy.isclose(z, 1.0), h / 2, h)
+        expected = 2 * numpy.pi * R * Z
+    assert measures == pytest.approx(expected, rel=1e-12)
+
+
+@pytest.mark.parametrize("method", methods)
+def test_the_lumped_measures_of_a_sphere_integrate_the_square_of_the_radius(method):
+    """The nodal rule on the ball 0 <= r <= 1 in spherical coordinates, whose coordinate factor
+    is 4 pi r^2: each node measure integrates 4 pi r^2 over the region of the node, so the centre
+    keeps a positive measure, and the measures sum to the volume 4 pi / 3.  Under DMCDM the
+    control domain [r_lo, r_hi] of a node has the measure 4 pi (r_hi^3 - r_lo^3) / 3.  Under FEM
+    the measure is int L 4 pi r^2 dr with L the hat function of the node, which the test
+    integrates with the four-point Gauss-Legendre rule, exact for this cubic on each element."""
+    n = 5
+    mesh = dualmesh.generate_line_mesh(start=0.0, end=1.0, num_elements=n)
+    points, measures = _node_measures(mesh, method, "spherical")
+    r = points[:, 0]
+    assert numpy.all(measures > 0)
+    assert measures.sum() == pytest.approx(4 * numpy.pi / 3, rel=1e-12)
+    h = 1.0 / n
+    if method == "dmcdm":
+        r_lo, r_hi = numpy.maximum(0, r - h / 2), numpy.minimum(1, r + h / 2)
+        expected = 4 * numpy.pi * (r_hi**3 - r_lo**3) / 3
+    else:
+        s, w = numpy.polynomial.legendre.leggauss(4)
+        expected = numpy.zeros_like(r)
+        for i, node in enumerate(r):
+            for start in (node - h, node):
+                if start < -1e-12 or start + h > 1 + 1e-12:
+                    continue
+                x = start + h * (s + 1) / 2
+                hat = 1 - numpy.abs(x - node) / h
+                expected[i] += numpy.sum(w * hat * 4 * numpy.pi * x**2) * h / 2
+    assert measures == pytest.approx(expected, rel=1e-12)

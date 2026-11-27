@@ -2,7 +2,7 @@
 #include "dualmesh/mesh/Bisection.h"
 
 #include "dualmesh/core/InputParameters.h"
-#include "dualmesh/fe/ReferenceElement.h"
+#include "dualmesh/mesh/ReferenceElement.h"
 
 #include <Eigen/Dense>
 
@@ -18,6 +18,62 @@ namespace
 /// nodes of Tri6 and Tet10.
 const int triangle_edges[3][2] = {{0, 1}, {1, 2}, {2, 0}};
 const int tetrahedron_edges[6][2] = {{0, 1}, {1, 2}, {0, 2}, {0, 3}, {1, 3}, {2, 3}};
+
+/// The relative difference under which two edge lengths tie.
+constexpr double kLengthTieTolerance = 1e-12;
+/// The steps per tetrahedron after which the refinement of tetrahedra stops with an error.
+constexpr std::size_t kStepsPerTetrahedron = 1000;
+/// The tolerance on the barycentric coordinates of a node inside an element.
+constexpr double kBarycentricTolerance = 1e-10;
+
+/// Whether the edge @p edge of length @p length is longer than the edge @p best of length
+/// @p best_length.  Ties go to the larger node numbers, so that the choice does not depend on
+/// rounding.
+bool
+longerEdge(double length,
+           const std::pair<Index, Index> & edge,
+           double best_length,
+           const std::pair<Index, Index> & best)
+{
+  const double scale = std::max(length, best_length);
+  return length > best_length + kLengthTieTolerance * scale ||
+         (std::abs(length - best_length) <= kLengthTieTolerance * scale && edge > best);
+}
+
+/// The cells around each of @p num_points nodes, by their index in @p cells.
+template <class Cell>
+std::vector<std::vector<std::size_t>>
+cellsAroundNodes(const std::vector<Cell> & cells, std::size_t num_points)
+{
+  std::vector<std::vector<std::size_t>> around(num_points);
+  for (std::size_t t = 0; t < cells.size(); ++t)
+    for (Index n : cells[t].n)
+      around[n].push_back(t);
+  return around;
+}
+
+/// Replace the @p removed cells by the merged @p parents, which go last.  The kept cells keep their
+/// marks of @p carried, and the parents take none.
+template <class Cell>
+void
+replaceMerged(std::vector<Cell> & cells,
+              const std::vector<char> & removed,
+              const std::vector<Cell> & parents,
+              std::vector<char> & carried)
+{
+  std::vector<Cell> kept;
+  std::vector<char> marks;
+  for (std::size_t t = 0; t < cells.size(); ++t)
+    if (!removed[t])
+    {
+      kept.push_back(cells[t]);
+      marks.push_back(carried[t]);
+    }
+  kept.insert(kept.end(), parents.begin(), parents.end());
+  cells = std::move(kept);
+  marks.resize(cells.size(), 0);
+  carried = std::move(marks);
+}
 } // namespace
 
 Bisection::Bisection(const Mesh & initial)
@@ -61,19 +117,14 @@ Bisection::Bisection(const Mesh & initial)
       _tetrahedra.push_back(t);
       continue;
     }
-    // The longest edge first, by a rotation of the nodes, which keeps the orientation.  Ties go
-    // to the larger node numbers, so that the choice does not depend on rounding.
+    // The longest edge first, by a rotation of the nodes, which keeps the orientation.
     int first = 0;
     for (int i = 1; i < 3; ++i)
-    {
-      const double l = length(el.nodes[i], el.nodes[(i + 1) % 3]);
-      const double best = length(el.nodes[first], el.nodes[(first + 1) % 3]);
-      const double scale = std::max(l, best);
-      if (l > best + 1e-12 * scale || (std::abs(l - best) <= 1e-12 * scale &&
-                                       key(el.nodes[i], el.nodes[(i + 1) % 3]) >
-                                           key(el.nodes[first], el.nodes[(first + 1) % 3])))
+      if (longerEdge(length(el.nodes[i], el.nodes[(i + 1) % 3]),
+                     key(el.nodes[i], el.nodes[(i + 1) % 3]),
+                     length(el.nodes[first], el.nodes[(first + 1) % 3]),
+                     key(el.nodes[first], el.nodes[(first + 1) % 3])))
         first = i;
-    }
     Triangle t;
     t.n = {el.nodes[first], el.nodes[(first + 1) % 3], el.nodes[(first + 2) % 3]};
     t.block = el.block;
@@ -234,10 +285,7 @@ Bisection::refineTriangles(const std::vector<char> & marked, int max_generation)
 bool
 Bisection::coarsenTriangles(const std::vector<char> & marked, std::vector<char> & carried)
 {
-  std::vector<std::vector<std::size_t>> around(_points.size());
-  for (std::size_t t = 0; t < _triangles.size(); ++t)
-    for (Index n : _triangles[t].n)
-      around[n].push_back(t);
+  const auto around = cellsAroundNodes(_triangles, _points.size());
   std::vector<char> removed(_triangles.size(), 0);
   std::vector<Triangle> parents;
   std::vector<Index> gone;
@@ -285,18 +333,7 @@ Bisection::coarsenTriangles(const std::vector<char> & marked, std::vector<char> 
   }
   if (gone.empty())
     return false;
-  std::vector<Triangle> kept;
-  std::vector<char> marks;
-  for (std::size_t t = 0; t < _triangles.size(); ++t)
-    if (!removed[t])
-    {
-      kept.push_back(_triangles[t]);
-      marks.push_back(carried[t]);
-    }
-  kept.insert(kept.end(), parents.begin(), parents.end());
-  _triangles = std::move(kept);
-  marks.resize(_triangles.size(), 0);
-  carried = std::move(marks);
+  replaceMerged(_triangles, removed, parents, carried);
   for (Index m : gone)
   {
     recordRemoval(m);
@@ -343,12 +380,8 @@ Bisection::refineTetrahedra(const std::vector<char> & marked, int max_generation
     const std::array<Edge, 6> edges = edgesOf(tets[t]);
     Edge best = edges[0];
     for (int k = 1; k < 6; ++k)
-    {
-      const double l = length(edges[k]), b = length(best);
-      const double scale = std::max(l, b);
-      if (l > b + 1e-12 * scale || (std::abs(l - b) <= 1e-12 * scale && edges[k] > best))
+      if (longerEdge(length(edges[k]), edges[k], length(best), best))
         best = edges[k];
-    }
     return best;
   };
 
@@ -358,9 +391,9 @@ Bisection::refineTetrahedra(const std::vector<char> & marked, int max_generation
       stack.push_back(t);
   if (stack.empty())
     return false;
-  // The recursion ends (each detour bisects a strictly longer edge); the cap turns a wrong
+  // The recursion ends, because each detour bisects a strictly longer edge.  The cap turns a wrong
   // geometry, a degenerate or duplicated tetrahedron, into an error.
-  const std::size_t step_limit = 1000 * (tets.size() + 1);
+  const std::size_t step_limit = kStepsPerTetrahedron * (tets.size() + 1);
   std::size_t steps = 0;
   while (!stack.empty())
   {
@@ -433,10 +466,7 @@ Bisection::refineTetrahedra(const std::vector<char> & marked, int max_generation
 bool
 Bisection::coarsenTetrahedra(const std::vector<char> & marked, std::vector<char> & carried)
 {
-  std::vector<std::vector<std::size_t>> around(_points.size());
-  for (std::size_t t = 0; t < _tetrahedra.size(); ++t)
-    for (Index n : _tetrahedra[t].n)
-      around[n].push_back(t);
+  const auto around = cellsAroundNodes(_tetrahedra, _points.size());
   std::vector<char> removed(_tetrahedra.size(), 0);
   std::vector<Tetrahedron> parents;
   std::vector<Index> gone;
@@ -513,18 +543,7 @@ Bisection::coarsenTetrahedra(const std::vector<char> & marked, std::vector<char>
   }
   if (gone.empty())
     return false;
-  std::vector<Tetrahedron> kept;
-  std::vector<char> marks;
-  for (std::size_t t = 0; t < _tetrahedra.size(); ++t)
-    if (!removed[t])
-    {
-      kept.push_back(_tetrahedra[t]);
-      marks.push_back(carried[t]);
-    }
-  kept.insert(kept.end(), parents.begin(), parents.end());
-  _tetrahedra = std::move(kept);
-  marks.resize(_tetrahedra.size(), 0);
-  carried = std::move(marks);
+  replaceMerged(_tetrahedra, removed, parents, carried);
   for (Index m : gone)
     recordRemoval(m);
   return true;
@@ -565,12 +584,12 @@ Bisection::locate(const Placed & element, Index node, Point & xi) const
   double sum = 0.0;
   for (int k = 0; k < _dimension; ++k)
   {
-    if (solution[k] < -1e-10)
+    if (solution[k] < -kBarycentricTolerance)
       return false;
     sum += solution[k];
   }
   xi = Point{solution[0], solution[1], solution[2]};
-  return sum <= 1.0 + 1e-10;
+  return sum <= 1.0 + kBarycentricTolerance;
 }
 
 } // namespace dualmesh

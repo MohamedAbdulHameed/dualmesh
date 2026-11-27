@@ -37,47 +37,118 @@ plainValue(const ADReal & v)
   return v.value();
 }
 
+constexpr double kPi = 3.14159265358979323846;
+
+// ---- the functions -------------------------------------------------------
+// The two tables below are the one list of the functions of the language.  Python reads their
+// names and numbers of arguments through ParsedExpression::functions(), and its model language
+// builds its calls of the same names from them.
+
 using Unary = double (*)(double);
-using Binary = double (*)(double, double);
 
-struct UnaryEntry
+double
+zero(double)
+{
+  return 0.0;
+}
+
+/// A function of one argument, with its first and second derivatives.  Every number type below
+/// carries its derivatives, or the size of its terms, through the function from these by the
+/// chain rule.  floor, ceil and sign are piecewise constant and abs is piecewise linear, so the
+/// derivatives they leave out are zero.
+struct UnaryFunction
 {
   const char * name;
-  Unary f;
+  Unary value;
+  Unary first = zero;
+  Unary second = zero;
 };
-struct BinaryEntry
+
+const UnaryFunction unary_functions[] = {
+    {"sin",
+     [](double a) { return std::sin(a); },
+     [](double a) { return std::cos(a); },
+     [](double a) { return -std::sin(a); }},
+    {"cos",
+     [](double a) { return std::cos(a); },
+     [](double a) { return -std::sin(a); },
+     [](double a) { return -std::cos(a); }},
+    {"tan",
+     [](double a) { return std::tan(a); },
+     [](double a) { return 1.0 / (std::cos(a) * std::cos(a)); },
+     [](double a) { return 2.0 * std::tan(a) / (std::cos(a) * std::cos(a)); }},
+    {"asin",
+     [](double a) { return std::asin(a); },
+     [](double a) { return 1.0 / std::sqrt(1.0 - a * a); },
+     [](double a) { return a / std::pow(1.0 - a * a, 1.5); }},
+    {"acos",
+     [](double a) { return std::acos(a); },
+     [](double a) { return -1.0 / std::sqrt(1.0 - a * a); },
+     [](double a) { return -a / std::pow(1.0 - a * a, 1.5); }},
+    {"atan",
+     [](double a) { return std::atan(a); },
+     [](double a) { return 1.0 / (1.0 + a * a); },
+     [](double a) { return -2.0 * a / ((1.0 + a * a) * (1.0 + a * a)); }},
+    {"sinh",
+     [](double a) { return std::sinh(a); },
+     [](double a) { return std::cosh(a); },
+     [](double a) { return std::sinh(a); }},
+    {"cosh",
+     [](double a) { return std::cosh(a); },
+     [](double a) { return std::sinh(a); },
+     [](double a) { return std::cosh(a); }},
+    {"tanh",
+     [](double a) { return std::tanh(a); },
+     [](double a) { return 1.0 - std::tanh(a) * std::tanh(a); },
+     [](double a) { return -2.0 * std::tanh(a) * (1.0 - std::tanh(a) * std::tanh(a)); }},
+    {"exp",
+     [](double a) { return std::exp(a); },
+     [](double a) { return std::exp(a); },
+     [](double a) { return std::exp(a); }},
+    {"log",
+     [](double a) { return std::log(a); },
+     [](double a) { return 1.0 / a; },
+     [](double a) { return -1.0 / (a * a); }},
+    {"log10",
+     [](double a) { return std::log10(a); },
+     [](double a) { return 1.0 / (a * std::log(10.0)); },
+     [](double a) { return -1.0 / (a * a * std::log(10.0)); }},
+    {"sqrt",
+     [](double a) { return std::sqrt(a); },
+     [](double a) { return 0.5 / std::sqrt(a); },
+     [](double a) { return -0.25 / (a * std::sqrt(a)); }},
+    {"abs", [](double a) { return std::abs(a); }, signOf},
+    {"floor", [](double a) { return std::floor(a); }},
+    {"ceil", [](double a) { return std::ceil(a); }},
+    {"erf",
+     [](double a) { return std::erf(a); },
+     [](double a) { return 2.0 / std::sqrt(kPi) * std::exp(-a * a); },
+     [](double a) { return -4.0 * a / std::sqrt(kPi) * std::exp(-a * a); }},
+    {"sign", signOf},
+};
+
+/// The functions of two arguments.  Each number type evaluates them by its own rules below.
+enum class Binary
+{
+  Atan2,
+  Pow,
+  Hypot,
+  Min,
+  Max
+};
+
+struct BinaryFunction
 {
   const char * name;
-  Binary f;
+  Binary function;
 };
 
-const UnaryEntry unary_functions[] = {
-    {"sin", [](double v) { return std::sin(v); }},
-    {"cos", [](double v) { return std::cos(v); }},
-    {"tan", [](double v) { return std::tan(v); }},
-    {"asin", [](double v) { return std::asin(v); }},
-    {"acos", [](double v) { return std::acos(v); }},
-    {"atan", [](double v) { return std::atan(v); }},
-    {"sinh", [](double v) { return std::sinh(v); }},
-    {"cosh", [](double v) { return std::cosh(v); }},
-    {"tanh", [](double v) { return std::tanh(v); }},
-    {"exp", [](double v) { return std::exp(v); }},
-    {"log", [](double v) { return std::log(v); }},
-    {"log10", [](double v) { return std::log10(v); }},
-    {"sqrt", [](double v) { return std::sqrt(v); }},
-    {"abs", [](double v) { return std::abs(v); }},
-    {"floor", [](double v) { return std::floor(v); }},
-    {"ceil", [](double v) { return std::ceil(v); }},
-    {"erf", [](double v) { return std::erf(v); }},
-    {"sign", [](double v) { return signOf(v); }},
-};
-
-const BinaryEntry binary_functions[] = {
-    {"atan2", [](double a, double b) { return std::atan2(a, b); }},
-    {"pow", [](double a, double b) { return std::pow(a, b); }},
-    {"hypot", [](double a, double b) { return std::hypot(a, b); }},
-    {"min", [](double a, double b) { return std::min(a, b); }},
-    {"max", [](double a, double b) { return std::max(a, b); }},
+const BinaryFunction binary_functions[] = {
+    {"atan2", Binary::Atan2},
+    {"pow", Binary::Pow},
+    {"hypot", Binary::Hypot},
+    {"min", Binary::Min},
+    {"max", Binary::Max},
 };
 
 /// A recursive-descent compiler from text to a postfix program.
@@ -269,7 +340,7 @@ private:
         }
       if (name == "pi")
       {
-        emit(Op::Constant, 0, 3.14159265358979323846);
+        emit(Op::Constant, 0, kPi);
         return;
       }
       if (name == "e")
@@ -387,92 +458,69 @@ depthOf(const std::vector<Instruction> & program)
 
 constexpr int kMaxStack = 64;
 
-// ---- evaluation for double and ADReal -----------------------------------
-double
-unaryValue(int k, double a)
+// ---- the number types and their chain rules -------------------------------
+// Each number type takes a function of one argument from its row of unary_functions, and those
+// of two arguments by the rules of binaryValue() at the end of this section.
+
+/// The value and the partial derivatives of a function f(a, b) at a point: first f_a and f_b,
+/// second f_aa, f_ab and f_bb.
+struct Partials
 {
-  return unary_functions[k].f(a);
-}
-double
-binaryValue(int k, double a, double b)
+  double value, a, b, aa, ab, bb;
+};
+
+/// atan2(x, y), whose first derivatives are y / (x^2 + y^2) and -x / (x^2 + y^2).
+Partials
+atan2Partials(double x, double y)
 {
-  return binary_functions[k].f(a, b);
+  const double r2 = x * x + y * y, r4 = r2 * r2;
+  return {
+      std::atan2(x, y), y / r2, -x / r2, -2.0 * x * y / r4, (x * x - y * y) / r4, 2.0 * x * y / r4};
 }
 
-/// The derivative of unary function k at a, for the chain rule.
+// ---- double ----
 double
-unaryDerivative(int k, double a)
+unaryValue(const UnaryFunction & f, double a)
 {
-  const std::string name = unary_functions[k].name;
-  if (name == "sin")
-    return std::cos(a);
-  if (name == "cos")
-    return -std::sin(a);
-  if (name == "tan")
-    return 1.0 / (std::cos(a) * std::cos(a));
-  if (name == "asin")
-    return 1.0 / std::sqrt(1.0 - a * a);
-  if (name == "acos")
-    return -1.0 / std::sqrt(1.0 - a * a);
-  if (name == "atan")
-    return 1.0 / (1.0 + a * a);
-  if (name == "sinh")
-    return std::cosh(a);
-  if (name == "cosh")
-    return std::sinh(a);
-  if (name == "tanh")
-    return 1.0 - std::tanh(a) * std::tanh(a);
-  if (name == "exp")
-    return std::exp(a);
-  if (name == "log")
-    return 1.0 / a;
-  if (name == "log10")
-    return 1.0 / (a * std::log(10.0));
-  if (name == "sqrt")
-    return 0.5 / std::sqrt(a);
-  if (name == "abs")
-    return signOf(a);
-  if (name == "erf")
-    return 2.0 / std::sqrt(3.14159265358979323846) * std::exp(-a * a);
-  return 0.0; // floor, ceil, sign: piecewise constant
+  return f.value(a);
 }
 
-/// The second derivative of unary function k at a.
 double
-unarySecondDerivative(int k, double a)
+binaryValue(Binary f, double a, double b)
 {
-  const std::string name = unary_functions[k].name;
-  if (name == "sin")
-    return -std::sin(a);
-  if (name == "cos")
-    return -std::cos(a);
-  if (name == "tan")
-    return 2.0 * std::tan(a) / (std::cos(a) * std::cos(a));
-  if (name == "asin")
-    return a / std::pow(1.0 - a * a, 1.5);
-  if (name == "acos")
-    return -a / std::pow(1.0 - a * a, 1.5);
-  if (name == "atan")
-    return -2.0 * a / ((1.0 + a * a) * (1.0 + a * a));
-  if (name == "sinh")
-    return std::sinh(a);
-  if (name == "cosh")
-    return std::cosh(a);
-  if (name == "tanh")
-    return -2.0 * std::tanh(a) * (1.0 - std::tanh(a) * std::tanh(a));
-  if (name == "exp")
-    return std::exp(a);
-  if (name == "log")
-    return -1.0 / (a * a);
-  if (name == "log10")
-    return -1.0 / (a * a * std::log(10.0));
-  if (name == "sqrt")
-    return -0.25 / (a * std::sqrt(a));
-  if (name == "erf")
-    return -4.0 * a / std::sqrt(3.14159265358979323846) * std::exp(-a * a);
-  return 0.0; // abs, floor, ceil, sign: piecewise linear or constant
+  switch (f)
+  {
+  case Binary::Atan2:
+    return std::atan2(a, b);
+  case Binary::Pow:
+    return std::pow(a, b);
+  case Binary::Hypot:
+    return std::hypot(a, b);
+  case Binary::Min:
+    return std::min(a, b);
+  case Binary::Max:
+    return std::max(a, b);
+  }
+  throw std::logic_error("dualmesh: unknown function of two arguments.");
 }
 
+double
+power(double a, double b)
+{
+  // An integer exponent is common (x**2) and is both faster and exact as
+  // repeated multiplication.
+  if (b == std::floor(b) && std::abs(b) <= 8)
+  {
+    const int n = static_cast<int>(b);
+    double r = 1;
+    for (int k = 0; k < std::abs(n); ++k)
+      r *= a;
+    return n >= 0 ? r : 1.0 / r;
+  }
+  return std::pow(a, b);
+}
+
+// ---- ADReal ----
 /// a scaled so that its value is v and its derivatives are d times those of a.
 ///
 /// An infinite d (x^(2/3) or sqrt(x) at x = 0) multiplies only the nonzero
@@ -493,42 +541,9 @@ chain(const ADReal & a, double v, double d)
 }
 
 ADReal
-unaryValue(int k, const ADReal & a)
+unaryValue(const UnaryFunction & f, const ADReal & a)
 {
-  return chain(a, unary_functions[k].f(a.value()), unaryDerivative(k, a.value()));
-}
-
-ADReal
-binaryValue(int k, const ADReal & a, const ADReal & b)
-{
-  const std::string name = binary_functions[k].name;
-  if (name == "pow")
-    return pow(a, b);
-  if (name == "min")
-    return a.value() <= b.value() ? a : b;
-  if (name == "max")
-    return a.value() >= b.value() ? a : b;
-  if (name == "hypot")
-    return sqrt(a * a + b * b);
-  // atan2(a, b): d = (b da - a db) / (a^2 + b^2).
-  const double av = a.value(), bv = b.value(), r2 = av * av + bv * bv;
-  return (a - av) * (bv / r2) - (b - bv) * (av / r2) + std::atan2(av, bv);
-}
-
-double
-power(double a, double b)
-{
-  // An integer exponent is common (x**2) and is both faster and exact as
-  // repeated multiplication.
-  if (b == std::floor(b) && std::abs(b) <= 8)
-  {
-    const int n = static_cast<int>(b);
-    double r = 1;
-    for (int k = 0; k < std::abs(n); ++k)
-      r *= a;
-    return n >= 0 ? r : 1.0 / r;
-  }
-  return std::pow(a, b);
+  return chain(a, f.value(a.value()), f.first(a.value()));
 }
 
 ADReal
@@ -550,6 +565,20 @@ power(const ADReal & a, const ADReal & b)
     return chain(a, power(av, p), p == 0.0 ? 0.0 : p * power(av, p - 1.0));
   }
   return pow(a, b);
+}
+
+ADReal
+atan2Of(const ADReal & a, const ADReal & b)
+{
+  const double av = a.value(), bv = b.value();
+  const Partials f = atan2Partials(av, bv);
+  return (a - av) * f.a + (b - bv) * f.b + f.value;
+}
+
+ADReal
+hypotOf(const ADReal & a, const ADReal & b)
+{
+  return sqrt(a * a + b * b);
 }
 
 // ---- evaluation with the size of the terms --------------------------------
@@ -613,6 +642,12 @@ carried(double value, double d, const Bounded & a)
 }
 
 Bounded
+unaryValue(const UnaryFunction & f, const Bounded & a)
+{
+  return carried(f.value(a.value), f.first(a.value), a);
+}
+
+Bounded
 power(const Bounded & a, const Bounded & b)
 {
   const double v = power(a.value, b.value);
@@ -624,30 +659,22 @@ power(const Bounded & a, const Bounded & b)
   return r;
 }
 
+/// atan2(a, b), whose derivatives are b / (a^2 + b^2) and -a / (a^2 + b^2).
 Bounded
-unaryValue(int k, const Bounded & a)
+atan2Of(const Bounded & a, const Bounded & b)
 {
-  return carried(unary_functions[k].f(a.value), unaryDerivative(k, a.value), a);
-}
-
-Bounded
-binaryValue(int k, const Bounded & a, const Bounded & b)
-{
-  const std::string name = binary_functions[k].name;
-  if (name == "pow")
-    return power(a, b);
-  if (name == "min")
-    return a.value <= b.value ? a : b;
-  if (name == "max")
-    return a.value >= b.value ? a : b;
-  const double v = binary_functions[k].f(a.value, b.value);
-  if (name == "hypot")
-    return {v, v > 0.0 ? v + (std::abs(a.value) * a.size + std::abs(b.value) * b.size) / v : 0.0};
-  // atan2(a, b), whose derivatives are b / (a^2 + b^2) and -a / (a^2 + b^2).
+  const double v = std::atan2(a.value, b.value);
   const double r2 = a.value * a.value + b.value * b.value;
   return {v,
           std::abs(v) +
               (r2 > 0.0 ? (std::abs(b.value) * a.size + std::abs(a.value) * b.size) / r2 : 0.0)};
+}
+
+Bounded
+hypotOf(const Bounded & a, const Bounded & b)
+{
+  const double v = std::hypot(a.value, b.value);
+  return {v, v > 0.0 ? v + (std::abs(a.value) * a.size + std::abs(b.value) * b.size) / v : 0.0};
 }
 
 // ---- evaluation with second derivatives ------------------------------------
@@ -677,29 +704,22 @@ scaled(double x, double d)
   return x == 0.0 ? 0.0 : x * d;
 }
 
-/// f(a, b) from its value v and its first (fa, fb) and second (faa, fab, fbb) partial
-/// derivatives at (a, b), by the chain rule to second order.
+/// f(a, b) from its value and its partial derivatives @p f at (a, b), by the chain rule to second
+/// order.
 Taylor2
-chain(const Taylor2 & a,
-      const Taylor2 & b,
-      double v,
-      double fa,
-      double fb,
-      double faa,
-      double fab,
-      double fbb)
+chain(const Taylor2 & a, const Taylor2 & b, const Partials & f)
 {
-  Taylor2 r(v);
+  Taylor2 r(f.value);
   for (int i = 0; i < kOrder2; ++i)
   {
-    r.gradient[i] = scaled(a.gradient[i], fa) + scaled(b.gradient[i], fb);
+    r.gradient[i] = scaled(a.gradient[i], f.a) + scaled(b.gradient[i], f.b);
     for (int j = 0; j < kOrder2; ++j)
     {
       const int k = i * kOrder2 + j;
-      r.hessian[k] = scaled(a.hessian[k], fa) + scaled(b.hessian[k], fb) +
-                     scaled(a.gradient[i] * a.gradient[j], faa) +
-                     scaled(a.gradient[i] * b.gradient[j] + b.gradient[i] * a.gradient[j], fab) +
-                     scaled(b.gradient[i] * b.gradient[j], fbb);
+      r.hessian[k] = scaled(a.hessian[k], f.a) + scaled(b.hessian[k], f.b) +
+                     scaled(a.gradient[i] * a.gradient[j], f.aa) +
+                     scaled(a.gradient[i] * b.gradient[j] + b.gradient[i] * a.gradient[j], f.ab) +
+                     scaled(b.gradient[i] * b.gradient[j], f.bb);
     }
   }
   return r;
@@ -709,7 +729,7 @@ chain(const Taylor2 & a,
 Taylor2
 chain(const Taylor2 & a, double v, double d1, double d2)
 {
-  return chain(a, Taylor2(), v, d1, 0.0, d2, 0.0, 0.0);
+  return chain(a, Taylor2(), {v, d1, 0.0, d2, 0.0, 0.0});
 }
 
 Taylor2
@@ -721,19 +741,19 @@ operator-(const Taylor2 & a)
 Taylor2
 operator+(const Taylor2 & a, const Taylor2 & b)
 {
-  return chain(a, b, a.value + b.value, 1.0, 1.0, 0.0, 0.0, 0.0);
+  return chain(a, b, {a.value + b.value, 1.0, 1.0, 0.0, 0.0, 0.0});
 }
 
 Taylor2
 operator-(const Taylor2 & a, const Taylor2 & b)
 {
-  return chain(a, b, a.value - b.value, 1.0, -1.0, 0.0, 0.0, 0.0);
+  return chain(a, b, {a.value - b.value, 1.0, -1.0, 0.0, 0.0, 0.0});
 }
 
 Taylor2
 operator*(const Taylor2 & a, const Taylor2 & b)
 {
-  return chain(a, b, a.value * b.value, b.value, a.value, 0.0, 1.0, 0.0);
+  return chain(a, b, {a.value * b.value, b.value, a.value, 0.0, 1.0, 0.0});
 }
 
 Taylor2
@@ -741,7 +761,13 @@ operator/(const Taylor2 & a, const Taylor2 & b)
 {
   const double q = a.value / b.value, inverse = 1.0 / b.value;
   return chain(
-      a, b, q, inverse, -q * inverse, 0.0, -inverse * inverse, 2.0 * q * inverse * inverse);
+      a, b, {q, inverse, -q * inverse, 0.0, -inverse * inverse, 2.0 * q * inverse * inverse});
+}
+
+Taylor2
+unaryValue(const UnaryFunction & f, const Taylor2 & a)
+{
+  return chain(a, f.value(a.value), f.first(a.value), f.second(a.value));
 }
 
 Taylor2
@@ -760,49 +786,49 @@ power(const Taylor2 & a, const Taylor2 & b)
   const double ln = std::log(av), below = power(av, p - 1.0);
   return chain(a,
                b,
-               v,
-               p * below,
-               v * ln,
-               p * (p - 1.0) * power(av, p - 2.0),
-               below * (1.0 + p * ln),
-               v * ln * ln);
+               {v,
+                p * below,
+                v * ln,
+                p * (p - 1.0) * power(av, p - 2.0),
+                below * (1.0 + p * ln),
+                v * ln * ln});
 }
 
 Taylor2
-unaryValue(int k, const Taylor2 & a)
+atan2Of(const Taylor2 & a, const Taylor2 & b)
 {
-  return chain(a,
-               unary_functions[k].f(a.value),
-               unaryDerivative(k, a.value),
-               unarySecondDerivative(k, a.value));
+  return chain(a, b, atan2Partials(a.value, b.value));
 }
 
 Taylor2
-binaryValue(int k, const Taylor2 & a, const Taylor2 & b)
+hypotOf(const Taylor2 & a, const Taylor2 & b)
 {
-  const std::string name = binary_functions[k].name;
-  if (name == "pow")
-    return power(a, b);
-  if (name == "min")
-    return a.value <= b.value ? a : b;
-  if (name == "max")
-    return a.value >= b.value ? a : b;
-  const double x = a.value, y = b.value, r2 = x * x + y * y;
-  if (name == "hypot")
+  const double x = a.value, y = b.value, v = std::hypot(x, y), v3 = v * v * v;
+  return chain(a, b, {v, x / v, y / v, y * y / v3, -x * y / v3, x * x / v3});
+}
+
+// ---- the functions of two arguments ----
+/// A function of two arguments of a number type that carries derivatives or sizes (ADReal,
+/// Bounded and Taylor2): pow is the power of the type, min and max choose an argument, and atan2
+/// and hypot take the rules of the type above.
+template <typename T>
+T
+binaryValue(Binary f, const T & a, const T & b)
+{
+  switch (f)
   {
-    const double v = std::hypot(x, y), v3 = v * v * v;
-    return chain(a, b, v, x / v, y / v, y * y / v3, -x * y / v3, x * x / v3);
+  case Binary::Pow:
+    return power(a, b);
+  case Binary::Min:
+    return plainValue(a) <= plainValue(b) ? a : b;
+  case Binary::Max:
+    return plainValue(a) >= plainValue(b) ? a : b;
+  case Binary::Atan2:
+    return atan2Of(a, b);
+  case Binary::Hypot:
+    return hypotOf(a, b);
   }
-  // atan2(a, b), whose first derivatives are b / (a^2 + b^2) and -a / (a^2 + b^2).
-  const double r4 = r2 * r2;
-  return chain(a,
-               b,
-               std::atan2(x, y),
-               y / r2,
-               -x / r2,
-               -2.0 * x * y / r4,
-               (x * x - y * y) / r4,
-               2.0 * x * y / r4);
+  throw std::logic_error("dualmesh: unknown function of two arguments.");
 }
 
 template <typename T>
@@ -869,10 +895,11 @@ run(const std::vector<Instruction> & program, const T * variables)
       --top;
       break;
     case Op::Function1:
-      stack[top] = unaryValue(ins.argument, stack[top]);
+      stack[top] = unaryValue(unary_functions[ins.argument], stack[top]);
       break;
     case Op::Function2:
-      stack[top - 1] = binaryValue(ins.argument, stack[top - 1], stack[top]);
+      stack[top - 1] =
+          binaryValue(binary_functions[ins.argument].function, stack[top - 1], stack[top]);
       --top;
       break;
     case Op::Select:
@@ -953,6 +980,17 @@ ParsedExpression::secondOrder(const double * variables,
     for (std::size_t j = 0; j < n; ++j)
       hessian[i * n + j] = r.hessian[i * kOrder2 + j];
   }
+}
+
+std::vector<std::pair<std::string, int>>
+ParsedExpression::functions()
+{
+  std::vector<std::pair<std::string, int>> table;
+  for (const auto & f : unary_functions)
+    table.emplace_back(f.name, 1);
+  for (const auto & f : binary_functions)
+    table.emplace_back(f.name, 2);
+  return table;
 }
 
 int

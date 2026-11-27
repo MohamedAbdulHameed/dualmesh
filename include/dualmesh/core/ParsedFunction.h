@@ -23,11 +23,11 @@
 //
 // so exponentiation is right-associative and binds tighter than a unary minus
 // (-x^2 is -(x^2)), as in mathematics.  The names in scope are the variables
-// x, y, z and t; the constants pi and e; and the functions sin, cos, tan, asin,
-// acos, atan, sinh, cosh, tanh, exp, log, log10, sqrt, abs, floor, ceil, erf,
-// sign, atan2, pow, hypot, min, max, and if(condition, a, b).  A comparison is 1
+// x, y, z and t; the constants pi and e; the functions that
+// ParsedExpression::functions() lists, from the one table of them in
+// ParsedFunction.cpp; and if(condition, a, b).  A comparison is 1
 // when true and 0 when false.  The input and the equations of general_form_PDE
-// reach this language through one printer (python/dualmesh/input/lower.py),
+// reach this language through one printer (python/dualmesh/model/engine_form.py),
 // which also writes the expressions that SymPy derives.
 #pragma once
 
@@ -35,6 +35,7 @@
 #include "dualmesh/core/Function.h"
 
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace dualmesh
@@ -68,6 +69,10 @@ public:
   /// It takes at most kMaxSecondOrderVariables variables.
   void
   secondOrder(const double * variables, double & value, double * gradient, double * hessian) const;
+
+  /// The functions of the language, each with its number of arguments.  The model language of
+  /// Python builds its calls of the same names from this list.
+  static std::vector<std::pair<std::string, int>> functions();
 
   const std::string & text() const { return _text; }
   const std::vector<std::string> & variables() const { return _variables; }

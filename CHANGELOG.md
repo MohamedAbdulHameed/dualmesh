@@ -8,1101 +8,804 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **The input.** A simulation is described as data: the mesh, the method, the
+  physics, the properties, models of your own, the initial and boundary
+  conditions, gravity, the time span or an eigenvalue study, the mesh
+  adaptivity, the postprocessors, the output and the solver settings. You write
+  it in Python with `dualmesh.problem`, or as a case file in YAML or TOML that
+  `dualmesh run case.yaml` solves and `dualmesh.problem.from_file` reads. All
+  three build the same tree and pass the same checks. A quantity is a text
+  with its unit, such as `"45 W/(m*K)"`, which the input converts to SI units
+  and checks against the dimension of its key. Fields, properties and boundary
+  quantities take standard names with fixed units
+  (`python/dualmesh/standard_names.toml`). A property is a constant, a formula,
+  a table (`dualmesh.table`) or a mapping of regions. The `models` section
+  holds balance laws of your own. Every key is checked before the solve, and a
+  misspelled key is answered with the nearest valid name. `solve` returns a
+  `dualmesh.results` object, and `to_YAML`, `to_TOML` and `to_tree` write the
+  input back. `examples/heated_plate.yaml` couples heat conduction and solid
+  mechanics. PyYAML is the optional dependency `dualmesh[yaml]`.
+- **Physics level.** `Problem.add_physics(type, **parameters)` adds a set of
+  equations named in physical terms: `heat_conduction`, `solid_mechanics`,
+  `fluid_dynamics` and `general_form_PDE`. A physics defines its variables
+  (`temperature`, the displacements `disp_x`, `disp_y` and `disp_z`, or
+  `velocity_x`, `velocity_y`, `velocity_z` and `pressure`) and generates its
+  kernels and property objects. A property that is not given is read from the
+  property objects of the problem. `Problem.add_coupling(type, **parameters)`
+  couples two physics: `thermal_expansion`, and `nonisothermal_flow` (the heat
+  that a flow carries and the Boussinesq buoyancy). A coupling takes its
+  physics as the objects that `add_physics` returned (`heat_conduction=heat`),
+  or none when the problem has one physics of each type it couples.
+  `dualmesh list --category physics` and `dualmesh describe <physics>`
+  document them. A misspelled parameter is answered with the closest name and
+  the list of accepted parameters.
+- **Boundary conditions written as text**, for every physics. A variable on
+  the left prescribes its value (`"temperature = 300"`), and the name of the
+  flux of the physics prescribes the flux along the outward normal:
+  `heat_flux` (the heat leaving the body), `traction`, `total_force` and
+  `pressure` of a solid, and `normal_flux` of `general_form_PDE`. The right
+  side may depend on the fields, so convection and radiation are written as
+  they are printed. Any other keyword is a definition that the text uses
+  (`"total_force = [0, -F, 0]", F=150.0`). A value may hold at a point:
+  `flow.add_boundary_condition("pressure = 0", point=[0.5, 0.0])`. The words
+  `fixed`, `symmetry` and `periodic` need no data. A type with keywords, such
+  as `heat.add_boundary_condition("Dirichlet", "left", value=40.0)`, is
+  refused with a message that shows the text form.
+- **Equations written as they are printed.** `general_form_PDE` takes
+  `variables` and `equations`, for example
+  `equations="rho*cp*dT/dt = div(k*grad(T)) + q"`. The language has `du/dt`,
+  `d2u/dt2`, `du/dx` (or `grad_x(u)`), `du/dn`, `grad`, `div`, `laplacian`,
+  `curl`, `dot`, `cross`, `norm`, vectors `[a, b]`, the tensor functions `I`,
+  `transpose`, `trace`, `determinant`, `inverse`, `symmetric`, `skew`,
+  `deviatoric`, `inner` and `outer`, and `conditional`. Each function has one
+  name. The fields are names or one-entry dicts,
+  `variables=[{"U": "vector"}, "p"]`, with the components `U_x` and `U_y`.
+  The equations are reduced symbolically to the flux, the source and the
+  storage of each scalar unknown. Keywords that are not parameters are
+  definitions: a number is a named constant and a text a named expression. An
+  equation may instead be given by its coefficients `m`, `d`, `c`, `alpha`,
+  `gamma`, `beta`, `a` and `f`. A flux condition may be written out
+  (`"-k*du/dn = h*(u - 1)"`), and is checked against the flux of the
+  equation. The expressions are compiled and differentiated automatically, so
+  the Jacobian is exact and the assembly runs on every thread and every
+  process. `parsed_kernel` is the object of one such term. The user guide page
+  "Equations written as text" defines the language and works ten examples,
+  from Poisson's equation to the Cahn-Hilliard equation, two-group neutron
+  diffusion and incompressible flow.
 - **Automatic continuation of a steady solve.** When Newton's method does not
   converge on the problem itself, the solve takes it again from the starting
   state with its driving data ramped: the sources, body forces and buoyancy,
-  prescribed fluxes, tractions and pressures, point loads and the distributed
-  loads of plates and beams from zero, and the prescribed values from those of
-  the starting state. A step that converges doubles the next one and a step
-  that fails is halved, down to 1/1024. The lid-driven cavity on a 32 x 32
-  mesh takes 3 steps at Re = 1000 and 5 at Re = 3200, and 7 at Re = 5000 on a
-  48 x 48 mesh, with no setting. `result.history` records each step
-  (`continuation_step`, `data_fraction`).
+  the prescribed fluxes, tractions and pressures, the point loads and the
+  distributed loads of plates and beams from zero, and the prescribed values
+  from those of the starting state. A step that converges doubles the next
+  one, and a step that fails is halved, down to $1/1024$ of the data. A
+  lid-driven cavity at the Reynolds number $Re = 3200$ converges this way with
+  no setting. `result.history` records each step (`continuation_step`,
+  `data_fraction`).
 - **Flows through a boundary named by their physics.** `heat.heat_flow(b)`
-  (the heat leaving, W), `solid.reaction_force(b)` (the force of the support
-  on the body, by direction), `flow.force(b)` (the force of the fluid on the
-  wall: drag and lift) and `flow.flow_rate(b)` (the volume flow leaving),
+  (the heat leaving, in W), `solid.reaction_force(b)` (the force of the
+  support on the body, by direction), `flow.force(b)` (the force of the fluid
+  on the wall: drag and lift), `flow.flow_rate(b)` (the volume flow leaving),
   `pde.boundary_flux(b)` of a `general_form_PDE`, and
   `Problem.boundary_flux(variable, b, per_node=False)`. Each takes the sign of
-  the flux in the boundary conditions (out of the body). On a boundary of
-  prescribed values it is the reaction there, conserved exactly; on any other
-  boundary the integral of the flux its conditions prescribe, so a boundary
-  without a condition carries exactly nothing. A corner node belongs to the
-  boundary whose condition holds it. Post-processors of the same names.
-- **Sign tests** (`tests/python/test_signs.py`): the direction of every flux,
-  load, source and result against hand results, with the zero cases and the
-  corners, in both methods.
-- **A value prescribed at a point in text form:**
-  `flow.add_boundary_condition("pressure = 0", point=[0.5, 0.0])`.
-- **Linear buckling.** `problem.solve_buckling(num_modes)` after a solve: (K +
-  lambda K_sigma) x = 0, with the geometric stiffness K_sigma = J(u) - J(0) of
-  the geometrically nonlinear equations (`large_deformation`, or `von_karman`
-  for beams and plates); `load_factors` are the critical multiples of the load.
-  Verified: pinned Euler and Timoshenko columns at second order in h, and a
-  plane-strain cantilever column within 8e-5 of Euler.
+  the flux in the boundary conditions, out of the body. On a boundary of
+  prescribed values it is the reaction there, conserved exactly. On any other
+  boundary it is the integral of the flux its conditions prescribe, so a
+  boundary without a condition carries nothing. A corner node belongs to the
+  boundary whose condition holds it. The post-processors `heat_flow`,
+  `reaction_force`, `force`, `flow_rate` and `boundary_flux` give the same
+  values.
+- **Tests of signs, conservation and symmetry.**
+  `tests/python/test_signs.py` checks the direction of every flux, load,
+  source and result against hand results, with the zero cases and the
+  corners, in both methods. `tests/python/test_conservation.py` checks the
+  balance of every physics and coupling to round-off, and states the measured
+  gap of the penalty and Taylor-Hood formulations.
+  `tests/python/test_symmetry.py` checks that symmetric problems of every
+  physics and coupling have symmetric solutions in both methods, that FEM
+  gives symmetric matrices for self-adjoint operators, and reciprocity
+  (Maxwell-Betti).
+- **Linear buckling.** `problem.solve_buckling(num_modes)` after a solve
+  solves $(\mathbf{K} + \lambda \mathbf{K}_\sigma)\mathbf{x} = 0$, with
+  $\mathbf{K}$ the stiffness of the undeformed body, $\mathbf{K}_\sigma$ the
+  geometric stiffness of the solved stresses, taken from the geometrically
+  nonlinear equations (`large_deformation`, or `von_karman` for beams and
+  plates), and $\lambda$ the load factor. `load_factors` are the critical
+  multiples of the load. Verified on pinned Euler and Timoshenko columns at
+  second order in the element size, and on a plane-strain cantilever column
+  within $8 \times 10^{-5}$ of the Euler load.
 - **Generalized plane strain.** `formulation="generalized_plane_strain"` with
   `axial_force`: the uniform axial strain `strain_zz` is one unknown of the
-  section (the new constraint `uniform_field`), whose equation is int sigma_zz
-  dA = F (`out_of_plane_stress`). Verified against the closed forms, a free
-  thermal expansion and Lame's open-ended tube.
+  section (the constraint `uniform_field`), whose equation states that the
+  axial stress integrated over the section equals the axial force
+  (`out_of_plane_stress`). Verified against the closed forms, a free thermal
+  expansion and Lame's open-ended tube.
 - **Viscoelasticity.** `viscoelasticity={"shear": [[G_i, tau_i], ...], "bulk":
-  [[K_i, tau_i], ...]}` of `solid_mechanics`: generalized Maxwell branches
-  (Prony series) on top of the long-term moduli, each integrated exactly over a
-  step by the recursive update of Herrmann and Taylor. A steady solve takes the
-  long-term moduli. Verified: a held shear and a held dilatation relax as the
-  Prony series at any step.
-- **Fracture.** `solid.j_integral(crack_tip, radii)` (the domain J-integral) and
-  `solid.stress_intensity(crack_tip, radii)` (K_I and K_II by the interaction
-  integral with the Williams fields), in plane strain and plane stress; and
-  `phase_field_fracture={"toughness": ..., "length": ...}` (AT2, Miehe's split
-  of the strain energy by the sign of the principal strains, a history field
-  that does not heal; object `phase_field_damage`, field `damage`). Verified:
-  J and K of the Williams fields on rings of several radii, mixed mode, and the
-  closed form of a uniform bar that does not heal.
-- **Trusses and shells.** `formulation="truss"`: bars of a line mesh in a
-  space of one, two or three dimensions, axial force only
-  (`cross_section={"area": A}`; object `truss`), one element per bar.
-  `formulation="shell"`: flat facets of a quadrilateral surface mesh in three
-  dimensions, with membrane, Mindlin bending, transverse shear at the centre of
-  the element and the rotation about the normal tied to the rotation of the
-  membrane (Hughes and Brezzi); variables `disp_x`, `disp_y`, `disp_z` and
-  `rotation_x`, `rotation_y`, `rotation_z`, the rotations about the global axes
-  (object `shell`). Both are linear elastic and static for now. Verified: a
-  flat shell is the plate formulation to 1e-9, and stays it when turned in
-  space; the Scordelis-Lo roof reaches 0.990 of its reference on 16 elements a
-  side and the pinched cylinder 0.997 on 32, from below, in both methods; a
-  tripod and a hanging bar against their closed forms. `reaction_force` now
-  takes a node set (a support at a point).
+  [[K_i, tau_i], ...]}` of `solid_mechanics` adds generalized Maxwell branches
+  (a Prony series) of moduli $G_i$ and $K_i$ and relaxation times $\tau_i$ to
+  the long-term moduli. Each branch is integrated exactly over a step by the
+  recursive update of Herrmann and Taylor. A steady solve takes the long-term
+  moduli. Verified: a held shear and a held dilatation relax as the Prony
+  series at any step.
+- **Fracture.** `solid.j_integral(crack_tip, radii)` gives the domain
+  J-integral, and `solid.stress_intensity(crack_tip, radii)` the stress
+  intensity factors $K_I$ and $K_{II}$ by the interaction integral with the
+  Williams fields, in plane strain and plane stress.
+  `phase_field_fracture={"toughness": ..., "length": ...}` adds the AT2 phase
+  field with Miehe's split of the strain energy and a history field that does
+  not heal (object `phase_field_damage`, field `damage`). Verified: J and K of
+  the Williams fields on rings of several radii, mixed mode, and the closed
+  form of a uniform bar.
+- **Trusses and shells.** `formulation="truss"` takes the bars of a line mesh
+  in one, two or three dimensions, with axial force only
+  (`cross_section={"area": A}`, object `truss`). `formulation="shell"` takes
+  the flat facets of a quadrilateral surface mesh in three dimensions, with
+  membrane, Mindlin bending, transverse shear at the centre of the element and
+  the rotation about the normal tied to the rotation of the membrane (Hughes
+  and Brezzi), and the variables `disp_x`, `disp_y`, `disp_z`, `rotation_x`,
+  `rotation_y` and `rotation_z` (object `shell`). Both are linear elastic.
+  Verified: a flat shell equals the plate formulation and stays so when turned
+  in space, and with FEM the Scordelis-Lo roof reaches 0.990 of its reference
+  on 16 elements a side and the pinched cylinder 0.997 on 32, from below.
+  `reaction_force` takes a node set, a support at a point.
 - **Cohesive zones** (two dimensions, linear sides):
   `solid.add_boundary_condition("cohesive", primary=..., secondary=...,
   strength=..., toughness=...)`, object `cohesive_zone`. A bilinear
   traction-separation law, normal and tangential, on surfaces that coincide at
   the start and need not match. The damage grows with the largest effective
-  opening and does not heal; a closing zone keeps its full stiffness. Verified:
-  a path that softens, unloads, closes and separates follows the law at every
-  step, in both methods and with the surfaces swapped; the work of separation
-  is the toughness in tension (1e-3) and in shear (7e-5); the forces on the two
-  bodies balance.
+  opening and does not heal, and a closing zone keeps its full stiffness.
+  Verified: a path that softens, unloads, closes and separates follows the law
+  at every step, in both methods and with the surfaces swapped, the work of
+  separation equals the toughness within a relative $10^{-3}$, and the forces
+  on the two bodies balance.
 - **Mortar contact with Coulomb friction** (two dimensions, linear sides):
   `solid.add_boundary_condition("contact", primary=..., secondary=...,
-  friction_coefficient=...)`, object `mortar_contact`. The contact pressure
-  (and the tangential traction) is a Lagrange multiplier on the secondary
-  surface, the complementarity conditions are solved by semi-smooth Newton with
-  the active set, and the surfaces need not match and may slide. No penalty.
-  `solid.contact_pressure(secondary)` gives the pressure, and `reaction_force`
-  the contact force on each surface. Verified: the contact patch test on
-  non-matching meshes (exact pressure), a gap that closes, stick and full slip
-  at mu lambda, the balance of the forces on the two surfaces, and the Jacobian
-  against finite differences. `gas_gap_heat_transfer` reads its
-  `contact_pressure`.
+  friction_coefficient=...)`, object `mortar_contact`. The contact pressure and
+  the tangential traction are Lagrange multipliers on the secondary surface,
+  the complementarity conditions are solved by Newton's method with an active
+  set, and the surfaces need not match and may slide. `solid.contact_pressure(
+  secondary)` gives the pressure, and `reaction_force` the contact force on
+  each surface. Verified: the contact patch test on non-matching meshes, a gap
+  that closes, stick and full slip, the balance of the forces on the two
+  surfaces, and the Jacobian against finite differences.
 - **J2 plasticity.** `plasticity={"yield_stress": ..., "kinematic_hardening":
-  {"C": [...], "gamma": [...]}, "constants": {...}}` of `solid_mechanics`
-  (objects: `yield_stress`, `plasticity_constants`,
-  `kinematic_hardening_moduli`, `dynamic_recovery`): isotropic hardening as any
-  expression of the equivalent plastic strain and the temperature, and
-  Armstrong-Frederick or Chaboche back stresses. Backward Euler radial return
-  with the exact tangent, in a steady solve and in time, in small and finite
-  strain and in plane stress, and with creep in one return. Results
-  `plastic_strain`, `equivalent_plastic_strain` and `back_stress`. Verified
-  against closed forms, a strain cycle against the uniaxial law integrated by
-  hand (5e-14), and quadratic Newton.
-- **The physics level of solids** takes `large_deformation`, `elasticity`
-  (`"linear"` or `"neo-Hookean"`), `creep={"rate": ..., "constants": ...,
-  "grain_size": ...}`, `plasticity` and `temperature` (a field or a number),
-  and a pressure that follows the deformed surface at finite strain.
-- **Anisotropic elasticity.** `youngs_modulus`, `poissons_ratio` and the new
+  {"C": [...], "gamma": [...]}, "constants": {...}}` of `solid_mechanics`:
+  isotropic hardening as any expression of the equivalent plastic strain and
+  the temperature, and Armstrong-Frederick or Chaboche back stresses. Backward
+  Euler radial return with the exact tangent, steady and in time, at small and
+  finite strain, in plane stress, and with creep in one return. The results
+  are `plastic_strain`, `equivalent_plastic_strain` and `back_stress`.
+  Verified against closed forms, a strain cycle against the uniaxial law
+  integrated by hand, and quadratic convergence of Newton's method.
+- **Material laws of `solid_mechanics`.** `large_deformation` (finite strain
+  and rotation, with a pressure that follows the deformed surface),
+  `elasticity` (`"linear"`, `"neo-Hookean"` or `"Saint_Venant_Kirchhoff"`),
+  `strain_energy` (a hyperelastic law written as its strain energy),
+  `creep={"rate": ..., "constants": ..., "grain_size": ...}`, `plasticity` and
+  `temperature` (a field or a number). The creep rate may read the time `t`
+  (time hardening) and `equivalent_creep_strain` (strain hardening, solved at
+  the end of the step in the scalar return map), and `grain_size` is needed
+  only when the rate uses it. In plane stress the return map solves the
+  out-of-plane strain at each point so that the out-of-plane stress is zero,
+  with the exact tangent.
+- **Anisotropic elasticity.** `youngs_modulus`, `poissons_ratio` and
   `shear_modulus` take three values each for an orthotropic continuum,
-  `stiffness` a 6 x 6 matrix, and `orientation` the material axes (an angle in
-  2D). Hill's equivalent stress (`"hill": [F, G, H, L, M, N]`) for creep and
-  plasticity, by a closest-point return with the exact tangent. Verified
-  against the compliance along each axis, the rotation of the fourth-order
-  tensor, and the closed forms of Hill.
+  `stiffness` a $6 \times 6$ matrix, and `orientation` the material axes (an
+  angle in two dimensions). Hill's equivalent stress
+  (`"hill": [F, G, H, L, M, N]`) serves creep and plasticity, by a
+  closest-point return with the exact tangent. Verified against the compliance
+  along each axis, the rotation of the fourth-order tensor, and the closed
+  forms of Hill.
 - **Structural dynamics.** `solid_mechanics` takes a `density`, Rayleigh
   `damping={"mass": a, "stiffness": b}` and an `initial_condition` of
-  displacement and velocity. Beams take rho A (and rho I in the displacement
-  form of Timoshenko), plates rho h and rho h^3/12. `solve_transient`
-  integrates a problem with inertia by the generalized-alpha method of Chung
-  and Hulbert (default, `spectral_radius` 0.75, COMSOL's default) or
-  `time_scheme="Newmark"` (average acceleration, energy kept to round-off),
-  from the acceleration that M a = -R(u, v) gives at the start. The new
-  objects are `second_time_derivative` and `stiffness_damping`, and
-  `general_form_PDE` takes its `m` coefficient. `solve_eigenvalue` takes the
-  inertia for the natural frequencies (`result.frequencies`, Hz), solving
-  K x = w^2 M x without damping and the companion form, scaled to the time
-  scale of the problem, with it. Verified: a string at second order in time,
-  its frequencies k/2, the energy of Newmark, the damping of unresolved modes
-  at rho_infinity per step, a damped oscillator, cantilever beam frequencies
-  at second order in h, a plane cantilever against the beam, the modal
-  damping ratios of Rayleigh damping, an axial mode started by a velocity,
-  and the momentum that the support force changes, to round-off.
-- **The eigenvalue study is unit-free.** It took the inertia of a steel
-  structure in SI units (|M|/|K| near 1e-12) for round-off and refused it, and
-  its companion form lost six digits of damping; each operator is now measured
-  in its own units and the companion form is scaled.
-- **Primary creep and creep in plane stress.** The parsed `creep_rate` may use
-  the time `t` (time hardening) and `equivalent_creep_strain` (strain
-  hardening, solved at the end of the step in the scalar return mapping). In
-  plane stress the return mapping solves the zz strain at each point so that
-  sigma_zz = 0, with the exact tangent (implicit function theorem). A plate
-  under uniaxial stress creeps at A sigma^n to 1e-8, and Newton converges
-  quadratically. The creep rate is no longer evaluated at 200 K or more, and
-  the threshold below which a point does not creep is 1e-12 of q/3G (it was
-  1e-3 Pa, which depended on the units).
-- **The start temperature of `heat_transfer` is 293.15 K** (COMSOL's default)
-  instead of 0 K.
-- **Expressions in a solid's `body_force`**, as in every other load, and point
-  sources with one coordinate per dimension of the mesh (`points=[0.5]` on a
-  line).
-
-
-- **Advection schemes.** The heat that a `nonisothermal_flow` coupling carries
-  is stabilised by default with the streamline upwind Petrov-Galerkin term
-  (SUPG, the new `heat_streamline_stabilization`). `advection_scheme` of
-  `heat_transfer` chooses `"central"`, `"upwind"`, `"linear_upwind"`,
-  `"limited"` or `"SUPG"` where the case calls for it. The inertia of a flow
-  takes SUPG, with no option. The object-level kernels `advection`,
-  `heat_convection` and `convective_inertia` take `advection_scheme`. The face
-  schemes are `"upwind"`, `"linear_upwind"` (the upstream value corrected by
-  the upstream gradient) and `"limited"` (blended towards the central value by
-  the van Albada limiter), with DMCDM, which reconstructs the gradient at a
-  node by least squares, with the exact Jacobian (not yet on a distributed
-  mesh). The heat and the momentum carry the
-  velocity whose flux the mass equation conserves (v - tau r_m through the
-  faces, as OpenFOAM carries phi), so they are conserved exactly, the
-  temperature does not depend on its scale, and upwind is bounded. On a
-  boundary layer at a cell Péclet number of 5, upwind and limited stay in
-  [0, 1] where central reaches -0.43, limited converges at order 2.05, and
-  upwind at order 0.9. On the
-  skew jump of Brooks and Hughes with a held outflow, the temperature of
-  Galerkin reaches 409 and that of SUPG 1.6. The SUPG residual is the sum of
-  the sources of every other kernel of the temperature.
-
-- **Block preconditioners of a flow.** `preconditioner="lsc"` (the least
-  squares commutator of Elman et al. 2006) and `"pcd"` (the pressure
-  convection-diffusion preconditioner of Kay, Loghin and Wathen 2002, in the
-  form of Elman and Tuminaro 2009, with the Robin condition at an inflow),
-  beside `"pressure_mass"`. They approximate the Schur complement of the
-  pressure in the block upper-triangular preconditioner of the saddle point
-  system: `lsc` from the blocks of the matrix, `pcd` from the operator of the
-  momentum equation on the pressure nodes, which dualmesh assembles at the
-  current velocity and time step. For the stabilised equal-order element the
-  pressure Laplacian of both takes the element stabilisation of Elman et al.
-  2007, a hundred times larger in `pcd`. They run in the built-in flexible GMRES with exact block solves, and
-  in PETSc's Schur complement field split with one V-cycle of BoomerAMG per
-  block, on one process or many. The PETSc version with exact block solves
-  takes the iterations of the built-in one. On the lid-driven cavity `lsc`
-  takes 10 to 30 iterations per Newton step for Taylor-Hood and 17 to 70 for
-  the equal-order element of `FEM` and `DMCDM` up to Re = 400, and `pcd` 17
-  to 79 (the Stokes start included). The counts grow by at most 73 per cent over two refinements of the
-  mesh. On a
-  three-dimensional Taylor-Hood cavity on two processes `lsc` is about twice
-  as fast as MUMPS from 37 000 unknowns on (23 s against 44 s at 144 000).
-  `automatic` takes `lsc` for a flow too large to factorise, in serial and in
-  parallel, with the direct solver when it does not converge in 500
-  iterations. Before, the distributed `automatic` took BoomerAMG on the whole
-  equal-order system (29.9 s against 8.1 s for `lsc` on the 62 500-unknown
-  three-dimensional cavity at Re = 100), and the serial one tried multigrid
-  and ILU(0) on a large equal-order flow before the direct solver.
-- **Split by physics.** `preconditioner="physics_blocks"` solves the blocks
-  of the physics of a coupled problem one after the other (the displacements
-  of a solid together, every other variable alone, in the order in which the
-  physics were added), each with one V-cycle of algebraic multigrid, inside
-  flexible GMRES: 14 to 18 iterations on a thermoelastic plate from 2000 to
-  32 000 elements, in the built-in solver and in PETSc. The distributed
-  `automatic` takes it for a solid coupled to other physics.
-- **Rigid body modes in PETSc.** Every PETSc solve gives the near null space
-  of the problem (the rigid body modes of a solid, the constant of every other
-  variable) to PETSc's smoothed aggregation multigrid, which a distributed
-  problem selects with `preconditioner="amg"` and takes by default for a
-  solid: 51 to 54 iterations on a three-dimensional cantilever on two
-  processes against 78 to 82 for BoomerAMG.
-- **Case files.** The physics level of a problem as data, in YAML, run by
-  `dualmesh run case.yaml` or `dualmesh.run_case`: the mesh (a generator with
-  its keywords, or a mesh file), the method and coordinates, the physics keyed
-  by the name a script gives their variable with their conditions as text,
-  the couplings naming physics by key, the study and the output. It has the
-  same names as the Python input and nothing else, every name is checked with
-  the closest valid one before any work is done, and numbers follow YAML 1.2.
-  `examples/heated_plate.yaml` builds the same problem as its Python script,
-  field for field. PyYAML is the optional dependency `dualmesh[yaml]`.
+  displacement and velocity. Beams take the inertia of their section and
+  plates that of their thickness. `solve_transient` integrates a problem with
+  inertia by the generalized-$\alpha$ method of Chung and Hulbert (the
+  default, with `spectral_radius` 0.75) or by `time_scheme="Newmark"`
+  (average acceleration, which conserves the energy), from the acceleration
+  of the start. The new objects are `second_time_derivative` and
+  `stiffness_damping`, and `general_form_PDE` takes the coefficient `m` of a
+  second time derivative. `solve_eigenvalue` takes the inertia for the natural
+  frequencies (`result.frequencies`, in Hz). Verified: a string at second
+  order in time, the energy of Newmark, a damped oscillator, cantilever beam
+  frequencies at second order in the element size, the modal damping ratios
+  of Rayleigh damping, and the momentum that the support force changes.
+- **Eigenvalue study of any problem.** `Problem.solve_eigenvalue` returns the
+  eigenvalues closest to `near` and their modes. Every field varies in time as
+  $\hat{u} e^{-\lambda t}$, with $\lambda$ the eigenvalue, so the time
+  derivatives define it, and the expressions may use the symbol `eigenvalue`,
+  at most quadratically. The operators come from exact assemblies, each
+  measured in its own units, and shift-invert Arnoldi iteration solves the
+  linear or the scaled companion quadratic problem. Complex eigenvalues are
+  reported with both parts. For a vibration, where no term uses `eigenvalue`,
+  `near` is the angular frequency in 1/s that the modes are closest to. The
+  study folds periodic copies and hanging nodes into the unknowns they depend
+  on. `examples/reactor_criticality.py` and the tutorial on reactor
+  criticality write two-group neutron diffusion as balance laws and find the
+  multiplication factor this way.
 - **Adjoint sensitivities.** `Problem.sensitivities(objective, parameters)`
-  gives d(objective)/d(parameter) of a converged solution for every named
-  parameter at the cost of one adjoint solve plus one residual assembly per
-  parameter. The objective is the integral of a variable over the domain (the
-  variable's name) or over one side set
-  (`{"variable": ..., "boundary": ...}`). The parameters are settable
-  constants registered with `Problem.add_parameter(name, value)` and read by
-  name wherever a coefficient, a source or a boundary value takes a function
-  (`Problem.set_parameter` assigns one between solves, and
-  `Problem.boundary_integral` gives the value of a boundary objective). The
-  adjoint solves with the exact Jacobian of the converged solution and the
-  same linear solvers as the primal, and dR/dp is a central difference of the
-  residual at the converged solution, so no parameter is solved for.
-  Verified against the central difference of whole re-solves, on linear and
-  nonlinear conduction, for every method, for the domain and the boundary
-  objective, and for the value of a prescribed temperature. The result
-  (`SensitivityResult`) follows the result protocol. Periodic boundary
-  conditions, stateful material histories, distributed problems and a
-  solution that is not the converged steady solution of the model as it
-  stands (no solve yet, a change of the model or of a parameter since, a
-  transient or eigenvalue study) are not differentiated and are refused.
-- **Gradient-enhanced Gaussian processes.** `uq.GaussianProcess().fit(x, y,
-  gradients=g)` conditions the surrogate of a scalar output on its values and
-  its gradients together, for example the gradients of
-  `Problem.sensitivities`. The covariances of the gradients are the
-  derivatives of the kernel in closed form, for all three kernels (the Matern
-  3/2 process is once mean-square differentiable), checked against central
-  differences. The length scales start from the fit to the values and then
-  maximise the likelihood of the values and gradients together. On a smooth
-  function of two inputs with 16 runs, the error of the surrogate falls from
-  0.135 to 0.008 (Matern 5/2) and from 0.059 to 0.0018 (squared exponential).
-- The word `symmetry` on a beam end: it holds the axial displacement and the
-  slope (`phi` in the displacement form), and the moment stays free. It is the
-  centre of a half beam.
-- `small_strain_stress` takes `plane_stress`, and `solid_mechanics` in plane
-  stress reads its moduli from the property objects as in the other
-  formulations.
-- **Surface meshes: two-dimensional elements in three-dimensional space**,
-  the meshes of shells. A mesh has an element dimension (`dimension`) and a
-  space dimension (`space_dimension`). A surface element is mapped by its
-  3 x 2 Jacobian, measured by sqrt(det(J^T J)), has tangential gradients and
-  edge conormals t x n, and is oriented consistently with its neighbours
-  (outward on a closed surface, and a surface that cannot be oriented is
-  refused). Curves in the plane or in space work the same way. The finite
-  element and dual mesh control domain methods run on surfaces, in serial
-  and distributed: a tilted rectangle reproduces the flat solution to
-  round-off, and the Laplace-Beltrami problem on the sphere converges at
-  second order. Flow and the continuum formulations of `solid_mechanics` refuse surfaces, and shells come
-  next. `mesh_from_arrays` and `read_mesh` place a mesh in the space its
-  coordinates use.
+  gives the derivative of an objective of a converged solution with respect to
+  every named parameter, at the cost of one adjoint solve plus one residual
+  assembly per parameter. The objective is the integral of a variable over the
+  domain (the variable's name) or over one side set
+  (`{"variable": ..., "boundary": ...}`). The parameters are constants
+  registered with `Problem.add_parameter(name, value)` and read by name
+  wherever a coefficient, a source or a boundary value takes a function.
+  `Problem.set_parameter` assigns one between solves, and
+  `Problem.boundary_integral` gives the value of a boundary objective. The
+  derivative of the residual with respect to a parameter is a central
+  difference at the converged solution. Verified against the central
+  difference of whole solves, on linear and nonlinear conduction, for both
+  methods and both objectives. The result is a `SensitivityResult`. Periodic
+  conditions, material histories, distributed problems and a solution that is
+  not the converged steady solution of the model as it stands are refused.
+- **Advection schemes.** The `advection` kernel carries the heat of a flow
+  and the momentum of its inertia, and takes `advection_scheme`: `"central"`
+  with either method, or the face fluxes of DMCDM `"upwind"`,
+  `"linear_upwind"` (the upstream value corrected by the upstream gradient,
+  reconstructed by least squares) and `"limited"` (blended towards the
+  central value by the van Albada limiter), each with the exact Jacobian. The
+  heat that a `nonisothermal_flow` coupling carries takes the streamline
+  upwind Petrov-Galerkin stabilisation (SUPG) by default, with the new kernel
+  `heat_streamline_stabilization`, whose residual is the strong residual of
+  every other kernel of the temperature. `advection_scheme` of
+  `heat_conduction` chooses another scheme. The inertia of an equal-order
+  flow takes SUPG through `momentum_stabilization`, with no option. At a cell
+  Peclet number of 5, the upwind and limited schemes stay bounded where the
+  central scheme oscillates.
+- **The projection time integration of incompressible flow**
+  (`fluid_dynamics(time_integration="projection", time_order=k)`), the
+  splitting of Nek5000 and nekRS: the backward difference formula and the
+  extrapolation of order $k$ (1, 2 or 3), with coefficients for variable
+  steps, a pressure Poisson equation with the rotational boundary term of the
+  viscous term, solved from the projection of the earlier pressures with
+  BoomerAMG, and Helmholtz equations for the velocity with a Jacobi
+  preconditioner, by the conjugate gradient method with FEM and GMRES with
+  DMCDM. It runs serial and distributed, with periodic boundaries and hanging
+  nodes, and gives the forces on boundaries with a prescribed velocity at
+  every step, so that `flow.force` gives drag and lift. Checked at second
+  order in space on the Taylor-Green vortex, at the order of the backward
+  difference in time on an exactly represented flow, and against the serial
+  run on one to four processes.
+- **A Courant number step controller**: `solve_transient(time_stepper="cfl",
+  courant_number=0.5)`.
+- **The Laplacian form of the viscous term**: `fluid_dynamics(viscous_form=
+  "laplacian")`, whose natural boundary condition is the do-nothing outflow of
+  the DFG benchmarks and of Nek5000. It is the default of the projection.
+- **Transient monolithic flow**: `fluid_dynamics` adds the inertia
+  $\rho\, \partial \mathbf{v} / \partial t$, with $\rho$ the density and
+  $\mathbf{v}$ the velocity, which a transient solve includes and a steady
+  solve leaves out. A transient run first projects the initial velocity onto a
+  field without divergence that keeps the prescribed values
+  (`result.start_correction`).
+- **Benchmarks** (`docs/benchmarks`, one page each, with their scripts in
+  `verification/benchmarks/fluids`): the steady flow around a cylinder at
+  $Re = 20$ (DFG 2D-1) and the vortex shedding at $Re = 100$ (DFG 2D-2)
+  against Schaefer and Turek, the Kovasznay flow against its exact solution,
+  and the lid-driven cavity at $Re = 1000$ against Erturk et al. (2005).
+- **A scaling study of the projection time integration**
+  (`verification/benchmarks/scaling/run_projection_scaling.py`): strong and
+  weak scaling of both methods on one to four processes, in the measures of
+  Nek5000 and nekRS. `dualmesh_benchmark projection` times its steps on any
+  number of processes.
+- **Splits of a flow and of coupled physics.** Two PETSc options of dualmesh
+  choose a split that PETSc cannot name. `-dualmesh_schur lsc`, `pcd` or
+  `pressure_mass` takes the upper block-triangular preconditioner of a
+  pressure-velocity flow with that approximation of the Schur complement of
+  the pressure: the least squares commutator of Elman et al. (2006), the
+  pressure convection-diffusion preconditioner of Kay, Loghin and Wathen
+  (2002) in the form of Elman and Tuminaro (2009), with the Robin condition at
+  an inflow, or the pressure mass matrix. The equal-order element takes the
+  stabilisation of Elman et al. (2007) in `lsc` and `pcd`. The defaults are
+  flexible GMRES and one V-cycle of BoomerAMG per block, on one process or
+  many. `-dualmesh_split physics` solves the blocks of the physics of a
+  coupled problem one after the other, the displacements of a solid together
+  and every other variable alone, each with one cycle of GAMG.
+- **Rigid body modes.** Every PETSc solve of a problem with the displacements
+  of a solid gives its near null space (the rigid body modes of the solid and
+  the constant of every other variable) to PETSc's smoothed aggregation
+  multigrid (GAMG).
+- **Distributed problems in `Problem`.** A `Problem` run under `mpirun` on
+  several processes splits itself among them (`distributed`, `partitioner`
+  and `gather_scatter` of the constructor). No process needs the whole mesh:
+  a mesh is read on the first process only, and PETSc's DMPlex partitions it
+  (PT-Scotch or ParMETIS) and moves every element, of any type, to its
+  process. The values at nodes that several processes hold are exchanged
+  through PETSc's star forests or through gslib, the gather-scatter library
+  of Nek5000. `partition_mesh` uses the same partitioners. `rank`,
+  `num_ranks`, `num_owned_dofs`, `num_global_dofs` and `gathered_values`
+  describe a distributed problem. Every post-processor and every flow through
+  a boundary gives the serial value on any number of processes. The history
+  of the material is committed, and the post-processors and the step callback
+  are evaluated, at every step, as in serial runs.
+- **Gap conditions in distributed problems**: an interface condition pairs
+  its primary and secondary sides across processes. A process that holds a
+  primary side reads the secondary elements it lacks as ghost elements, which
+  it does not integrate. Checked for `gap_heat_transfer` between non-matching
+  meshes on one to six processes.
+- **Checkpoints and restarts**: `dualmesh.Output(checkpoint_interval=...)`
+  writes the time, the step, the solution, the history of the material, the
+  damage of the cohesive zones and the history of the post-processors to one
+  file in PETSc's binary format, in the order of the global numbers.
+  `solve_transient(restart=...)` continues the run on any number of
+  processes, and a run restarted on another partition ends where an
+  uninterrupted run ends, to round-off. A checkpoint records a fingerprint of
+  its mesh, so a restart on a mesh with the same counts but moved or
+  renumbered nodes or elements is refused, and sizes beyond the PETSc integer
+  range are refused with the name of `--with-64-bit-indices`.
+- **Periodic boundary conditions** (`periodic`, in the new category of objects
+  `constraint`): the field on a secondary boundary is the field on a primary
+  boundary carried over by a translation, in one, two or three directions,
+  serially and on any number of processes. Both methods converge at second
+  order on manufactured solutions periodic in one direction and in two.
+- **Surface meshes: two-dimensional elements in three-dimensional space.** A
+  mesh has an element dimension (`dimension`) and a space dimension
+  (`space_dimension`). A surface element is mapped by its $3 \times 2$
+  Jacobian $\mathbf{J}$, measured by $\sqrt{\det(\mathbf{J}^T \mathbf{J})}$,
+  has tangential gradients and edge conormals, and is oriented consistently
+  with its neighbours (outward on a closed surface, and a surface that cannot
+  be oriented is refused). Curves in the plane or in space work the same way.
+  Both methods run on surfaces, serial and distributed: a tilted rectangle
+  reproduces the flat solution to round-off, and the Laplace-Beltrami problem
+  on the sphere converges at second order. Flow and the continuum
+  formulations of `solid_mechanics` refuse surfaces. `mesh_from_arrays` and
+  `read_mesh` place a mesh in the space its coordinates use.
+  `Mesh.fix_orientation(preferred=...)` takes one normal per element and turns
+  each connected part of a surface to the side that agrees best with them.
 - **Surface generators.** `generate_cylinder_surface_mesh` (radius, length,
-  `arc_angle` in degrees; edges `near_curved_edge`, `far_curved_edge`,
-  `left_straight_edge`, `right_straight_edge`),
-  `generate_spherical_shell_mesh` (`polar_angle` and `azimuth` in degrees;
-  caps closed at a pole are butterflies of quadrilaterals, with no collapsed
-  element; edges `upper_circular_edge`, `lower_circular_edge`,
-  `start_meridian_edge`, `end_meridian_edge`) and `generate_surface_mesh`,
-  which takes a surface written as equations with its definitions as
-  keywords: a height surface `"z = f(x, y)"`, a parametric surface in `u`
-  and `v` (seams merged), `f(x, y, z) = c` seen from a `center` (the sphere's
-  quadrilaterals moved along their rays onto the surface), and any
-  `f(x, y, z) = c` cut out of a `box` (quadrilaterals by surface nets, closed
-  along the cut by a net of the box face, then projected and smoothed along
-  the surface). Every node lies on the exact surface, quadratic elements
-  included.
-- `num_elements=[...]` in `generate_rectangle_mesh` and `generate_box_mesh`,
-  beside the per-axis counts.
+  `arc_angle` in degrees, edges `near_curved_edge`, `far_curved_edge`,
+  `left_straight_edge` and `right_straight_edge`),
+  `generate_spherical_shell_mesh` (`polar_angle` and `azimuth` in degrees,
+  caps closed at a pole by quadrilaterals with no collapsed element, edges
+  `upper_circular_edge`, `lower_circular_edge`, `start_meridian_edge` and
+  `end_meridian_edge`) and `generate_surface_mesh`, which takes a surface
+  written as equations with its definitions as keywords: a height surface
+  `"z = f(x, y)"`, a parametric surface in `u` and `v`, or `f(x, y, z) = c`
+  seen from a `center` or cut out of a `box` (quadrilaterals by surface nets).
+  Every node lies on the exact surface, quadratic elements included.
+- **Mesh tools.** `num_elements=[...]` in `generate_rectangle_mesh` and
+  `generate_box_mesh`, beside the per-axis counts. `read_mesh` names the
+  element blocks after the physical names of the file (`Mesh.block_names()`).
+  The element facts come from the C++ core: `element_dimension`,
+  `element_is_quadratic`, `element_is_serendipity`, `element_corner_type` and
+  `Mesh.element_types()`.
+- **An inverted or degenerate element is refused.** `initialize()` maps the
+  centroid of every element and the points half way from it to the nodes, and
+  names the first element whose Jacobian determinant is negative or zero by
+  its index and block. The generators and `read_mesh` fix the orientation
+  themselves, so this is reached by a mesh built node by node. Surfaces and
+  curves in space are exempt.
+- **Side set tools**: `sideset_summary` (faces, nodes, area and extent of
+  every side set), `write_sidesets` (the boundary with one field per side
+  set, for ParaView), `Mesh.sideset_measure`, `Problem.boundary_area` and the
+  command `dualmesh mesh <mesh file> --sidesets <file.vtu>`.
+- **Wrench example** (`examples/wrench`, tutorial "Boundary conditions on an
+  imported mesh"): a three-dimensional steel wrench on a Gmsh mesh, with the
+  boundaries named by physical groups or by geometric predicates, verified
+  against the statics of the wrench and beam theory.
+- **`dualmesh.solve_transient_with_adaptive_refinement`** adapts the mesh of a
+  transient run after every `interval` accepted steps, and the
+  `mesh_adaptivity` section of a transient input runs through it.
+- **Output design.** Every study takes `report="full"`, `report="summary"` or
+  `report="none"`: `Problem.solve`, `Problem.solve_transient`,
+  `Problem.solve_eigenvalue`, `Problem.solve_buckling`,
+  `ManufacturedSolution.convergence_study` and the adaptive refinements. A
+  study inside another study prints nothing, and in a distributed run the
+  first process prints. The `dualmesh.Output` group (directory, file base,
+  output times or interval, fields, formats `vtu` and `csv`) writes the fields
+  of a solve, a transient solve or an eigenvalue study. The time steps land on
+  the output times, and a transient study writes a ParaView collection
+  (`.pvd`). Each physics gives the SI units of its variables, which the CSV
+  headers and the VTU data arrays carry.
+- **Tables and the result protocol.** `dualmesh.Table` is the one form of
+  every tabular result: it prints in aligned columns, writes a CSV file whose
+  header names each column with its unit (for example `temperature [K]`), and
+  gives each column as an array by its name. Every result has `summary()`,
+  `to_dict()`, `tables`, `write_json(path)` and `write_csv(path, table=None)`:
+  the `SolveResult` of a solve, the new `AdaptivityResult` of
+  `solve_with_adaptive_refinement` (which returned the tuple
+  `(problem, mesh)`) and the `ConvergenceResult` of a manufactured solution.
+- `Problem.element_integrals(variable)` and `Problem.element_volumes()`.
+- **`dualmesh.mms.convergence_rates(sizes, errors)`**, the observed orders
+  between consecutive refinements of any study.
+- **`property_scaling`** and the parameter `property_factors` of every
+  property object, which multiply named properties by constant factors.
+- `small_strain_stress` takes `plane_stress`.
+- Expressions in the `body_force` of a solid, as in every other load, and
+  point sources with one coordinate per dimension of the mesh (`points=[0.5]`
+  on a line).
+- The `flux` of `Neumann` and the `transfer_coefficient` and `ambient_value`
+  of `Robin` may be expressions of the fields and their gradients.
+- A nonlinear solve whose residual or Jacobian is no longer finite stops with a
+  message that names divergence or a property that is not finite.
+- **Continuous integration.** A finite-difference check of the Jacobian, builds
+  with AddressSanitizer and UndefinedBehaviorSanitizer, coverage reports,
+  clang-tidy, CodeQL, a weekly mutation test, actions pinned to commit hashes
+  and read-only job permissions. The release script refuses a workflow with an
+  action that is not pinned to a commit. `scripts/audit_names.py` checks every
+  public name and parameter declaration against the naming rules.
 - **A performance regression gate** (`.github/workflows/performance.yml`):
   `scripts/benchmark.py --quick --only assembly` times one residual and
   Jacobian assembly of every method for three physics, weekly, and
   `scripts/check_performance.py` compares the times with budgets of about ten
-  times the calibration machine. A regression of an order of magnitude (the
-  class that once made copying the whole derivative array of an ADReal the
-  dominant cost of assembly) fails the run, and the noise of a shared runner does
-  not. The benchmark itself follows the physics level as it is now (the
-  variables of `solid_mechanics` and `fluid_dynamics` had been renamed under
-  it).
+  times the calibration machine, so a regression of an order of magnitude
+  fails the run and the noise of a shared runner does not.
 - **The software bill of materials of a release** (the `sbom` job of the
-  Wheels workflow): the SBOM action of Anchore, pinned by its commit as every
-  action is, scans the source distribution, and its SPDX document is kept
-  with the wheels and the sdist as an artifact of the tag.
-- The weekly mutation test also mutates `uq/distributions.py`, against its
-  tests of the moments, the quantiles and the truncation.
-- **An inverted or degenerate element is refused.** `initialize()` maps the
-  centroid of every element and the points half way from it to the nodes
-  (inside the element, where the integration points lie, and away from the
-  apex of a pyramid, whose map is degenerate there by construction). It names
-  the first element whose Jacobian determinant is negative, or zero, by its
-  index and block, instead of integrating it with a positive measure and
-  giving a wrong answer silently. The generators and `read_mesh` fix the orientation
-  themselves, so this is reached by a mesh built node by node. Surfaces and
-  curves in space are exempt (their measure is a square root, and the side of
-  their normal is a convention that `fix_orientation` sets).
-- `Mesh.fix_orientation(preferred=...)`: one normal per element, shape
-  `(num_elements, 3)`. Each connected part of a surface takes the side that
-  agrees best with these normals, weighted by the element areas.
-- `read_mesh` names the element blocks after the physical names of the file
-  (`mesh.block_names()`).
-
-- **Equations written as they are printed.** `general_form_PDE` takes
-  `variables` and `equations`, e.g.
-  `equations="rho*cp*dT/dt = div(k*grad(T)) + q"`, with `du/dt`, `du/dx`
-  (or `grad_x(u)`), `grad`, `div`, `laplacian`, `curl`, `dot`, `cross`,
-  `norm`, vectors `[a, b]`, tensors (`I`, `transpose`, `trace`, `det`,
-  `inverse`, `sym`, `skew`, `dev`, `ddot`, `outer`) and vector fields
-  (`variables={"U": "vector"}`, components `U_x`, `U_y`). The equations are
-  reduced symbolically in the C++ core (`reduceEquations`) to the flux, the
-  source and the time coefficient of each scalar unknown, with the chain
-  rule for the derivatives of expressions, and matched to the fields they
-  govern. Keywords that are not parameters are definitions: a number is a
-  named constant, a text a named expression. An equation of a scalar field
-  may instead be given by its coefficients `d`, `c`, `alpha`, `gamma`,
-  `beta`, `a` and `f`.
-- **Boundary conditions written as text**, for every physics: a variable on
-  the left prescribes its value (`"temperature = 300"`, `"u = 0"`), and the
-  name of the flux of the physics prescribes the flux through the boundary
-  along the outward normal: `heat_flux` (the heat leaving the body),
-  `traction`, `total_force` and `pressure` of a solid, `normal_flux` of
-  `general_form_PDE`, which also takes the flux written out
-  (`"-k*du/dn = h*(u - 1)"`, checked against the flux of the equation). The
-  right side may depend on the fields, so convection and radiation are
-  written as they are printed.
-- **The user guide page "From paper to code"**: the language of the
-  equations and of their boundary conditions, and twelve worked examples,
-  from Poisson's equation to the Cahn-Hilliard equation, two-group
-  criticality and linear elasticity of a vector field, each run by the test
-  suite.
-
-- **The projection time integration of incompressible flow**
-  (`incompressible_flow(time_integration="projection", time_order=k)`), the
-  splitting of Nek5000 and nekRS: BDFk and EXTk with coefficients for
-  variable steps, a pressure Poisson equation with the curl-curl boundary
-  term, solved by the conjugate gradient method with BoomerAMG from the
-  projection of the earlier pressures, and Helmholtz equations for the
-  velocity, solved by the conjugate gradient method with a Jacobi
-  preconditioner. For equal-order elements the weight of the divergence in
-  the pressure equation is capped by the stabilization parameter of the
-  pressure-velocity formulation, which keeps the accuracy at small steps.
-  The finite element and dual mesh control domain methods, serial and
-  distributed, with periodic boundaries.
-  Checked at second order in space on the Taylor-Green vortex, at the order
-  of the backward difference in time on an exactly represented flow, and
-  against the serial run on one to four processes.
-- **A Courant number step controller**: `solve_transient(time_stepper="cfl",
-  courant_number=0.5)`.
-- **Reactions of the projection time integration**: the forces on boundaries
-  with a prescribed velocity, from its momentum equations at every step, so
-  that `flow.force` gives drag and lift.
-- **The Laplacian form of the viscous term**: `incompressible_flow(viscous_form=
-  "laplacian")`, whose natural boundary condition is the do-nothing outflow of
-  the DFG benchmarks and of Nek5000.
-- **Benchmarks** (docs/benchmarks, one page each, with their scripts in
-  verification/benchmarks): F1, the DFG flow around a cylinder at Re = 20
-  (drag within 0.009 % with equal-order elements, every printed digit with
-  Taylor-Hood); F2, the DFG vortex shedding at Re = 100 with the projection
-  time integration on four processes (drag, lift and Strouhal number within
-  0.5 %); F4, the Kovasznay flow (every method at its order); F5, the
-  lid-driven cavity at Re = 1000 against Erturk et al. (2005).
-- **A scaling study of the projection time integration**
-  (`verification/benchmarks/scaling/run_projection_scaling.py`): strong and
-  weak scaling of every node method on one to four processes, in the measures
-  of Nek5000 and nekRS.
-- A nonlinear solve whose residual or Jacobian is no longer finite stops with a
-  message that names divergence or a non-finite property, rather than failing
-  in the linear solver.
-- **Transient monolithic flow**: `incompressible_flow` adds the inertia
-  rho dv/dt, which a transient solve includes and a steady solve leaves out.
-- `dualmesh_benchmark projection` times the steps of the projection time
-  integration on any number of processes.
-- **Gap conditions in distributed problems**: an interface condition pairs
-  its primary and secondary sides across processes; a process that holds a
-  primary side reads the secondary elements it lacks as ghost elements, which
-  it does not integrate. Checked for `gap_heat_transfer` between non-matching
-  meshes on one to six processes.
-- **Checkpoints and restarts**: `dm.Output(checkpoint_interval=...)` writes
-  the time, the step, the solution, the history of the material and the
-  history of the post-processors to one file in PETSc's binary format, in
-  the order of the global numbers, and `solve_transient(restart=...)`
-  continues the run on any number of processes. A run restarted on another
-  partition ends where an uninterrupted run ends, to round-off.
-- In distributed transient runs, the history of the material is committed
-  at every step and the post-processors and the step callback are evaluated
-  at every step, as in serial runs.
-- **Post-processors and reactions in distributed problems**: every
-  post-processor type and the flows through a boundary give the serial value on any
-  number of processes.
-- **Periodic boundary conditions** (`periodic_boundary_condition`, a new
-  category of objects, the constraints): the field on a secondary boundary is
-  the field on a primary boundary carried over by a translation, for every
-  node-based method, in one, two or three directions, serially and on any
-  number of processes. Every method converges at second order on manufactured
-  solutions periodic in one direction and in two.
-- **A distributed core built on PETSc, in which no process needs the whole
-  mesh.** A build with MPI now requires PETSc. The values at nodes that
-  several processes hold are exchanged through PETSc's star forests (PetscSF),
-  which find the owner of every node from the global node numbers alone. The
-  distributed solver takes the part of the mesh of each process; a whole mesh
-  is read on the first process only, and PETSc's DMPlex partitions it
-  (PT-Scotch or ParMETIS) and moves every element, of any type, to its
-  process. `partition_mesh` uses the same partitioners. The exchanges of
-  shared values go through PETSc's star forests or through gslib, the
-  gather-scatter library of Nek5000, chosen with `gather_scatter`. The boundary node sets are completed across processes,
-  and the areas of the side sets are summed over them. The linear systems are
-  one distributed PETSc matrix. By default a flow is factorised by MUMPS
-  where that is inexpensive and split by the least squares commutator
-  otherwise, a solid is solved with GAMG and its rigid body modes, a solid
-  coupled to other physics with the split by physics, and any other system
-  with GMRES and hypre BoomerAMG (15 iterations on one to four processes for
-  a 48 x 48 Poisson problem), with MUMPS when an iteration fails.
-- **`dualmesh.materials`**: functions of the state that return material
-  properties in SI units. `materials.water` gives compressed liquid water
-  (IAPWS-IF97 region 1, with the IAPWS viscosity and thermal conductivity),
-  and `materials.gas` gives the thermal conductivity of helium, argon,
-  krypton, xenon, hydrogen and nitrogen at low density and of their mixtures,
-  and the temperature jump distance at a wall.
-- **General partial differential equations.** `general_form_PDE` solves a
-  system $`d \, \partial u / \partial t + \nabla \cdot \boldsymbol{\Gamma} = f`$ whose flux $`\boldsymbol{\Gamma}`$ and source $f$ are
-  expressions of all the fields, the components of their gradients
-  (`grad_x(u)`, `grad_y(u)`, `grad_z(u)`), x, y, z, t and named constants.
-  The expressions are compiled and differentiated automatically, so the
-  Jacobian is exact and the assembly runs on every thread and every process
-  with every method. `parsed_kernel` is the object of one such term.
-- **Eigenvalue study of any problem.** `Problem.solve_eigenvalue` returns
-  the eigenvalues closest to `near` and their modes for every problem.
-  Every field varies in time as
-  u_hat exp(-lambda t), so the time derivatives define the eigenvalue, and
-  the expressions may use the symbol `eigenvalue`, at most quadratically.
-  The operators come from exact assemblies, and shift-invert Arnoldi
-  iteration solves the linear or the companion quadratic problem. Complex
-  eigenvalues are reported with both parts. `examples/reactor_criticality.py`
-  and the tutorial on reactor criticality write multigroup neutron diffusion
-  with `coefficient_form_PDE` and solve the IAEA 2D PWR benchmark this way.
-- `coefficient_form_PDE` solves systems: every input is a dict keyed by the
-  field of the equation, and a coefficient couples to other fields with a
-  dict field name -> value. Every coefficient and the source may be an
-  expression of the fields, their gradients and the position together.
-- The `flux` of `Neumann_boundary_condition` and the `flux`,
-  `transfer_coefficient` and `ambient_value` of `Robin_boundary_condition`
-  may be expressions of the fields and their gradients.
-- `gas_gap_heat_transfer` takes an `accommodation_coefficient`.
-- The parsed creep rate of `small_strain_stress` reads `grain_size`, which is
-  required only when the expression uses it.
-
-- `uq.sobol` and `uq.calibrate` take `output_transform={"name": "log"}`:
-  the Gaussian process models the logarithm of a positive output, which
-  suits an output that changes by factors (a creep strain). The Sobol'
-  indices are those of the output itself, and the calibration of that output
-  is on the logarithmic scale (its noise is the standard deviation of the
-  logarithm, about the relative error).
-- `uq.calibrate` calibrates several experiments together: `model` is a dict
-  of experiment name -> function, the experiments share the inputs their
-  functions have in common, and the log-likelihoods add up. Verified against
-  the normal posterior of two linear experiments.
-- `uq.sobol` on a Gaussian process also gives the indices of the global
-  process (Marrel et al. 2009, Eq. 12), with their intervals:
-  `first_order_global_process`, `total_global_process` and the columns of the
-  same names in the table `indices`.
-- **Output design.** Every study takes `report="full"` (the default: the
-  inputs with the defaults marked, the progress and the result),
-  `report="summary"` or `report="none"`: `Problem.solve`,
-  `Problem.solve_transient`, `Problem.solve_eigenvalue`, `uq.propagate`,
-  `uq.sobol`, `uq.calibrate`, `ManufacturedSolution.convergence_study` and
-  `solve_with_adaptive_refinement`. A study inside another study prints
-  nothing. The `dm.Output` group (directory, file base, output times or
-  interval, fields, formats `vtu` and `csv`) writes the fields of a solve, a
-  transient solve or an eigenvalue study. The time steps land on the output
-  times, and a transient study writes a ParaView collection (`.pvd`). Each
-  physics gives the SI units of its variables, which the CSV headers and the
-  VTU data arrays carry.
-
-- **Physics level**: `Problem.add_physics(type, name, ...)` adds a set of
-  equations named in physical terms: `heat_transfer`, `solid_mechanics`,
-  `incompressible_flow`, `beam`, `plate` and `circular_plate`. A physics
-  creates its variables and generates its kernels and materials. Its boundary
-  conditions and extra terms (`physics.add_boundary_condition`,
-  `physics.add_kernel`) take the type names and parameters of the objects,
-  with the variables, the components and the thickness filled in, and a
-  vector value (a traction, a total force, a prescribed displacement or
-  velocity) given as a list with one entry per component. A property that is
-  not given is read from the materials.
-  `Problem.add_coupling(type, name, ...)` couples two physics:
-  `thermal_expansion` and `nonisothermal_flow` (heat carried by a flow, and
-  the Boussinesq buoyancy). `dualmesh list --category physics` and
-  `dualmesh describe <physics>` document them, and the syntax reference has a
-  page for each.
-- `Problem.element_integrals(variable)` and `Problem.element_volumes()`, and
-  `Mesh.block_names()`.
-- **Tables.** `dm.Table` is the one form of every tabular result: it prints
-  in aligned columns, writes a CSV file with one header line whose column
-  names carry their units (for example `temperature (K)`), and gives its
-  columns as arrays and as a pandas DataFrame. Every result has `tables` and
-  `write_csv(path, table=None)`.
-- A finite-difference check of the Jacobian (`tests/python/test_jacobian.py`)
-  and, in the continuous integration, builds with AddressSanitizer and
-  UndefinedBehaviorSanitizer, coverage reports, clang-tidy, CodeQL, a weekly
-  mutation test, actions pinned to commit hashes, read-only job
-  permissions and a software bill of materials of each release. The release
-  script refuses a workflow with an action that is not pinned to a commit.
-- **`coefficient_form_PDE`**: a physics for a scalar equation written by its
-  coefficients, $`d \, \partial u / \partial t + \nabla \cdot (-c \nabla u - \boldsymbol{\alpha} u) + \boldsymbol{\beta} \cdot \nabla u + a u = f`$,
-  with a diffusion coefficient that is a constant, an expression of position
-  and time or of the variable, a constant tensor, or the property
-  `diffusion_coefficient`, and an absorption coefficient that may depend on
-  the variable.
+  Wheels workflow): the SBOM action of Anchore scans the source distribution,
+  and its SPDX document is kept with the wheels and the source distribution
+  as an artifact of the tag.
 - `dualmesh list` and `dualmesh describe` answer an unknown name with the
   closest one.
-- `scripts/audit_names.py` checks every public name and parameter
-  declaration against the naming rules, and the tests run it.
-- Every result provides `summary()`, `to_dict()`, `write_json(path)` and
-  `write_csv(path)`: the `SolveResult` of a solve, the new `AdaptivityResult`
-  of `solve_with_adaptive_refinement` (which returned the tuple
-  `(problem, mesh)`), the `ConvergenceResult` of a manufactured solution, and
-  the `Runs`, `SobolIndices` and `Posterior` of the uncertainty studies.
-- The `reaction` kernel takes its coefficient from a property
-  (`coefficient_property`).
-- `uq.sobol` takes the runs of `uq.propagate` to train its Gaussian process
-  surrogate (`training`), as `uq.calibrate` does, so that one set of runs
-  serves the propagation, the indices and the calibration. With the nested
-  scrambled Sobol' design of `propagate(method="sobol")`, a larger study
-  reuses the runs of a smaller one from its store.
-- **`symmetry_boundary_condition`**: a plane of symmetry, on which the
-  displacement (or velocity) normal to the plane is zero.
-- **Distributed problems in `Problem`**: a `Problem` run under `mpirun` on
-  several processes splits itself among them (`distributed` and
-  `partitioner` of the constructor), and its `solve` and `solve_transient`
-  solve it with PETSc. `rank`, `num_ranks`,
-  `num_owned_dofs`, `num_global_dofs` and `gathered_values` describe a
-  distributed problem.
-- **Keyword checks**: a misspelled parameter of a physics, a coupling or an
-  input group is answered with the closest name and the list of accepted
-  parameters.
-
-- **Algebraic multigrid preconditioner** (`preconditioner="amg"`): smoothed
-  aggregation with the rigid body modes of the elastic materials and the
-  constants of the other variables as near null space, Chebyshev smoothing
-  and a factorised coarsest level, for the conjugate gradient method and
-  BiCGSTAB. `linear_solver="automatic"` uses it for the systems it does not
-  factorise (three-dimensional systems above a few thousand unknowns), with
-  BiCGSTAB and ILU(0) and then the direct solver as fallbacks. The solve of
-  the wrench tutorial takes 1.8 s on 56 787 unknowns, and a solve of
-  340 000 unknowns about 30 s, in two threads. An iteration that reaches the
-  round-off level of a stiff system is accepted. The option
-  `amg_strength_threshold` sets the aggregation.
-- **Reuse of factorisations**: the direct solver and the multigrid
-  hierarchy are kept while the matrix does not change, so the second Newton
-  iteration of a linear problem costs one back substitution.
-- **One boundary condition on several variables**: every boundary condition
-  accepts a `variables` list and is created once per variable.
-  `fixed_constraint` clamps the displacements it lists.
-- **`total_force`** of `traction_boundary_condition`: a load given as the
-  total force on a side set, spread uniformly over its area, in Cartesian,
-  plane and axisymmetric problems.
-- **Side set tools**: `sideset_summary` (faces, nodes, area and extent of
-  every side set), `write_sidesets` (the boundary with one field per side
-  set, for ParaView), `Mesh.sideset_measure`, `Problem.boundary_area`, the
-  command `dualmesh mesh <mesh file> --sidesets <file.vtu>`.
-- **Uncertainty quantification and sensitivity analysis** (`dualmesh.uq`).
-  Input distributions `Normal`, `LogNormal`,
-  `Uniform` and `LogUniform`, with optional truncation. `propagate` samples a
-  model by Latin hypercube, scrambled Sobol' or Monte Carlo designs and
-  returns the statistics, bootstrap intervals, Wilks tolerance limits and the
-  Pearson, Spearman and partial rank correlation coefficients. `sobol`
-  computes the first-order and total Sobol' indices (Saltelli 2010, Jansen
-  1999) with bootstrap intervals, either directly or on a Gaussian process
-  surrogate. `GaussianProcess` is a kriging surrogate with a Matern 5/2, Matern 3/2 or
-  squared exponential kernel, maximum likelihood hyperparameters, a fitted
-  nugget, principal components for vector outputs and closed-form
-  leave-one-out validation. `calibrate` performs Bayesian calibration on a
-  surrogate, with the surrogate variance and an optional model discrepancy
-  in the likelihood, and an affine-invariant ensemble sampler or adaptive
-  Metropolis, and reports the split R-hat, the effective sample size and the
-  contraction of every parameter. Runs are executed in parallel processes
-  and stored, so that an interrupted study resumes. The results write their
-  statistics to JSON files (`write_json`).
-- **Wrench example** (`examples/wrench`, tutorial "Boundary conditions on an
-  imported mesh"): a three-dimensional steel wrench on a Gmsh mesh, with the
-  boundaries named by physical groups or by geometric predicates, verified against the statics of the wrench and beam theory.
-- **`property_scaling` property object** and the `scaled_properties` and
-  `property_factors` parameters of every property object, which multiply
-  named properties by constant factors.
 
 ### Changed
 
-- **Plain names in the input** (no aliases before the first release):
-  `total_reaction` and `reactions` are replaced by the flows above;
-  `nodal_extreme` by `maximum` and `minimum`; `entity_points` by
-  `node_coordinates`; `boundary_measure` by `boundary_area`;
-  `boundary_flux_integral` by `kernel_boundary_flux`; the post-processors
-  `variable_integral`, `variable_average`, `nodal_extreme_value` and
-  `total_reaction` by `integral`, `average`, `maximum`, `minimum` and the
-  flows; `implicitness` of `solve_transient` by `time_scheme`
-  (`"backward_Euler"`, the default, `"Crank-Nicolson"` or `"forward_Euler"`);
-  `vol_expansion_coeff` and `linear_expansion_coeff` by
-  `volumetric_expansion_coefficient` and `linear_expansion_coefficient`, and
-  every `coeff` by `coefficient`; the flow formulation `"pressure"` by
-  `"equal_order"`; the `form` of the Timoshenko beam by `beam_formulation`;
-  `add_point_source` takes no type name. The iteration records name their
-  fields `continuation_step` and `data_fraction`.
-- **The default formulation of `fluid_dynamics`** keeps the pressure:
-  Taylor-Hood when `method="FEM"` is given on a quadratic mesh, the
-  equal-order formulation otherwise (it was the penalty formulation, which
-  makes the flow slightly compressible). `penalty_parameter` is refused with
-  any formulation but `"penalty"`.
-- **The default diagonal of a triangle mesh** is `"alternate"`, which keeps
-  the mesh symmetric under reflection.
-
-
-- **The advection of a flow conserves heat and momentum exactly.** In an
-  equal-order flow (FEM or DMCDM) `heat_convection`
-  and `convective_inertia` carry the velocity w = v - tau r_m that the
-  stabilised mass equation conserves (Hughes and Wells 2005): the source
-  rho c_p (w . grad T) for FEM, and for DMCDM the face flux
-  rho c_p (w . n)(T_f - T_C) with every scheme, central included, on the
-  boundary faces too (OpenFOAM's bounded form). The heat and the momentum are
-  conserved exactly against the discrete mass flux, and the temperature does
-  not depend on its scale at any iterate. On the lid-driven cavity at
-  Re = 1000 (64 x 64) the error of DMCDM is halved; FEM gains in v and loses a
-  third in u; Newton takes 40 iterations instead of 43. At the old time of a
-  Crank-Nicolson step w is the velocity that the previous step conserved.
-  `kernel_boundary_flux` of a DMCDM advection gives the flux as the assembly
-  takes it. The penalty and Taylor-Hood formulations carry v.
-
-- **Conservation tests.** `tests/python/test_conservation.py` checks the
-  balance of every physics and coupling to round-off, and states the measured
-  gap of the penalty and Taylor-Hood formulations.
-
-- **Symmetry tests.** `tests/python/test_symmetry.py` checks that symmetric
-  problems of every physics and coupling have symmetric solutions on both
-  methods, that FEM gives symmetric matrices for self-adjoint operators, and
-  reciprocity (Maxwell-Betti), and states the measured gaps of DMCDM.
-
+- **PETSc and MPI are required.** SNES, the nonlinear solver of PETSc, runs
+  the iteration, and PETSc solves every linear system, in the same way on one
+  process and on several. One nonlinear driver and one transient driver serve
+  the serial and the distributed problem. Without PETSc options of the linear
+  solver, the solver factorises with MUMPS where that is cheap (always in one
+  dimension, up to $10^5$ unknowns in two and up to 4000 in three). A larger
+  flow takes flexible GMRES with `lsc`, a solid GMRES with GAMG and its rigid
+  body modes, a solid coupled to other physics the split by physics, and any
+  other system GMRES with BoomerAMG, each at the tolerance of Eisenstat and
+  Walker. An iteration that does not converge in 500 iterations falls back to
+  the direct factorisation. `petsc_options` takes PETSc's options as a string
+  or a dictionary. Every PETSc solve is checked by its true residual, and a
+  direct solve on several processes without MUMPS is refused.
 - **The solvers do not depend on units.** Newton's method converges when the
   residual of every equation is at most `relative_tolerance` of the size of
   its own terms (the reference residual, the sum of the magnitudes of every
-  contribution to each unknown), or at the round-off level of its rows; the
-  line search and the divergence test use the same scaled norm; the step test
-  compares each variable with its range. The iterative linear solvers measure
-  the residual in that norm, a prescribed value takes the size of the diagonal
-  of its equation, the block preconditioners of a flow take their sign from
-  the velocities alone, and the test that the pressure level of a flow is free
-  compares each equation with itself (a heated channel with an outlet was
-  taken for an enclosed flow). `tests/python/test_units.py` solves each case in
-  metres and in millimetres, with the same iterations.
-
-- **The stabilised residual is consistent on quadratic elements.** The
-  momentum residual of the PSPG and SUPG terms takes the viscous term
-  - mu Laplacian(v), and the SUPG of the heat the conduction - k Laplacian(T),
-  from the second derivatives of the shape functions (exact for curved
-  elements, with the axisymmetric and spherical terms) and with the exact
-  Jacobian. Poiseuille flow is exact to round-off on Quad9 and Tri6 with both
-  methods. Linear elements, inside which the Laplacian vanishes, keep the
-  standard residual: their measured error on Poiseuille flow falls at second
-  order (1.1e-3 at the nodes on 32 cells across). The remedies measured for them
-  (the recovered Laplacian of Jansen et al. 1999, the orthogonal subscales of
-  Codina 2002) cost more than the refinement that gives the same gain.
-- **The method follows the physics by default.** `Problem(mesh)` takes
-  DMCDM when the problem has a `fluid_dynamics` of the equal-order formulation,
-  and FEM otherwise. `method="FEM"` or `"DMCDM"` chooses one.
-- **The pressure level of an enclosed flow is fixed automatically.** When no
-  boundary determines the pressure, which the solver finds from the Jacobian
-  (a constant pressure solves the homogeneous problem), Newton's method holds
-  the pressure unknown nearest the centre of the fluid at its value and
-  shifts the converged pressure to a mean of zero over the fluid, with the
-  reactions taken after the shift. The result is the same on any number of
-  processes. A boundary velocity whose net flux is not zero, which an
-  incompressible flow cannot take in, is reported with its size. A level
-  that changes the flow (a property or source that depends on the pressure)
-  is refused with the request for a pressure datum.
-- **A steady flow at rest starts from the Stokes solution.** Newton's method
-  starts from the same problem without the inertia, solved at the first load
-  factor, when the velocity is zero wherever no condition prescribes it. On a
-  channel at Re = 100 with a varying inflow, Newton's method diverged from
-  rest and now converges in a few iterations. A start set by the user is kept. The counts
-  of a solve include the Stokes iterations.
-- **A diverging Newton iteration stops** when the residual reaches a million
-  times its first value, with an error that says so and names the remedies.
-- **The stabilisation parameter tau has the factor 9 on its viscous (and
-  conductive) term**, as MOOSE's navier_stokes module takes it, for the
-  stabilised flow of every method, the SUPG of the heat, and the cap of the
-  projection solver. Its viscous limit h^2 / (12 nu) is that of the optimal
-  parameter of linear elements; Tezduyar's form gave h^2 / (4 nu), three times
-  too much. Measured against a fine Taylor-Hood cavity at Re = 100 the error of
-  the centreline velocities halves for every method, the Kovasznay errors fall
-  by about a quarter, the Nusselt number at Ra = 1e5 is within 0.5 % (1.1 %
-  before), and the SUPG boundary layer has the error 0.0024 (0.143 before).
-- **Abbreviations in the input are written in capitals and proper names with a
-  capital**, as the naming rule of the input requires: `advection_scheme="SUPG"`,
-  the methods `"FEM"` and `"DMCDM"` (`Problem.method` holds this spelling), the linear solvers `"LU"`, `"CG"`, `"GMRES"`, `"BiCGStab"`,
-  `"PETSc"`, the preconditioners `"ILU"`, `"ILUT"`, `"AMG"`, `"Jacobi"`, `"LSC"`,
-  `"PCD"`, and the nonlinear solvers `"Newton"`, `"Picard"`. The lower-case
-  spelling is accepted everywhere.
+  contribution to each unknown), or at the round-off level of its rows. The
+  line search, the divergence test and the iterative linear solvers use the
+  same scaled norm, the step test compares each variable with its range, and
+  a prescribed value takes the size of the diagonal of its equation.
+  `tests/python/test_units.py` solves each case in metres and in millimetres,
+  with the same iterations.
 - **`line_search` takes `"automatic"`, the new default**: backtracking when a
   kernel uses the limited advection scheme, whose limiter has kinks on which
-  Newton's method cycled (on cells of alternating size it never converged),
-  and no line search otherwise, as before.
-
-- A distributed problem accepts `preconditioner`: the block preconditioners
-  of a flow, `physics_blocks` and `amg`. The preconditioners of the serial
-  Krylov methods (`ilu`, `ilut`, `jacobi`, `none`) are refused there with the
-  PETSc option that replaces them. An unknown preconditioner is refused
-  with the closest valid name. With the default linear solver it was ignored
-  silently.
-- The pressure mass matrix preconditioner of a flow is named
-  `preconditioner="pressure_mass"`, like `lsc` and `pcd`.
-- **One nonlinear driver and one transient driver** serve the serial and the
-  distributed problem. A `Parallel` interface of the problem (the global sum,
-  norm and any, the residual entries shared by processes, the prescribed
-  values, the linear solve, the checkpoint numbering and the field files) has
-  the serial identity by default, and a `DistributedProblem` implements it
-  for its local problem, whose own drivers then solve the whole problem. The
-  two copies of each driver had drifted apart: the distributed solve now has
-  the backtracking line search, and a step of a stateful material starts from
-  its committed history by an explicit flag of the step instead of a
-  comparison of the solution vectors.
-- The bounds of an axis of `generate_rectangle_mesh` and `generate_box_mesh`
-  are also given as a pair, `x=[0, 0.1]`, in place of `x_min` and `x_max`
-  (both together are refused), and so in a case file. Coordinates given with
+  Newton's method can cycle, and no line search otherwise.
+- **A diverging Newton iteration stops** when the residual reaches $10^6$
+  times its first value, with an error that says so and names the remedies.
+- **`solve` and `solve_transient` take their defaults from the C++
+  `SolverOptions` and `TransientOptions`**, which also fill the defaults in
+  their docstrings.
+- **The method follows the physics by default.** A problem with an
+  equal-order flow takes DMCDM, together with any solid or heat conduction
+  beside the flow, and every other problem takes FEM. `method="FEM"` or
+  `"DMCDM"` chooses one, and `Problem.method` holds this spelling.
+- **Abbreviations in the input are written in capitals and proper names with a
+  capital**: `advection_scheme="SUPG"`, the methods `"FEM"` and `"DMCDM"`,
+  and the nonlinear solvers `"Newton"` and `"Picard"`. The lower-case
+  spelling is accepted.
+- **The default formulation of `fluid_dynamics`** keeps the pressure:
+  Taylor-Hood (`"Taylor-Hood"`) when `method="FEM"` is given on a quadratic
+  mesh, and the equal-order formulation (`"equal_order"`, formerly
+  `"pressure"`) otherwise. `penalty_parameter` is refused with any formulation
+  but `"penalty"`.
+- **The advection of a flow conserves heat and momentum exactly.** In an
+  equal-order flow the `advection` kernel carries the velocity
+  $\mathbf{w} = \mathbf{v} - \tau \mathbf{r}_m$ that the stabilised mass
+  equation conserves (Hughes and Wells 2005), with $\tau$ the stabilisation
+  parameter and $\mathbf{r}_m$ the momentum residual: a source for FEM, and
+  for DMCDM a face flux with every scheme, on the boundary faces too. The
+  heat and the momentum are conserved exactly against the discrete mass flux,
+  and the temperature does not depend on its scale. At the old time of a
+  Crank-Nicolson step $\mathbf{w}$ is the velocity that the previous step
+  conserved. The penalty and Taylor-Hood formulations carry $\mathbf{v}$.
+- **The stabilised residual is consistent on quadratic elements.** The
+  momentum residual of the stabilisation takes the viscous term, and the SUPG
+  of the heat the conduction, from the second derivatives of the shape
+  functions, with the exact Jacobian. Poiseuille flow is exact to round-off on
+  `Quad9` and `Tri6` with both methods. Linear elements, inside which the
+  Laplacian vanishes, keep the standard residual.
+- **The stabilisation parameter $\tau$ has the factor 9 on its viscous and
+  conductive term**, as MOOSE's navier_stokes module takes it, for the
+  stabilised flow of every method, the SUPG of the heat and the projection.
+  Its viscous limit $h^2 / (12 \nu)$, with $h$ the element size and $\nu$ the
+  kinematic viscosity, is that of the optimal parameter of linear elements.
+- **The pressure level of an enclosed flow is fixed automatically.** When no
+  boundary determines the pressure, Newton's method holds the pressure
+  unknown nearest the centre of the fluid and shifts the converged pressure to
+  a mean of zero over the fluid, with the reactions taken after the shift.
+  The result is the same on any number of processes. A boundary velocity whose
+  net flux is not zero is reported with its size, and a level that changes the
+  flow (a property or source that depends on the pressure) is refused. A
+  `point_Dirichlet` condition on the pressure still prescribes its value at a
+  point.
+- **A steady flow at rest starts from the Stokes solution**, the same problem
+  without the inertia, when the velocity is zero wherever no condition
+  prescribes it. A start set by the user is kept.
+- **The initial temperature of `heat_conduction` is 293.15 K** (COMSOL's
+  default).
+- **Structural formulations of `solid_mechanics`.** The beams and plates are
+  formulations of `solid_mechanics`: `formulation="plate"`, `"beam"` with
+  `theory="Euler-Bernoulli"` or `"Timoshenko"` and, for Timoshenko,
+  `beam_formulation="mixed"` or `"displacement"`, and `"circular_plate"` with
+  `theory="first_order"` or `"classical"`. The variables of a plate are
+  `disp_x`, `disp_y`, `disp_z`, `phi_x` and `phi_y`, of a beam `disp_x`,
+  `disp_z` and `bending_moment` or `phi`, and of a circular plate `disp_r`,
+  `disp_z` and `phi` or `bending_moment`. A section is given by its material
+  (`youngs_modulus`, `poissons_ratio` and the `thickness` or the
+  `cross_section`), integrated through the thickness at every integration
+  point, so a modulus that depends on the height $z$ above the mid-surface or
+  on the fields enters exactly, or by the section stiffnesses of its theory.
+  The shell takes the section of the plate. `thermal_expansion` acts on the
+  structures. An end without a condition is free, and the word `symmetry` on
+  a beam end holds the axial displacement and the slope. A plate takes
+  `Quad4` elements and a beam or circular plate `Edge2`, the elements that the
+  one-point integration of the shear unlocks. `solid.stress(z=...)` gives the
+  stress at the element centres, for a structure at a height above the
+  mid-surface (a number, `"top"`, `"mid"` or `"bottom"`). Checked against the
+  closed-form stiffnesses of graded sections, free thermal expansion and the
+  thermal bending of a graded cantilever.
+- **Poisson's ratio has no default value.** A continuum reads the property
+  `poissons_ratio` of its property objects, and a plate, a circular plate and
+  a Timoshenko beam given by its material, or a plate given by its section
+  stiffnesses, need it given. `fgm.beam_stiffness` takes `poissons_ratio` as
+  a required keyword.
+- **One thermal strain**: `thermal_expansion_eigenstrain` takes
+  `linear_expansion_coefficient` as a constant, a function or an expression of
+  the temperature, also in a case file, with the secant definition
+  $\varepsilon = \alpha(T)(T - T_0)$, where $\varepsilon$ is the thermal
+  strain, $\alpha$ the mean coefficient between the stress-free temperature
+  $T_0$ and the temperature $T$. The coupling passes it to the continuum and
+  the structures alike. `parsed_eigenstrain` is for an eigenstrain given as an
+  expression of the state, and refuses a `stress_free_state` whose expression
+  reads a property.
+- **One isotropic stress object.** `small_strain_stress` serves every
+  formulation, and reads its moduli from the property objects in plane stress
+  as in the other formulations. The thermal strain is an eigenstrain of
+  `thermal_expansion_eigenstrain`. A property object may skip an output that
+  no object reads, so `small_strain_stress` forms the deformation gradient and
+  the von Mises stress only when they are read.
+- **Plain names in the input.** The post-processors are `integral`,
+  `average`, `maximum`, `minimum`, `point_value` and the flows through a
+  boundary. `solve_transient` takes `time_step`, `time_scheme`
+  (`"backward_Euler"`, the default, `"Crank-Nicolson"` or `"forward_Euler"`),
+  `min_time_step` and `max_time_step` (formerly `dt`, `theta` or
+  `implicitness`, `dt_min` and `dt_max`). The expansion coefficients name
+  their kind: `volumetric_expansion_coefficient` for the Boussinesq buoyancy
+  of a flow and `linear_expansion_coefficient` for a solid, and every `coeff`
+  is `coefficient`. `add_point_source` takes no type name. The objects that
+  compute named properties are property objects: `problem.add_property(type,
+  name, ...)` (formerly `add_material`), category `property`, `PythonProperty`
+  (formerly `PythonMaterial`) and the C++ base class `Property` (formerly
+  `Material`). The word material is kept for physical substances.
+- **Input without repetition.** The object types are named without their
+  category: `Dirichlet`, `Neumann`, `Robin`, `point_Dirichlet`, `periodic`,
+  `traction`, `pressure`, `symmetry`, `mass_flux`, `constant` and `parsed`
+  (formerly `generic_constant_material` and `parsed_material`), and a
+  misspelled name is answered with the closest registered one. `variable`
+  takes a list, which adds one object per variable, and the component of a
+  vector equation follows from its variable. A parameter and its `*_property`
+  twin are one parameter that takes a number, a function, an expression or a
+  property. Lists of names and values are dicts (`properties`, `constants`,
+  `creep_constants`, `property_factors`, `stress_free_state`). Nodal
+  conditions take no quadrature parameters.
+- `time_derivative` takes its coefficient as an expression, which may depend
+  on the fields.
+- **Quadrature names are canonical and case-sensitive**: `automatic`, `gauss1`
+  to `gauss20`, `midpoint`, `trapezoid`, `simpson`, `nodal`, `interface` and
+  `control_domain_trapezoid`. A Gauss rule name with other characters after
+  its number is refused.
+- **`**` takes a float base with an `ADReal` exponent.**
+- **The bounds of an axis** of `generate_rectangle_mesh` and
+  `generate_box_mesh` are also given as a pair, `x=[0, 0.1]`, in place of
+  `x_min` and `x_max` (both together are refused). Coordinates given with
   bounds are refused, where the bounds were ignored.
-- A free end of a mixed beam or of a classical circular plate holds no
-  moment by itself: `solid_mechanics` holds the moment at zero on every end
-  that is not clamped (`fixed`), not a plane of symmetry and has no moment of
-  its own. The natural condition of the moment equation is a zero slope, so an
-  end left without a condition was a guided end: a cantilever deflected 0.34
-  (Timoshenko) or 0.33 (Euler-Bernoulli) of its exact tip deflection.
-- Poisson's ratio is 1/3 by default everywhere it is not given (the property
-  `poissons_ratio` when a property object declares it), and the report marks
-  it as a default. Young's modulus has no default, and its absence is named.
-- A plate or circular plate given by its material needs its `thickness`. The
-  thickness is refused in three-dimensional, axisymmetric and beam problems,
-  and with section stiffnesses.
-- A section given by its stiffnesses takes those of its theory: A and D, and S
-  for the Timoshenko beam and the first-order plates (B may be left out). A
-  stiffness the theory does not use is refused, and so is a Timoshenko beam
-  section given by area and second moment without its `shear_correction`.
-- The beam and plate formulations refuse quadratic elements: their reduced
-  integration of the shear is right for linear elements only.
-- `stress(z)` refuses a height outside the section, and `body_force` needs one
-  value per displacement component.
-- The structural kernels require `stress_free_temperature` with a temperature
-  and their stiffnesses with no material, and default Poisson's ratio to 1/3.
-- The units of `transverse_load` and `foundation_modulus` are stated per
-  member (plate or beam).
-- `elastic_strain` of the neo-Hookean law is the Green-Lagrange strain of the
-  elastic part of the deformation, and `volumetric_strain` at finite strain is
-  J - 1.
-- A property object may skip an output that no object reads. The registry of
-  properties knows the outputs that kernels, conditions, expressions and
-  post-processors read, and `small_strain_stress` forms the deformation
-  gradient and the von Mises stress only for them. Assembly of linear
-  elasticity takes the time it took with `linear_elastic_stress`.
-- `refined()` carries the side sets over in a time proportional to the mesh:
-  1.26 million `Hex8` elements take 7.8 s, against 131 s before, and 1.28
-  million `Quad4` elements 2.6 s, against 9.6 s.
+- **The default diagonal of a triangle mesh** is `"alternate"`, which keeps
+  the mesh symmetric under reflection.
+- `mesh_from_arrays` takes the `(element_type, nodes, block)` triples of
+  `Mesh.cells()`, so a mesh is rebuilt from its own cells.
+- `refined()` carries the side sets over in a time proportional to the mesh.
 - The outward normal of an element side comes from the stored normal of the
   reference side, mapped by the element (the relation of Nanson), in place of
   a test against the element centroid. `write_sidesets` writes through meshio.
-- **`general_form_PDE`** takes the equations as text or by their
-  coefficients; `flux`, `source`, `time_derivative_coefficient`, `constants` and
-  `expressions` are removed, and `coefficient_form_PDE` is merged into it.
-- **Input without repetition** (sweep of the input for information given
-  twice): the object types are named without the category
-  (`Dirichlet`, `Neumann`, `Robin`, `point_Dirichlet`, `periodic`,
-  `traction`, `pressure`, `symmetry`, `mass_flux`, `radiative_heat_flux`,
-  `constant`, `function`, `parsed`; the old names are removed, and a
-  misspelled name is answered with the closest registered one); `variable` takes a list, which adds one object per variable;
-  the component of a vector equation follows from its variable; every
-  coefficient is `*_coefficient`; a parameter and its `*_property` twin are one
-  parameter that takes a number, a function, an expression or a property;
-  lists of names and values are dicts (`properties`, `constants`,
-  `creep_constants`, `property_factors`, `stress_free_state`); nodal
-  conditions take no quadrature parameters.
-- The expansion coefficients name their kind: `volumetric_expansion_coefficient` for
-  the Boussinesq buoyancy of a flow, `linear_expansion_coefficient` for a solid.
-- `time_derivative` takes its coefficient as an expression, which may depend
-  on the fields.
-- **Three modules**: `heat_transfer`, `solid_mechanics` and `fluid_dynamics`
-  (was `incompressible_flow`), with their couplings, and `general_form_PDE`.
-  The `beam`, `plate` and `circular_plate` physics are formulations of
-  `solid_mechanics` (`formulation="plate"`, `"beam"` with
-  `theory="Euler-Bernoulli"` or `"Timoshenko"` and, for Timoshenko,
-  `form="mixed"` or `"displacement"`, `"circular_plate"` with
-  `theory="first_order"` or `"classical"`), whose section is given by its
-  material (`youngs_modulus`, `poissons_ratio` and the `thickness` or the
-  `cross_section`) or by its section stiffnesses. The results equal those of
-  the former physics. The variables of a plate are `disp_x`, `disp_y`,
-  `disp_z`, `phi_x`, `phi_y`; of a beam `disp_x`, `disp_z` and
-  `bending_moment` or `phi`; of a circular plate `disp_r`, `disp_z` and
-  `phi` or `bending_moment`. The former names are removed.
-- **The structural sections are computed from the material**, as MOOSE's
-  shells and beams do: given `youngs_modulus` (and `poissons_ratio` with the
-  `thickness` or the `cross_section`), the plate, beam and circular-plate
-  kernels integrate the material law through the thickness at every
-  integration point, at `through_thickness_points` Gauss points. A modulus
-  that depends on z (a graded section) or on the fields (E(T)) enters
-  exactly, with its derivatives. `thermal_expansion` acts on the structural
-  formulations: the thermal strain alpha (T - T_0) gives the thermal force
-  and moment of the section. Checked against the closed-form stiffnesses of
-  graded sections and against free thermal expansion and the thermal bending
-  of a graded cantilever.
-- **`solid_mechanics.stress(z=...)`**: the stress at the element centres; for
-  a structural formulation at a height above the mid-surface (a number, or
-  "top", "mid", "bottom"), from the material law of the section with its
-  thermal strain.
-- Objects added without a name by one call for several variables no longer
-  take a name that such a call already used.
-- **Each physics defines its variables**, and names are given only in
-  `general_form_PDE`: `temperature` (heat_transfer); `disp_x`, `disp_y`,
-  `disp_z` (`disp_r`, `disp_z` axisymmetric; solid_mechanics);
-  `velocity_x`, `velocity_y`, `velocity_z` and `pressure`
-  (fluid_dynamics). The parameters `temperature`,
-  `displacements`, `velocities`, `pressure`, `in_plane_displacements`,
-  `rotations`, `axial_displacement` and the like are removed.
-- `general_form_PDE` takes its fields as a list whose items are names
-  (scalar) or one-entry dicts, `variables=[{"U": "vector"}, "p"]`.
-- A boundary condition written as text takes definitions as keywords
-  (`"total_force = [0, -F, 0]", F=150.0`); `normal_flux` finds its field by
-  the kind of its value; a traction and a pressure may depend on the
-  displacements.
-- `nonisothermal_flow` reads the density from the flow and the specific heat
-  from the heat transfer, and no longer takes them itself;
-  `fluid_dynamics` takes `initial_condition`; the in-plane load of a
-  plate is one list, `in_plane_load=[f_x, f_y]`.
-- **A boundary condition of a physics is written as text**; the type with
-  keywords (`heat.add_boundary_condition("Dirichlet", "left", value=40.0)`)
-  is refused with a message that shows the text form. The words without
-  data stay: `fixed` and `symmetry` of a solid, and `periodic`. The object
-  level (`problem.add_boundary_condition("Dirichlet", ...)`) is unchanged.
-
-- **A physics has no name.** `add_physics` takes the type and the parameters
-  only; the variable it is assigned to names it. A coupling takes its physics
-  as the objects that `add_physics` returned (`heat_transfer=heat`), or none
-  when the problem has only one physics of each type it couples.
-- The documentation states its problems by themselves rather than by the
-  numbers of the textbook examples they came from, and the verification page
-  lists each problem with what it is checked against.
-- The method `variables()` of a physics is renamed `variable_names()`.
-- `gas_gap_heat_transfer` takes the data of the surfaces from the case, with
-  no default: the roughnesses, the emissivities and, with a
-  `contact_penalty`, the Meyer hardness and the conductivities of the two
-  bodies. Every mole fraction of the gas has the default 0.
-- The author of the software is Mohamed AbdulHameed, with his ORCID iD, in
-  `CITATION.cff`, `pyproject.toml` and the documentation.
-- The citation is the software alone (`CITATION.cff`, the README and the
-  documentation). Its abstract covers heat transfer, solid mechanics, fluid
-  dynamics, general partial differential equations and uncertainty
-  quantification.
-- Names written out in full: `solve_transient` takes `time_step`,
-  `time_scheme`, `min_time_step` and `max_time_step` (were `dt`, `theta`,
-  `dt_min` and `dt_max`), the
-  uncertainty quantification uses `standard_deviation` (`uq.Normal`, the
-  `standard_deviation` methods of the results, `return_standard_deviation`
-  of `GaussianProcess.predict`), and `fgm.beam_stiffness` takes
-  `poissons_ratio`.
-- The Taylor-Hood formulation of `incompressible_flow` is named
-  `Taylor-Hood`.
-- `linear_solver="automatic"` iterates with algebraic multigrid where it
-  used BiCGSTAB with ILU(0).
+- **One input-error class**: `dualmesh.InputError`, raised by the C++ core and
+  the Python input alike.
+- **`dualmesh.SolveResult` is a Python class** that wraps the library's
+  result, and the extension type is no longer patched at import.
+- **The Python modules import in one direction**, from `_core` and `units` up
+  through `model`, `physics` and `engine` to `input` and `case`, with no
+  import cycles. `dualmesh.physics` is a package with one module per physics,
+  and every public name keeps its import path.
+- **The C++ libraries include in one direction**: `core`, `mesh`, `fe`,
+  `linalg` and `base`, with `modules` and `parallel` on top and independent of
+  each other. `ReferenceElement` moves to `mesh/` and `Communicator` to
+  `linalg/`. The modules register their objects through `registerAllObjects()`
+  (`dualmesh/modules/Registry.h`), which a C++ program calls once before it
+  makes a `Problem`, and the Python module calls on import.
+- **The flow and solid work leaves `Problem`**: the flow preconditioner
+  blocks, the pressure level of an enclosed flow, the at-rest test and the
+  projection of the initial velocity are in the fluid module behind the
+  `FlowSystem` hook, and the near null space, the displacement groups, the
+  crack tip integrals and the section stresses in the solid module behind
+  `SolidSystem`. One C++ operator builder, `Problem::operatorOf`, serves the
+  projection and the eigenvalue study. The solid mechanics source is split by
+  responsibility within the one module, with shared declarations in
+  `SolidMechanics.h`.
+- **`Kernel` keeps the hooks every kernel needs.** The hooks of one family
+  move to small base classes: `StorageKernel`, `MassEquation`,
+  `AdvectiveKernel`, and `SectionKernel` in the solid module. The assembly
+  finds them once per kernel group. The methods of `Problem` that initialise
+  on first use are non-const. `dualmesh/core/Coordinates.h` holds the measure
+  factor ($1$, $2\pi r$ or $4\pi r^2$, with $r$ the radius) and the hoop terms
+  of a divergence and of a strain. The functions of the expression language
+  have one table in C++.
+- **C++20.** The core builds with the C++20 standard, so it needs a C++20
+  compiler: GCC 10 or Clang 10, or newer.
 - The Python code is formatted by `ruff format` with a line length of 100
-  characters, which wraps a long call with one argument on each line.
-
-- **Property objects.** The objects that compute named properties at the
-  integration points (conductivities, stresses, eigenstrains, cross
-  sections) are property objects: they are added with
-  `problem.add_property(type, name, ...)` (was `add_material`), their
-  category is `property` (`dualmesh list --category property`), and the
-  word material is kept for physical substances. Renamed with them:
-  `constant_property` (was `generic_constant_material`), `function_property`
-  (was `generic_function_material`), `parsed_property` (was
-  `parsed_material`, whose `material_property_names` is now
-  `coupled_properties`), `PythonProperty` (was `PythonMaterial`) and the
-  C++ base class `Property` (was `Material`).
+  characters.
+- The author of the software is Mohamed AbdulHameed, with his ORCID iD, in
+  `CITATION.cff`, `pyproject.toml` and the documentation. The citation is the
+  software alone.
 
 ### Removed
 
-- `load_factors` of `solve` and `scale_with_load` of every object and of
-  `nonisothermal_flow`: the solve continues a problem by itself, and whether
-  an object is data is a property of its type.
-- `gap_contact` (penalty contact): mortar contact replaces it.
-- `mass_flux_boundaries` of `fluid_dynamics`: the mass equation takes the flow
-  through every boundary.
-- `Problem.values_at_nodes`: `values(v)[nodes]` gives it.
-
-
-- `absolute_tolerance` of `solve` and `solve_transient`: it had a unit (a
-  problem in millimetres stopped one Newton step earlier than in metres), and
-  the convergence of each equation against its own terms replaces it.
-
 - **The vertex-centred (`"HFVM"`) and cell-centred (`"ZFVM"`) finite volume
-  methods**, with `boundary_gradient`, `Problem.is_cell_centered` and
-  `Problem.boundary_entities`. Two
-  methods remain: FEM, the more accurate for solids (order p + 1 on
-  quadratic elements, every element type, the structures and Taylor-Hood),
-  and DMCDM, for fluids, as accurate as equal-order FEM, locally
-  conservative and 30 % faster per projection step. HFVM, with the same
-  unknowns as DMCDM, was within 1 % of it on the Kovasznay flow and up to
-  twice as far from the exact solution on conduction. ZFVM was seven times
-  less accurate on the cavity at Re = 1000 and the slowest.
-- `pressure_pin_point`, `stabilization` and `streamline_stabilization` of
-  `fluid_dynamics`. The pressure level of an enclosed flow is fixed
-  automatically. The pressure stabilisation is always on for the equal-order
-  element and off for Taylor-Hood. The advection of the momentum takes SUPG. A
-  `point_Dirichlet` condition on the pressure still prescribes its value at a
-  point.
-- `linear_elastic_stress`, merged into `small_strain_stress`: one isotropic
-  stress object for every formulation. The thermal strain is an eigenstrain of
-  `thermal_expansion_eigenstrain`. The orthotropic option (`stiffness_c11` to
-  `stiffness_c66`), which was untested and ignored in axisymmetric problems,
-  is removed.
-- `coefficient_form_PDE` (merged into `general_form_PDE`), and the objects
-  that repeated another one: `heat_flux_boundary_condition` and
-  `convective_heat_flux_boundary_condition` (now `Neumann` and `Robin`, or
-  the words `heat_flux` and `convective_heat_flux` of `heat_transfer`),
-  `fixed_constraint` (`Dirichlet` on the displacements, or the word `fixed`
-  of `solid_mechanics`) and the `heat_source` kernel (`body_force`).
-
-- **Publication on PyPI**: the publish job of the Wheels workflow, the PyPI
-  gates of `scripts/release.py` and the installation from PyPI. dualmesh is
-  installed from source; the wheels of a release are the artifacts of its
-  tag build.
-- The solver option `verbose` and the `progress` parameter of the
-  uncertainty studies (both replaced by `report`), and the `output_interval`
-  and `output_file_base` parameters of `Problem.solve_transient` (replaced by
-  `output=dm.Output(...)`).
+  methods**, with `boundary_gradient`, `Problem.is_cell_centered`,
+  `Problem.boundary_entities` and the method aliases `fvm`, `finite_volume`,
+  `vertex_finite_volume`, `finite_element`, `dual_mesh` and
+  `cell_finite_volume`. Two methods remain: FEM, the more accurate for solids
+  (every element type, the structures and Taylor-Hood), and DMCDM for fluids,
+  locally conservative.
+- **The built-in linear solvers**, with the options `linear_solver` and
+  `preconditioner`, the function `have_petsc` and the CMake option
+  `DUALMESH_ENABLE_PETSC`. PETSc solves every system, and `petsc_options`
+  chooses its solver.
+- `absolute_tolerance` of `solve` and `solve_transient`: it had a unit, and the
+  convergence of each equation against its own terms replaces it.
+- `load_factors` of `solve` and `scale_with_load` of every object: the solve
+  continues a problem by itself, and whether an object is data is a property
+  of its type.
+- The solver option `verbose` (replaced by `report`), and the
+  `output_interval` and `output_file_base` parameters of
+  `Problem.solve_transient` (replaced by `output=dualmesh.Output(...)`).
+- **The kernels `heat_convection` and `convective_inertia`**, replaced by
+  `advection`, and the parameter `stabilization` of `mass_conservation`: the
+  pressure stabilisation is always on for the equal-order element and off for
+  Taylor-Hood.
+- `linear_elastic_stress`, merged into `small_strain_stress`, with its
+  untested orthotropic option (`stiffness_c11` to `stiffness_c66`).
+- `heat_flux_boundary_condition`, `convective_heat_flux_boundary_condition`
+  and the `heat_source` kernel: use `Neumann`, `Robin` and `body_force`, or a
+  condition written as text.
+- `gap_contact` (penalty contact), replaced by mortar contact, and
+  `gas_gap_heat_transfer`.
 - The classes `mms.Term`, `mms.Diffusion`, `mms.Advection`, `mms.Reaction`,
   `mms.TimeDerivative`, `mms.LinearElasticity` and `mms.IncompressibleFlow`.
   `mms.ManufacturedSolution` takes the physics of the physics level
-  (`study.add_physics(...)`, as for a problem), and the boundaries that get
-  the exact flux in place of the exact solution are its `flux_boundaries`.
+  (`study.add_physics(...)`), and the boundaries that get the exact flux in
+  place of the exact solution are its `flux_boundaries`.
 - The helpers `dualmesh.physics.add_plane_elasticity`,
   `add_incompressible_flow`, `add_boussinesq_buoyancy`, `add_beam`,
   `add_plate` and `add_circular_plate`, replaced by the physics level.
-- The class `DistributedProblem`, replaced by `Problem`, which splits itself
-  under `mpirun` (or with `distributed=True`).
-- YAML input files and the command `dualmesh run`. A problem and an
-  uncertainty study are described in a Python script, which runs with
-  `python script.py`, or with `mpirun -n 4 python script.py` for a
-  distributed problem. The example `examples/bus_bar.yaml` is replaced by
-  `examples/bus_bar.py`, the optional dependency `input` (PyYAML) is removed,
-  and `dualmesh mesh` reads a mesh file.
+- The Python class `DistributedProblem`, replaced by `Problem`, which splits
+  itself under `mpirun` (or with `distributed=True`), and the C++
+  `DistributedOptions.verbose`.
+- `dualmesh.postprocess` (sample a profile with `Problem.sample` or a `line`
+  postprocessor of the input, and compute orders with
+  `dualmesh.mms.convergence_rates`),
+  and `Mesh.vtk_node_order`, which was the identity for every element.
+- `dualmesh.input_error` (use `dualmesh.InputError`) and `dualmesh.pow` (write
+  `**`).
+- `Problem.values_at_nodes`: `values(v)[nodes]` gives it.
+- `save_state` and `restore_state`.
+- **Second spellings of names.** The coordinate systems `xyz`, `rz` and
+  `cylindrical` (use `cartesian` and `axisymmetric`), the element names of
+  Exodus and meshio (`QUAD4`, `triangle`, `Prism6` and the rest: use `Quad4`,
+  `Tri3` and `Wedge6`, and `read_mesh` converts the names of a file), the
+  quadrature aliases `auto`, `trapezoidal`, `lumped`, `centroid`,
+  `cd_trapezoid` and a bare `gauss`, and the spellings `sym`, `dev`, `det`,
+  `ddot` and `if` of the expression language.
+- **Publication on PyPI**: the publish job of the Wheels workflow, the PyPI
+  gates of `scripts/release.py` and the installation from PyPI. dualmesh is
+  installed from source, and the wheels of a release are the artifacts of its
+  tag build.
 
 ### Fixed
 
-- **Distributed FEM with hanging nodes.** Each process now folds the equation
-  of a hanging node or a periodic copy into its primaries before the processes
-  add their residuals, as it already did with the Jacobian. Before, the
-  residual was folded after the sum, and the solver read a row from the
-  process that owns it, which need not hold the constraint that folds into
-  the row: the patch test on a mesh refined twice at a corner missed the
-  linear field by 4.0e-3 on 3 processes (simple partition), now exact to
-  round-off on 1 to 6. The reactions read the residual folded the same way.
-- **The start of a dynamic run.** The start acceleration is taken at the
-  start of the first step: before, the prescribed values were differenced at
-  its end, so a boundary value of u = 1 + 2x - 3y + c t^2 gave the boundary an
-  acceleration of 1.5e6 in place of 2c = 1.5, and the field, exact for both
-  schemes, was missed by 9.6e-3 after three steps; it is now exact to
-  round-off. On several processes the inertia of the prescribed nodes, which
-  each process holds for its own elements only, is added over the processes
-  before the owner of a row reads it, and the start residual is folded before
-  the sum. `set_gathered_velocities` now also sets the velocity of a
-  second-order variable that no physics defines.
-- **The theta method with an equation that has no time derivative.** The
-  mass equation of an incompressible flow and the equilibrium of a
-  quasi-static solid are now taken at the new time with the weight 1 for
-  every time scheme, and so are the pressure gradient and the stabilisation
-  of a flow, whose residual is that of the discrete momentum equation.
-  Before, Crank-Nicolson made the pressure an average of two steps, whose
-  error changed sign at every step and grew (5.2e-2 after four steps on a
-  flow that backward Euler gives to round-off, now exact to round-off), and
-  it evaluated creep at the old time without the material history (a strain
-  185 % too large, now exact). An explicit step solves such an equation at
-  the new time.
-
+- **Spherical flows carry their hoop terms.** The divergence of the velocity
+  includes $2 v_r / r$, with $v_r$ the radial velocity, and the radial
+  momentum equation the hoop stresses of both hoop directions, where the flow
+  kernels treated spherical coordinates as Cartesian.
+- **The penalty pressure of axisymmetric and spherical flows under DMCDM** is
+  the pressure of the discrete equations, to second order, where it was wrong
+  by a multiple of $\gamma h^2$, with $\gamma$ the penalty parameter and $h$
+  the element size: the hoop term of the divergence takes the radius of the
+  point where the reduced rule evaluates the velocity.
+- **The stabilisation of a flow of several blocks** takes the density and
+  viscosity of each block, where it took the first block's everywhere.
+- **Lumped weights in axisymmetric and spherical coordinates** integrate the
+  coordinate factor: $\int_{CD_a} 2\pi r \, dA$ for DMCDM and
+  $\int \psi_a \, 2\pi r \, dA$ for FEM ($4\pi r^2$ in spherical
+  coordinates), with $CD_a$ the control domain of node $a$ and $\psi_a$ its
+  shape function. They used the Cartesian measure times the factor at the
+  node, which gave zero storage and source at nodes on the axis or at the
+  centre. The node measures and the reported boundary flux follow.
+- **Buoyancy needs the density of the fluid.** A flow without a positive
+  density no longer gets $\rho = 1$ in its Boussinesq force, and a gravity
+  of the wrong length is refused.
+- **`gap_heat_transfer` refuses an emissivity outside $(0, 1]$** and one
+  emissivity without the other.
+- **The theta method with an equation that has no time derivative.** The mass
+  equation of an incompressible flow and the equilibrium of a quasi-static
+  solid are taken at the new time with the weight 1 for every time scheme, and
+  so are the pressure gradient and the stabilisation of a flow. Before,
+  Crank-Nicolson made the pressure an average of two steps, whose error
+  changed sign at every step and grew ($5.2 \times 10^{-2}$ on a flow that
+  backward Euler gives to round-off), and it evaluated creep at the old time
+  without the material history (a strain 185 % too large). An explicit step
+  solves such an equation at the new time.
 - **The time derivative inside a streamline stabilisation with
-  Crank-Nicolson.** `momentum_stabilization` and the new
+  Crank-Nicolson.** `momentum_stabilization` and
   `heat_streamline_stabilization` put the time derivative inside a steady
-  term, which the theta method weights by theta and evaluates again at the old
-  time without it. The derivative now enters with the weight 1. Before, SUPG
-  of the energy equation converged at order 0.7 to 1.1 with Crank-Nicolson.
-  Backward Euler is unchanged. The explicit step (forward_Euler), which
-  cannot weight that derivative, refuses these kernels and the stabilised
-  `mass_conservation` of a flow with inertia, and so does the eigenvalue
-  study, whose mass operator does not hold that derivative. A stabilised
-  Stokes flow has none and keeps both.
-- **An error raised inside the threaded assembly** reached Python as a
-  RuntimeError, not as the InputError it was.
-- **An error of an object named it twice** ("advection 'advection_0':
-  advection 'advection_0': ..."). The type and the name now come once.
-
-- A run on several processes could hang when Python's cycle collector freed
-  a distributed problem: its MPI, PETSc and gslib objects must be destroyed
-  by every process together, and the collector runs whenever each process
-  happens to run it (a sequence of the parallel tests hung on two processes).
-  A collected distributed problem is now kept until the next collective point
-  (a new problem, a solve, or the end of the run), where every process
-  collects its cycles and destroys the kept problems in the order of their
-  creation.
-- `error_norms` of a distributed problem returned the norm of the part of each
-  process (too small by sqrt(2) on two processes). The squares now add over
-  the processes, so a convergence study gives the same numbers on any number
-  of them.
-- The error-controlled time step (`time_stepper="error"`) estimated its error
-  with the norm of each process, so the processes could disagree on a step
-  and wait for each other forever. The estimate uses the global norm.
-- A distributed nonlinear solve that stopped on the size of its step kept the
-  residual of the iterate before, so its reactions were stale. It assembles
-  the residual at the solution, as the serial solve does.
-- A distributed solve accepted any nonlinear solver or line search name and
-  ignored the backtracking line search. Unknown names are refused, and the
-  line search, which only the serial solve has, is refused by name.
-- A checkpoint check that failed on one process left the others waiting in
-  the next collective call. Every process now stops with the message.
-- In a run on several processes every process printed the report of a study
-  and wrote the `.pvd` index. The first process does both.
+  term, which the theta method weighted by $\theta$ and evaluated again at the
+  old time without it. The derivative now enters with the weight 1. The
+  explicit step (`forward_Euler`) and the eigenvalue study refuse these
+  kernels and the stabilised `mass_conservation` of a flow with inertia. A
+  stabilised Stokes flow has no such derivative and keeps both.
+- **No sliver step before an output or end time.** A target less than two
+  steps away is reached in two equal steps, and the steps after a step
+  shortened to land on a target grow back by at most `growth_factor` each,
+  within what the error estimate allows. Before, a step of 0.01 to the end
+  time 0.1003 ended with a step of $3 \times 10^{-4}$, and the step after
+  such a sliver was up to 33 times larger, past the ratio $1 + \sqrt{2}$ at
+  which the backward difference of order 2 is stable.
+- **`pow` of a zero or negative base.** In an equation or a property,
+  `pow(u, 2)` gave NaN where $u \le 0$, because its derivatives went through
+  $\exp(2 \ln u)$. It now differentiates as $p u^{p-1}$ for a constant
+  exponent $p$, as `u^2` does.
+- **Adaptive marking at the maximum refinement level.** The marker picked the
+  cells of the largest error, which near a singularity are the cells at the
+  maximum level, and then dropped them, so the loop stopped while other cells
+  still held error. The marker now sees only the cells that can be refined.
+- **Unconverged return maps are rejected.** The Newton iterations of the
+  creep and plasticity return maps, and of the zero out-of-plane stress of
+  plane stress, ended at their iteration limit without an error. A state they
+  do not solve is now rejected, and the nonlinear solve takes a smaller step.
+  They judge convergence on the full Newton step and on the stress scale.
+- **Distributed FEM with hanging nodes.** Each process folds the equation of a
+  hanging node or a periodic copy into its primaries before the processes add
+  their residuals, as it already did with the Jacobian. Before, the solver
+  read a row from the process that owns it, which need not hold the
+  constraint that folds into the row, so the patch test on a locally refined
+  mesh missed the linear field on several processes. The reactions read the
+  residual folded the same way.
+- **`Mesh.refined()` and `Mesh.second_order()` refuse a mesh with hanging
+  nodes**, which they would have left without constraints.
+- **FEM refuses the nodal and interface rules on `Tri6`, `Tet10`, `Quad8` and
+  `Hex20`**, where a corner shape function integrates to zero or less.
+- **`generate_annulus_mesh` names the sides of a sector** `inner`, `outer`,
+  `start` and `end`, and checks its arguments.
+- **Input checks that let bad values through:** a boolean parameter takes only
+  true or false, an integer parameter refuses a boolean and any real that is
+  not whole, `add_function` refuses a name in use, and `plate_first_order`
+  refuses `axial_load` (use `in_plane_load`).
 - Numbers outside the range a parameter states are refused when the object is
   made, naming the parameter and the value: a non-positive diffusivity,
   thermal conductivity, viscosity, specific heat, thickness or penalty, and a
   negative density, emissivity, transfer coefficient or foundation modulus.
   A negative diffusivity solved the anti-diffusion problem without a word.
-- A mesh without elements, a mesh that reaches x < 0 in axisymmetric or
+- A mesh without elements, a mesh that reaches $x < 0$ in axisymmetric or
   spherical coordinates, and a second `Dirichlet` value for the same variable
-  on the same boundary are refused (the second value silently replaced the
-  first, and the negative radius failed later in the nonlinear solver).
-- The method aliases `fvm`, `finite_volume`, `vertex_finite_volume`,
-  `finite_element`, `dual_mesh` and `cell_finite_volume` are removed: each
-  method has one name, and "finite volume" alone names two methods.
-- `mesh_from_arrays` takes the `(element_type, nodes, block)` triples of
-  `Mesh.cells()`, so a mesh is rebuilt from its own cells.
-- Newton's method accepts the round-off level of a badly scaled system: from
-  the third iteration, a residual that no longer falls, after a step of at
-  most 1e-8 of the solution, below 64 eps |J| |U|. A thin displacement
-  Timoshenko beam (L/h of 1000 and 10000) stalled there with FEM and was
-  reported as not converged, with its exact answer in hand. The serial and
-  the distributed solvers decide it by one rule.
-- Two physics on two blocks that share a field (a stepped beam) gave the
-  second block no unknowns, and their junction was taken for a free end. A
-  shared field now lives on the blocks of every physics that uses it, and the
-  ends are those of the field, with the end conditions of all of them.
-- The plate formulation refuses triangles, which lock with its one-point
-  shear rule (0.04 of the deflection of a thin plate on an 8 x 8 mesh).
-- A traction, pressure or gap contact condition took the thickness of the
-  first stress_divergence kernel of its displacement, whatever its block. It
-  now refuses kernels of different thicknesses, and stress_divergence refuses
-  a thickness in a three-dimensional or axisymmetric problem.
-- A negative thickness, section dimension or foundation modulus is refused,
-  and so is an end condition of a beam added after the first solve, whose
-  free ends were derived already.
-- `symmetry` on a boundary that does not determine its plane (a single node)
-  held disp_x. It is refused.
-- `stress(z)` of a beam on some blocks failed on the empty rows of the other
-  blocks, which are now NaN rows.
-- The object-level `beam_Timoshenko_displacement` described itself as
-  integrating the shear at the centre, which only the one-point rule of its
-  rotation equation does (the physics adds it so). The description says so.
-- `fgm.beam_stiffness` took Poisson's ratio 0.3 by default, against the 1/3
-  of the library.
-- The documentation named condition types that no longer exist
-  (`traction_boundary_condition` and the others) and stated that a wrong
-  thickness of an axisymmetric problem is accepted.
-- The distributed linear solve accepted a solve that PETSc reported as
-  converged on its preconditioned residual: algebraic multigrid on a matrix
-  with zero diagonal entries (the mixed beams) gave a zero step after 0
-  iterations, and the beam stayed at zero deflection on two processes. Every
-  PETSc solve is now checked by its true residual, and the automatic choice
-  falls back to the direct solver.
-- `gap_contact` of a plane problem ignored the thickness of the equations, so
-  its penalty acted as k / h.
+  on the same boundary are refused. The second value silently replaced the
+  first, and the negative radius failed later in the nonlinear solver.
+- A singular system (a part of the mesh that no boundary condition holds,
+  such as a floating body or a region without any temperature condition) is
+  reported with the variables and the extent of that part. It was solved
+  without an error and returned zero there. The check runs again when the
+  pattern of the Jacobian changes.
+- A traction or pressure condition took the thickness of the first
+  `stress_divergence` kernel of its displacement, whatever its block. It now
+  refuses kernels of different thicknesses, and `stress_divergence` refuses a
+  thickness in a three-dimensional or axisymmetric problem.
 - The plane-stress `volumetric_strain` left out the out-of-plane strain, which
   the `strain` property now holds.
-- The `stress()` docstring gave the Voigt order wrongly (it is xx, yy, zz, yz,
-  xz, xy).
-- Four of the five sides of the `Wedge6` element were stored in an order
-  whose right-hand normal pointed into the prism, so `write_sidesets` wrote
-  those faces wound inward. Every side of every element type is now wound
-  outward, which a test checks against the divergence theorem.
-- A mesh whose nodes had a constant coordinate that was not zero (a plate at
-  z = 0.5) became a surface in space, and so did a plane mesh with round-off
-  in z. A coordinate now moves a mesh into a higher space only when its range
-  is larger than 1e-12 times the size of the mesh.
+- Four of the five sides of the `Wedge6` element were stored in an order whose
+  right-hand normal pointed into the prism, so `write_sidesets` wrote those
+  faces wound inward. Every side of every element type is now wound outward,
+  which a test checks against the divergence theorem.
 - `read_mesh` found a physical name by its tag alone. Gmsh numbers its
   physical groups separately in each dimension, so a boundary could take the
   name of a volume group with the same tag. Names are now found by tag and
@@ -1112,61 +815,27 @@ All notable changes to this project are documented here. The format follows
   between two boundary nodes joined a boundary node set. One rule now serves
   all three: a node set gains an added node whose parents are all members,
   and a set on the boundary gains only added nodes on the boundary.
-- `refined()` oriented a surface again by the default rule, which could
-  reverse the orientation that a generator gave. It now keeps the
-  orientation of the coarse surface.
-- `add_bounding_box_sidesets` used the axes of the elements, so a surface in
-  space had no `back` and `front` side sets. It now uses the axes of the space
-  and skips an axis along which the mesh is flat.
 - `add_sideset_from_faces` kept the faces it had found when another face was
   not on the boundary. It now refuses the whole set and adds nothing.
-- A Gauss rule name with other characters after its number (`gauss3x`) was
-  read as `gauss3`, and `gaussx` failed with an internal error. Such names are
-  now refused with a message, and `gauss11` to `gauss20` are accepted.
 - An `Expression` of no variables raised an `IndexError` when it was
   evaluated. It now returns its value.
-- `mesh_from_arrays(..., dimension=2)` for a plane truss of `Edge2`
-  elements raised an error (the element dimension had to equal the mesh
-  dimension); `dimension` is now the space the nodes live in, as documented.
-- The C++ coverage job of CI stopped at the hit counts above 2^32 of the
-  automatic differentiation, which gcovr takes for a gcov bug; it now warns
-  about them.
-- The interval of a Sobol' index on a Gaussian process came from the random
-  functions of the process alone, so it could exclude the estimate (a total
-  index of 0.031 with the interval 0.049 to 0.142). The interval now holds
-  the bootstrap error of the estimate and the spread of the random functions
-  around their mean, and it is centred on the estimate.
-- A store of the uncertainty studies matched a run only when its input values
-  were equal to the last bit, so a store written with other versions of
-  NumPy and SciPy ran its runs again. It now matches the input values to a
-  relative tolerance of 1e-12.
-- `describe` of an input group failed on a list of groups and on a nested
-  list of numbers.
-- A singular system (a part of the mesh that no boundary condition holds,
-  e.g., a floating body or a region without any temperature condition) is
-  reported with the variables and the extent of that part. It was solved
-  without an error and returned zero there.
-- The thermal strain of a chromium coating uses the coefficient of
-  Holzwarth and Stamm as the mean coefficient from 20 degrees Celsius,
-  which is how they define it.
-- The temperature jump distance uses the constant of Lanning and Hann,
-  0.013748 in SI units.
-- `uq.calibrate` with `discrepancy="gaussian_process"` integrates the
-  discrepancy out of the likelihood as Kennedy and O'Hagan do, with its
-  hyperparameters at the joint posterior mode. The discrepancy was fitted
-  at the prior mean and subtracted from the data, which held the posterior
-  at the prior mean.
-- The singularity check runs again when the pattern of the Jacobian changes
-  (a constraint that appears folds rows into others, an interface condition
-  starts to couple two bodies), which the number of rows and entries is a
-  cheap signature of; it ran once per solve however the system changed.
-- The symmetry of the linear system is computed when a solver asks for it
-  (the conjugate gradient method and the automatic choice with the
-  multigrid), not every time a nonlinear problem stores a new matrix with a
-  Newton iteration.
-- The convergence diagnostic of `uq.calibrate` is the rank-normalized and
-  folded split R-hat of Vehtari et al. (2021), which detects chains of
-  different scales.
+- `error_norms` of a distributed problem returned the norm of the part of each
+  process. The squares now add over the processes, so a convergence study
+  gives the same numbers on any number of them.
+- The error-controlled time step (`time_stepper="error"`) estimated its error
+  with the norm of each process, so the processes could disagree on a step
+  and wait for each other forever. The estimate uses the global norm.
+- A run on several processes could hang when Python's cycle collector freed a
+  distributed problem, whose MPI, PETSc and gslib objects every process must
+  destroy together. A collected distributed problem is now kept until the next
+  collective point (a new problem, a solve, or the end of the run), where
+  every process destroys the kept problems in the order of their creation.
+- An error raised inside the threaded assembly reached Python as a
+  `RuntimeError` instead of the `InputError` it was.
+- The message of an error of an object names its type and name once.
+- The object-level `beam_Timoshenko_displacement` described itself as
+  integrating the shear at the centre, which only the one-point rule of its
+  rotation equation does. The description says so.
 
 ## [0.2.0] - 2026-09-27
 

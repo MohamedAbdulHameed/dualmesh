@@ -31,7 +31,6 @@ of a submodule as ``dualmesh.<module>.<name>``, for example
    eigenvalues
    manufactured_solutions
    sections
-   postprocessing
    parallel
    automatic_differentiation
    registry

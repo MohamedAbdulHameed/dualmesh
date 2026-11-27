@@ -1,1 +1,1 @@
-"""The input of dualmesh: units, standard names and the reading of input files."""
+"""The input of dualmesh: reading, validating and lowering the input tree onto the engine."""

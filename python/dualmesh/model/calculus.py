@@ -22,7 +22,7 @@ exact slope of the interpolant.
 The derivative of an `antiderivative` $H(u) = \\int^{u} f(u')\\,\\mathrm{d}u'$ by
 its variable $u$ is the integrand $f$. Its derivative by a leaf that $f$ does
 not read is zero. Any other derivative, by time included, stops with an
-`input_error`, since $H$ is never evaluated.
+`InputError`, since $H$ is never evaluated.
 
 `derivative_along` applies the chain rule over every leaf, for a derivative
 along a path on which each leaf changes at a given rate, such as the
@@ -31,9 +31,9 @@ derivative along a direction of space.
 
 import math
 
-from dualmesh.input.units import input_error
+from dualmesh._core import InputError
 from dualmesh.model.dimensions import comparisons, is_zero
-from dualmesh.model.expression import (
+from dualmesh.model.graph import (
     conditional,
     cos,
     cosh,
@@ -78,9 +78,9 @@ def differentiate(node: expression, variable: expression) -> expression:
     The result has the dimension of node over the dimension of variable.
     """
     if not isinstance(node, expression) or node.rank != 0:
-        raise input_error(f"differentiate needs a scalar expression, got '{node}'. Expand it first")
+        raise InputError(f"differentiate needs a scalar expression, got '{node}'. Expand it first")
     if not isinstance(variable, expression) or variable.rank != 0 or variable.operands:
-        raise input_error(f"differentiate needs a scalar leaf as the variable, got '{variable}'")
+        raise InputError(f"differentiate needs a scalar leaf as the variable, got '{variable}'")
     derivatives = {}
 
     def zero(current: expression) -> expression:
@@ -105,7 +105,7 @@ def differentiate(node: expression, variable: expression) -> expression:
         kind = current.kind
         operands = current.operands
         if current.rank != 0 or any(operand.rank != 0 for operand in operands):
-            raise input_error(
+            raise InputError(
                 f"differentiate needs a scalar expression, got '{current}'. Expand it first"
             )
         if kind == "conditional":
@@ -124,7 +124,7 @@ def differentiate(node: expression, variable: expression) -> expression:
                 return integrand
             if is_zero(derivative(integrand)) and is_zero(derivative(antiderivative_variable)):
                 return zero(current)
-            raise input_error(
+            raise InputError(
                 f"{current}: an antiderivative is differentiated only by its variable "
                 f"{antiderivative_variable}, here by {variable}"
             )
@@ -147,6 +147,10 @@ def differentiate(node: expression, variable: expression) -> expression:
         if kind == "power":
             if second.kind == "number":
                 return second * first ** (second.value - 1.0) * first_derivative
+            # An exponent that does not read the variable, such as a named constant, takes the
+            # power rule, which stays finite at a zero base.
+            if is_zero(second_derivative):
+                return second * first ** (second - 1.0) * first_derivative
             # Here the base is dimensionless, so log(base) exists.
             return current * (second_derivative * log(first) + second * first_derivative / first)
         if kind == "maximum":
@@ -157,7 +161,7 @@ def differentiate(node: expression, variable: expression) -> expression:
             return (second * first_derivative - first * second_derivative) / (first**2 + second**2)
         if kind == "hypot":
             return (first * first_derivative + second * second_derivative) / current
-        raise input_error(
+        raise InputError(
             f"differentiate does not know the kind '{kind}' of '{current}'. Expand it first"
         )
 

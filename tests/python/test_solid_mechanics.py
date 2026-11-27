@@ -475,6 +475,52 @@ def test_free_thermal_expansion_in_plane_stress():
     assert problem.values("disp_x")[right_edge] == pytest.approx(expected, rel=1e-9)
 
 
+@pytest.mark.parametrize("method", ["fem", "dmcdm"])
+def test_a_bar_heated_with_a_coefficient_linear_in_the_temperature_expands_by_the_secant_law(
+    method,
+):
+    r"""A free bar in plane stress, heated from $T_0$ to a uniform $T_1$, with the secant
+    expansion coefficient $\alpha(T) = a + b T$ given to the thermal_expansion coupling as an
+    expression of the temperature.  It carries no stress and stretches by the secant strain
+    $\varepsilon = \alpha(T_1) (T_1 - T_0)$ in every direction, so $u = \varepsilon x$ and
+    $v = \varepsilon y$.  The strain differs from the tangent integral
+    $a (T_1 - T_0) + b (T_1^2 - T_0^2)/2$ by $b (T_1 - T_0)^2 / 2$, which the check resolves.
+    The temperature is an unknown of the problem, so the Jacobian carries
+    $\partial\varepsilon/\partial T = \alpha'(T) (T - T_0) + \alpha(T)$, which the finite
+    difference of the residual checks."""
+    from test_Jacobian import compare, finite_difference_Jacobian
+
+    a, b, t0, t1 = 1.0e-5, 2.0e-8, 293.0, 793.0
+    mesh = dualmesh.generate_rectangle_mesh(
+        x_min=0.0, x_max=2.0, y_min=0.0, y_max=0.2, num_x_elements=10, num_y_elements=2
+    )
+    problem = dualmesh.Problem(mesh, method=method)
+    heat = problem.add_physics("heat_conduction", thermal_conductivity=50.0)
+    heat.add_boundary_condition("temperature = T1", boundary=["left", "right"], T1=t1)
+    solid = problem.add_physics(
+        "solid_mechanics",
+        formulation="plane_stress",
+        youngs_modulus=steel_youngs_modulus,
+        poissons_ratio=steel_poissons_ratio,
+    )
+    solid.add_boundary_condition("disp_x = 0", boundary="left")
+    solid.add_boundary_condition("disp_y = 0", boundary="bottom")
+    problem.add_coupling(
+        "thermal_expansion",
+        linear_expansion_coefficient=f"{a!r} + {b!r}*temperature",
+        stress_free_temperature=t0,
+    )
+    problem.solve(report="none")
+    secant = (a + b * t1) * (t1 - t0)
+    tangent = a * (t1 - t0) + b * (t1**2 - t0**2) / 2
+    assert abs(secant - tangent) > 0.1 * secant
+    points = numpy.asarray(mesh.points())
+    assert problem.values("disp_x") == pytest.approx(secant * points[:, 0], rel=1e-9, abs=1e-15)
+    assert problem.values("disp_y") == pytest.approx(secant * points[:, 1], rel=1e-9, abs=1e-15)
+    _, Jacobian = problem.linear_system()
+    assert compare(Jacobian.toarray(), finite_difference_Jacobian(problem)) < 1e-6
+
+
 def test_three_dimensional_thermal_stress_matches_plane_strain():
     """The same fully restrained problem in three dimensions must give exactly
     the plane strain answer, which is the statement that the two formulations

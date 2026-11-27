@@ -8,7 +8,8 @@ import re
 from fractions import Fraction
 
 import pytest
-from dualmesh.input.units import base, dimensionless, input_error, parse_quantity, parse_unit, to_SI
+from dualmesh._core import InputError
+from dualmesh.units import base, dimensionless, parse_quantity, parse_unit, to_SI
 
 length = base("length")
 mass = base("mass")
@@ -91,7 +92,7 @@ def test_compound_units_read_as_written():
     ],
 )
 def test_a_malformed_unit_is_refused(text, message):
-    with pytest.raises(input_error, match=re.escape(message)):
+    with pytest.raises(InputError, match=re.escape(message)):
         parse_unit(text)
 
 
@@ -123,14 +124,14 @@ def test_a_quantity_converts_to_SI(text, value, expected):
     ],
 )
 def test_a_malformed_quantity_is_refused(text, message):
-    with pytest.raises(input_error, match=message):
+    with pytest.raises(InputError, match=message):
         parse_quantity(text)
 
 
 def test_a_number_without_the_unit_of_its_quantity_is_refused_with_its_key():
     """A bare 200e9 for Young's modulus could be in Pa or in GPa: the input states it."""
     key = "properties.Young_modulus"
-    with pytest.raises(input_error) as error:
+    with pytest.raises(InputError) as error:
         to_SI(200.0e9, pressure, key)
     assert str(error.value).startswith(key + ":")
     assert "has no unit" in str(error.value)
@@ -138,7 +139,7 @@ def test_a_number_without_the_unit_of_its_quantity_is_refused_with_its_key():
 
 def test_a_value_of_the_wrong_dimension_is_refused_with_both_units():
     key = "properties.Young_modulus"
-    with pytest.raises(input_error) as error:
+    with pytest.raises(InputError) as error:
         to_SI("200 K", pressure, key)
     message = str(error.value)
     assert message.startswith(key + ":")
@@ -146,7 +147,7 @@ def test_a_value_of_the_wrong_dimension_is_refused_with_both_units():
 
 
 def test_a_dimensionless_value_takes_no_unit():
-    with pytest.raises(input_error, match="dimensionless and takes no unit"):
+    with pytest.raises(InputError, match="dimensionless and takes no unit"):
         to_SI("0.3 m", dimensionless, "properties.Poisson_ratio")
     assert to_SI(0.3, dimensionless, "properties.Poisson_ratio") == 0.3
 
@@ -156,7 +157,7 @@ def test_a_temperature_in_degrees_Celsius_converts_to_kelvin_with_its_key():
     assert to_SI("40 degC", temperature, "boundary_conditions.left.temperature") == pytest.approx(
         313.15, rel=1e-14
     )
-    with pytest.raises(input_error, match="has an offset from the kelvin"):
+    with pytest.raises(InputError, match="has an offset from the kelvin"):
         to_SI(
             "20 W/(m*degC)",
             mass * length / time**3 / temperature,

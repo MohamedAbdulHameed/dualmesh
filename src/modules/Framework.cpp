@@ -13,7 +13,6 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
-#include <limits>
 #include <map>
 
 namespace dualmesh
@@ -314,7 +313,7 @@ TimeDerivative::validParams()
 }
 
 TimeDerivative::TimeDerivative(const InputParameters & p)
-    : Kernel(p), _storage(!p.getString("storage").empty())
+    : StorageKernel(p), _storage(!p.getString("storage").empty())
 {
   _automatic = _quad.automatic;
 }
@@ -329,8 +328,12 @@ TimeDerivative::lumped(const Problem & problem) const
     if (elementIsQuadratic(el.type))
       return false;
   for (const auto & k : problem.kernels())
-    if (k->variableName() == variableName() && (k->transportsVariable() || k->isSecondOrder()))
+  {
+    const auto * storage = dynamic_cast<const StorageKernel *>(k.get());
+    if (k->variableName() == variableName() &&
+        (k->transportsVariable() || (storage && storage->isSecondOrder())))
       return false;
+  }
   return true;
 }
 
@@ -355,7 +358,8 @@ TimeDerivative::initialSetup(Problem & problem)
     return;
   }
   for (const auto & k : problem.kernels())
-    if (k->variableName() == variableName() && k->isSecondOrder())
+    if (const auto * storage = dynamic_cast<const StorageKernel *>(k.get());
+        storage && storage->variableName() == variableName() && storage->isSecondOrder())
       throw InputError("'" + name() + "': the equation of '" + variableName() +
                        "' is of second order in time, whose rate follows the Newmark relations "
                        "of the variable alone, so its storage is the variable itself. Leave "
@@ -434,7 +438,7 @@ SecondTimeDerivative::validParams()
   return p;
 }
 
-SecondTimeDerivative::SecondTimeDerivative(const InputParameters & p) : Kernel(p) {}
+SecondTimeDerivative::SecondTimeDerivative(const InputParameters & p) : StorageKernel(p) {}
 
 void
 SecondTimeDerivative::initialSetup(Problem & problem)
@@ -509,7 +513,7 @@ Advection::validParams()
 }
 
 Advection::Advection(const InputParameters & p)
-    : Kernel(p), _face_scheme(isFaceAdvectionScheme(p.getString("advection_scheme")))
+    : AdvectiveKernel(p), _face_scheme(isFaceAdvectionScheme(p.getString("advection_scheme")))
 {
   const auto form = p.getString("advection_form");
   if (form == "conservative")
@@ -587,18 +591,6 @@ ADVector3
 Advection::carryingVelocity(const QpContext & ctx) const
 {
   return _velocities.empty() ? velocity(ctx) : advectingVelocity(ctx, _mass, _velocities);
-}
-
-bool
-Advection::advectingNormalVelocity(const QpContext & ctx, double & velocity) const
-{
-  if (!usesFaceSides())
-    return false;
-  const ADVector3 w = carryingVelocity(ctx);
-  velocity = 0.0;
-  for (int d = 0; d < ctx.dim; ++d)
-    velocity += w[d].value() * ctx.normal[d];
-  return true;
 }
 
 void
@@ -987,7 +979,7 @@ PeriodicBC::validParams()
   return p;
 }
 
-PeriodicBC::PeriodicBC(const InputParameters & p) : Constraint(p) {}
+PeriodicBC::PeriodicBC(const InputParameters & p) : PeriodicConstraint(p) {}
 
 std::vector<int>
 PeriodicBC::periodicVariables(const Problem & problem) const

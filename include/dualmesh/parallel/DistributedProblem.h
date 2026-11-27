@@ -27,12 +27,12 @@
 // PETSc solves it with its Krylov methods and preconditioners: by default algebraic multigrid (hypre BoomerAMG) inside GMRES, and the parallel direct solver MUMPS when multigrid fails or the system is a saddle point problem; petsc_options chooses any other.
 // Inner products count every degree of freedom once, on the rank that owns it, and are then reduced over all ranks.
 //
-// Without MPI, or with MPI on a single rank, all of this reduces to the serial
-// algorithm, and the answer is identical.
+// On a single rank all of this reduces to the serial algorithm, and the answer
+// is identical.
 #pragma once
 
 #include "dualmesh/base/Problem.h"
-#include "dualmesh/parallel/Communicator.h"
+#include "dualmesh/linalg/Communicator.h"
 #include "dualmesh/parallel/GatherScatter.h"
 #include "dualmesh/parallel/MeshDistribution.h"
 
@@ -49,7 +49,6 @@ struct DistributedOptions
   std::string gather_scatter = "petsc";
   /// PETSc's partitioner of the elements: "automatic" (PT-Scotch, else ParMETIS), "ptscotch", "parmetis" or "simple".
   std::string partitioner = "automatic";
-  bool verbose = false;
 };
 
 /// A problem split among the processes.  It is the Parallel of its local problem: the local
@@ -79,8 +78,6 @@ public:
   int rank() const { return _comm.rank(); }
   int numRanks() const { return _comm.size(); }
 
-  /// Whether this rank owns a local node (and therefore its degrees of freedom).
-  bool ownsNode(Index local_node) const { return _owned_node[local_node] != 0; }
   /// Number of degrees of freedom this rank owns.
   Index numOwnedDofs() const;
   /// Number of degrees of freedom of the whole problem.  The total is computed
@@ -92,7 +89,6 @@ public:
   /// Inner product that counts every degree of freedom exactly once.
   double dot(const Vector & a, const Vector & b) const;
 
-  // ---- one value per entity, for a solver that works on the local problem directly -------------
   /// Set up the distributed problem: the solves call it, and a solver that works on the local problem directly calls it first.
   void prepare();
   /// The numbers of @p width unknowns at each local entity that @p owned marks, contiguous on each
@@ -100,11 +96,6 @@ public:
   /// its owner's numbers, and an entity that no rank owns -1.
   std::vector<Index>
   globalNumbers(const std::vector<char> & owned, int width, Index & first, Index & total) const;
-  /// The global number of every local entity, in a numbering in which each rank numbers its owned entities contiguously from firstOwnedEntity(); a copy has its owner's number, and an entity that only this rank has -1.
-  const std::vector<Index> & globalEntityNumbers() const { return _global_entity; }
-  Index firstOwnedEntity() const { return _first_owned_entity; }
-  Index numOwnedEntities() const;
-  Index numGlobalEntities() const { return _num_global_entities; }
   double norm(const Vector & a) const override { return std::sqrt(dot(a, a)); }
 
   // ---- the Parallel of the local problem ---------------------------------------------------
@@ -199,8 +190,6 @@ private:
   /// Set up the gather-scatter of the nodes and which of them this rank owns.
   void shareNodes();
   bool _prepared = false;
-  std::vector<Index> _global_entity;
-  Index _first_owned_entity = 0, _num_global_entities = 0;
 };
 
 } // namespace dualmesh

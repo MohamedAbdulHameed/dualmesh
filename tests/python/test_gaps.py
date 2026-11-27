@@ -7,6 +7,8 @@ its far face, face each other across a gap. Every check has an exact answer:
 
 * the temperatures of a gap with a given conductance (piecewise quadratic and
   linear), in one, two and three dimensions and in a cylinder;
+* the heat flux and the temperature drop of a gap that only radiates, against
+  the closed form of two parallel grey surfaces in series with the two slabs;
 * the contact pressure of two elastic slabs pushed together;
 * the conservation of the heat that crosses the gap, to round-off, on
   matching and non-matching meshes;
@@ -19,6 +21,8 @@ from __future__ import annotations
 import dualmesh
 import numpy
 import pytest
+from dualmesh._core import InputError
+from dualmesh.mms import convergence_rates
 
 methods = ["fem", "dmcdm"]
 vertex_methods = ["fem", "dmcdm"]
@@ -155,11 +159,6 @@ def given_conductance_error(problem):
     return numpy.abs(problem.values("temperature") - exact).max()
 
 
-def convergence_rates(errors):
-    errors = numpy.asarray(errors)
-    return numpy.log2(errors[:-1] / errors[1:])
-
-
 # ---------------------------------------------------------------------------
 # A gap with a given conductance
 # ---------------------------------------------------------------------------
@@ -188,13 +187,14 @@ def test_the_heat_that_crosses_the_gap_is_conserved_on_non_matching_meshes(metho
 def test_non_matching_meshes_converge_at_first_order(method):
     """The closest-point pairing of the two surfaces converges at first order
     when the meshes of the surfaces do not match."""
+    levels = (4, 8, 16)
     errors = [
         given_conductance_error(
             given_conductance_problem(two_slabs(2, num_x, num_x // 2, 3 * num_x // 4), method)
         )
-        for num_x in (4, 8, 16)
+        for num_x in levels
     ]
-    assert convergence_rates(errors).min() > 0.9
+    assert min(convergence_rates([1 / n for n in levels], errors)) > 0.9
 
 
 @pytest.mark.parametrize("method", vertex_methods)
@@ -222,8 +222,9 @@ def test_a_given_conductance_in_a_cylinder_converges_at_second_order(method):
             t_cool + linear_power / (2 * numpy.pi * k_outer) * numpy.log(C / numpy.maximum(r, B)),
         )
 
+    levels = (8, 16, 32)
     errors = []
-    for num_x in (8, 16, 32):
+    for num_x in levels:
         problem = given_conductance_problem(two_slabs(1, num_x), method, coordinates="axisymmetric")
         errors.append(
             numpy.abs(
@@ -233,7 +234,108 @@ def test_a_given_conductance_in_a_cylinder_converges_at_second_order(method):
         assert problem.boundary_flux("temperature", "right") == pytest.approx(
             source * numpy.pi * A**2, rel=1e-10
         )
-    assert convergence_rates(errors).min() > 1.7
+    assert min(convergence_rates([1 / n for n in levels], errors)) > 1.7
+
+
+# ---------------------------------------------------------------------------
+# A gap that only radiates
+# ---------------------------------------------------------------------------
+STEFAN_BOLTZMANN = 5.670374419e-8
+t_hot, t_cold, emissivity_inner, emissivity_outer = 1000.0, 400.0, 0.8, 0.5
+
+
+def radiating_gap_problem(method, **emissivities):
+    mesh = two_slabs(1, 4)
+    problem = dualmesh.Problem(mesh, method=method)
+    problem.add_variable("temperature", initial_condition=0.5 * (t_hot + t_cold))
+    for block, conductivity in (("inner", k_inner), ("outer", k_outer)):
+        problem.add_kernel(
+            "diffusion", variable="temperature", diffusivity=conductivity, block=[block]
+        )
+    problem.add_boundary_condition("Dirichlet", "left", variable="temperature", value=t_hot)
+    problem.add_boundary_condition("Dirichlet", "right", variable="temperature", value=t_cold)
+    problem.add_boundary_condition(
+        "gap_heat_transfer",
+        "primary",
+        variable="temperature",
+        secondary_boundary=["secondary"],
+        **emissivities,
+    )
+    return problem
+
+
+def radiating_gap_exact():
+    """The heat flux q (W/m^2) across the slabs and the gap, and the surface
+    temperatures T_p and T_s (K) of the primary and the secondary side.
+
+    Two parallel grey surfaces of emissivities e_p and e_s exchange the flux
+
+        q = sigma (T_p^4 - T_s^4) / (1/e_p + 1/e_s - 1)
+
+    (Incropera et al., Fundamentals of Heat and Mass Transfer, Sect. 13.3),
+    with sigma the Stefan-Boltzmann constant in W/(m^2 K^4).  In series with
+    the conduction of the slabs, T_p = T_hot - q A / k_inner and
+    T_s = T_cold + q (C - B) / k_outer, with A and C - B the slab widths in m
+    and k the conductivities in W/(m K).  The radiated flux minus q falls
+    strictly as q grows, so bisection finds its single root in [0, q_max],
+    with q_max the flux at the outer temperatures."""
+    factor = STEFAN_BOLTZMANN / (1.0 / emissivity_inner + 1.0 / emissivity_outer - 1.0)
+
+    def surfaces(q):
+        return t_hot - q * A / k_inner, t_cold + q * (C - B) / k_outer
+
+    def excess(q):
+        t_primary, t_secondary = surfaces(q)
+        return factor * (t_primary**4 - t_secondary**4) - q
+
+    low, high = 0.0, factor * (t_hot**4 - t_cold**4)
+    for _ in range(200):
+        middle = 0.5 * (low + high)
+        low, high = (middle, high) if excess(middle) > 0.0 else (low, middle)
+    q = 0.5 * (low + high)
+    return (q, *surfaces(q))
+
+
+@pytest.mark.parametrize("method", vertex_methods)
+def test_a_radiating_gap_matches_two_grey_parallel_surfaces_in_series_with_the_slabs(method):
+    """Radiation alone crosses the gap, and the slabs conduct in series with it.
+    The temperature in each slab is linear, which the elements represent, so
+    the flux and the surface temperatures match the closed form to the
+    tolerance of the nonlinear solve.  The flux is about 1.87e4 W/m^2, with
+    drops of about 62 K in the inner slab and 12 K in the outer one, and
+    surfaces held at the outer temperatures would radiate 2.46e4 W/m^2, so
+    the series coupling matters."""
+    problem = radiating_gap_problem(
+        method, primary_emissivity=emissivity_inner, secondary_emissivity=emissivity_outer
+    )
+    problem.solve(report="none")
+    q, t_primary, t_secondary = radiating_gap_exact()
+    assert problem.boundary_flux("temperature", "right") == pytest.approx(q, rel=1e-8)
+    assert problem.boundary_flux("temperature", "left") == pytest.approx(-q, rel=1e-8)
+    x = problem.node_coordinates()[:, 0]
+    temperature = problem.values("temperature")
+    (primary,) = numpy.flatnonzero(numpy.abs(x - A) < 1e-12)
+    (secondary,) = numpy.flatnonzero(numpy.abs(x - B) < 1e-12)
+    assert temperature[primary] == pytest.approx(t_primary, rel=1e-9)
+    assert temperature[secondary] == pytest.approx(t_secondary, rel=1e-9)
+    assert temperature[primary] - temperature[secondary] == pytest.approx(
+        t_primary - t_secondary, rel=1e-8
+    )
+
+
+@pytest.mark.parametrize("emissivity", [0.0, 1.5])
+def test_an_emissivity_outside_zero_to_one_is_refused(emissivity):
+    for emissivities in (
+        {"primary_emissivity": emissivity, "secondary_emissivity": 0.5},
+        {"primary_emissivity": 0.5, "secondary_emissivity": emissivity},
+    ):
+        with pytest.raises(InputError, match=r"an emissivity lies in \(0, 1\]"):
+            radiating_gap_problem("fem", **emissivities).initialize()
+
+
+def test_radiation_across_a_gap_needs_both_emissivities():
+    with pytest.raises(InputError, match="needs both"):
+        radiating_gap_problem("fem", primary_emissivity=0.8).initialize()
 
 
 @pytest.mark.parametrize("thickness", [1.0, 0.1])

@@ -9,10 +9,7 @@
 #include "dualmesh/fe/Assembly.h"
 
 #include <algorithm>
-#include <cctype>
-#include <cmath>
-#include <limits>
-#include <map>
+#include <ranges>
 #include <sstream>
 
 namespace dualmesh
@@ -91,9 +88,9 @@ ResidualObject::addIntegrationParams(InputParameters & p)
                 "midpoint, trapezoid, simpson, nodal (a single point at the owning node, which "
                 "lumps the term), interface (a single point at the control domain interface), and "
                 "control_domain_trapezoid (the trapezoidal rule over the whole control domain, "
-                "which is the source rule of the classical finite volume method). The code also "
-                "accepts the aliases auto, trapezoidal, lumped, centroid and cd_trapezoid, reads "
-                "a bare gauss as gauss2, and matches the name without regard to case. Raise the "
+                "which is the source rule of the classical finite volume method). The names are "
+                "case-sensitive. FEM refuses nodal and interface on Tri6, Tet10, Quad8 and Hex20, "
+                "where the integral of a corner shape function is zero or negative. Raise the "
                 "rule for strongly curved elements or a rapidly varying coefficient, and use "
                 "nodal to lump a capacity or mass term. Default automatic: Gauss-Legendre with "
                 "one point per direction more than the polynomial order of the mesh, two on a "
@@ -113,13 +110,10 @@ ResidualObject::addIntegrationParams(InputParameters & p)
 bool
 Object::parametersAreThreadSafe() const
 {
-  for (const auto & [name, info] : _params.all())
-  {
-    (void) name;
+  for (const auto & info : std::views::values(_params.all()))
     if (const auto * f = std::get_if<std::shared_ptr<Function>>(&info.value))
       if (*f && !(*f)->threadSafe())
         return false;
-  }
   return true;
 }
 
@@ -151,6 +145,29 @@ ResidualObject::initialSetup(Problem & problem)
   if (_params.has("block"))
     for (const auto & b : _params.getStringList("block"))
       _blocks.insert(problem.mesh().blockId(b));
+  // FEM lumps a volume term by row sums: each node takes the integral of its shape function.  On
+  // Edge3, Quad9 and Hex27 these integrals are positive, since per direction a corner takes 1/6
+  // of the length and a middle node 2/3.  On Tri6 the corner integral is zero, and on Tet10, Quad8
+  // and Hex20 it is negative, so the lumped term would be singular or negative.
+  const bool lumps =
+      _quad.kind == QuadratureSpec::Kind::Nodal || _quad.kind == QuadratureSpec::Kind::Interface;
+  if (lumps && !problem.isDual() && dynamic_cast<const Kernel *>(this))
+    for (const auto & el : problem.mesh().elements())
+    {
+      const bool corner_integral_not_positive =
+          el.type == ElementType::Tri6 || el.type == ElementType::Tet10 ||
+          el.type == ElementType::Quad8 || el.type == ElementType::Hex20;
+      // The interface rule on an element without control domains is refused where its points are
+      // built, with that reason.
+      const bool has_points = _quad.kind == QuadratureSpec::Kind::Nodal ||
+                              ReferenceElement::get(el.type).supportsDualMesh();
+      if (activeOnBlock(el.block) && corner_integral_not_positive && has_points)
+        throw InputError("'" + name() + "': the quadrature " + _params.getString("quadrature") +
+                         " lumps the term by the integral of each shape function, which is zero "
+                         "or negative at the corners of a " +
+                         elementTypeName(el.type) +
+                         " element in FEM. Use automatic or a Gauss rule, or the DMCDM method.");
+    }
 }
 
 int
@@ -478,16 +495,6 @@ Factory::instance()
   return f;
 }
 
-Factory::Factory()
-{
-  registerFrameworkObjects(*this);
-  registerHeatTransferObjects(*this);
-  registerSolidMechanicsObjects(*this);
-  registerFluidObjects(*this);
-  registerParsedObjects(*this);
-  registerParsedStateObjects(*this);
-}
-
 const Factory::Entry &
 Factory::entry(const std::string & type) const
 {
@@ -575,23 +582,23 @@ addAdvectionSchemeParam(InputParameters & params)
       "Default central, the one scheme that both methods take.");
 }
 
-const Kernel *
+const MassEquation *
 massConservationKernel(const Problem & problem)
 {
   for (const auto & k : problem.kernels())
-    if (k->isMassConservation())
-      return k.get();
+    if (const auto * mass = dynamic_cast<const MassEquation *>(k.get()))
+      return mass;
   return nullptr;
 }
 
-const Kernel *
+const MassEquation *
 conservingMassEquation(const Problem & problem, int variable)
 {
   // By name: the mass equation may come after the kernel being set up, with its variable not yet
   // resolved.
   // Without mixed orders every variable is interpolated alike, whatever order it declares (a
   // pressure declared first on a linear mesh).
-  const Kernel * mass = massConservationKernel(problem);
+  const MassEquation * mass = massConservationKernel(problem);
   if (mass && (!problem.hasMixedOrder() ||
                problem.variable(problem.variableIndex(mass->variableName())).order ==
                    problem.variable(variable).order))
@@ -600,13 +607,16 @@ conservingMassEquation(const Problem & problem, int variable)
 }
 
 ADVector3
-advectingVelocity(const QpContext & ctx, const Kernel * mass, const std::vector<int> & velocities)
+advectingVelocity(const QpContext & ctx,
+                  const MassEquation * mass,
+                  const std::vector<int> & velocities)
 {
   ADVector3 w{ADReal(0.0), ADReal(0.0), ADReal(0.0)};
   // The old time of a first step has no step whose mass equation it holds, and carries v.
   const bool first_old_level = ctx.old_level && !ctx.previous_step;
-  if (mass && !ctx.on_boundary && !first_old_level && mass->conservedVelocity(ctx, w))
+  if (mass && !ctx.on_boundary && !first_old_level)
   {
+    mass->conservedVelocity(ctx, w);
     // The velocity part as a coefficient, which Picard iteration takes from the previous iterate.
     for (std::size_t d = 0; d < velocities.size(); ++d)
       w[d] += ctx.coefficientValue(velocities[d]) - ctx.value(velocities[d]);

@@ -128,27 +128,23 @@ dimension of the mesh.
      - ``[a, b]``, ``[[a, b], [c, d]]``
      - One entry per dimension.  A tensor is written row by row.
    * - :math:`\mathbf{I}`, :math:`\mathbf{A}^\mathsf{T}`, :math:`\operatorname{tr} \mathbf{A}`, :math:`\det \mathbf{A}`, :math:`\mathbf{A}^{-1}`
-     - ``I``, ``transpose(A)``, ``trace(A)``, ``det(A)`` or ``determinant(A)``, ``inverse(A)``
+     - ``I``, ``transpose(A)``, ``trace(A)``, ``determinant(A)``, ``inverse(A)``
      -
    * - :math:`\tfrac12 (\mathbf{A} + \mathbf{A}^\mathsf{T})`, :math:`\tfrac12 (\mathbf{A} - \mathbf{A}^\mathsf{T})`
-     - ``sym(A)`` or ``symmetric(A)``, ``skew(A)``
+     - ``symmetric(A)``, ``skew(A)``
      -
    * - :math:`\mathbf{A} - \tfrac{1}{n_d} (\operatorname{tr} \mathbf{A}) \mathbf{I}`
-     - ``dev(A)`` or ``deviatoric(A)``
+     - ``deviatoric(A)``
      -
    * - :math:`\mathbf{A} : \mathbf{B}`, :math:`\mathbf{a} \otimes \mathbf{b}`
-     - ``ddot(A, B)`` or ``inner(A, B)``, ``outer(a, b)``
+     - ``inner(A, B)``, ``outer(a, b)``
      -
-   * - functions of one argument
-     - ``sin``, ``cos``, ``tan``, ``asin``, ``acos``, ``atan``, ``sinh``,
-       ``cosh``, ``tanh``, ``exp``, ``log``, ``log10``, ``sqrt``, ``abs``,
-       ``floor``, ``ceil``, ``erf``, ``sign``
-     - Of a scalar.
-   * - functions of two arguments
-     - ``atan2``, ``pow``, ``hypot``, ``min``, ``max``
-     - Of scalars.
+   * - functions of scalars
+     - ``exp(a)``, ``max(a, b)`` and the other functions of a formula
+       (see :ref:`input-formulas`)
+     - The arguments are scalars.
    * - a condition
-     - ``if(c, a, b)`` or ``conditional(c, a, b)``, with ``<``, ``>``, ``<=``,
+     - ``conditional(c, a, b)``, with ``<``, ``>``, ``<=``,
        ``>=``, ``==``, ``!=``, ``and``, ``or``
      - A comparison is 1 when true and 0 when false.  A condition holds where it is not 0.
    * - :math:`\pi`, :math:`e`, the eigenvalue
@@ -158,8 +154,8 @@ dimension of the mesh.
 The language is the formula language of the input (see
 :doc:`/user_guide/input`).  The equations add the derivatives ``du/dt``,
 ``du/dx`` and ``du/dn``, and ``div``, ``laplacian``, ``curl``, ``cross`` and
-``grad`` of any expression.  ``sym``, ``dev``, ``det``, ``ddot`` and ``if`` are short spellings,
-each the same function as its long one.  The text follows these rules:
+``grad`` of any expression.  Each function has one name.  The text follows
+these rules:
 
 * The equations carry no units: the fields, the coordinates, the time and the
   definitions are numbers.  Write each value as its number in one consistent
@@ -648,7 +644,7 @@ plane strain:
        variables=[{"U": "vector"}],
        lame_lambda=1.15e11,
        G=7.7e10,
-       strain="sym(grad(U))",
+       strain="symmetric(grad(U))",
        stress="lame_lambda*trace(strain)*I + 2*G*strain",
        equations="div(stress) + [0, -7800*9.81] = 0",
    )

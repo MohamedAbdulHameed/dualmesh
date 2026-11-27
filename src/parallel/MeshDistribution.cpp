@@ -8,13 +8,11 @@
 #include <stdexcept>
 #include <unordered_map>
 
-#ifdef DUALMESH_HAVE_PETSC
 #include "Plex.h"
 #include "dualmesh/linalg/PetscSolver.h"
 
 #include <petscsf.h>
 #define DM_PETSC(call) petsc::check((call), #call)
-#endif
 
 namespace dualmesh
 {
@@ -192,7 +190,6 @@ private:
   std::vector<std::vector<Index>> _nodes;
 };
 
-#ifdef DUALMESH_HAVE_PETSC
 /// The records of every element of @p mesh, in sections over the cells of @p dm, which numbers cell e as element e.
 /// Every side set is also a node set of the same name, holding its boundary nodes, so that a value prescribed on a boundary reaches every rank that holds one of its nodes, whichever rank holds the side.
 void
@@ -351,7 +348,6 @@ rebuild(DM dm,
   }
   return part.finish();
 }
-#endif
 } // namespace
 
 LocalMesh
@@ -368,7 +364,6 @@ distributeMesh(const Mesh & mesh, const Communicator & comm, const std::string &
     std::iota(part.global_elements.begin(), part.global_elements.end(), 0);
     return part;
   }
-#ifdef DUALMESH_HAVE_PETSC
   // Every rank waits for its part, so an error on the root must stop every rank.
   std::string error;
   Header header;
@@ -452,10 +447,6 @@ distributeMesh(const Mesh & mesh, const Communicator & comm, const std::string &
   DM_PETSC(DMDestroy(&distributed));
   DM_PETSC(DMDestroy(&dm));
   return part;
-#else
-  (void) partitioner;
-  throw std::runtime_error("distributeMesh: more than one rank needs a build with MPI and PETSc.");
-#endif
 }
 
 } // namespace dualmesh

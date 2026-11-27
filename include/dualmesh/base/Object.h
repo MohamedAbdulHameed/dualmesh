@@ -7,7 +7,7 @@
 
 #include "dualmesh/core/Function.h"
 #include "dualmesh/core/InputParameters.h"
-#include "dualmesh/fe/ReferenceElement.h"
+#include "dualmesh/mesh/ReferenceElement.h"
 
 #include <memory>
 #include <set>

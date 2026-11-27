@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 """Members in space: trusses on line meshes and shells of flat facets on surface meshes.
 
-A shell on a flat mesh is the Mindlin plate, and stays it when the plate is turned in space;
-the shell converges to the Scordelis-Lo roof and the pinched cylinder of the MacNeal-Harder
-set; a truss carries its loads by axial forces only, with the closed forms of a tripod and a
-hanging bar."""
+A shell on a flat mesh is the Mindlin plate, for a graded section and a thermal strain too, and
+stays it when the plate is turned in space; the shell converges to the Scordelis-Lo roof and the
+pinched cylinder of the MacNeal-Harder set; a truss carries its loads by axial forces only, with
+the closed forms of a tripod and a hanging bar."""
 
 from __future__ import annotations
 
@@ -86,6 +86,182 @@ def test_a_flat_shell_is_the_plate_and_stays_it_when_turned(method, thickness):
     assert u[:, 2] == pytest.approx(w, rel=1e-8, abs=1e-10 * abs(w).max())
     assert numpy.abs(u[:, :2]).max() < 1e-10 * abs(w).max()
     assert theta[:, 1] == pytest.approx(flat.values("rotation_y"), abs=1e-8 * abs(theta).max())
+
+
+# A section of alumina on aluminium, with Young's modulus E and the expansion coefficient alpha
+# linear in s = 1/2 + z/H, z the height above the mid-surface and H the thickness.
+bottom_modulus, top_modulus = 7.0e10, 3.8e11
+bottom_alpha, top_alpha = 2.3e-5, 7.0e-6
+
+
+def graded(bottom, top, thickness):
+    """The expression of a quantity linear through the thickness, bottom at z = -H/2."""
+    return f"{bottom!r} + {top - bottom!r}*(0.5 + z/{thickness!r})"
+
+
+def flat_shell_mesh(plane):
+    """The plane mesh `plane` as a surface mesh in three dimensions, in the plane z = 0 with the
+    same nodes and elements, and the node sets left, right, bottom and top."""
+    cells = numpy.array([plane.element_nodes(e) for e in range(plane.num_elements)])
+    points = numpy.c_[numpy.asarray(plane.points())[:, :2], numpy.zeros(plane.num_nodes)]
+    mesh = dualmesh.mesh_from_arrays(points, [("Quad4", cells)], dimension=3)
+    x, y = points[:, 0], points[:, 1]
+    sets = {
+        "left": numpy.isclose(x, x.min()),
+        "right": numpy.isclose(x, x.max()),
+        "bottom": numpy.isclose(y, y.min()),
+        "top": numpy.isclose(y, y.max()),
+    }
+    for name, nodes in sets.items():
+        mesh.add_nodeset(name, [int(n) for n in numpy.flatnonzero(nodes)])
+    return mesh
+
+
+@pytest.mark.parametrize("method", methods)
+def test_a_flat_graded_shell_is_the_graded_plate(method):
+    """A cantilever strip of a graded section under a uniform pressure, in cylindrical bending
+    (v = 0 and phi_y = 0 on its long edges): the shell on the flat mesh gives the displacements
+    and rotations of the plate formulation, the membrane displacement that the coupling
+    stiffness B makes included.  The field depends on x alone, so the drilling strain is zero and
+    the two discretisations are the same."""
+    H, q = 0.05, -1e4
+    modulus = graded(bottom_modulus, top_modulus, H)
+    plane = dualmesh.generate_rectangle_mesh(0, 2, 0, 0.5, 8, 2)
+    problem = dualmesh.Problem(plane, method=method)
+    plate = problem.add_physics(
+        "solid_mechanics",
+        formulation="plate",
+        youngs_modulus=modulus,
+        poissons_ratio=0.3,
+        thickness=H,
+        transverse_load=q,
+    )
+    for name in ["disp_x", "disp_y", "disp_z", "phi_x", "phi_y"]:
+        plate.add_boundary_condition(f"{name} = 0", boundary="left")
+    for name in ["disp_y", "phi_y"]:
+        plate.add_boundary_condition(f"{name} = 0", boundary=["bottom", "top"])
+    problem.solve(report="none")
+    shell_problem = dualmesh.Problem(flat_shell_mesh(plane), method=method)
+    shell = shell_problem.add_physics(
+        "solid_mechanics",
+        formulation="shell",
+        youngs_modulus=modulus,
+        poissons_ratio=0.3,
+        thickness=H,
+        body_force=[0.0, 0.0, q / H],
+    )
+    for name in shell_variables:
+        shell.add_boundary_condition(f"{name} = 0", boundary="left")
+    for name in ["disp_y", "rotation_x"]:
+        shell.add_boundary_condition(f"{name} = 0", boundary=["bottom", "top"])
+    shell_problem.solve(report="none")
+    w, u = problem.values("disp_z"), problem.values("disp_x")
+    # The coupling stiffness B moves the mid-surface in its plane.
+    assert numpy.abs(u).max() > 1e-3 * numpy.abs(w).max()
+    scale = numpy.abs(w).max()
+    assert shell_problem.values("disp_z") == pytest.approx(w, rel=1e-9, abs=1e-12 * scale)
+    assert shell_problem.values("disp_x") == pytest.approx(u, rel=1e-9, abs=1e-12 * scale)
+    assert shell_problem.values("rotation_y") == pytest.approx(
+        problem.values("phi_x"), rel=1e-9, abs=1e-12 * numpy.abs(problem.values("phi_x")).max()
+    )
+
+
+@pytest.mark.parametrize("method", methods)
+def test_a_heated_graded_flat_shell_bends_as_the_plate_and_the_closed_form(method):
+    r"""A plate strip of thickness $H$, with $E$ and $\alpha$ linear in $s = 1/2 + z/H$ (alumina
+    on aluminium), heated uniformly by $\Delta T$ and free to expand and bend along $x$.  Its
+    long edges $y = 0$ and $y = b$ hold $v = 0$ and $\phi_y = 0$, the cylindrical bending of a
+    wide plate, and the edge $x = 0$ holds $u = 0$, $w = 0$ and $\phi_x = 0$, which the free
+    strip satisfies there, so the supports carry no reaction.  The strip carries $N_{xx} = 0$
+    and $M_{xx} = 0$ with $\varepsilon_{yy} = \chi_{yy} = 0$, so its membrane strain $e_0$ and
+    its curvature $k$ are uniform and solve $[A, B; B, D] [e_0; k] = (1 + \nu) \Delta T [F; G]$,
+    with Poisson's ratio $\nu$ and the integrals per unit width
+
+    $$ A = H \left( E_b + \frac{\Delta E}{2} \right), \quad
+       B = \frac{H^2 \Delta E}{12}, \quad
+       D = H^3 \left( \frac{E_b}{12} + \frac{\Delta E}{24} \right), $$
+
+    $$ F = H \left( E_b \alpha_b + \frac{E_b \Delta\alpha + \Delta E \alpha_b}{2} +
+       \frac{\Delta E \Delta\alpha}{3} \right), \quad
+       G = \frac{H^2}{12} (E_b \Delta\alpha + \Delta E \alpha_b + \Delta E \Delta\alpha), $$
+
+    where $E_b$, $\alpha_b$ are the values at the bottom and $\Delta E$, $\Delta\alpha$ the
+    differences between top and bottom.  The factor $1 + \nu$ is that of the restrained
+    direction $y$.  Then $u = e_0 x$, $v = 0$, $w = -k x^2/2$ and $\phi_x = k x$, which the plate
+    and the shell on the flat mesh reproduce at the nodes.  The deflection is held along a whole
+    edge: the transverse shear integrated at the element centre leaves the checkerboard mode of
+    $w$ without stiffness, and a deflection held at one node only would leave it free."""
+    H, nu, t0, t1 = 0.02, 0.3, 293.0, 393.0
+    modulus = graded(bottom_modulus, top_modulus, H)
+    alpha = graded(bottom_alpha, top_alpha, H)
+    plane = dualmesh.generate_rectangle_mesh(0, 1, 0, 0.5, 4, 2)
+    points = numpy.asarray(plane.points())
+    walls = ["left", "right", "bottom", "top"]
+
+    def heated(mesh, formulation, conditions):
+        problem = dualmesh.Problem(mesh, method=method)
+        heat = problem.add_physics("heat_conduction", thermal_conductivity=50.0)
+        heat.add_boundary_condition("temperature = T1", boundary=walls, T1=t1)
+        solid = problem.add_physics(
+            "solid_mechanics",
+            formulation=formulation,
+            youngs_modulus=modulus,
+            poissons_ratio=nu,
+            thickness=H,
+        )
+        for condition, boundary in conditions:
+            solid.add_boundary_condition(condition, boundary=boundary)
+        problem.add_coupling(
+            "thermal_expansion", linear_expansion_coefficient=alpha, stress_free_temperature=t0
+        )
+        problem.solve(report="none")
+        return problem
+
+    long_edges = ["bottom", "top"]
+    plate = heated(
+        plane,
+        "plate",
+        [
+            ("disp_x = 0", "left"),
+            ("disp_z = 0", "left"),
+            ("phi_x = 0", "left"),
+            ("disp_y = 0", long_edges),
+            ("phi_y = 0", long_edges),
+        ],
+    )
+    shell = heated(
+        flat_shell_mesh(plane),
+        "shell",
+        [
+            ("disp_x = 0", "left"),
+            ("disp_z = 0", "left"),
+            ("rotation_y = 0", "left"),
+            ("disp_y = 0", long_edges),
+            ("rotation_x = 0", long_edges),
+        ],
+    )
+    E_b, dE = bottom_modulus, top_modulus - bottom_modulus
+    a_b, da = bottom_alpha, top_alpha - bottom_alpha
+    A = H * (E_b + dE / 2)
+    B = H**2 * dE / 12
+    D = H**3 * (E_b / 12 + dE / 24)
+    F = H * (E_b * a_b + (E_b * da + dE * a_b) / 2 + dE * da / 3)
+    G = H**2 / 12 * (E_b * da + dE * a_b + dE * da)
+    heating = (1 + nu) * (t1 - t0)
+    e0 = heating * (D * F - B * G) / (A * D - B**2)
+    k = heating * (A * G - B * F) / (A * D - B**2)
+    x = points[:, 0]
+    w = -k * x**2 / 2
+    # The bending is of the order of the stretching, so the check of w is not one of zero.
+    assert abs(k) * H > 0.1 * abs(e0)
+    for problem in (plate, shell):
+        assert problem.values("disp_x") == pytest.approx(e0 * x, rel=1e-8, abs=1e-12 * abs(e0))
+        assert numpy.abs(problem.values("disp_y")).max() < 1e-9 * abs(e0)
+        assert problem.values("disp_z") == pytest.approx(w, rel=1e-8, abs=1e-12 * abs(k))
+    assert plate.values("phi_x") == pytest.approx(k * x, rel=1e-8, abs=1e-12 * abs(k))
+    assert shell.values("rotation_y") == pytest.approx(k * x, rel=1e-8, abs=1e-12 * abs(k))
+    for name in ["rotation_x", "rotation_z"]:
+        assert numpy.abs(shell.values(name)).max() < 1e-9 * abs(k)
 
 
 def scordelis_lo(n, method):

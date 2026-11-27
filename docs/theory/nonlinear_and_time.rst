@@ -209,8 +209,10 @@ and ``"forward_Euler"`` (:math:`\theta = 0`, explicit in the steady terms).
   step solves the steady problem at its time.
 * ``"forward_Euler"`` refuses a stabilization whose residual holds the time
   derivative.
-* A storage with ``quadrature="nodal"`` is lumped on any mesh, and a storage
-  with a Gauss rule is consistent on any mesh.
+* A storage with ``quadrature="nodal"`` is lumped, and a storage with a Gauss
+  rule is consistent on any mesh.  FEM refuses the lumped storage on ``Tri6``,
+  ``Tet10``, ``Quad8`` and ``Hex20``, where the integral of a corner shape
+  function is zero or negative.
 
 Second-order equations
 ~~~~~~~~~~~~~~~~~~~~~~
@@ -277,8 +279,10 @@ The option ``time_stepper`` chooses how the step changes.
    The step follows an estimate :math:`e` of the local truncation error.
 
 ``"fixed"``
-   The step stays :math:`\Delta t`, and the last step is shortened to land on
-   the end time.
+   The step stays :math:`\Delta t` and lands on every output time and on the
+   end time.  A target less than :math:`2\Delta t` away is reached in two
+   equal steps, so no step is shorter than :math:`\Delta t / 2` unless two
+   targets are closer than that.
 
 ``"iteration"``
    A step that converged in fewer than ``optimal_iterations`` minus

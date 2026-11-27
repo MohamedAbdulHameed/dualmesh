@@ -15,7 +15,7 @@ import math
 import dualmesh
 import numpy
 import pytest
-from dualmesh.input import units
+from dualmesh import units
 
 
 # ---------------------------------------------------------------------------
@@ -224,6 +224,103 @@ def test_transient_conduction_against_the_Fourier_series():
     assert problem.sample("temperature", x.reshape(-1, 1)) == pytest.approx(exact, abs=1e-3)
 
 
+@pytest.mark.parametrize("method", ["fem", "dmcdm"])
+def test_anisotropic_diffusion_with_a_rotated_tensor_keeps_its_linear_field(method):
+    r"""The tensor $K = R(\theta) \mathrm{diag}(k_1, k_2) R(\theta)^T$ of an orthotropic
+    conductor whose principal axes are turned by $\theta$ (Carslaw and Jaeger, Conduction of
+    Heat in Solids, 2nd ed., Chapter 1), with $k_1 = 4$, $k_2 = 1$ and $\theta = \pi/6$.  On
+    the unit square with $u$ given on the left and right sides and no condition on the bottom
+    and top, the linear field $u = x + b y$ solves $\nabla \cdot (K \nabla u) = 0$.  The bottom
+    and top carry no flux when $K_{yx} + K_{yy} b = 0$, so $b = -K_{xy}/K_{yy}$.  The flux
+    $-K \nabla u$ then has the $x$ component $-(K_{xx} + K_{xy} b) = -\det K / K_{yy}
+    = -k_1 k_2 / K_{yy}$, the outflow through the right side of unit length.  A tensor
+    without its off-diagonal entries, or with them of the other sign, would bend the field."""
+    k1, k2, angle = 4.0, 1.0, math.pi / 6
+    c, s = math.cos(angle), math.sin(angle)
+    kxx, kxy, kyy = k1 * c * c + k2 * s * s, (k1 - k2) * c * s, k1 * s * s + k2 * c * c
+    slope = -kxy / kyy
+    mesh = dualmesh.generate_rectangle_mesh(
+        x_min=0.0, x_max=1.0, y_min=0.0, y_max=1.0, num_x_elements=4, num_y_elements=4
+    )
+    problem = dualmesh.Problem(mesh, method=method)
+    problem.add_variable("u")
+    problem.add_kernel(
+        "anisotropic_diffusion", variable="u", diffusivity_tensor=[kxx, kxy, kxy, kyy]
+    )
+    problem.add_boundary_condition(
+        "Dirichlet", ["left", "right"], variable="u", value=f"x + ({slope!r})*y"
+    )
+    problem.solve()
+    points = numpy.asarray(mesh.points())
+    exact = points[:, 0] + slope * points[:, 1]
+    assert problem.values("u") == pytest.approx(exact, abs=1e-10)
+    assert problem.boundary_flux("u", "right") == pytest.approx(-k1 * k2 / kyy, rel=1e-9)
+
+
+@pytest.mark.parametrize("method", ["fem", "dmcdm"])
+def test_coupled_force_drives_one_equation_by_another_variable(method):
+    r"""Two equations on $0 < x < 1$: $-v'' = 0$ with $v(0) = 0$ and $v(1) = 1$ gives $v = x$,
+    and $-u'' = c v$ with $u(0) = u(1) = 0$, the source of coupled_force with the coefficient
+    $c = 3$, gives $u = c (x - x^3) / 6$.  Linear elements reproduce this cubic at the nodes,
+    because the source is integrated exactly and the error of each element flux is the same
+    constant $-c h^2 / 24$, with $h$ the element length.  The flow leaving through the two ends
+    is the total source $\int_0^1 c v dx = c/2$."""
+    coefficient = 3.0
+    mesh = dualmesh.generate_line_mesh(start=0.0, end=1.0, num_elements=8)
+    problem = dualmesh.Problem(mesh, method=method)
+    problem.add_variable("u")
+    problem.add_variable("v")
+    problem.add_kernel("diffusion", variable="v")
+    problem.add_kernel("diffusion", variable="u")
+    problem.add_kernel("coupled_force", variable="u", coupled_variable="v", coefficient=coefficient)
+    problem.add_boundary_condition("Dirichlet", "left", variable=["u", "v"], value=0.0)
+    problem.add_boundary_condition("Dirichlet", "right", variable="u", value=0.0)
+    problem.add_boundary_condition("Dirichlet", "right", variable="v", value=1.0)
+    problem.solve()
+    x = numpy.asarray(mesh.points())[:, 0]
+    assert problem.values("u") == pytest.approx(coefficient * (x - x**3) / 6, abs=1e-10)
+    leaving = problem.boundary_flux("u", "left") + problem.boundary_flux("u", "right")
+    assert leaving == pytest.approx(coefficient / 2, rel=1e-9)
+
+
+def test_point_Dirichlet_holds_the_node_nearest_to_its_point():
+    r"""A bar $0 < x < 1$ with $-u'' = 0$, the inflow $q = 2$ at $x = 1$ and the outflow $q$ at
+    $x = 0$, has the slope $u' = q$ and a free level: $u = q x + C$.  Holding $u = g = 5$ at the
+    point $x_p = 0.52$ holds the nearest node, $x = 0.5$, so $C = g - q/2$.  A value
+    interpolated at $x_p$ itself would give $C = g - 0.52 q$."""
+    inflow, held = 2.0, 5.0
+    mesh = dualmesh.generate_line_mesh(start=0.0, end=1.0, num_elements=10)
+    problem = dualmesh.Problem(mesh, method="DMCDM")
+    problem.add_variable("u")
+    problem.add_kernel("diffusion", variable="u")
+    problem.add_boundary_condition("Neumann", "right", variable="u", flux=inflow)
+    problem.add_boundary_condition("Neumann", "left", variable="u", flux=-inflow)
+    problem.add_boundary_condition("point_Dirichlet", variable="u", point=[0.52], value=held)
+    problem.solve()
+    x = numpy.asarray(mesh.points())[:, 0]
+    assert problem.values("u") == pytest.approx(inflow * (x - 0.5) + held, abs=1e-10)
+
+
+def test_property_scaling_multiplies_a_property_computed_before_it():
+    r"""A bar $0 < x < 1$ with the conductivity $k = 2$ of a constant property, scaled by the
+    factor $f = 1.5$ of a property_scaling object, $u(0) = 0$ and the inflow $q = 3$ at $x = 1$.
+    The flux $k f u'$ equals $q$ everywhere, so $u = q x / (k f)$, which is $x$ here and would
+    be $1.5 x$ without the scaling."""
+    conductivity, factor, inflow = 2.0, 1.5, 3.0
+    mesh = dualmesh.generate_line_mesh(start=0.0, end=1.0, num_elements=4)
+    problem = dualmesh.Problem(mesh, method="DMCDM")
+    problem.add_variable("temperature")
+    problem.add_property("constant", properties={"thermal_conductivity": conductivity})
+    problem.add_property("property_scaling", property_factors={"thermal_conductivity": factor})
+    problem.add_kernel("diffusion", variable="temperature", diffusivity="thermal_conductivity")
+    problem.add_boundary_condition("Dirichlet", "left", variable="temperature", value=0.0)
+    problem.add_boundary_condition("Neumann", "right", variable="temperature", flux=inflow)
+    problem.solve()
+    x = numpy.asarray(mesh.points())[:, 0]
+    exact = inflow * x / (conductivity * factor)
+    assert problem.values("temperature") == pytest.approx(exact, abs=1e-10)
+
+
 # ---------------------------------------------------------------------------
 # objects written in Python
 # ---------------------------------------------------------------------------
@@ -232,6 +329,14 @@ class exponential_source(dualmesh.PythonKernel):
 
     def compute_source(self, ctx):
         return -self.magnitude * dualmesh.exp(-self.rate * ctx.value(self.variable))
+
+
+def test_the_power_operator_takes_an_AD_number_on_either_side():
+    """For the AD number a = 3, the values of 2.0**a, a**2.0 and a**a are 8, 9 and 27."""
+    three = dualmesh.ADReal(3.0)
+    assert (2.0**three).value == pytest.approx(8.0, rel=1e-14)
+    assert (three**2.0).value == pytest.approx(9.0, rel=1e-14)
+    assert (three**three).value == pytest.approx(27.0, rel=1e-14)
 
 
 class recording_source(dualmesh.PythonKernel):

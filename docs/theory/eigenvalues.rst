@@ -86,7 +86,11 @@ problem :math:`\mathbf{K} \hat{\mathbf{u}} = -\Lambda^2 (\mathbf{B}_2 +
 imaginary part.  For a structure with the stiffness :math:`\mathbf{K}` and the
 mass :math:`\mathbf{M}_2`, the vibration :math:`\Lambda = i\omega` gives
 :math:`\mathbf{K} \hat{\mathbf{u}} = \omega^2 \mathbf{M}_2 \hat{\mathbf{u}}`,
-with :math:`\omega` the angular frequency (rad/s).
+with :math:`\omega` the angular frequency (rad/s).  In a vibration, a problem
+whose only time term is a second time derivative and in which no term reads
+``eigenvalue``, ``near`` is the angular frequency :math:`\omega_0` that the
+modes are closest to, and the shift of :math:`\Lambda^2` is
+:math:`-\omega_0^2`, the square of :math:`\Lambda_0 = i\omega_0`.
 
 **Quadratic.**  With both terms, the study solves the companion form, a linear
 problem of twice the size for :math:`\hat{\mathbf{u}}` and

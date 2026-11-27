@@ -17,18 +17,7 @@ from __future__ import annotations
 import dualmesh
 import numpy
 import pytest
-
-
-def unit_square(num_elements=4):
-    return dualmesh.generate_rectangle_mesh(
-        x_min=0.0,
-        x_max=1.0,
-        y_min=0.0,
-        y_max=1.0,
-        num_x_elements=num_elements,
-        num_y_elements=num_elements,
-        element_type="Tri3",
-    )
+from helpers import unit_square
 
 
 def signed_areas(mesh):
@@ -109,7 +98,7 @@ def test_repeated_refinement_keeps_every_triangle_properly_oriented():
     parent, and newest-vertex bisection gives finitely many shapes.  Both are
     checked here over many rounds of random marking, which is the way an
     adaptive run actually exercises the algorithm."""
-    mesh = unit_square(2)
+    mesh = unit_square(2, "Tri3")
     generator = numpy.random.default_rng(0)
     smallest_ratio = 1.0
     for _ in range(12):
@@ -132,7 +121,7 @@ def test_refinement_leaves_no_hanging_node():
     domain and a linear field is reproduced exactly.  The patch test is run on
     a mesh refined several times in one corner, which is where a hanging node
     would appear if the propagation were incomplete."""
-    mesh = unit_square(4)
+    mesh = unit_square(4, "Tri3")
     for _ in range(4):
         points = numpy.asarray(mesh.points())
         centroids = numpy.array([points[list(c)].mean(axis=0) for _t, c, _b in mesh.cells()])
@@ -191,7 +180,7 @@ def test_refinement_of_a_quadratic_quadrilateral_mesh_is_refused_with_a_reason()
 
 
 def test_a_wrong_sized_marker_is_refused():
-    mesh = unit_square(2)
+    mesh = unit_square(2, "Tri3")
     with pytest.raises(Exception, match="one entry per element"):
         dualmesh.refine_marked(mesh, numpy.ones(mesh.num_elements + 1, dtype=bool))
 
@@ -205,7 +194,7 @@ def test_the_indicator_vanishes_for_a_field_the_elements_represent_exactly():
     recovery reproduces it, and the indicator is zero to round-off.  An
     estimator that did not do this would refine a mesh that is already
     perfect."""
-    mesh = unit_square(4)
+    mesh = unit_square(4, "Tri3")
     problem = dualmesh.Problem(mesh)
     problem.add_variable("u")
     problem.add_kernel("diffusion", variable="u")
@@ -219,9 +208,112 @@ def test_the_indicator_vanishes_for_a_field_the_elements_represent_exactly():
     assert numpy.abs(problem.error_indicator("u")).max() < 1e-12
 
 
+def indicator_of_nodal_values(mesh, field):
+    """The indicator of the variable u whose nodal values are field(x, y)."""
+    problem = dualmesh.Problem(mesh)
+    problem.add_variable("u")
+    problem.add_kernel("diffusion", variable="u")
+    problem.initialize()
+    points = problem.node_coordinates()
+    problem.set_values("u", field(points[:, 0], points[:, 1]))
+    return problem.error_indicator("u")
+
+
+def element_left_ends(mesh):
+    points = numpy.asarray(mesh.points())
+    return numpy.array(
+        [points[list(mesh.element_nodes(e)), 0].min() for e in range(mesh.num_elements)]
+    )
+
+
+def test_the_indicator_of_a_cubic_on_a_line_matches_its_closed_form():
+    """Linear elements of size h on 0 < x < L with the nodal values of u = x^3.
+
+    The gradient of the element [a, a + h] is the difference quotient
+    g_e = ((a + h)^3 - a^3) / h = 3 a^2 + 3 a h + h^2.  The recovery averages
+    the two element gradients at an interior node x with the equal weights
+    h / 2 of its control domain, and gives 3 x^2 + h^2.  The end x = 0 has
+    one element, of gradient h^2, which the same formula gives, and the end
+    x = L has the gradient 3 L^2 - 3 L h + h^2 of its element.
+
+    On an element away from x = L, with s = x - a, the recovered gradient
+    interpolates linearly from 3 a^2 + h^2 at s = 0 with the slope 6 a + 3 h,
+    so its difference from g_e is (6 a + 3 h)(s - h / 2) + 3 h^2 / 2 and
+
+        eta^2 = (6 a + 3 h)^2 h^3 / 12 + 9 h^5 / 4 .
+
+    On the element at x = L the recovered gradient falls from 3 a^2 + h^2 to
+    g_e, the difference is -3 a h (1 - s / h), and eta^2 = 3 a^2 h^3.  Each
+    integrand is quadratic, so the three-point rule of the indicator
+    integrates it exactly, and the indicator matches to round-off."""
+    length, num_elements = 1.0, 8
+    h = length / num_elements
+    mesh = dualmesh.generate_line_mesh(0.0, length, num_elements)
+    indicator = indicator_of_nodal_values(mesh, lambda x, y: x**3)
+    a = element_left_ends(mesh)
+    last = numpy.isclose(a + h, length)
+    exact = numpy.sqrt(
+        numpy.where(last, 3 * a**2 * h**3, (6 * a + 3 * h) ** 2 * h**3 / 12 + 9 * h**5 / 4)
+    )
+    assert last.sum() == 1
+    assert indicator == pytest.approx(exact, rel=1e-12)
+
+
+def test_the_indicator_of_a_quadratic_on_rectangles_matches_its_closed_form():
+    """Bilinear rectangles of width h and height k with the nodal values of
+    u = x^2, which vary with x only.
+
+    The computed gradient of the element [a, a + h] is (2 a + h, 0), the
+    difference quotient of x^2.  The four elements of an interior node share
+    its control domain in quarters h k / 4, so the recovery at a node of
+    abscissa x averages 2 x - h and 2 x + h into the exact 2 x.  A node on
+    x = 0 sees only elements of gradient h, and a node on x = L only elements
+    of gradient 2 L - h.  The recovered gradient is then linear in x on every
+    element, and with s = x - a its difference from the computed one is
+
+    * 2 s - h on an interior element,
+    * s on the element at x = 0, where it rises from h to 2 h,
+    * s - h on the element at x = L, where it rises from 2 L - 2 h to 2 L - h.
+
+    The square of each integrates over the element to k h^3 / 3, so every
+    element has the indicator eta = (k h^3 / 3)^(1/2), with the second
+    component zero in both gradients."""
+    width, height, num_x, num_y = 1.0, 1.0, 4, 2
+    h, k = width / num_x, height / num_y
+    mesh = dualmesh.generate_rectangle_mesh(
+        x_min=0.0,
+        x_max=width,
+        y_min=0.0,
+        y_max=height,
+        num_x_elements=num_x,
+        num_y_elements=num_y,
+        element_type="Quad4",
+    )
+    indicator = indicator_of_nodal_values(mesh, lambda x, y: x**2)
+    assert indicator == pytest.approx(numpy.full(num_x * num_y, (k * h**3 / 3) ** 0.5), rel=1e-12)
+
+
 @pytest.mark.parametrize("marker", [dualmesh.mark_by_fraction, dualmesh.mark_by_error_fraction])
 def test_a_marker_never_returns_an_empty_selection_for_a_positive_error(marker):
     assert marker(numpy.array([1.0, 1.0, 1.0, 1.0]), 0.1).any()
+
+
+def test_the_error_of_cells_at_the_finest_level_does_not_stop_the_refinement_of_the_others():
+    """A cell at the maximum level that carries most of the error, as at a singularity, cannot be
+    refined.  Half of the error of the others is in the cell of indicator 2, which is marked."""
+    from dualmesh.adaptivity import _marks
+
+    class Hierarchy:
+        def refinable(self, max_level):
+            return numpy.array([False, True, True, True])
+
+        def coarsenable(self):
+            return numpy.array([True, True, True, True])
+
+    indicators = numpy.array([10.0, 2.0, 1.0, 1.0])
+    marker = lambda values: dualmesh.mark_by_error_fraction(values, 0.5)  # noqa: E731
+    refine, _ = _marks(Hierarchy(), indicators, marker, 0.0, 1)
+    assert refine.tolist() == [False, True, False, False]
 
 
 # ---------------------------------------------------------------------------
@@ -497,6 +589,68 @@ def test_DMCDM_keeps_the_heat_of_an_insulated_plate_through_refinement_and_coars
     change(~left & hierarchy.refinable(1), left & hierarchy.coarsenable())
 
 
+def test_the_transient_loop_follows_a_spreading_front_and_keeps_the_heat_of_an_insulated_plate():
+    """A unit square insulated on every side, without a source, under DMCDM, with k = 1, rho = 2
+    and c_p = 3, starts with a sharp front at x = 0.5 between T = 300 on its left and T = 400 on
+    its right.  The front is odd about x = 0.5, and the default mesh of alternate diagonals is its
+    own mirror image in x = 0.5, so the heat of the plate, the integral of rho c_p T, is
+    rho c_p (350)(1) = 2100, and it stays 2100, since no heat crosses the sides.  The front
+    spreads over about 2 sqrt(k t / (rho c_p)) = 0.1 by t = 0.015, and the temperature stays flat
+    beyond 0.3 from it.  The Python loop adapts the mesh every two steps: the cells it refines lie
+    along the front, every change of mesh keeps the heat, since DMCDM carries the content of the
+    control domains, and the temperature stays between its initial bounds, as the maximum
+    principle requires."""
+    end_time, heat_exact = 0.015, 6.0 * 350.0
+
+    def plate(mesh):
+        problem = dualmesh.Problem(mesh, method="DMCDM")
+        problem.add_physics(
+            "heat_conduction",
+            thermal_conductivity=1.0,
+            density=2.0,
+            specific_heat=3.0,
+            initial_condition="350 + 50*tanh((x - 0.5)/0.01)",
+        )
+        return problem
+
+    mesh = dualmesh.generate_rectangle_mesh(0.0, 1.0, 0.0, 1.0, 16, 16, element_type="Tri3")
+    first = plate(mesh)
+    first.initialize()
+    assert 6.0 * first.integrate("temperature") == pytest.approx(heat_exact, rel=1e-9)
+    heats = []
+    result = dualmesh.solve_transient_with_adaptive_refinement(
+        plate,
+        mesh,
+        "temperature",
+        end_time=end_time,
+        time_step=end_time / 10,
+        interval=2,
+        coarsen_fraction=0.05,
+        maximum_refinement_level=2,
+        callback=lambda _interval, problem, _indicators: heats.append(
+            6.0 * problem.integrate("temperature")
+        ),
+        report="none",
+        time_stepper="fixed",
+    )
+    assert result.times[-1] == pytest.approx(end_time)
+    assert len(heats) == len(result.num_elements) > 2
+    assert heats == pytest.approx([heat_exact] * len(heats), rel=1e-9)
+    # The cells finer than those of the initial mesh lie along the front.
+    points = numpy.asarray(result.mesh.points())
+    corners = [points[list(cell)][:, :2] for _type, cell, _block in result.mesh.cells()]
+    areas = numpy.array(
+        [0.5 * abs((b - a)[0] * (c - a)[1] - (b - a)[1] * (c - a)[0]) for a, b, c in corners]
+    )
+    centres = numpy.array([c[:, 0].mean() for c in corners])
+    refined = areas < 0.99 * 0.5 / 16**2
+    assert refined.any()
+    assert numpy.abs(centres[refined] - 0.5).max() < 0.3
+    temperature = result.problem.gathered_values("temperature")
+    assert temperature.min() >= 300.0 - 1e-6
+    assert temperature.max() <= 400.0 + 1e-6
+
+
 # ---------------------------------------------------------------------------
 # Quadrilaterals with hanging nodes
 # ---------------------------------------------------------------------------
@@ -538,6 +692,16 @@ def test_the_middle_of_a_chord_between_two_corners_stays_out_of_a_boundary_node_
     members = points[list(refined.boundary_nodes("corners"))]
     assert len(members) == 4
     assert not numpy.any(numpy.all(numpy.isclose(members[:, :2], 0.5), axis=1))
+
+
+def test_a_mesh_with_hanging_nodes_refuses_uniform_refinement_and_promotion():
+    """Both copies would add nodes on the sides that hold a hanging node without a constraint
+    for them, so the mesh would not conform."""
+    mesh = hanging_cells(2)
+    with pytest.raises(ValueError, match="hanging nodes cannot be refined uniformly"):
+        mesh.refined()
+    with pytest.raises(ValueError, match="hanging nodes cannot be promoted to second order"):
+        mesh.second_order()
 
 
 @pytest.mark.parametrize("dimension", [2, 3])

@@ -10,11 +10,12 @@ abstract: >-
   dualmesh solves coupled problems of heat transfer, solid
   mechanics and incompressible flow, and partial differential equations
   written as text. It discretizes a problem by the finite element method
-  (FEM), and a problem with a flow by the dual mesh control domain method
-  (DMCDM), which conserves the transported quantity in every control domain. Coupled
-  problems are solved together by Newton's method, with exact Jacobians from
-  automatic differentiation. The core is written in C++17 with PETSc and MPI,
-  and it is driven from Python or from YAML case files.
+  (FEM), and a problem with an equal-order flow by the dual mesh control
+  domain method (DMCDM), which conserves the transported quantity in every
+  control domain. Coupled problems are solved together by Newton's method,
+  with exact Jacobians from automatic differentiation. The core is written
+  in C++20 with PETSc and MPI, and it is driven from Python or from YAML case
+  files.
 keywords:
   - dual mesh control domain method
   - finite element method

@@ -334,7 +334,7 @@ Under DMCDM, a change of mesh keeps the content of each field.  Let
 :math:`u_i` be the value of a field at node :math:`i`, in the unit of the field.
 Let :math:`M_i` be the measure of the control domain of the node, an area in
 :math:`\mathrm{m^2}` in two dimensions and a volume in :math:`\mathrm{m^3}` in
-three, times the coordinate factor of the problem at the node, such as
+three, with the coordinate factor of the problem integrated over it, such as
 :math:`2 \pi r` in axisymmetric coordinates with :math:`r` the radius in m.  The
 content of the field is :math:`\sum_i M_i u_i`.  A coarsening removes the middle
 of a bisected edge, or the middles of the edges, the centres of the faces and
@@ -368,7 +368,8 @@ values this way on linear elements only, and interpolates them on ``Tri6`` and
 ``Tet10``, as FEM does.
 
 A steady adaptive loop starts each solve from the solution of the last mesh,
-carried to the new one.  A transient run of the input adapts the mesh every
+carried to the new one.  A transient adaptive run, of the input or of
+:func:`~dualmesh.solve_transient_with_adaptive_refinement`, adapts the mesh every
 ``interval`` accepted time steps and goes on from the time it reached, with the
 time step that the step control chose before the change.  At each change, the
 fields are carried to the new mesh, and so is the velocity of a second-order

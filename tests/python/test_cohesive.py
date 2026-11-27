@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 """Cohesive zones: the bilinear traction-separation law along a path that softens, unloads,
-closes and separates, the work of separation in tension and in shear, and the balance of the
-forces on the two surfaces."""
+closes and separates, the work of separation in tension and in shear, the balance of the
+forces on the two surfaces, and zones in axisymmetry and at finite strain."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import dualmesh
 import numpy
 import pytest
 from dualmesh._core import InputError
+from scipy.optimize import brentq
 from test_contact import two_blocks
 
 E, nu = 100e9, 0.3
@@ -132,6 +133,156 @@ def test_a_sheared_zone_separates_with_the_work_of_the_toughness():
     assert max(forces) > 0.5 * strength
     assert forces[-1] == pytest.approx(0.0, abs=1e-6 * strength)
     assert numpy.trapezoid(forces, moves) == pytest.approx(toughness, rel=1e-3)
+
+
+def test_a_zone_restarted_from_its_checkpoint_keeps_its_damage():
+    """The top pulled into the softening branch, the run stopped there, and the run restarted
+    from its checkpoint to unload part way.  The checkpoint holds the largest opening of every
+    point of the zone, so the restarted zone unloads along the secant of the opening reached
+    before the stop, which the bilinear law gives in closed form, and ends where an
+    uninterrupted run ends.  A zone that had lost its damage would load again from the start
+    of its law and carry the traction of its law at the opening, here 21 percent more."""
+    import pathlib
+    import shutil
+
+    # Under mpirun every process runs its own serial problem and writes its own checkpoint.
+    directory = pathlib.Path(f"dualmesh_cohesive_checkpoint_test_{dualmesh.parallel.rank()}")
+    directory.mkdir(exist_ok=True)
+    # The stiffness of the zone, 50 E / h with h = 1/5 the side of the secondary surface.
+    stiffness = 50 * E / 0.2
+    steps = dict(time_step=0.02, time_stepper="fixed", report="none")
+
+    def zone():
+        problem, solid = bonded()
+        solid.add_boundary_condition("disp_x = 0", boundary="left")
+        # Up to 4e-5 at t = 1, past the peak near 2.75e-5, then down to 1.5e-5 at t = 1.5.
+        solid.add_boundary_condition("disp_y = 4e-5*t - 5e-5*max(t - 1, 0)", boundary="top")
+        return problem, solid
+
+    def opening_and_force(problem, solid):
+        u = problem.values("disp_y")
+        mesh = problem.mesh
+        opening = u[mesh.boundary_nodes("upper_bottom")][0] - u[mesh.boundary_nodes("lower_top")][0]
+        return opening, solid.reaction_force("top")["y"]
+
+    whole, whole_solid = zone()
+    whole.solve_transient(end_time=1.5, **steps)
+    stopped, stopped_solid = zone()
+    stopped.solve_transient(
+        end_time=1.0,
+        output=dualmesh.Output(directory=str(directory), file_base="zone", checkpoint_interval=10),
+        **steps,
+    )
+    reached, _ = opening_and_force(stopped, stopped_solid)
+    restarted, restarted_solid = zone()
+    result = restarted.solve_transient(end_time=1.5, restart=str(directory / "zone.chk"), **steps)
+    assert result.time_steps == 25
+    assert restarted.values("disp_y") == pytest.approx(whole.values("disp_y"), rel=1e-10, abs=1e-18)
+    opening, force = opening_and_force(restarted, restarted_solid)
+    assert force == pytest.approx(opening_and_force(whole, whole_solid)[1], rel=1e-10)
+    # The zone was softening at the stop and unloads along the secant of the opening reached.
+    assert strength / stiffness < reached < 2 * fracture_toughness / strength
+    assert 0.0 < opening < reached
+    assert force == pytest.approx(bilinear(opening, reached, stiffness), rel=1e-8)
+    assert bilinear(opening, opening, stiffness) > 1.15 * force
+    shutil.rmtree(directory, ignore_errors=True)
+
+
+def test_an_axisymmetric_zone_carries_the_traction_of_its_spring_in_series_with_the_bulk():
+    """Two coaxial cylinders of radius R = 1 bonded end to end, the lower one on rollers at
+    z = 0, held at r = 0 on the axis, and the top pulled up by u = 1e-5, below the strength.  The
+    bulk is in uniaxial stress sigma, with the strain sigma / E over the height H = 1, and the
+    zone, a spring of stiffness K = 50 E / h with h = 1/5 the side of the secondary surface,
+    opens by sigma / K, so u = sigma (H / E + 1 / K), springs in series.  The radial contraction
+    nu sigma r / E is the same in both cylinders, so the zone does not shear.  Each body carries
+    the force sigma pi R^2 through the zone, which the factor 2 pi r of the axisymmetric measure
+    gives."""
+    mesh = two_blocks()
+    problem = dualmesh.Problem(mesh, coordinates="axisymmetric")
+    solid = problem.add_physics("solid_mechanics", youngs_modulus=E, poissons_ratio=nu)
+    solid.add_boundary_condition(
+        "cohesive",
+        primary="lower_top",
+        secondary="upper_bottom",
+        strength=strength,
+        toughness=fracture_toughness,
+    )
+    solid.add_boundary_condition("disp_z = 0", boundary="bottom")
+    solid.add_boundary_condition("disp_r = 0", boundary="left")
+    solid.add_boundary_condition("disp_z = 1e-5", boundary="top")
+    problem.solve(report="none")
+    stiffness = 50 * E / 0.2
+    sigma = 1e-5 / (1 / E + 1 / stiffness)
+    assert sigma < strength
+    assert problem.property_at_centroids("stress")[:, 1] == pytest.approx(sigma, rel=1e-8)
+    u = problem.values("disp_z")
+    assert u[mesh.boundary_nodes("lower_top")] == pytest.approx(0.5 * sigma / E, rel=1e-8)
+    assert u[mesh.boundary_nodes("upper_bottom")] == pytest.approx(
+        0.5 * sigma / E + sigma / stiffness, rel=1e-8
+    )
+    assert solid.reaction_force("top")["z"] == pytest.approx(sigma * numpy.pi, rel=1e-8)
+    assert solid.reaction_force("upper_bottom")["z"] == pytest.approx(-sigma * numpy.pi, rel=1e-8)
+    assert solid.reaction_force("lower_top")["z"] == pytest.approx(sigma * numpy.pi, rel=1e-8)
+
+
+def test_a_zone_turned_with_its_bodies_resists_closing_with_its_full_stiffness():
+    """The two bonded blocks, of neo-Hookean material with nu = 0, turned rigidly by 90 degrees
+    about the origin in 20 steps by their bottom and top, and then the top pushed toward the
+    lower block by delta = 1e-3 along the turned axis of the blocks.  A hyperelastic body is at
+    finite strain, so the zone takes the normal of its deformed surface, and the push closes it
+    along that normal, where it keeps the full stiffness K = 50 E / h, h = 1/5, and does not
+    damage.  With nu = 0 the lateral stretch stays 1 and the stress is uniaxial along the axis,
+    with the nominal stress P = mu (lambda - 1/lambda) of the stretch lambda (Bonet and Wood
+    2008, Nonlinear Continuum Mechanics for Finite Element Analysis), so the closing g of the zone
+    and lambda solve K g = mu (1/lambda - lambda) and delta = (1 - lambda) H + g, with H = 1 the
+    height.  Measured along the undeformed normal, the same closing would be a slip of g, about
+    4e-6, far beyond the opening strength / K = 1.2e-7 at which the zone starts to soften."""
+    mesh = two_blocks()
+    problem = dualmesh.Problem(mesh)
+    solid = problem.add_physics(
+        "solid_mechanics",
+        formulation="plane_strain",
+        youngs_modulus=E,
+        poissons_ratio=0.0,
+        elasticity="neo-Hookean",
+    )
+    solid.add_boundary_condition(
+        "cohesive",
+        primary="lower_top",
+        secondary="upper_bottom",
+        strength=strength,
+        toughness=fracture_toughness,
+    )
+    # The angle rises to pi/2 at t = 1, and the push to 1e-3 at t = 1.1 along R (0, -1).
+    angle = "(pi/2*(t - max(t - 1, 0)))"
+    push = "(1e-2*max(t - 1, 0))"
+    turn_x = f"(cos{angle} - 1)*x - sin{angle}*y"
+    turn_y = f"sin{angle}*x + (cos{angle} - 1)*y"
+    solid.add_boundary_condition([f"disp_x = {turn_x}", f"disp_y = {turn_y}"], boundary="bottom")
+    solid.add_boundary_condition(
+        [f"disp_x = {turn_x} + {push}*sin{angle}", f"disp_y = {turn_y} - {push}*cos{angle}"],
+        boundary="top",
+    )
+    problem.solve_transient(end_time=1.1, time_step=0.05, time_stepper="fixed", report="none")
+    stiffness, shear_modulus, delta = 50 * E / 0.2, E / 2, 1e-3
+
+    def closing(stretch):
+        return shear_modulus * (1 / stretch - stretch) / stiffness
+
+    stretch = brentq(lambda s: 1 - s + closing(s) - delta, 0.99, 1.0, xtol=1e-16)
+    force = stiffness * closing(stretch)
+    # Turned by 90 degrees the lower block lies on -0.5 < x < 0 and the upper on -1 < x < -0.5:
+    # the zone pushes the upper block along -x and the lower along +x.  The tolerance is that of
+    # Newton's method on displacements of 1 m, against a closing of 4e-6 m.
+    upper, lower = solid.reaction_force("upper_bottom"), solid.reaction_force("lower_top")
+    assert upper["x"] == pytest.approx(-force, rel=1e-6)
+    assert lower["x"] == pytest.approx(force, rel=1e-6)
+    assert upper["y"] == pytest.approx(0.0, abs=1e-6 * force)
+    # The closing g: the secondary surface lies g closer to the lower block than the primary.
+    x = numpy.asarray(mesh.points())[:, 0] + problem.values("disp_x")
+    assert x[mesh.boundary_nodes("upper_bottom")] - x[mesh.boundary_nodes("lower_top")][0] == (
+        pytest.approx(closing(stretch), rel=1e-6)
+    )
 
 
 def test_the_input_of_a_cohesive_zone_is_checked():

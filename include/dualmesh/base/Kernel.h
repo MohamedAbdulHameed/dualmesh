@@ -30,7 +30,7 @@ namespace dualmesh
 {
 
 /// The coefficients of an incompressible flow at a point, which the mass
-/// conservation kernel gives to the block preconditioners of the saddle point
+/// equation (MassEquation) gives to the block preconditioners of the saddle point
 /// system: rho (dv/dt + v . grad v) - mu laplace v + grad p = f.
 struct FlowCoefficients
 {
@@ -64,57 +64,22 @@ public:
   /// is the floor of Newton's test (Problem::nonlinearSolve): terms that cancel, as those of a
   /// stress at a small strain do, leave a flux far smaller than its round-off.  The default is the
   /// magnitude of the flux and of the source, for a kernel whose terms do not cancel.
-  virtual void fluxTermSize(const QpContext & ctx, const ADVector3 & flux, double size[3]) const
+  virtual void fluxTermSize(const QpContext & /*ctx*/, const ADVector3 & flux, double size[3]) const
   {
-    (void) ctx;
     for (int c = 0; c < 3; ++c)
       size[c] = std::abs(flux[c].value());
   }
-  virtual double sourceTermSize(const QpContext & ctx, const ADReal & source) const
+  virtual double sourceTermSize(const QpContext & /*ctx*/, const ADReal & source) const
   {
-    (void) ctx;
     return std::abs(source.value());
   }
 
   /// Time-derivative kernels are not weighted by the time-integration theta.
   virtual bool isTimeKernel() const { return false; }
-  /// A kernel of a second time derivative (inertia), which makes its variable's equation second
-  /// order in time: a transient run integrates it by the generalized-alpha method.
-  virtual bool isSecondOrder() const { return false; }
 
   /// Properties this kernel needs (names), resolved at setup.
   virtual std::vector<std::string> requiredProperties() const { return {}; }
 
-  /// For the constraint equation of a saddle point problem (the mass equation
-  /// of an incompressible flow, attached to the pressure): the coefficients of
-  /// the flow at a point, from which the block preconditioners of the system
-  /// (SaddlePointBlocks.h) assemble their operators on the pressure.  Every
-  /// other kernel returns false.
-  virtual bool flowCoefficients(const QpContext & /*context*/,
-                                FlowCoefficients & /*coefficients*/) const
-  {
-    return false;
-  }
-  /// Whether this kernel is the mass conservation equation of a flow, the
-  /// one that provides flowCoefficients.
-  virtual bool isMassConservation() const { return false; }
-
-  /// For an advective flux of a control volume method: whether it needs the two sides of a face
-  /// (QpContext::advectedValue), and the normal velocity at a face point, positive from side 0 to
-  /// side 1.  At a face between two blocks an advective flux takes the properties of the upstream
-  /// side, where every other flux takes the harmonic mean of the two.
-  virtual bool usesFaceSides() const { return false; }
-  virtual bool advectingNormalVelocity(const QpContext & /*context*/, double & /*velocity*/) const
-  {
-    return false;
-  }
-  /// Whether the face flux is the non-conservative v . grad u, m (u_f - u_C) for the control
-  /// volume C on each side, rather than the conservative m u_f.  The assembly then evaluates the
-  /// flux once for each side, with QpContext::reference_side set, and the flux subtracts
-  /// QpContext::referenceValue.  The non-conservative form does not see the discrete divergence
-  /// of the velocity, so it keeps the solution independent of a constant added to it and keeps
-  /// upwind bounded.
-  virtual bool nonConservativeFaceFlux() const { return false; }
   /// Whether the term of the kernel belongs to the strong residual of its equation, which a
   /// residual-based stabilisation reads (StrongResidual): a source, and a flux whose divergence
   /// strongResidual gives.  An advection written as a face flux keeps v . grad u as its term.
@@ -133,42 +98,77 @@ public:
   /// The automatic quadrature of a storage term then takes the Gauss rule, since a lumped
   /// storage loses phase accuracy in a transport.
   virtual bool transportsVariable() const { return false; }
-  /// The quadrature rule of the kernel in an eigenvalue study (Problem::eigenvalueStudy): its
-  /// rule of every study by default.  A storage term that time stepping lumps takes its
-  /// consistent rule there (TimeDerivative).
-  virtual const QuadratureSpec & eigenvalueStudyQuadrature() const { return quadrature(); }
   /// Whether the kernel evaluates the residual of its equation with the time derivative in it (a
   /// residual-based stabilisation, weighted by QpContext::time_weight).  The theta method gives
   /// that derivative no weight when theta is 0, so an explicit step refuses such a kernel.
   virtual bool residualHasTimeDerivative() const { return false; }
-  /// Whether the kernel is the inertia of a flow, rho (v . grad) v_i, which the Stokes start of a
-  /// steady flow at rest turns off (Problem::solveSteady).
-  virtual bool isInertia() const { return false; }
-  /// Whether Newton's method needs a line search for the kernel, which the automatic line search
-  /// then turns on: a residual with kinks, where its derivative jumps (the limiter of the limited
-  /// advection scheme), and the full step can cycle between the two sides.
-  virtual bool needsLineSearch() const { return false; }
-  /// Whether the face flux needs the gradient at the two sides of a face (the linear upwind and
-  /// limited schemes).  DMCDM then reconstructs it at the nodes from the nodes
-  /// around them (Problem::buildNodeGradients), and the flux depends on those nodes too.
-  virtual bool needsSideGradients() const { return false; }
   /// Whether the kernel reads the Laplacian of the variables at its points (QpContext::laplacian),
   /// which quadratic elements give.
   virtual bool needsLaplacian() const { return false; }
-  /// For the mass equation of a flow: the velocity whose flux it conserves through the faces of
-  /// the control volumes, w = v - tau r_m with its stabilisation.  An advective flux of the heat
-  /// or the momentum with w conserves them exactly and sees no source from a discrete divergence.
-  virtual bool conservedVelocity(const QpContext & /*context*/, ADVector3 & /*w*/) const
-  {
-    return false;
-  }
+};
 
-  /// For a structural member (a plate or a beam): the stress at the height @p z above its
-  /// mid-surface, from the material law of its section; empty for every other kernel.
-  virtual std::vector<double> sectionStress(const QpContext & /*context*/, double /*z*/) const
-  {
-    return {};
-  }
+/// A storage term of a balance law: a time derivative of its variable (TimeDerivative,
+/// SecondTimeDerivative).  The setup finds such a kernel by a dynamic_cast.
+class StorageKernel : public Kernel
+{
+public:
+  using Kernel::Kernel;
+  bool isTimeKernel() const override { return true; }
+  /// Whether the term is a second time derivative (inertia), which makes its variable's equation
+  /// second order in time: a transient run integrates it by the generalized-alpha method.
+  virtual bool isSecondOrder() const { return false; }
+  /// The quadrature rule of the term in an eigenvalue study (Problem::eigenvalueStudy): its rule
+  /// of every study by default.  A storage term that time stepping lumps takes its consistent
+  /// rule there (TimeDerivative).
+  virtual const QuadratureSpec & eigenvalueStudyQuadrature() const { return quadrature(); }
+};
+
+/// The mass equation of an incompressible flow, attached to the pressure: the constraint equation
+/// of the saddle point system.  The block preconditioners of the system and the advective fluxes
+/// of the flow find it by a dynamic_cast at setup (Problem::flowConstraint,
+/// massConservationKernel).
+class MassEquation : public Kernel
+{
+public:
+  using Kernel::Kernel;
+  /// The coefficients of the flow at the point of @p context, from which the block
+  /// preconditioners of the system (SaddlePointBlocks.h) assemble their operators on the
+  /// pressure.
+  virtual void flowCoefficients(const QpContext & context,
+                                FlowCoefficients & coefficients) const = 0;
+  /// The velocity @p w whose flux the equation conserves through the faces of the control
+  /// volumes, w = v - tau r_m with its stabilisation.  An advective flux of the heat or the
+  /// momentum with w conserves them exactly and sees no source from a discrete divergence.
+  virtual void conservedVelocity(const QpContext & context, ADVector3 & w) const = 0;
+};
+
+/// A kernel that carries its variable with a velocity, as a volume source or as a face flux of a
+/// control volume method (Advection).  The assembly finds such a kernel by a dynamic_cast when it
+/// groups the kernels (Problem::Group), so that no point of an element casts.
+class AdvectiveKernel : public Kernel
+{
+public:
+  using Kernel::Kernel;
+  /// Whether the flux needs the two sides of a face (QpContext::advectedValue).
+  virtual bool usesFaceSides() const = 0;
+  /// Whether the face flux is the non-conservative v . grad u, m (u_f - u_C) for the control
+  /// volume C on each side, rather than the conservative m u_f.  The assembly then evaluates the
+  /// flux once for each side, with QpContext::reference_side set, and the flux subtracts
+  /// QpContext::referenceValue.  The non-conservative form does not see the discrete divergence
+  /// of the velocity, so it keeps the solution independent of a constant added to it and keeps
+  /// upwind bounded.
+  virtual bool nonConservativeFaceFlux() const = 0;
+  /// Whether Newton's method needs a line search for the kernel, which the automatic line search
+  /// then turns on: a residual with kinks, where its derivative jumps (the limiter of the limited
+  /// advection scheme), and the full step can cycle between the two sides.
+  virtual bool needsLineSearch() const = 0;
+  /// Whether the face flux needs the gradient at the two sides of a face (the linear upwind and
+  /// limited schemes).  DMCDM then reconstructs it at the nodes from the nodes around them
+  /// (Problem::buildNodeGradients), and the flux depends on those nodes too.
+  virtual bool needsSideGradients() const = 0;
+  /// Whether the kernel is the inertia of a flow, rho (v . grad) v_i, which the Stokes start of a
+  /// steady flow at rest turns off (Problem::solveSteady).
+  virtual bool isInertia() const = 0;
 };
 
 /// Integrated boundary condition: prescribes the outward normal flux
@@ -229,8 +229,8 @@ protected:
 /// the discretisation; the secondary side receives its share through its own
 /// test functions at the paired point (finite elements) or the control domain
 /// that contains the paired point (the dual mesh).  At an interface point the context holds the primary values in
-/// u and grad_u, the secondary values in u_other, the paired point in x_other,
-/// and the primary outward normal in normal.  Gradients are not available on
+/// u and grad_u, the secondary values in u_other, and the primary outward normal
+/// in normal.  Gradients are not available on
 /// the secondary side.
 class InterfaceBC : public IntegratedBC
 {
@@ -311,6 +311,23 @@ protected:
   std::vector<std::pair<Index, Index>> _pairs;
 };
 
+/// A constraint that makes the nodes of one boundary copies of those of another (a periodic
+/// boundary).  A distributed problem joins the copies in its gather-scatter, from the boundaries
+/// and the pairing that this interface gives (DistributedProblem::joinConstraints).
+class PeriodicConstraint : public Constraint
+{
+public:
+  using Constraint::Constraint;
+  /// The side set of the primary nodes and that of their copies.
+  virtual std::string primaryBoundary() const = 0;
+  virtual std::string secondaryBoundary() const = 0;
+  /// The periodic variables of @p problem.
+  virtual std::vector<int> periodicVariables(const Problem & problem) const = 0;
+  /// For every point of @p secondary, the index of the point of @p primary that it is a copy of.
+  virtual std::vector<Index> match(const std::vector<Point> & primary,
+                                   const std::vector<Point> & secondary) const = 0;
+};
+
 /// Add the parameter advection_scheme of an advective kernel to @p params.
 void addAdvectionSchemeParam(InputParameters & params);
 /// Whether the advection scheme named by @p text is a face flux of DMCDM (upwind,
@@ -376,23 +393,23 @@ private:
   std::vector<double> _h;
 };
 
-/// The mass equation of the flow of the problem @p problem (the kernel whose
-/// conservedVelocity() is defined), or nullptr for a problem without one (the penalty
-/// formulation, a velocity prescribed by conditions).
-const Kernel * massConservationKernel(const Problem & problem);
+/// The mass equation of the flow of the problem @p problem, or nullptr for a problem without one
+/// (the penalty formulation, a velocity prescribed by conditions).
+const MassEquation * massConservationKernel(const Problem & problem);
 /// The mass equation of the problem when it tests with the functions of @p variable (an
 /// equal-order flow, whose pressure is interpolated like the variable), or nullptr.  Then the
 /// mass equation holds for every test function of the variable, and an advection by the velocity
 /// it conserves both conserves the variable and carries a constant unchanged.
-const Kernel * conservingMassEquation(const Problem & problem, int variable);
+const MassEquation * conservingMassEquation(const Problem & problem, int variable);
 
 /// The velocity that an advective face flux of a flow carries at the point of @p ctx: the
 /// velocity w whose flux the mass equation @p mass conserves, so that the heat and the momentum
 /// are conserved exactly and see no source from a discrete divergence of the velocity.  On the
 /// boundary the mass equation takes v . n (mass_flux), and so does the flux there.  Without a mass
 /// equation it is the velocity @p velocities.
-ADVector3
-advectingVelocity(const QpContext & ctx, const Kernel * mass, const std::vector<int> & velocities);
+ADVector3 advectingVelocity(const QpContext & ctx,
+                            const MassEquation * mass,
+                            const std::vector<int> & velocities);
 
 /// The advection scheme named by @p text, checked against the method of @p problem: "central"
 /// for both methods (the term as the volume source v . grad u), and the face fluxes "upwind",

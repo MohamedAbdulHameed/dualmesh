@@ -5,13 +5,16 @@ Adaptive mesh refinement
 
 An adaptive solve repeats a cycle: it solves the problem, estimates the error
 of every element, marks the elements with the largest errors, and refines
-them.  :func:`solve_with_adaptive_refinement` runs the cycles, and the other
-functions carry out its steps one at a time.
+them.  :func:`solve_with_adaptive_refinement` runs the cycles of a steady
+problem, :func:`solve_transient_with_adaptive_refinement` adapts the mesh of
+a transient run every few time steps, and the other functions carry out the
+steps one at a time.
 
 .. autosummary::
    :toctree: generated/
 
    solve_with_adaptive_refinement
+   solve_transient_with_adaptive_refinement
    mark_by_fraction
    mark_by_error_fraction
    mark_by_threshold
@@ -22,3 +25,4 @@ functions carry out its steps one at a time.
    :template: class.rst
 
    AdaptivityResult
+   TransientAdaptivityResult

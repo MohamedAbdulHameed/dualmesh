@@ -42,11 +42,10 @@ struct MeshPartition
 };
 
 /// Partition @p mesh into @p num_parts parts with a partitioner of PETSc: "ptscotch" (PT-Scotch), "parmetis" (ParMETIS), "simple" (contiguous blocks of elements), or "automatic" (PT-Scotch, else ParMETIS).
-/// It needs a build with PETSc.
 MeshPartition
 partitionMesh(const Mesh & mesh, int num_parts, const std::string & method = "automatic");
 
-/// The partitioners of this build: none without PETSc.
+/// The partitioners of this build: "simple", and "ptscotch" and "parmetis" when PETSc has them.
 std::vector<std::string> availablePartitioners();
 
 /// The element adjacency (dual) graph: for every element, the elements that

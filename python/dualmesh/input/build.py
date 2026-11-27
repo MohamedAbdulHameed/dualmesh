@@ -8,23 +8,29 @@ cannot run, and the checks that need the mesh stop here with their key, so that 
 the input is dropped without a message.
 """
 
-import importlib
+from dataclasses import dataclass
 
 import numpy
 
-from dualmesh.input import units, user_model
-from dualmesh.input.lower import engine_formula, write_expression
+from dualmesh import units
+from dualmesh._core import InputError
+from dualmesh.engine import Problem
+from dualmesh.input import user_model
 from dualmesh.input.physics_options import physics_functions
 from dualmesh.input.schema import context, generated_region, join, symmetry
-from dualmesh.input.units import fail, input_error
-from dualmesh.model import parse
-from dualmesh.model.expression import field_component
+from dualmesh.meshing import (
+    generate_box_mesh,
+    generate_line_mesh,
+    generate_rectangle_mesh,
+    read_mesh,
+)
+from dualmesh.model import graph, parse
+from dualmesh.model.engine_form import add_boundary_condition, engine_formula, write_expression
+from dualmesh.model.graph import field_component
 from dualmesh.physics import HYPERELASTIC
 from dualmesh.postprocessors import von_Mises_stress
-
-# import_module returns the module itself, which dualmesh.model hides behind the class of the
-# same name.
-graph = importlib.import_module("dualmesh.model.expression")
+from dualmesh.tables import Table
+from dualmesh.units import fail
 
 # The engine's names of the properties of the input.
 engine_property_names = {
@@ -63,6 +69,11 @@ engine_element_types = {
     "hexahedron": "Hex8",
     "tetrahedron": "Tet4",
 }
+# The postprocessors that read one field: a reduction over the domain or the value at a point.
+field_reductions = ("integral", "average", "maximum", "minimum", "point_value")
+# The unit of the heat through a boundary, by the dimension of the integral: per unit area at
+# the end of a line, per unit thickness of a plane body, and the whole heat of a solid body.
+heat_flow_units = {1: "W/m^2", 2: "W/m", 3: "W"}
 
 
 class region_view:
@@ -82,17 +93,15 @@ class region_view:
 def build_mesh(mesh: dict):
     """The engine's mesh of the mesh section. The grading of a generated mesh is the bias of the
     engine's generators: the ratio of the length of each cell to the one before it."""
-    import dualmesh
-
     if "segment" in mesh:
         segment = mesh["segment"]
         start = segment["origin"]
-        return dualmesh.generate_line_mesh(
+        return generate_line_mesh(
             start, start + segment["length"], segment["cells"], bias=segment["grading"]
         )
     for form, generate in (
-        ("rectangle", dualmesh.generate_rectangle_mesh),
-        ("box", dualmesh.generate_box_mesh),
+        ("rectangle", generate_rectangle_mesh),
+        ("box", generate_box_mesh),
     ):
         if form not in mesh:
             continue
@@ -105,7 +114,7 @@ def build_mesh(mesh: dict):
             options |= {axis: [start, start + size], f"num_{axis}_elements": cells}
             options[f"{axis}_bias"] = grading
         return generate(element_type=engine_element_types[generated["cell_type"]], **options)
-    return dualmesh.read_mesh(mesh["file"], length_unit=mesh["length_unit"])
+    return read_mesh(mesh["file"], length_unit=mesh["length_unit"])
 
 
 def region_blocks(mesh: dict, engine_mesh, region: str, path: str) -> dict:
@@ -138,15 +147,28 @@ def engine_value(
 
 def constant_everywhere(properties: dict, name: str) -> float:
     """The value of a property that the engine takes as one number of its physics."""
+    return float(_value_everywhere(properties, name, formula=False))
+
+
+def _value_everywhere(properties: dict, name: str, formula: bool):
+    """The value of a property that has one value in every region: one constant, or with
+    `formula` one constant or one formula of the solid. Any other value stops the run."""
     entry = properties[name]
     value = entry["value"]
-    if entry["regions"] or not isinstance(value, (int, float)):
-        fail(
-            join("properties", name),
-            f"the engine takes {name} as one number of its physics, so it is one constant, the "
-            "same in every region.",
-        )
-    return float(value)
+    allowed = not isinstance(value, dict) if formula else isinstance(value, (int, float))
+    if entry["regions"] or not allowed:
+        if formula:
+            message = (
+                f"the {name.replace('_', ' ')} is one constant or one formula of the solid, the "
+                "same in every region."
+            )
+        else:
+            message = (
+                f"the engine takes {name} as one number of its physics, so it is one constant, "
+                "the same in every region."
+            )
+        fail(join("properties", name), message)
+    return value
 
 
 # The problem
@@ -158,8 +180,6 @@ def build_problem(validated: dict, engine_mesh=None):
     It is built on ``engine_mesh`` when given (an adapted mesh), and otherwise on the mesh section.
     It returns (engine problem, physics by input name, engine variable names by field name).
     """
-    import dualmesh
-
     mesh = validated["mesh"]
     coordinate_system = mesh["coordinate_system"]
     transient = "time" in validated
@@ -172,16 +192,7 @@ def build_problem(validated: dict, engine_mesh=None):
     models = user_model.prepare(validated, engine_mesh)
     if not physics and not models:
         fail("physics", "the problem needs a physics, such as heat_conduction.")
-    # The schema keeps one method for the whole problem, given at the top or in its entries.
-    methods = {
-        entry["method"]
-        for entry in [validated, *physics.values(), *validated.get("models", {}).values()]
-        if "method" in entry
-    }
-    options = {"coordinates": coordinate_system} if coordinate_system != "cartesian" else {}
-    if methods:
-        options["method"] = methods.pop()
-    problem = dualmesh.Problem(engine_mesh, **options)
+    problem = Problem(engine_mesh, **_problem_options(validated, physics, coordinate_system))
 
     properties = validated.get("properties", {})
     gravity = _gravity(validated, physics, engine_mesh, coordinate_system)
@@ -190,8 +201,79 @@ def build_problem(validated: dict, engine_mesh=None):
     reads = {name: physics_functions[name](view) for name in physics}
     physics_reads = _check_properties(reads, properties, model_reads)
 
-    engine_physics = {}
     initial = _initial_values(validated)
+    _check_fields(validated, physics, models, transient, initial)
+    setting = _physics_setting(
+        properties,
+        initial,
+        transient,
+        dynamic,
+        engine_mesh,
+        coordinate_system,
+        gravity,
+        "heat_conduction" in physics,
+    )
+    engine_physics = {
+        name: _add_physics(problem, setting, name, entry, reads[name]["needed"])
+        for name, entry in physics.items()
+    }
+    # The engine's names of the variables of each field, which the formulas take.
+    variables = _variables(engine_physics)
+    user_model.add_variables(problem, models, initial, variables)
+    heat_needed = reads.get("heat_conduction", {}).get("needed", ())
+    _add_properties(problem, setting, mesh, physics_reads, heat_needed, variables)
+    _add_thermal_expansion(problem, engine_physics, properties, coordinate_system, variables)
+    _add_nonisothermal_flow(problem, engine_physics, properties, gravity)
+    user_model.add(
+        problem, models, variables, dynamic, engine_mesh.dimension, _postprocessed_fields(validated)
+    )
+    _add_boundary_conditions(
+        validated.get("boundary_conditions", {}),
+        engine_physics,
+        variables,
+        coordinate_system,
+        problem,
+        models,
+        validated,
+    )
+    return problem, engine_physics, variables
+
+
+@dataclass
+class _physics_setting:
+    """What the physics of the input read when they are added: the properties, the initial
+    values, whether the run is transient, whether it takes the time terms (dynamic, which an
+    eigenvalue study takes too), the engine's mesh, the coordinate system, the gravity or None,
+    and whether the problem has heat_conduction (heated)."""
+
+    properties: dict
+    initial: dict
+    transient: bool
+    dynamic: bool
+    engine_mesh: object
+    coordinate_system: str
+    gravity: list | None
+    heated: bool
+
+
+def _problem_options(validated: dict, physics: dict, coordinate_system: str) -> dict:
+    """The keywords of the engine's Problem: the coordinate system, and the method, which the
+    schema keeps one for the whole problem, given at the top or in its entries."""
+    methods = {
+        entry["method"]
+        for entry in [validated, *physics.values(), *validated.get("models", {}).values()]
+        if "method" in entry
+    }
+    options = {"coordinates": coordinate_system} if coordinate_system != "cartesian" else {}
+    if methods:
+        options["method"] = methods.pop()
+    return options
+
+
+def _check_fields(validated: dict, physics: dict, models: list, transient: bool, initial: dict):
+    """Stops the run at a model that does not fit the fields of the physics, at the states of a
+    model in a transient run with mesh_adaptivity, and at an initial condition of a field that no
+    physics or model solves for."""
     solved = {field for name in physics for field in physics_fields[name]}
     user_model.check(models, solved, transient, initial)
     if transient and "mesh_adaptivity" in validated and any(model.law.states() for model in models):
@@ -204,31 +286,33 @@ def build_problem(validated: dict, engine_mesh=None):
     for key in initial:
         if key not in solved:
             fail(join("initial_conditions", key), f"no physics of the problem solves for {key}.")
-    for name, entry in physics.items():
-        engine_physics[name] = _add_physics(
-            problem,
-            name,
-            entry,
-            properties,
-            initial,
-            (transient, dynamic),
-            engine_mesh,
-            coordinate_system,
-            gravity,
-            reads[name]["needed"],
-            "heat_conduction" in physics,
-        )
-    # The engine's names of the variables of each field, which the formulas take.
-    variables = _variables(engine_physics)
-    user_model.add_variables(problem, models, initial, variables)
-    # The properties that the kernels of heat_conduction read from property objects, and the
-    # source of heat, a property that the source term reads.
-    heat_objects = [*reads.get("heat_conduction", {}).get("needed", ()), "volumetric_heat_source"]
-    for name in properties:
+
+
+def _add_properties(
+    problem, setting: _physics_setting, mesh: dict, physics_reads: set, heat_needed, variables
+) -> None:
+    """Adds the property objects that the kernels read: the properties of property_objects, and
+    those that the kernels of heat_conduction read (heat_needed) with the source of heat, a
+    property that the source term reads."""
+    heat_objects = [*heat_needed, "volumetric_heat_source"]
+    for name, entry in setting.properties.items():
         if name in physics_reads and (name in property_objects or name in heat_objects):
             _add_property(
-                problem, mesh, engine_mesh, name, properties[name], coordinate_system, variables
+                problem,
+                mesh,
+                setting.engine_mesh,
+                name,
+                entry,
+                setting.coordinate_system,
+                variables,
             )
+
+
+def _add_thermal_expansion(
+    problem, engine_physics: dict, properties: dict, coordinate_system: str, variables: dict
+) -> None:
+    """Adds the thermal expansion of the solid by the temperature of heat_conduction, when the
+    input gives the linear expansion coefficient and the stress-free temperature."""
     expansion = [
         key
         for key in ("linear_expansion_coefficient", "stress_free_temperature")
@@ -246,60 +330,55 @@ def build_problem(validated: dict, engine_mesh=None):
             "a thermal expansion follows the temperature of heat_conduction, which the problem "
             "does not have.",
         )
-    if (
-        "heat_conduction" in engine_physics
-        and "linear_expansion_coefficient" in properties
-        and "solid_mechanics" not in engine_physics
-    ):
+    if "heat_conduction" not in engine_physics or "linear_expansion_coefficient" not in properties:
+        return
+    if "solid_mechanics" not in engine_physics:
         fail(
             "properties.linear_expansion_coefficient",
             "the thermal expansion needs solid_mechanics.",
         )
-    if "heat_conduction" in engine_physics and "linear_expansion_coefficient" in properties:
-        problem.add_coupling(
-            "thermal_expansion",
-            heat_conduction=engine_physics["heat_conduction"],
-            solid_mechanics=engine_physics["solid_mechanics"],
-            linear_expansion_coefficient=constant_everywhere(
-                properties, "linear_expansion_coefficient"
-            ),
-            stress_free_temperature=constant_everywhere(properties, "stress_free_temperature"),
-        )
-    if "heat_conduction" in engine_physics and "fluid_dynamics" in engine_physics:
-        # Under gravity the fluid takes the Boussinesq force -rho beta (T - T_0) g, on top of
-        # its weight rho g, which the flow took with its density at T_0.
-        buoyancy = {}
-        if gravity is not None:
-            buoyancy = {
-                "gravity": gravity,
-                **{
-                    name: constant_everywhere(properties, name)
-                    for name in ("volumetric_expansion_coefficient", "reference_temperature")
-                },
-            }
-        problem.add_coupling(
-            "nonisothermal_flow",
-            heat_conduction=engine_physics["heat_conduction"],
-            fluid_dynamics=engine_physics["fluid_dynamics"],
-            **buoyancy,
-        )
-    read = {
+    problem.add_coupling(
+        "thermal_expansion",
+        heat_conduction=engine_physics["heat_conduction"],
+        solid_mechanics=engine_physics["solid_mechanics"],
+        linear_expansion_coefficient=_expansion_coefficient(
+            properties, coordinate_system, variables
+        ),
+        stress_free_temperature=constant_everywhere(properties, "stress_free_temperature"),
+    )
+
+
+def _add_nonisothermal_flow(problem, engine_physics: dict, properties: dict, gravity) -> None:
+    """Couples heat_conduction and fluid_dynamics, when the problem has both. Under gravity the
+    fluid takes the Boussinesq force -rho beta (T - T_0) g, on top of its weight rho g, which
+    the flow took with its density at T_0."""
+    if "heat_conduction" not in engine_physics or "fluid_dynamics" not in engine_physics:
+        return
+    buoyancy = {}
+    if gravity is not None:
+        buoyancy = {
+            "gravity": gravity,
+            **{
+                name: constant_everywhere(properties, name)
+                for name in ("volumetric_expansion_coefficient", "reference_temperature")
+            },
+        }
+    problem.add_coupling(
+        "nonisothermal_flow",
+        heat_conduction=engine_physics["heat_conduction"],
+        fluid_dynamics=engine_physics["fluid_dynamics"],
+        **buoyancy,
+    )
+
+
+def _postprocessed_fields(validated: dict) -> set:
+    """The fields and the quantities of the models that the postprocessors read."""
+    return {
         definition[reduction]
         for definition in validated.get("postprocessors", {}).values()
-        for reduction in ("integral", "average", "maximum", "minimum", "point_value")
+        for reduction in field_reductions
         if reduction in definition
     }
-    user_model.add(problem, models, variables, dynamic, engine_mesh.dimension, read)
-    _add_boundary_conditions(
-        validated.get("boundary_conditions", {}),
-        engine_physics,
-        variables,
-        coordinate_system,
-        problem,
-        models,
-        validated,
-    )
-    return problem, engine_physics, variables
 
 
 def _initial_values(validated: dict) -> dict:
@@ -417,71 +496,90 @@ def _add_property(
             )
 
 
-def _add_physics(
-    problem,
-    name,
-    entry,
-    properties,
-    initial,
-    time_terms,
-    engine_mesh,
-    coordinate_system,
-    gravity,
-    needed,
-    heated,
-):
+def _add_physics(problem, setting: _physics_setting, name: str, entry: dict, needed):
     """Adds one physics of the input, with the names of the properties it reads from property
     objects and the numbers of the others. `needed` lists the properties that its physics
-    function needs, and `heated` says whether the problem has heat_conduction. `time_terms` is
-    (transient, dynamic): a transient run, and a run with the time terms, which an eigenvalue
-    study takes too."""
-    path = join("physics", name)
-    transient, dynamic = time_terms
+    function needs."""
     if name == "heat_conduction":
-        options = {"thermal_conductivity": "thermal_conductivity"}
-        # The heat capacity stores heat in time and carries it with a flow.
-        if "density" in needed:
-            options.update(density="density", specific_heat="specific_heat")
-        if "temperature" in initial:
-            options["initial_condition"] = initial["temperature"]
-        elif transient:
-            fail("initial_conditions", "a transient heat_conduction needs the initial temperature.")
-        return problem.add_physics("heat_conduction", **options)
+        return _add_heat_conduction(problem, setting, needed)
     # The density of the solid or the fluid, and its weight rho g per volume.
-    density = constant_everywhere(properties, "density") if "density" in needed else None
-    weight = None if gravity is None else [density * g for g in gravity]
+    density = constant_everywhere(setting.properties, "density") if "density" in needed else None
+    weight = None if setting.gravity is None else [density * g for g in setting.gravity]
     if name == "solid_mechanics":
-        if "displacement" in initial and not transient:
-            fail(
-                "initial_conditions.displacement",
-                "an initial displacement is the start of a transient run with inertia, so it "
-                "needs the time section.",
-            )
-        options = {"formulation": _solid_formulation(entry, engine_mesh, coordinate_system, path)}
-        if entry["kinematics"] == "finite":
-            options["large_deformation"] = True
-            options.update(_strain_energy(entry["strain_energy"], join(path, "strain_energy")))
-        if "yield_stress" in properties:
-            options.update(_plasticity(properties, entry, coordinate_system, heated))
-        # The density and the weight are per volume of the undeformed body at finite strain.
-        if dynamic:
-            options["density"] = density
-        if weight is not None:
-            options["body_force"] = weight
-        if "displacement" in initial:
-            options["initial_condition"] = {"displacement": list(initial["displacement"])}
-        return problem.add_physics("solid_mechanics", **options)
+        return _add_solid_mechanics(problem, setting, entry, density, weight)
+    return _add_fluid_dynamics(problem, setting, entry, density, weight)
+
+
+def _add_heat_conduction(problem, setting: _physics_setting, needed):
+    """Adds heat_conduction, which reads its properties from property objects."""
+    options = {"thermal_conductivity": "thermal_conductivity"}
+    # The heat capacity stores heat in time and carries it with a flow.
+    if "density" in needed:
+        options.update(density="density", specific_heat="specific_heat")
+    if "temperature" in setting.initial:
+        options["initial_condition"] = setting.initial["temperature"]
+    elif setting.transient:
+        fail("initial_conditions", "a transient heat_conduction needs the initial temperature.")
+    return problem.add_physics("heat_conduction", **options)
+
+
+def _add_solid_mechanics(problem, setting: _physics_setting, entry: dict, density, weight):
+    """Adds solid_mechanics, with its density in a run with the time terms and its weight under
+    gravity."""
+    path = join("physics", "solid_mechanics")
+    initial = setting.initial
+    if "displacement" in initial and not setting.transient:
+        fail(
+            "initial_conditions.displacement",
+            "an initial displacement is the start of a transient run with inertia, so it "
+            "needs the time section.",
+        )
+    formulation = _solid_formulation(entry, setting.engine_mesh, setting.coordinate_system, path)
+    options = {"formulation": formulation}
+    if entry["kinematics"] == "finite":
+        options["large_deformation"] = True
+        options.update(_strain_energy(entry["strain_energy"], join(path, "strain_energy")))
+    if "yield_stress" in setting.properties:
+        options.update(
+            _plasticity(setting.properties, entry, setting.coordinate_system, setting.heated)
+        )
+    # The density and the weight are per volume of the undeformed body at finite strain.
+    if setting.dynamic:
+        options["density"] = density
+    if weight is not None:
+        options["body_force"] = weight
+    if "displacement" in initial:
+        options["initial_condition"] = {"displacement": list(initial["displacement"])}
+    return problem.add_physics("solid_mechanics", **options)
+
+
+def _add_fluid_dynamics(problem, setting: _physics_setting, entry: dict, density, weight):
+    """Adds fluid_dynamics, with its density, its viscosity and its weight under gravity."""
     options = {
         "density": density,
-        "dynamic_viscosity": constant_everywhere(properties, "dynamic_viscosity"),
+        "dynamic_viscosity": constant_everywhere(setting.properties, "dynamic_viscosity"),
         "formulation": entry.get("formulation"),
     }
     if weight is not None:
         options["body_force"] = weight
+    initial = setting.initial
     flow_initial = {key: initial[key] for key in ("velocity", "pressure") if key in initial}
     if flow_initial:
         options["initial_condition"] = flow_initial
     return problem.add_physics("fluid_dynamics", **options)
+
+
+def _expansion_coefficient(properties: dict, coordinate_system: str, variables: dict):
+    """The linear expansion coefficient of the thermal expansion as the engine takes it: a number,
+    or the text of a formula of the temperature, the other fields and the coordinates. It is the
+    secant coefficient between the stress-free temperature and the temperature, one value of the
+    solid, so it is the same in every region and takes no table."""
+    path = join("properties", "linear_expansion_coefficient")
+    entry = properties["linear_expansion_coefficient"]
+    value = _value_everywhere(properties, "linear_expansion_coefficient", formula=True)
+    if isinstance(value, (int, float)):
+        return float(value)
+    return engine_formula(value, entry["unit"], path, coordinate_system, variables)
 
 
 def _plasticity(properties: dict, entry: dict, coordinate_system: str, heated: bool) -> dict:
@@ -496,13 +594,7 @@ def _plasticity(properties: dict, entry: dict, coordinate_system: str, heated: b
             "module updates a plastic stress by a hypoelastic rate, which has no multiplicative "
             "split of the deformation gradient.",
         )
-    value = properties["yield_stress"]["value"]
-    if properties["yield_stress"]["regions"] or isinstance(value, dict):
-        fail(
-            path,
-            "the yield stress is one constant or one formula of the solid, the same in every "
-            "region.",
-        )
+    value = _value_everywhere(properties, "yield_stress", formula=True)
     options = {"plasticity": {"yield_stress": engine_value(value, "Pa", path, coordinate_system)}}
     node = getattr(value, "node", None)
     if node is not None and any(
@@ -535,8 +627,8 @@ def _strain_energy(text: str, path: str) -> dict:
     symbols = {name: field_component(name, (), dimension) for name, dimension in leaves.items()}
     try:
         energy = parse(text, symbols)
-    except input_error as error:
-        raise input_error(f"{path}: {error}") from None
+    except InputError as error:
+        raise InputError(f"{path}: {error}") from None
     if energy.rank != 0 or energy.dimension != pressure:
         fail(
             path,
@@ -619,7 +711,7 @@ def _add_boundary_conditions(
                 model = unknowns.get(key) or fluxes[key]
                 unit = model.unit if key in unknowns else model.flux_unit
                 text = engine_value(value, unit, path, coordinate_system, variables, symbols)
-                user_model.add_boundary_condition(
+                add_boundary_condition(
                     problem, boundary, model.unknown, text, flux=key not in unknowns
                 )
                 continue
@@ -758,81 +850,96 @@ def add_postprocessors(problem, validated: dict, variables: dict) -> None:
     measured = 3 if coordinate_system == "axisymmetric" else problem.mesh.dimension
     names = set(validated.get("postprocessors", {}))
     for name, definition in validated.get("postprocessors", {}).items():
-        path = join("postprocessors", name)
         if "boundary_flux" in definition:
             flux = definition["boundary_flux"]
             if (units.split_component(flux, coordinate_system) or (flux,))[0] == "traction":
                 _add_traction(
                     problem, name, definition, variables, coordinate_system, measured, names
                 )
-                continue
-            if flux in model_fluxes:
-                # The normal flux over a boundary of measured - 1 dimensions.
-                flow = units.parse_unit(quantities[flux])[1] * units.base("length") ** (
-                    measured - 1
-                )
-                variable, unit = model_fluxes[flux], units.SI_unit_text(flow)
             else:
-                if "temperature" not in variables:
-                    fail(path, "the boundary flux heat_flux needs heat_conduction.")
-                variable = variables["temperature"][0]
-                unit = "W" if measured == 3 else ("W/m" if measured == 2 else "W/m^2")
-            problem.add_postprocessor(
-                "boundary_flux", name, variable=variable, boundary=definition["boundary"], unit=unit
-            )
+                _add_boundary_flux(
+                    problem, name, definition, variables, measured, quantities, model_fluxes
+                )
             continue
         if "line" in definition:
             continue
-        reduction = next(
-            key
-            for key in ("integral", "average", "maximum", "minimum", "point_value")
-            if key in definition
-        )
+        reduction = next(key for key in field_reductions if key in definition)
         field = definition[reduction]
         if field in quantities and field not in variables:
-            if reduction == "point_value":
-                fail(
-                    path,
-                    f"{field} lives at the integration points, so it takes an integral, an "
-                    "average, a maximum or a minimum.",
-                )
-            unit = quantities[field]
+            _add_model_quantity(problem, name, reduction, quantities[field], field, measured)
+        elif reduction == "point_value":
+            _add_point_value(problem, name, definition, variables, coordinate_system)
+        else:
+            path = join("postprocessors", name)
+            variable, unit = _scalar_variable(field, variables, coordinate_system, problem, path)
             problem.add_postprocessor(
-                f"property_{reduction}",
-                name,
-                property=field,
-                unit=f"{unit}*m^{measured}" if reduction == "integral" else unit,
+                reduction, name, variable=variable, unit=_reduction_unit(unit, reduction, measured)
             )
-            continue
-        if reduction == "point_value":
-            kind, source, unit = point_quantity(field, variables, coordinate_system, problem, path)
-            point = list(definition["point"])
-            if kind == "stress":
-                problem.add_postprocessor(
-                    "property_point_value",
-                    name,
-                    property="stress",
-                    component=source,
-                    point=point,
-                    unit=unit,
-                )
-            elif kind == "von_Mises_stress":
-                problem.add_postprocessor(
-                    "von_mises_stress_point_value", name, point=point, unit=unit
-                )
-            else:
-                point += [0.0] * (3 - len(point))
-                problem.add_postprocessor(
-                    "point_value", name, variable=source, point=point, unit=unit
-                )
-            continue
-        variable, unit = _scalar_variable(field, variables, coordinate_system, problem, path)
-        problem.add_postprocessor(
-            reduction,
-            name,
-            variable=variable,
-            unit=f"{unit}*m^{measured}" if reduction == "integral" else unit,
+
+
+def _reduction_unit(unit: str, reduction: str, measured: int) -> str:
+    """The unit of a reduction of a field in `unit`: an integral over `measured` dimensions
+    takes the unit times m^measured, and the average, maximum, minimum and point value the unit
+    itself."""
+    return f"{unit}*m^{measured}" if reduction == "integral" else unit
+
+
+def _add_boundary_flux(
+    problem, name: str, definition: dict, variables: dict, measured, quantities, model_fluxes
+):
+    """The integral of the outward normal flux of a model, or of the heat flux, over a
+    boundary of measured - 1 dimensions."""
+    flux = definition["boundary_flux"]
+    if flux in model_fluxes:
+        flow = units.parse_unit(quantities[flux])[1] * units.base("length") ** (measured - 1)
+        variable, unit = model_fluxes[flux], units.SI_unit_text(flow)
+    else:
+        if "temperature" not in variables:
+            fail(join("postprocessors", name), "the boundary flux heat_flux needs heat_conduction.")
+        variable = variables["temperature"][0]
+        unit = heat_flow_units[measured]
+    problem.add_postprocessor(
+        "boundary_flux", name, variable=variable, boundary=definition["boundary"], unit=unit
+    )
+
+
+def _add_model_quantity(problem, name: str, reduction: str, unit: str, field: str, measured):
+    """A reduction of a state or an expression of a model, which lives at the integration
+    points, so it takes no value at a point."""
+    if reduction == "point_value":
+        fail(
+            join("postprocessors", name),
+            f"{field} lives at the integration points, so it takes an integral, an "
+            "average, a maximum or a minimum.",
         )
+    problem.add_postprocessor(
+        f"property_{reduction}",
+        name,
+        property=field,
+        unit=_reduction_unit(unit, reduction, measured),
+    )
+
+
+def _add_point_value(problem, name: str, definition: dict, variables: dict, coordinate_system):
+    """The value of a field, of a stress component or of the von Mises stress at a point."""
+    path = join("postprocessors", name)
+    field = definition["point_value"]
+    kind, source, unit = point_quantity(field, variables, coordinate_system, problem, path)
+    point = list(definition["point"])
+    if kind == "stress":
+        problem.add_postprocessor(
+            "property_point_value",
+            name,
+            property="stress",
+            component=source,
+            point=point,
+            unit=unit,
+        )
+    elif kind == "von_Mises_stress":
+        problem.add_postprocessor("von_mises_stress_point_value", name, point=point, unit=unit)
+    else:
+        point += [0.0] * (3 - len(point))
+        problem.add_postprocessor("point_value", name, variable=source, point=point, unit=unit)
 
 
 def _add_traction(
@@ -950,8 +1057,6 @@ class line_sampler:
             self.rows.append([time, *row] if self.transient else row)
 
     def table(self):
-        from dualmesh.tables import Table
-
         return Table(self.columns, self.units, self.rows, title=self.name)
 
 

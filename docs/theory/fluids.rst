@@ -8,7 +8,8 @@ equal-order elements, the advection of momentum, the two ways of advancing a
 transient flow, and the buoyancy that couples the flow to the temperature.
 Both methods of the code assemble these equations: the finite element method
 (FEM) and the dual mesh control domain method (DMCDM) [Reddy2024]_.  A flow
-takes DMCDM when the method is not given.
+of the equal-order formulation, the default, takes DMCDM when the method is
+not given.
 
 The governing equations
 -----------------------
@@ -68,7 +69,11 @@ also holds the hoop stress :math:`\sigma_{\theta\theta} = -p + 2 \mu v_r / r`,
 with :math:`v_r` the radial velocity: its source is
 :math:`s = f_r - \sigma_{\theta\theta} / r`.  The ``"laplacian"`` form takes
 :math:`\mu v_r / r^2` in place of :math:`2 \mu v_r / r^2`, the term of the
-radial component of the vector Laplacian.
+radial component of the vector Laplacian.  In spherical coordinates :math:`r`
+of a radial flow, the two hoop directions each carry
+:math:`\sigma_{\theta\theta} = \sigma_{\phi\phi} = -p + 2 \mu v_r / r`, so the
+source is :math:`s = f_r - 2 \sigma_{\theta\theta} / r`, and the
+``"laplacian"`` form takes :math:`2 \mu v_r / r^2`.
 
 The formulations
 ----------------
@@ -119,7 +124,7 @@ The kernels
 
 For every velocity component, ``fluid_dynamics`` adds ``viscous_stress`` (the
 viscous flux), ``pressure_gradient`` (the pressure part :math:`p \mathbf{e}_i`
-of the flux, with the hoop term in axisymmetric coordinates), and, with a
+of the flux, with the hoop term in axisymmetric and spherical coordinates), and, with a
 positive density, ``advection`` (the inertia :math:`\rho (\mathbf{v} \cdot
 \nabla) v_i`, the one transport kernel of the code with the coefficient
 :math:`\rho`), ``momentum_stabilization`` and ``time_derivative`` (the term
@@ -377,9 +382,9 @@ keeps a dilatation of order :math:`p / \gamma`.  Substituting
 :eq:`flow-penalty` into the stress removes the pressure from the unknowns: the
 flux of the equation of :math:`v_i` gains
 :math:`-\gamma (\nabla \cdot \mathbf{v})\, \mathbf{e}_i`, which
-``penalty_incompressibility`` assembles.  In axisymmetric coordinates the
-divergence holds :math:`v_r / r`, and the hoop stress holds the penalty
-pressure.
+``penalty_incompressibility`` assembles.  The divergence holds :math:`v_r / r`
+in axisymmetric coordinates and :math:`2 v_r / r` in spherical ones, and the
+hoop stresses hold the penalty pressure.
 
 The parameter ``penalty_parameter`` defaults to :math:`10^8`, which suits a
 viscosity of order one.  Choose :math:`\gamma` between about :math:`10^4 \mu`
@@ -402,11 +407,32 @@ constraints, two unknowns per constraint, the ratio of the continuum problem.
 velocity gradients at the centroid of the element.  This is selective reduced
 integration [MalkusHughes1978]_: the viscous term keeps its full rule.
 
+In axisymmetric and spherical coordinates the divergence holds the hoop term
+:math:`n v_r / r`, with :math:`n` the number of hoop directions (1 in
+axisymmetric and 2 in spherical coordinates).  The term takes the radius
+:math:`r` of the centroid along with the velocity :math:`v_r` there, so each
+element carries one divergence and one penalty pressure :math:`p_e`.  DMCDM
+integrates the penalty term at the points of the faces and of the control
+domains, which differ from the centroid, and every one of them takes this
+:math:`p_e`, both in the flux through the faces and in the hoop stresses of
+the radial equation.  The factor :math:`n / r` of the hoop stresses takes the
+radius of the integration point.  Its product with the factor of the volume
+element, :math:`2 \pi` in axisymmetric and :math:`8 \pi r` in spherical
+coordinates, is linear in :math:`r`, so the midpoint rule integrates it
+exactly.  A pressure uniform in an element then exerts no net force on a
+control domain, as in the continuum.  A divergence with the radius of each
+integration point would give each point of an element its own pressure.  As
+:math:`\gamma \to \infty` the penalty would then drive a combination of these
+divergences to zero, and the divergence at the centroid would keep a residue
+of order :math:`h^2`, with :math:`h` the element size, which
+:math:`-\gamma \nabla \cdot \mathbf{v}` multiplies by :math:`\gamma`.
+
 The property object ``penalty_pressure``, which ``fluid_dynamics`` adds,
 declares the property ``pressure`` as :math:`-\gamma \nabla \cdot \mathbf{v}`,
 with the :math:`\gamma` of the ``penalty_incompressibility`` kernels of the
-velocities.  It is most accurate at the element centroids, where the
-constraint is imposed.  The input does not offer this formulation.
+velocities.  At the element centroids, where the constraint is imposed, it is
+the pressure :math:`p_e` of the discrete equations.  The input does not offer
+this formulation.
 
 Boundary conditions and the pressure level
 ------------------------------------------
@@ -435,8 +461,8 @@ tie to the node of the smaller number, so that a distributed run holds the node
 of a serial one.  After each converged solve, it shifts the pressure to a mean
 of zero over the fluid and takes the reactions at the shifted state.  The mean
 weighs each node as the lumped rule does: by the measure of its control domain
-under DMCDM and by the integral of its shape function under FEM, times the
-coordinate factor at the node.  When a viscosity, a density or a source depends on the
+under DMCDM and by the integral of its shape function under FEM, each with the
+coordinate factor inside the integral.  When a viscosity, a density or a source depends on the
 pressure, the level changes the flow, and the solve stops with an error that
 asks for the pressure at a point,
 ``flow.add_boundary_condition("pressure = 0", point=[...])``, or for a
@@ -732,13 +758,16 @@ its unsteady term.  It adds
 [Fischer2021]_, and as :math:`\Delta t \to 0` it tends to the stabilized
 discretization of the monolithic solver.  The added term multiplies a
 divergence, so it leaves the exact solution unchanged.  The Taylor-Hood element
-is stable without it and keeps the weight :math:`\rho b_0 / \Delta t`.  For
-DMCDM the part :math:`\rho (b_0 / \Delta t)(\psi, \delta)` is the flux of
-:math:`-\sum_j (b_j / b_0) \mathbf{v}^{n-j}` out of the control domain, as
-:math:`(\nabla \psi, \mathbf{v}^*)` is.  The terms in
-:math:`\rho b_0 / \Delta t` then cancel inside the domain for every velocity
-of the earlier steps, also where the velocity jumps across the side of a cell
-with hanging nodes.
+is stable without it and keeps the weight :math:`\rho b_0 / \Delta t`.  DMCDM
+takes the weighted divergence as the flux of
+:math:`-\sum_j (b_j / b_0) \mathbf{v}^{n-j}` out of each control domain,
+through the same sides as the flux of :math:`\mathbf{v}^*`, with one value of
+:math:`\chi` for the whole control domain, with :math:`1 / \tau_P` averaged
+over it at the velocity of its node.  A velocity of the earlier
+steps whose flux out of every control domain vanishes then adds nothing, also
+where it jumps across the side of a cell with hanging nodes.  A volume integral
+of the divergence would miss those jumps, and the pressure equation would
+measure the divergence that it removes in another way than it reads it back.
 
 **The steady state.**  At a steady state the terms in :math:`b_0 / \Delta t`
 of the two equations cancel, and the pressure equation states
@@ -749,12 +778,27 @@ parameter :math:`1 / \chi`.  Below :math:`\Delta t = b_0 \tau_P` it is
 step.  Above, the parameter is :math:`\Delta t / b_0`, and the steady state
 depends on the step that reaches it.  The rotational form does not change
 this, since it acts on the boundary condition of the pressure, while the
-dependence comes from the weight of the divergence.  The error control of the
-time step lets the step grow as the flow settles, so a flow marched to its
-steady state ends with a step above the cap.  The discrete velocity then has a
-divergence that grows with the step, and the advection, which carries this
-velocity in the non-conservative form, no longer conserves the momentum
-exactly.  A body force of :math:`3\ \mathrm{N/m^3}` that drives the flow of
+dependence comes from the weight of the divergence.  Above the cap the discrete
+velocity has a divergence that grows with the step, and the advection, which
+carries this velocity in the non-conservative form, no longer conserves the
+momentum exactly.  The error estimate of a step cannot see this change of the
+discretization.  So the adaptive time steppers keep every step at most
+:math:`b_0 \tau_P`, with the smallest :math:`\tau_P` of the cells at the
+velocity reached.  This :math:`b_0` is that of a constant step of the order of
+the next step: 1, 3/2 and 11/6 for BDF1, BDF2 and BDF3.  A step shorter than
+the one before has a smaller :math:`b_0`, for BDF2
+:math:`(1 + 2\omega) / (1 + \omega)` with :math:`\omega < 1` the ratio of the
+step to the one before, so after a shrinking step the cap lies somewhat above
+the true :math:`b_0 \tau_P`.  With :math:`\nu = \mu / \rho` the kinematic
+viscosity in :math:`\mathrm{m^2/s}`, the definition of :math:`\tau_P` reads
+:math:`\tau_P = [(2 |\mathbf{v}| / h)^2 + (12 \nu / h^2)^2]^{-1/2}`, with
+:math:`|\mathbf{v}|` the speed in :math:`\mathrm{m/s}` and :math:`h` the size
+of the cell in :math:`\mathrm{m}`.  The cap has two limits.  Where the
+advection dominates, :math:`\tau_P` tends to :math:`h / (2 |\mathbf{v}|)`,
+and the cap is a Courant number :math:`|\mathbf{v}| \Delta t / h` near
+:math:`b_0 / 2`.  Where the viscosity dominates, :math:`\tau_P` tends to
+:math:`h^2 / (12 \nu)`, and the cap is a step near
+:math:`b_0 h^2 / (12 \nu)`.  A fixed step is the one given.  A body force of :math:`3\ \mathrm{N/m^3}` that drives the flow of
 unit density and viscosity through a channel of 8 by 6 triangles, periodic in
 :math:`x`, puts :math:`6\ \mathrm{N/m}` on the walls at the steady state.
 Marched to :math:`t = 4\ \mathrm{s}` by the projection, the force on the walls
@@ -762,9 +806,7 @@ has the relative error :math:`2.4 \times 10^{-7}` for every fixed step up to
 :math:`4 \times 10^{-3}\ \mathrm{s}`, and :math:`4.6 \times 10^{-7}`,
 :math:`9.7 \times 10^{-7}` and :math:`1.4 \times 10^{-6}` with the steps
 0.0125, 0.05 and :math:`0.2\ \mathrm{s}` (FEM and DMCDM alike).  With the error
-control, whose last step is :math:`0.58\ \mathrm{s}` for FEM and
-:math:`1.2\ \mathrm{s}` for DMCDM, it is :math:`1.9 \times 10^{-6}` and
-:math:`2.0 \times 10^{-6}`.  The monolithic solve, whose
+control it is :math:`2.3 \times 10^{-7}` for both methods.  The monolithic solve, whose
 advection carries the velocity that its mass equation conserves
 [HughesWells2005]_, has no splitting, so it computes a steady state best.
 
@@ -828,8 +870,10 @@ adds it to the equation of one velocity component, with the parameters
 ``temperature``, ``velocities``, ``gravity``, ``density`` (default 1),
 ``volumetric_expansion_coefficient`` and ``reference_temperature`` (default 0).
 The ``nonisothermal_flow`` coupling adds it for every component with a non-zero
-gravity when you give both ``gravity`` and ``volumetric_expansion_coefficient``,
-with the density of the flow, and ``advection`` of the heat in the energy equation
+gravity when you give both ``gravity``, with one component per velocity
+component, and ``volumetric_expansion_coefficient``.  It takes the density of
+the ``fluid_dynamics`` physics, which must then be positive, and it adds
+``advection`` of the heat in the energy equation
 (:doc:`heat_transfer`).  The pressure of this coupling excludes the
 hydrostatic part :math:`\rho_0 \mathbf{g} \cdot \mathbf{x}`.  In the input, a
 problem with ``gravity``, ``heat_conduction`` and ``fluid_dynamics`` takes the
@@ -837,8 +881,9 @@ weight :math:`\rho \mathbf{g}` as a body force and the Boussinesq force on top
 of it, with the properties ``volumetric_expansion_coefficient`` and
 ``reference_temperature``, so its pressure is the full pressure.
 
-The buoyancy enters :math:`\mathbf{r}_m` of an equal-order flow with the same
-load scaling as the force itself.  The coupling runs in both directions, and
+The buoyancy enters :math:`\mathbf{r}_m` of an equal-order flow, and a
+continuation of the steady solve ramps it there as it ramps the force itself
+(:doc:`nonlinear_and_time`).  The coupling runs in both directions, and
 the Jacobian holds the blocks :math:`\partial \mathbf{R}_{\mathbf{v}} / \partial
 T` of the buoyancy and :math:`\partial R_T / \partial \mathbf{v}` of the
 advected heat, with :math:`\mathbf{R}_{\mathbf{v}}` and :math:`R_T` the

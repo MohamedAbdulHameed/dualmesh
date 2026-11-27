@@ -8,7 +8,7 @@ the pressure is linear, so a scheme whose stabilisation vanishes for the exact s
 the nodes.  Quadratic elements give the viscous term - mu Laplacian(v) of the residual and are
 exact.  Inside a linear element that term vanishes, so the residual of the exact solution is
 - mu Laplacian(v) = 8, and the error falls at second order in the velocity (the standard
-residual, as MOOSE and COMSOL take it; decision_2026-10-25_consistent_SUPG.md).
+residual, as MOOSE and COMSOL take it).
 """
 
 from __future__ import annotations

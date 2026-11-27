@@ -19,23 +19,36 @@
 namespace dualmesh
 {
 
-namespace
-{
 std::vector<double>
-localValues(const Problem & pb, const Element & el)
+Problem::localValues(const Element & el) const
 {
-  const int nv = pb.numVariables();
-  std::vector<double> loc(pb.numLocalDofs(el));
+  const int nv = numVariables();
+  std::vector<double> loc(numLocalDofs(el));
   for (int k = 0; k < el.numNodes(); ++k)
     for (int v = 0; v < nv; ++v)
     {
-      const int i = pb.localDofIndex(el, k, v);
+      const int i = localDofIndex(el, k, v);
       if (i >= 0)
-        loc[i] = pb.solution()[pb.dof(el.nodes[k], v)];
+        loc[i] = _U[dof(el.nodes[k], v)];
     }
   return loc;
 }
-} // namespace
+
+void
+Problem::evaluateAt(QpContext & ctx,
+                    Index e,
+                    MappedPoint & mp,
+                    const std::vector<double> & local) const
+{
+  const auto & el = _mesh->element(e);
+  if (_mixed_order)
+    mapCornerShape(el, mp);
+  fillContext(ctx, el, mp, local, nullptr, nullptr, 0);
+  ctx.x = mp.x;
+  ctx.element = e;
+  ctx.block = el.block;
+  evaluateProperties(ctx);
+}
 
 std::vector<std::pair<Index, double>>
 Problem::boundaryOutflow(const std::string & var,
@@ -378,10 +391,9 @@ Problem::errorNorms(const std::string & var,
 }
 
 std::vector<std::vector<double>>
-Problem::propertyAtCentroids(const std::string & property) const
+Problem::propertyAtCentroids(const std::string & property)
 {
-  auto * self = const_cast<Problem *>(this);
-  self->initialize();
+  initialize();
   const int id = _props.id(property);
   const int nc = _props.components(property);
   std::vector<std::vector<double>> out;
@@ -393,16 +405,9 @@ Problem::propertyAtCentroids(const std::string & property) const
   {
     const auto & el = _mesh->element(e);
     mapPoint(*_mesh, el, ReferenceElement::get(el.type).centroid(), mp);
-    const auto loc = localValues(*this, el);
-    if (_mixed_order)
-      mapCornerShape(el, mp);
-    fillContext(ctx, el, mp, loc, nullptr, nullptr, 0);
-    ctx.x = mp.x;
-    ctx.element = e;
-    ctx.block = el.block;
     ctx.state_owner = e;
     ctx.state_key = kCentroidStateKey;
-    evaluateProperties(ctx);
+    evaluateAt(ctx, e, mp, localValues(el));
     std::vector<double> row(nc);
     for (int c = 0; c < nc; ++c)
       row[c] = ctx.property(id, c).value();
@@ -412,10 +417,9 @@ Problem::propertyAtCentroids(const std::string & property) const
 }
 
 std::vector<std::vector<double>>
-Problem::propertyAtPoints(const std::string & property, const std::vector<Point> & points) const
+Problem::propertyAtPoints(const std::string & property, const std::vector<Point> & points)
 {
-  auto * self = const_cast<Problem *>(this);
-  self->initialize();
+  initialize();
   const int id = _props.id(property);
   const int nc = _props.components(property);
   PointLocator locator(*_mesh);
@@ -435,17 +439,10 @@ Problem::propertyAtPoints(const std::string & property, const std::vector<Point>
     }
     const auto & el = _mesh->element(e);
     mapPoint(*_mesh, el, xi, mp);
-    const auto loc = localValues(*this, el);
-    if (_mixed_order)
-      mapCornerShape(el, mp);
-    fillContext(ctx, el, mp, loc, nullptr, nullptr, 0);
-    ctx.x = mp.x;
-    ctx.element = e;
-    ctx.block = el.block;
     // A property with a history takes the average committed history of the element.
     ctx.state_owner = e;
     ctx.state_key = kCentroidStateKey;
-    evaluateProperties(ctx);
+    evaluateAt(ctx, e, mp, localValues(el));
     std::vector<double> row(nc);
     for (int c = 0; c < nc; ++c)
       row[c] = ctx.property(id, c).value();
@@ -455,7 +452,7 @@ Problem::propertyAtPoints(const std::string & property, const std::vector<Point>
 }
 
 std::vector<Point>
-Problem::kernelFluxAtCentroids(const std::string & kernel) const
+Problem::kernelFluxAtCentroids(const std::string & kernel)
 {
   auto k = std::dynamic_pointer_cast<Kernel>(object(kernel));
   if (!k)
@@ -472,29 +469,10 @@ Problem::kernelFluxAtCentroids(const std::string & kernel) const
   return out;
 }
 
-std::vector<std::vector<double>>
-Problem::sectionStressAtCentroids(const std::string & kernel, double z) const
-{
-  auto k = std::dynamic_pointer_cast<Kernel>(object(kernel));
-  if (!k)
-    throw InputError("'" + kernel + "' is not a kernel.");
-  std::vector<std::vector<double>> out;
-  centroidContexts(
-      [&](QpContext & ctx, int block)
-      {
-        auto row = k->activeOnBlock(block) ? k->sectionStress(ctx, z) : std::vector<double>{};
-        if (row.empty() && k->activeOnBlock(block))
-          throw InputError("'" + kernel + "' is not a structural member with a section.");
-        out.push_back(std::move(row));
-      });
-  return out;
-}
-
 void
-Problem::centroidContexts(const std::function<void(QpContext &, int)> & visit) const
+Problem::centroidContexts(const std::function<void(QpContext &, int)> & visit)
 {
-  auto * self = const_cast<Problem *>(this);
-  self->initialize();
+  initialize();
   MappedPoint mp;
   QpContext ctx;
   ctx.dim = _mesh->spaceDimension();
@@ -503,16 +481,9 @@ Problem::centroidContexts(const std::function<void(QpContext &, int)> & visit) c
   {
     const auto & el = _mesh->element(e);
     mapPoint(*_mesh, el, ReferenceElement::get(el.type).centroid(), mp);
-    const auto loc = localValues(*this, el);
-    if (_mixed_order)
-      mapCornerShape(el, mp);
-    fillContext(ctx, el, mp, loc, nullptr, nullptr, 0);
-    ctx.x = mp.x;
-    ctx.element = e;
-    ctx.block = el.block;
     ctx.state_owner = e;
     ctx.state_key = kCentroidStateKey;
-    evaluateProperties(ctx);
+    evaluateAt(ctx, e, mp, localValues(el));
     visit(ctx, el.block);
   }
 }
@@ -600,145 +571,6 @@ Problem::boundaryArea(const std::vector<std::string> & boundaries) const
   return sidesetMeasure(*_mesh, boundaries, _coord);
 }
 
-std::array<double, 3>
-Problem::crackTipIntegrals(const std::vector<std::string> & displacements,
-                           const Point & tip,
-                           double angle,
-                           double inner_radius,
-                           double outer_radius,
-                           double youngs_modulus,
-                           double poissons_ratio,
-                           bool plane_strain) const
-{
-  // The domain integrals of a crack tip in two dimensions, in the axes of the crack (x1 along
-  // it, ahead of the tip): with the weight q = 1 inside the inner radius, 0 outside the outer
-  // one and linear between,
-  //   J = int (sigma_ij u_j,1 - W delta_1i) q,i dA,
-  //   I = int (sigma_ij v_j,1 + s_ij u_j,1 - sigma_kl e_kl delta_1i) q,i dA,
-  // with (v, s, e) the Williams field of mode I or II at K = 1, and K = E' I / 2.
-  auto * self = const_cast<Problem *>(this);
-  self->initialize();
-  if (_mesh->spaceDimension() != 2)
-    throw InputError("The crack tip integrals are available in two dimensions.");
-  if (!(outer_radius > inner_radius && inner_radius >= 0.0))
-    throw InputError("The radii of the crack tip integrals are 0 <= inner < outer.");
-  const int ux = variableIndex(displacements.at(0)), uy = variableIndex(displacements.at(1));
-  const int stress = _props.id("stress"), strain = _props.id("strain");
-  const double mu = youngs_modulus / (2.0 * (1.0 + poissons_ratio));
-  const double kappa =
-      plane_strain ? 3.0 - 4.0 * poissons_ratio : (3.0 - poissons_ratio) / (1.0 + poissons_ratio);
-  const double plane =
-      plane_strain ? youngs_modulus / (1.0 - poissons_ratio * poissons_ratio) : youngs_modulus;
-  const double c = std::cos(angle), sn = std::sin(angle);
-  // The Williams displacements of mode I (m = 0) or II (m = 1) at K = 1, in the crack axes.
-  const auto williams = [&](int m, double x1, double x2, double & v1, double & v2)
-  {
-    const double r = std::hypot(x1, x2), t = std::atan2(x2, x1);
-    const double f = std::sqrt(r / (2.0 * M_PI)) / (2.0 * mu);
-    const double ch = std::cos(t / 2), sh = std::sin(t / 2);
-    if (m == 0)
-    {
-      v1 = f * ch * (kappa - 1.0 + 2.0 * sh * sh);
-      v2 = f * sh * (kappa + 1.0 - 2.0 * ch * ch);
-    }
-    else
-    {
-      v1 = f * sh * (kappa + 1.0 + 2.0 * ch * ch);
-      v2 = -f * ch * (kappa - 1.0 - 2.0 * sh * sh);
-    }
-  };
-  // Its stresses (s11, s22, s12).
-  const auto williamsStress = [&](int m, double x1, double x2, std::array<double, 3> & out)
-  {
-    const double r = std::hypot(x1, x2), t = std::atan2(x2, x1);
-    const double a = 1.0 / std::sqrt(2.0 * M_PI * r);
-    const double ch = std::cos(t / 2), sh = std::sin(t / 2), c3 = std::cos(1.5 * t),
-                 s3 = std::sin(1.5 * t);
-    if (m == 0)
-      out = {a * ch * (1 - sh * s3), a * ch * (1 + sh * s3), a * sh * ch * c3};
-    else
-      out = {-a * sh * (2 + ch * c3), a * sh * ch * c3, a * ch * (1 - sh * s3)};
-  };
-  QuadratureSpec rule;
-  rule.points = 4;
-  std::vector<IntegrationPoint> pts;
-  MappedPoint mp;
-  QpContext ctx;
-  ctx.dim = 2;
-  ctx.time = _time;
-  double J = 0.0, I[2] = {0.0, 0.0};
-  for (Index e = 0; e < numIntegratedElements(); ++e)
-  {
-    const auto & el = _mesh->element(e);
-    buildElementPoints(*_mesh, e, false, PointSet::Volume, rule, pts);
-    const auto loc = localValues(*this, el);
-    for (const auto & ip : pts)
-    {
-      mapPoint(*_mesh, el, ip.xi, mp);
-      // The point in the crack axes, and the gradient of q there.
-      const double dx = mp.x[0] - tip[0], dy = mp.x[1] - tip[1];
-      const double x1 = c * dx + sn * dy, x2 = -sn * dx + c * dy;
-      const double r = std::hypot(x1, x2);
-      if (!(r > inner_radius && r < outer_radius))
-        continue;
-      const double dq1 = -x1 / r / (outer_radius - inner_radius),
-                   dq2 = -x2 / r / (outer_radius - inner_radius);
-      if (_mixed_order)
-        mapCornerShape(el, mp);
-      fillContext(ctx, el, mp, loc, nullptr, nullptr, 0);
-      ctx.x = mp.x;
-      ctx.element = e;
-      ctx.block = el.block;
-      evaluateProperties(ctx);
-      // The stress, the strain and the displacement gradient, rotated to the crack axes.
-      const double sxx = ctx.property(stress, 0).value(), syy = ctx.property(stress, 1).value(),
-                   sxy = ctx.property(stress, 5).value();
-      const double s11 = c * c * sxx + 2 * c * sn * sxy + sn * sn * syy;
-      const double s22 = sn * sn * sxx - 2 * c * sn * sxy + c * c * syy;
-      const double s12 = (c * c - sn * sn) * sxy + c * sn * (syy - sxx);
-      const double W = 0.5 * (ctx.property(stress, 0).value() * ctx.property(strain, 0).value() +
-                              ctx.property(stress, 1).value() * ctx.property(strain, 1).value() +
-                              ctx.property(stress, 2).value() * ctx.property(strain, 2).value() +
-                              ctx.property(stress, 5).value() * ctx.property(strain, 5).value());
-      // grad u in global axes, then G' = R G R^T.
-      const Point gx = {ctx.gradient(ux)[0].value(), ctx.gradient(ux)[1].value(), 0.0};
-      const Point gy = {ctx.gradient(uy)[0].value(), ctx.gradient(uy)[1].value(), 0.0};
-      const double R[2][2] = {{c, sn}, {-sn, c}};
-      const double Gg[2][2] = {{gx[0], gx[1]}, {gy[0], gy[1]}};
-      double G[2][2] = {{0, 0}, {0, 0}};
-      for (int i = 0; i < 2; ++i)
-        for (int j = 0; j < 2; ++j)
-          for (int k = 0; k < 2; ++k)
-            for (int l = 0; l < 2; ++l)
-              G[i][j] += R[i][k] * Gg[k][l] * R[j][l];
-      const double weight = ip.weight * coordFactor(mp.x);
-      // J: (sigma_1j u_j,1 - W) q,1 + sigma_2j u_j,1 q,2.
-      J += ((s11 * G[0][0] + s12 * G[1][0] - W) * dq1 + (s12 * G[0][0] + s22 * G[1][0]) * dq2) *
-           weight;
-      for (int m = 0; m < 2; ++m)
-      {
-        // The auxiliary gradients by central differences in the crack axes.
-        const double h = 1e-6 * r;
-        double a1, a2, b1, b2, d1, d2, e1, e2;
-        williams(m, x1 + h, x2, a1, a2);
-        williams(m, x1 - h, x2, b1, b2);
-        williams(m, x1, x2 + h, d1, d2);
-        williams(m, x1, x2 - h, e1, e2);
-        const double v11 = (a1 - b1) / (2 * h), v21 = (a2 - b2) / (2 * h);
-        const double v12 = (d1 - e1) / (2 * h), v22 = (d2 - e2) / (2 * h);
-        std::array<double, 3> aux;
-        williamsStress(m, x1, x2, aux);
-        // sigma : e_aux, with e_aux the symmetric part of grad v.
-        const double interaction = s11 * v11 + s22 * v22 + s12 * (v12 + v21);
-        const double first = s11 * v11 + s12 * v21 + aux[0] * G[0][0] + aux[2] * G[1][0];
-        const double second = s12 * v11 + s22 * v21 + aux[2] * G[0][0] + aux[1] * G[1][0];
-        I[m] += ((first - interaction) * dq1 + second * dq2) * weight;
-      }
-    }
-  }
-  return {J, plane * I[0] / 2.0, plane * I[1] / 2.0};
-}
-
 double
 Problem::normalIntegral(const std::vector<std::string> & components,
                         const std::string & boundary) const
@@ -771,10 +603,9 @@ Problem::normalIntegral(const std::vector<std::string> & components,
 }
 
 double
-Problem::boundaryFluxIntegral(const std::string & kernel, const std::string & boundary) const
+Problem::boundaryFluxIntegral(const std::string & kernel, const std::string & boundary)
 {
-  auto * self = const_cast<Problem *>(this);
-  self->initialize();
+  initialize();
   auto k = std::dynamic_pointer_cast<Kernel>(object(kernel));
   if (!k)
     throw InputError("'" + kernel + "' is not a kernel.");
@@ -784,10 +615,10 @@ Problem::boundaryFluxIntegral(const std::string & kernel, const std::string & bo
   // volumes, where both sides are the node whose control volume the face bounds: the flux m u_f
   // that leaves, with the face value its scheme takes there (the assembly adds m (u_f - u_C), and
   // the mass flux carries the rest out at the node values).
-  const bool dual_advective = isDual() && k->usesFaceSides();
+  const auto * advection = dynamic_cast<const AdvectiveKernel *>(k.get());
+  const bool dual_advective = isDual() && advection && advection->usesFaceSides();
   if (dual_advective)
     g = k->quadrature();
-  const int nv = numVariables();
   double total = 0;
   MappedPoint mp;
   QpContext ctx;
@@ -799,8 +630,8 @@ Problem::boundaryFluxIntegral(const std::string & kernel, const std::string & bo
     const auto & el = _mesh->element(side.first);
     if (!k->activeOnBlock(el.block))
       continue;
-    buildSidePoints(*_mesh, side, dual_advective, g, pts);
-    const auto loc = localValues(*this, el);
+    buildSidePoints(*_mesh, side, dual_advective, g, pts, _coord);
+    const auto loc = localValues(el);
     for (const auto & ip : pts)
     {
       mapPoint(*_mesh, el, ip.xi, mp);
@@ -814,20 +645,17 @@ Problem::boundaryFluxIntegral(const std::string & kernel, const std::string & bo
       ctx.on_boundary = true;
       if (dual_advective)
       {
-        ctx.on_face = true;
-        ctx.side_u[0].resize(nv);
-        for (int u = 0; u < nv; ++u)
-          ctx.side_u[0][u] = ADReal(loc[ip.owner * nv + u]);
-        ctx.side_u[1] = ctx.side_u[0];
-        ctx.side_grad[0].clear();
-        ctx.side_grad[1].clear();
-        ctx.side_x[0] = ctx.side_x[1] = _mesh->node(el.nodes[ip.owner]);
+        const Point & x = _mesh->node(el.nodes[ip.owner]);
+        setFaceSides(ctx, loc, 0, ip.owner, ip.owner, x, x);
       }
       evaluateProperties(ctx);
       ADVector3 F{ADReal(0.0), ADReal(0.0), ADReal(0.0)};
       k->computeFlux(ctx, F);
-      total += (F[0].value() * ip.area[0] + F[1].value() * ip.area[1] + F[2].value() * ip.area[2]) *
-               coordFactor(mp.x);
+      // The flux through the unit normal times the measure of the point, as the assembly
+      // weighs it (a lumped point carries the coordinate factor in its measure).
+      total += (F[0].value() * ctx.normal[0] + F[1].value() * ctx.normal[1] +
+                F[2].value() * ctx.normal[2]) *
+               pointMeasure(ip, coordFactor(mp.x));
     }
   }
   return total;
@@ -836,7 +664,7 @@ Problem::boundaryFluxIntegral(const std::string & kernel, const std::string & bo
 void
 Problem::writeVTU(const std::string & filename,
                   const std::vector<std::string> & cell_properties,
-                  const std::vector<std::string> & fields) const
+                  const std::vector<std::string> & fields)
 {
   for (const auto & name : fields)
     if (!hasVariable(name))
@@ -902,7 +730,7 @@ Problem::writeVTU(const std::string & filename,
   for (Index e = 0; e < ne; ++e)
   {
     const auto & el = m.element(e);
-    for (int k : vtkNodeOrder(el.type))
+    for (int k = 0; k < el.numNodes(); ++k)
       f << el.nodes[k] << " ";
     f << "\n";
   }

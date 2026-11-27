@@ -38,9 +38,11 @@ const char * kStateExpressionHelp =
 class ParsedState : public Property
 {
 public:
-  /// The most states of one object, and the most iterations of the local Newton method.
+  /// The most states of one object, the most iterations of the local Newton method and the most
+  /// halvings of one of its steps.
   static constexpr int kMaxStates = 8;
   static constexpr int kMaxIterations = 50;
+  static constexpr int kMaxHalvings = 30;
   using Matrix = Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic, 0, kMaxStates, kMaxStates>;
   using Column = Eigen::Matrix<double, Eigen::Dynamic, 1, 0, kMaxStates, 1>;
 
@@ -106,8 +108,8 @@ public:
     Property::initialSetup(problem);
     // The states are constants of the expressions while they are compiled, since they are
     // declared after this object is set up.  A state that the object of another block declared
-    // is a property of the problem already, which the expressions find by its name.  Its argument is overwritten
-    // either way.
+    // is a property of the problem already, which the expressions find by its name.  The
+    // evaluation overwrites the argument of a state either way.
     FieldExpressions::Names names;
     for (const auto & state : _states)
       if (!problem.propertyRegistry().has(state))
@@ -170,57 +172,69 @@ public:
     }
     // The residual r_i = c (q_i - q_i_old) - g_i(q): c = 1/dt in a step, 0 in a steady solve.
     const double c = step ? 1.0 / ctx.dt : 0.0;
-
     std::array<ADReal, FieldExpressions::kMaxArguments> args;
     _expressions.arguments(ctx, args.data());
     std::array<double, FieldExpressions::kMaxArguments> values{};
     for (std::size_t k = 0; k < _expressions.numArguments(); ++k)
       values[k] = args[k].value();
+    const Column q = solve(ctx, start, c, values.data());
+    setStates(ctx, q, start, c, values.data(), args.data());
+  }
 
-    const auto place = [&](const Column & q)
-    {
-      for (int i = 0; i < n; ++i)
-        if (_slots[i] >= 0)
-          values[_slots[i]] = q[i];
-    };
-    // The residual at q, and whether every component is at the round-off of its terms.
-    const auto residual = [&](const Column & q, Column & r)
-    {
-      place(q);
-      const double tolerance = 64.0 * std::numeric_limits<double>::epsilon();
-      bool small = true;
-      for (int i = 0; i < n; ++i)
-      {
-        r[i] =
-            c * (q[i] - start[i]) - _expressions.value(static_cast<std::size_t>(i), values.data());
-        const double size = c * (std::abs(q[i]) + std::abs(start[i])) +
-                            _expressions.termSize(static_cast<std::size_t>(i), values.data());
-        small = small && std::abs(r[i]) <= tolerance * size;
-      }
-      return small;
-    };
-    const auto jacobian = [&](const Column & q, Matrix & J)
-    {
-      place(q);
-      for (int i = 0; i < n; ++i)
-        for (int j = 0; j < n; ++j)
-          J(i, j) = (i == j ? c : 0.0) -
-                    _expressions.value(static_cast<std::size_t>(n + i * n + j), values.data());
-    };
+private:
+  /// Put the states @p q into the arguments @p values of the expressions.
+  void place(const Column & q, double * values) const
+  {
+    for (int i = 0; i < q.size(); ++i)
+      if (_slots[i] >= 0)
+        values[_slots[i]] = q[i];
+  }
 
-    // Newton's method in plain numbers from the state at the start of the step.
+  /// The residual @p r at the states @p q, and whether every component is at the round-off of
+  /// its terms.
+  bool residual(const Column & q, const Column & start, double c, double * values, Column & r) const
+  {
+    place(q, values);
+    const double tolerance = 64.0 * std::numeric_limits<double>::epsilon();
+    bool small = true;
+    for (int i = 0; i < q.size(); ++i)
+    {
+      r[i] = c * (q[i] - start[i]) - _expressions.value(static_cast<std::size_t>(i), values);
+      const double size = c * (std::abs(q[i]) + std::abs(start[i])) +
+                          _expressions.termSize(static_cast<std::size_t>(i), values);
+      small = small && std::abs(r[i]) <= tolerance * size;
+    }
+    return small;
+  }
+
+  /// The derivative @p J of the residual by the states, at the states @p q.
+  void jacobian(const Column & q, double c, double * values, Matrix & J) const
+  {
+    place(q, values);
+    const int n = static_cast<int>(q.size());
+    for (int i = 0; i < n; ++i)
+      for (int j = 0; j < n; ++j)
+        J(i, j) = (i == j ? c : 0.0) -
+                  _expressions.value(static_cast<std::size_t>(n + i * n + j), values);
+  }
+
+  /// The root of the residual by Newton's method in plain numbers from the states @p start at
+  /// the start of the step, with each step halved until the norm of the residual falls.
+  Column solve(const QpContext & ctx, const Column & start, double c, double * values) const
+  {
+    const int n = static_cast<int>(start.size());
     Column q = start, r(n), trial(n), trial_r(n), dq(n);
     Matrix J(n, n);
     for (int iteration = 0;; ++iteration)
     {
-      const bool converged = residual(q, r);
+      const bool converged = residual(q, start, c, values, r);
       if (!r.allFinite())
         fail(ctx, "the rates are not finite");
       if (converged)
         break;
       if (iteration == kMaxIterations)
         fail(ctx, std::to_string(kMaxIterations) + " iterations did not reach the root");
-      jacobian(q, J);
+      jacobian(q, c, values, J);
       const Eigen::FullPivLU<Matrix> lu(J);
       if (!lu.isInvertible())
         fail(ctx, "the derivative of the residual by the states is singular");
@@ -230,19 +244,18 @@ public:
       // Halve the step until the norm of the residual falls (the Armijo condition).
       const double norm = r.norm();
       double fraction = 1.0;
-      bool tiny = false;
       for (int halving = 0;; ++halving)
       {
         trial = q + fraction * dq;
-        residual(trial, trial_r);
+        residual(trial, start, c, values, trial_r);
         if (trial_r.allFinite() && trial_r.norm() <= (1.0 - 1e-4 * fraction) * norm)
           break;
-        if (halving == 30)
+        if (halving == kMaxHalvings)
           fail(ctx, "no step along the Newton direction lowers the residual");
         fraction *= 0.5;
       }
       // A step at the round-off of the states ends the iteration.
-      tiny = true;
+      bool tiny = true;
       for (int i = 0; i < n; ++i)
         tiny = tiny && std::abs(trial[i] - q[i]) <= 64.0 * std::numeric_limits<double>::epsilon() *
                                                         (std::abs(trial[i]) + std::abs(start[i]));
@@ -250,11 +263,23 @@ public:
       if (tiny)
         break;
     }
+    return q;
+  }
 
-    // The implicit function theorem in one step of automatic differentiation: the root as a
-    // constant, less J^-1 r with r at the root carrying the derivatives of the fields.  Its
-    // derivative is -J^-1 dr/du, and its value is one more Newton step from the root.
-    jacobian(q, J);
+  /// The states as properties and the history at the root @p q, by the implicit function theorem
+  /// in one step of automatic differentiation: the root as a constant, less J^-1 r with r at the
+  /// root carrying the derivatives of the fields in @p args.  Its derivative is -J^-1 dr/du, and
+  /// its value is one more Newton step from the root.
+  void setStates(QpContext & ctx,
+                 const Column & q,
+                 const Column & start,
+                 double c,
+                 double * values,
+                 ADReal * args) const
+  {
+    const int n = static_cast<int>(q.size());
+    Matrix J(n, n);
+    jacobian(q, c, values, J);
     const Eigen::FullPivLU<Matrix> lu(J);
     if (!lu.isInvertible())
       fail(ctx, "the derivative of the residual by the states is singular");
@@ -264,8 +289,7 @@ public:
         args[_slots[i]] = ADReal(q[i]);
     std::array<ADReal, kMaxStates> r_ad;
     for (int i = 0; i < n; ++i)
-      r_ad[i] =
-          c * (q[i] - start[i]) - _expressions.value(static_cast<std::size_t>(i), args.data());
+      r_ad[i] = c * (q[i] - start[i]) - _expressions.value(static_cast<std::size_t>(i), args);
     for (int i = 0; i < n; ++i)
     {
       ADReal value(q[i]);
@@ -276,7 +300,6 @@ public:
     }
   }
 
-private:
   [[noreturn]] void fail(const QpContext & ctx, const std::string & why) const
   {
     throw InadmissibleStateError("'" + name() + "': no value of the states solves their rate " +

@@ -200,19 +200,21 @@ public:
     InputParameters p = Property::validParams();
     p.setClassDescription(
         std::string(
-            "An eigenstrain, a strain free of stress such as thermal expansion or swelling, "
-            "given by an expression and stored as a property of six components for the "
-            "'eigenstrain_names' of small_strain_stress. The expression is a linear or a "
+            "An eigenstrain, a strain free of stress such as swelling or a measured thermal "
+            "strain curve f(T), given by an expression and stored as a property of six components "
+            "for the 'eigenstrain_names' of small_strain_stress. The expression is a linear or a "
             "volumetric strain ('strain_type'), which acts equally in the three normal "
             "directions, only along the axis, or only across it ('direction'). With "
             "'stress_free_state' the code shifts the strain to zero in a given state: for a "
             "thermal strain f(T) of the temperature T, give the stress-free temperature T_sf, and "
-            "the stored strain is f(T) - f(T_sf). The expression may use the fields, the components "
-            "of their gradients as grad_x(u), grad_y(u) and grad_z(u), the coordinates x, y and "
-            "z, the time t, the registered functions, the element fields, the scalar properties "
-            "of the property objects added before it and named constants, each by its name. The "
-            "fields take their values at the current iterate, with their derivatives, under "
-            "Newton's method and Picard iteration alike, as in every expression of the code. ") +
+            "the stored strain is f(T) - f(T_sf). A thermal strain given by its expansion "
+            "coefficient alpha is the object thermal_expansion_eigenstrain. The expression may "
+            "use the fields, the components of their gradients as grad_x(u), grad_y(u) and "
+            "grad_z(u), the coordinates x, y and z, the time t, the registered functions, the "
+            "element fields, the scalar properties of the property objects added before it and "
+            "named constants, each by its name. The fields take their values at the current "
+            "iterate, with their derivatives, under Newton's method and Picard iteration alike, "
+            "as in every expression of the code. ") +
         kExpressionHelp);
     p.addRequired("expression", ParameterKind::String, "The expression of the strain.");
     p.addRequired("eigenstrain_name", ParameterKind::String, "Name of the declared property.");
@@ -241,35 +243,23 @@ public:
                   ParameterKind::RealMap,
                   RealMap{},
                   "The state in which the strain is zero, as name -> value pairs, with each name "
-                  "an argument of the expression, for example {temperature: 293.15}. Default: "
-                  "none, which stores the expression as it is.");
+                  "an argument of the expression, for example {temperature: 293.15}. The "
+                  "expression then reads no property, since a property keeps its value at the "
+                  "current state: write the dependence of the property on the named arguments "
+                  "in the expression. Default: none, which stores the expression as it is.");
     addConstants(p);
     return p;
   }
-  explicit ParsedEigenstrain(const InputParameters & p) : Property(p)
+  explicit ParsedEigenstrain(const InputParameters & p)
+      : Property(p), _scale(volumetricScale(p.getString("strain_type"))),
+        _direction(directionFromName(p.getString("direction")))
   {
-    const auto type = p.getString("strain_type");
-    if (type != "linear" && type != "volumetric")
-      throw InputError("'" + name() + "': strain_type must be 'linear' or 'volumetric', not '" +
-                       type + "'.");
-    _scale = type == "volumetric" ? 1.0 / 3.0 : 1.0;
-    const auto direction = p.getString("direction");
-    if (direction != "isotropic" && direction != "axial" && direction != "transverse")
-      throw InputError("'" + name() + "': direction must be isotropic, axial or transverse, not '" +
-                       direction + "'.");
-    if (type == "volumetric" && direction != "isotropic")
+    if (_scale != 1.0 && _direction != Direction::Isotropic)
       throw InputError("'" + name() +
                        "': a volumetric strain acts equally in every direction. "
                        "Use strain_type = 'linear' for an axial or transverse "
                        "strain.");
-    _direction = direction == "isotropic" ? 0 : direction == "axial" ? 1 : 2;
-    const auto formulation = p.getString("formulation");
-    if (formulation == "axisymmetric" || formulation == "axisymmetric_1d")
-      _axial = 1;
-    else if (formulation == "plane_strain" || formulation == "three_dimensional")
-      _axial = 2;
-    else
-      throw InputError("'" + name() + "': unknown formulation '" + formulation + "'.");
+    _axial = axialComponent(p.getString("formulation"));
   }
   void initialSetup(Problem & problem) override
   {
@@ -286,12 +276,77 @@ public:
       _free_slots.push_back(k);
       _free_values.push_back(value);
     }
+    // The shift evaluates the expression with the named arguments at their stress-free values.
+    // A property that the expression reads is computed by its own object at the current state,
+    // so f(T_sf) would take it at T and not at T_sf.
+    if (!_free_slots.empty() && _expression.readsProperties())
+      throw InputError("'" + name() +
+                       "': with 'stress_free_state' the expression reads no property. A property "
+                       "keeps its value at the current state, so the code would not subtract the "
+                       "value of the expression in the stress-free state. Write the dependence of "
+                       "the property on the named arguments in the expression itself.");
   }
   void declareProperties(PropertyRegistry & r) override
   {
     _prop = r.declare(_params.getString("eigenstrain_name"), 6);
   }
   void computeProperties(QpContext & ctx) const override
+  {
+    const ADReal e = strain(ctx);
+    for (int i = 0; i < 6; ++i)
+      ctx.property(_prop, i) = i < 3 && actsAlong(i) ? e : ADReal(0.0);
+  }
+
+private:
+  /// The directions the strain acts in.
+  enum class Direction
+  {
+    Isotropic,
+    Axial,
+    Transverse
+  };
+
+  /// The factor on the expression of the strain_type @p type: 1/3 of a volumetric strain acts
+  /// along each normal direction.
+  double volumetricScale(const std::string & type) const
+  {
+    if (type != "linear" && type != "volumetric")
+      throw InputError("'" + name() + "': strain_type must be 'linear' or 'volumetric', not '" +
+                       type + "'.");
+    return type == "volumetric" ? 1.0 / 3.0 : 1.0;
+  }
+
+  Direction directionFromName(const std::string & direction) const
+  {
+    if (direction == "isotropic")
+      return Direction::Isotropic;
+    if (direction == "axial")
+      return Direction::Axial;
+    if (direction == "transverse")
+      return Direction::Transverse;
+    throw InputError("'" + name() + "': direction must be isotropic, axial or transverse, not '" +
+                     direction + "'.");
+  }
+
+  /// The normal component along the axis of the formulation @p formulation.
+  int axialComponent(const std::string & formulation) const
+  {
+    if (formulation == "axisymmetric" || formulation == "axisymmetric_1d")
+      return 1;
+    if (formulation == "plane_strain" || formulation == "three_dimensional")
+      return 2;
+    throw InputError("'" + name() + "': unknown formulation '" + formulation + "'.");
+  }
+
+  /// Whether the strain acts along the normal component @p i.
+  bool actsAlong(int i) const
+  {
+    return _direction == Direction::Isotropic || (_direction == Direction::Axial) == (i == _axial);
+  }
+
+  /// The strain at the point of @p ctx: the expression, less its value in the stress-free state,
+  /// times the factor of strain_type.
+  ADReal strain(const QpContext & ctx) const
   {
     std::array<ADReal, FieldExpressions::kMaxArguments> args;
     _expression.arguments(ctx, args.data());
@@ -302,21 +357,13 @@ public:
         args[_free_slots[k]] = ADReal(_free_values[k]);
       e = e - _expression.value(0, args.data());
     }
-    e = e * _scale;
-    for (int i = 0; i < 6; ++i)
-      ctx.property(_prop, i) = ADReal(0.0);
-    for (int i = 0; i < 3; ++i)
-    {
-      const bool axial = i == _axial;
-      if (_direction == 0 || (_direction == 1 && axial) || (_direction == 2 && !axial))
-        ctx.property(_prop, i) = e;
-    }
+    return e * _scale;
   }
 
-private:
   FieldExpressions _expression;
   double _scale = 1.0;
-  int _direction = 0, _axial = 2, _prop = -1;
+  Direction _direction = Direction::Isotropic;
+  int _axial = 2, _prop = -1;
   std::vector<int> _free_slots;
   std::vector<double> _free_values;
 };

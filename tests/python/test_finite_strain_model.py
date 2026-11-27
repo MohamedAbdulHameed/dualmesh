@@ -165,12 +165,12 @@ def test_an_energy_of_the_wrong_unit_and_an_energy_at_small_strain_are_refused()
     solid = block(strain_energy="shear_modulus*(I_C - 3)*J/[1 m]")
     solid.boundary_conditions("left", displacement_x="0 m")
     with pytest.raises(
-        dualmesh.input_error, match=r"physics\.solid_mechanics\.strain_energy: .*J/m\^3"
+        dualmesh.InputError, match=r"physics\.solid_mechanics\.strain_energy: .*J/m\^3"
     ):
         solid.solve(report="none")
     # The physics section refuses the energy of a small-strain solid where it is given.
     with pytest.raises(
-        dualmesh.input_error,
+        dualmesh.InputError,
         match=r"physics\.solid_mechanics\.strain_energy: .*takes no strain_energy",
     ):
         block("small", strain_energy="neo-Hookean")

@@ -13,6 +13,7 @@
 #include "dualmesh/base/Problem.h"
 #include "dualmesh/modules/Framework.h"
 #include "dualmesh/modules/Projection.h"
+#include "dualmesh/modules/Registry.h"
 #include "dualmesh/parallel/DistributedProblem.h"
 
 #include <chrono>
@@ -212,6 +213,7 @@ projection(int n, int steps, int order, int vectors, const std::string & method_
 int
 main(int argc, char ** argv)
 {
+  registerAllObjects();
   if (argc > 1 && std::string(argv[1]) == "projection")
     return projection(argc > 2 ? std::atoi(argv[2]) : 128,
                       argc > 3 ? std::atoi(argv[3]) : 20,

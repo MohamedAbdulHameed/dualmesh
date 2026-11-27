@@ -171,6 +171,86 @@ def test_monotonic_Armstrong_Frederick_converges_to_its_closed_form():
     assert errors[0] / errors[1] == pytest.approx(2.0, rel=0.2)
 
 
+shear_modulus = E / (2 * (1 + nu))
+
+
+def sheared_cube(shear, plasticity):
+    """A cube with every face displaced as the simple shear u_x = shear y, solved once."""
+    mesh = dualmesh.generate_box_mesh(0, size, 0, size, 0, size, 1, 1, 1)
+    problem = dualmesh.Problem(mesh)
+    body = problem.add_physics(
+        "solid_mechanics", youngs_modulus=E, poissons_ratio=nu, plasticity=plasticity
+    )
+    body.add_boundary_condition(
+        [f"disp_x = {shear!r}*y", "disp_y = 0", "disp_z = 0"], boundary=list(mesh.sideset_names())
+    )
+    problem.solve(report="none")
+    return problem
+
+
+@pytest.mark.parametrize("h", [0.0, 1e9], ids=["perfect", "linear"])
+def test_simple_shear_yields_at_the_shear_yield_stress_of_von_Mises(h):
+    """Simple shear gamma beyond yield on sigma_y = sigma_0 + h p, sigma_0 = 250 MPa: the stress
+    is the shear tau alone, whose von Mises stress is sqrt(3) tau, so the shear yield stress is
+    sigma_y / sqrt(3).  The radial return (Simo and Hughes 1998, Computational Inelasticity,
+    chapter 3) flows along the deviator, with the plastic engineering shear sqrt(3) p, so tau =
+    mu (gamma - sqrt(3) p), with mu the shear modulus, and the yield sqrt(3) tau = sigma_0 + h p
+    gives p = (sqrt(3) mu gamma - sigma_0) / (h + 3 mu).  Beyond yield the shear stress then
+    rises with the slope mu h / (h + 3 mu), zero in perfect plasticity, where tau =
+    sigma_0 / sqrt(3)."""
+    yield_stress = 250e6 if h == 0.0 else f"250e6 + {h!r}*equivalent_plastic_strain"
+    shears, taus = (5e-3, 1e-2), []
+    for shear in shears:
+        problem = sheared_cube(shear, {"yield_stress": yield_stress})
+        plastic = (numpy.sqrt(3) * shear_modulus * shear - 250e6) / (h + 3 * shear_modulus)
+        tau = shear_modulus * (shear - numpy.sqrt(3) * plastic)
+        stress = problem.property_at_centroids("stress")[0]
+        assert stress == pytest.approx([0, 0, 0, 0, 0, tau], abs=1e-8 * tau)
+        assert problem.property_at_centroids("equivalent_plastic_strain")[0][0] == pytest.approx(
+            plastic, rel=1e-8
+        )
+        taus.append(stress[5])
+    slope = (taus[1] - taus[0]) / (shears[1] - shears[0])
+    assert slope == pytest.approx(shear_modulus * h / (h + 3 * shear_modulus), abs=1e-6 * E)
+
+
+@pytest.mark.parametrize("recovery", [0.0, 100.0], ids=["Prager", "Armstrong_Frederick"])
+def test_the_back_stress_of_simple_shear_is_its_closed_form(recovery):
+    """Simple shear gamma = 1e-2 on sigma_0 = 250 MPa with one back stress X of modulus C =
+    20 GPa and dynamic recovery r: dX = (2/3) C d(eps_p) - r X dp (Armstrong and Frederick 1966,
+    Prager 1956 for r = 0).  In shear the tensor plastic strain is eps_p,xy = (sqrt(3)/2) p, so
+    dX_xy = (C / sqrt(3)) dp - r X_xy dp.  Backward Euler, as the return integrates it, gives in
+    one step from the virgin state X_xy = C p / (sqrt(3) (1 + r p)), which is exact for Prager's
+    law, linear in p.  With tau = mu (gamma - sqrt(3) p) the yield sqrt(3) (tau - X_xy) =
+    sigma_0 is the equation sqrt(3) mu gamma - 3 mu p - C p / (1 + r p) = sigma_0 of p."""
+    C, shear = 20e9, 1e-2
+    problem = sheared_cube(
+        shear,
+        {"yield_stress": 250e6, "kinematic_hardening": {"C": [C], "gamma": [recovery]}},
+    )
+
+    def yield_function(p):
+        return (
+            numpy.sqrt(3) * shear_modulus * shear
+            - 3 * shear_modulus * p
+            - C * p / (1 + recovery * p)
+            - 250e6
+        )
+
+    plastic = brentq(yield_function, 0.0, 1.0, xtol=1e-16, rtol=1e-15)
+    tau = shear_modulus * (shear - numpy.sqrt(3) * plastic)
+    back = C * plastic / (numpy.sqrt(3) * (1 + recovery * plastic))
+    assert problem.property_at_centroids("equivalent_plastic_strain")[0][0] == pytest.approx(
+        plastic, rel=1e-8
+    )
+    assert problem.property_at_centroids("stress")[0] == pytest.approx(
+        [0, 0, 0, 0, 0, tau], abs=1e-8 * tau
+    )
+    assert problem.property_at_centroids("back_stress")[0] == pytest.approx(
+        [0, 0, 0, 0, 0, back], abs=1e-8 * back
+    )
+
+
 def test_plasticity_and_creep_act_together():
     """Under a constant 300 MPa, sigma_y = 250 MPa + 1 GPa p yields p = 0.05 at once, and creep
     at A sigma^n adds A sigma^n t: the strain is sigma/E + 0.05 + A sigma^n t."""

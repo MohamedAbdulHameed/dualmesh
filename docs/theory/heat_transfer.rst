@@ -237,9 +237,9 @@ primary and the secondary surface, :math:`h_g` the gap conductance
 (``gap_conductance``, default 0) in :math:`\mathrm{W/(m^2\,K)}`, and
 :math:`F_\epsilon` the radiation exchange factor of two parallel grey surfaces
 of emissivities :math:`\epsilon_p` and :math:`\epsilon_s`
-(``primary_emissivity`` and ``secondary_emissivity``, default 0).  The
-radiation term enters when both emissivities are positive, and the
-temperatures must then be absolute.  The constant :math:`\sigma_{\mathrm{SB}}`
+(``primary_emissivity`` and ``secondary_emissivity``, each in :math:`(0, 1]`,
+default none).  The radiation term enters when both emissivities are given, and
+the temperatures must then be absolute.  The constant :math:`\sigma_{\mathrm{SB}}`
 is that of radiation above.  The secondary body receives the same heat, so the
 gap conserves energy.
 
@@ -402,7 +402,9 @@ dimension [BrooksHughes1982]_, which the factor 9 gives.  The element size is
 :math:`d` the dimension of the mesh and :math:`c = 1` for quadrilaterals and
 hexahedra, 2 for triangles and prisms, and 6 for tetrahedra and pyramids, so
 that each element of a structured grid of spacing :math:`h` has the size
-:math:`h`.  A quadratic element has half that size.
+:math:`h`.  A quadratic element has half that size.  Where no advection kernel
+of the temperature acts, or its heat capacity :math:`\rho c_p` is not positive, the
+flow carries no heat, and the kernel adds no flux.
 
 On quadratic elements, and for a conductivity uniform in space, the residual of
 the exact solution is zero, and the stabilization is consistent.  On linear

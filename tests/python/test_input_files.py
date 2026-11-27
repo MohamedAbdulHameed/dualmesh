@@ -7,8 +7,8 @@ import re
 
 import pytest
 import tomllib
+from dualmesh._core import InputError
 from dualmesh.input.read import TOML_text, read, read_table, write_TOML, write_YAML
-from dualmesh.input.units import input_error
 
 tree = {
     "mesh": {"rectangle": {"size": ["0.2 m", "0.1 m"], "cells": [40, 20]}},
@@ -55,7 +55,7 @@ def test_YAML_reads_numbers_and_truth_values_as_TOML_does(tmp_path):
 def test_a_bad_file_is_refused_with_its_name(tmp_path, name, content, message):
     path = tmp_path / name
     path.write_text(content)
-    with pytest.raises(input_error, match=re.escape(message)):
+    with pytest.raises(InputError, match=re.escape(message)):
         read(path)
 
 
@@ -97,7 +97,7 @@ def test_a_CSV_table_gives_its_columns_with_their_units(tmp_path):
 def test_a_bad_CSV_table_is_refused_with_its_line(tmp_path, content, message):
     path = tmp_path / "table.csv"
     path.write_text(content)
-    with pytest.raises(input_error, match=re.escape(message)):
+    with pytest.raises(InputError, match=re.escape(message)):
         read_table(path)
 
 

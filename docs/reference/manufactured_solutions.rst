@@ -13,3 +13,12 @@ it exact, and a solve on a sequence of meshes gives the order of convergence.
 
    ManufacturedSolution
    ConvergenceResult
+
+:func:`convergence_rates` gives the observed orders of any sequence of
+refinements, such as a study of the time step or of a benchmark that you solve
+yourself.
+
+.. autosummary::
+   :toctree: generated/
+
+   convergence_rates

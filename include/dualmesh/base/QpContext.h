@@ -43,6 +43,11 @@ public:
   // ---- geometry and time ---------------------------------------------------
   int dim = 1;
   Point x{0, 0, 0};
+  /// The point at which the solution and its gradients are evaluated: x, or the centroid of the
+  /// element under selective reduced integration (QuadratureSpec::reduced).  A quantity derived
+  /// from the solution that also holds the position, such as the hoop term n v_r / r of a
+  /// divergence, takes the radius here, so that it is the quantity of that point.
+  Point x_field{0, 0, 0};
   double time = 0.0;
   double dt = 0.0;
   /// The weight that a steady kernel gives the time derivative inside a residual it evaluates (the
@@ -112,7 +117,7 @@ public:
   const Point & oldGradient(int v) const { return grad_u_old[v]; }
 
   // ---- time derivatives ------------------------------------------------------------------
-  /// A variable of a second-order equation (Kernel::isSecondOrder) in a step of the
+  /// A variable of a second-order equation (StorageKernel::isSecondOrder) in a step of the
   /// generalized-alpha method has its time derivatives by the Newmark relations, at the levels
   /// of the method: du/dt = rate_scale u - rate_shift and d2u/dt2 = accel_scale u - accel_shift
   /// (Problem::ThetaIntegrator).  second_order marks those variables; empty: none.
@@ -161,7 +166,8 @@ public:
   double side_weight = 0.5;
   /// The side (0 the owner, 1 the neighbour) for whose equation a non-conservative face flux is
   /// evaluated, or -1.  The flux of v . grad u through a face is m (u_f - u_C) for the control
-  /// volume C on either side, so it differs between the two sides (Kernel::nonConservativeFaceFlux).
+  /// volume C on either side, so it differs between the two sides
+  /// (AdvectiveKernel::nonConservativeFaceFlux).
   int reference_side = -1;
 
   /// The value of variable @p v that an advective flux carries, whose normal velocity
@@ -206,9 +212,8 @@ public:
 
   // ---- interface (gap) points ---------------------------------------------------
   /// At an integration point of an InterfaceBC: the values of the variables on
-  /// the other side of the gap at the paired point, and that point.
+  /// the other side of the gap at the paired point.
   std::vector<ADReal> u_other;
-  Point x_other{0, 0, 0};
 
   // ---- history (state) of stateful property objects ------------------------------------
   /// Where this point's history is kept: the owner element and a key unique within the owner.

@@ -40,6 +40,7 @@ r_u x r_v on a parametric surface x(u, v), y(u, v), z(u, v).
 
 from __future__ import annotations
 
+import itertools
 import math
 import re
 from collections.abc import Callable, Sequence
@@ -48,6 +49,7 @@ import numpy
 
 from . import _core
 from ._core import Mesh
+from .meshing import _promote
 from .parameters import InputError
 
 __all__ = [
@@ -56,8 +58,6 @@ __all__ = [
     "generate_surface_mesh",
 ]
 
-_ELEMENT_TYPES = ("Quad4", "Quad8", "Quad9", "Tri3", "Tri6")
-_QUADRATIC = {"Quad8": "Quad4", "Quad9": "Quad4", "Tri6": "Tri3"}
 _RESERVED = {"x", "y", "z", "u", "v", "t", "pi", "e"}
 
 
@@ -76,9 +76,9 @@ def _counts(num_elements, size: int, name: str) -> list[int]:
 
 
 def _check_type(element_type: str, name: str) -> None:
-    if element_type not in _ELEMENT_TYPES:
+    if _core.element_dimension(element_type) != 2:
         raise InputError(
-            f"{name}: element_type must be one of {', '.join(_ELEMENT_TYPES)}, not '{element_type}'."
+            f"{name}: element_type must be a two-dimensional element type, such as Quad4, Quad9 or Tri6, not '{element_type}'."
         )
 
 
@@ -106,12 +106,6 @@ def _merge(points: numpy.ndarray) -> tuple[numpy.ndarray, numpy.ndarray]:
     rank = numpy.empty_like(order)
     rank[order] = numpy.arange(len(order))
     return points[first[order]], rank[inverse]
-
-
-def _promote(mesh: Mesh, element_type: str) -> Mesh:
-    if element_type not in _QUADRATIC:
-        return mesh
-    return mesh.second_order(serendipity=element_type == "Quad8")
 
 
 def _area_vectors(points: numpy.ndarray, cells) -> numpy.ndarray:
@@ -259,7 +253,7 @@ def generate_cylinder_surface_mesh(
     param = _core.generate_rectangle_mesh(
         list(numpy.linspace(-half, half, n_arc + 1)),
         list(numpy.linspace(0.0, float(length), n_axis + 1)),
-        _QUADRATIC.get(element_type, element_type),
+        _core.element_corner_type(element_type),
         "right",
     )
     param = _promote(param, element_type)
@@ -433,7 +427,7 @@ def _zone_edges(directions, faces, limits):
     return edges
 
 
-def _centred_surface(directions, quads, limits, element_type, name, place):
+def _centred_surface(directions, quads, limits, element_type, place):
     """A surface seen from a centre: the linear mesh of unit directions is
     merged, given the element type, and every node is moved to `place(d)`."""
     points, index = _merge(directions)
@@ -483,7 +477,7 @@ def generate_spherical_shell_mesh(
         return centre + radius * d
 
     place.center = centre
-    return _centred_surface(directions, quads, limits, element_type, name, place)
+    return _centred_surface(directions, quads, limits, element_type, place)
 
 
 def _crossing_radius(g, centre, d):
@@ -595,40 +589,108 @@ def _surface_nets(g, lo, hi, h):
     quadrilateral for each grid edge the surface crosses, joining the four
     cells around it.  Returns the vertices, the quadrilaterals (not yet
     oriented) and which vertices lie on a face of the box."""
+    n, X, G = _sample_grid(g, lo, hi, h)
+    vertex, V, crossed_edges = _cell_vertices(X, G, n)
+    quads = _cell_quads(crossed_edges, vertex, n)
+    # Where the surface leaves the box, a net of each face (one vertex in each
+    # face square the cut curve crosses, in the face plane) and a strip of
+    # quadrilaterals from the first layer of cells to it close the surface
+    # along the cut.  Where the cut curve crosses a line along which two faces
+    # meet, a vertex at the crossing closes the corner.
+    vertices = _Vertices(V)
+    faces, face_edges = _face_nets(X, G, n, vertices)
+    quads += _cut_quads(faces, face_edges, vertex, n, vertices)
+    points = numpy.concatenate(vertices.blocks)
+    face_vertex = numpy.zeros(len(points), dtype=bool)
+    face_vertex[len(V) :] = True
+    return points, numpy.concatenate(quads), face_vertex
+
+
+class _Vertices:
+    """Vertices added in blocks, each block numbered after the ones before it."""
+
+    def __init__(self, first):
+        self.blocks = [first]
+        self.count = len(first)
+
+    def add(self, p):
+        """Add the vertices ``p`` and return their numbers."""
+        ids = self.count + numpy.arange(len(p))
+        self.count += len(p)
+        self.blocks.append(p)
+        return ids
+
+
+def _sample_grid(g, lo, hi, h):
+    """The number of cells along each axis of a regular grid of spacing about h on the box
+    [lo, hi], the positions of its nodes and the values of g at them."""
     n = numpy.maximum(1, numpy.ceil((hi - lo) / h - 1e-9).astype(int))
     axes = [numpy.linspace(lo[k], hi[k], n[k] + 1) for k in range(3)]
     X = numpy.stack(numpy.meshgrid(*axes, indexing="ij"), -1)
     G = g(X[..., 0], X[..., 1], X[..., 2])
-    others = {0: (1, 2), 1: (2, 0), 2: (0, 1)}  # cyclic, so e_o1 x e_o2 = e_axis
+    return n, X, G
+
+
+def _other_axes(axis, dim):
+    """The axes other than ``axis`` of a grid of ``dim`` axes, in cyclic order, so that in three
+    dimensions e_o1 x e_o2 = e_axis."""
+    return [(axis + k) % dim for k in range(1, dim)]
+
+
+def _edge_crossings(G, X, axis):
+    """Which grid edges along ``axis`` the surface G = 0 crosses, and where, by linear
+    interpolation of the node values G at the node positions X."""
+    a = [slice(None)] * (X.ndim - 1)
+    b = [slice(None)] * (X.ndim - 1)
+    a[axis], b[axis] = slice(0, -1), slice(1, None)
+    ga, gb = G[tuple(a)], G[tuple(b)]
+    cross = (ga < 0) != (gb < 0)
+    t = numpy.where(cross, ga / numpy.where(cross, ga - gb, 1.0), 0.0)
+    p = X[tuple(a)] + t[..., None] * (X[tuple(b)] - X[tuple(a)])
+    return cross, p
+
+
+def _cell_crossings(G, X, n):
+    """The crossings of the surface G = 0 with the edges of a grid of n cells (cubes, or the
+    squares of a box face): ``(cross, p)`` along each axis, the sum of the crossing points on
+    the edges of each cell and their number."""
+    dim = len(n)
     total = numpy.zeros(tuple(n) + (3,))
     count = numpy.zeros(tuple(n))
-    edges = []
-    for axis in range(3):
-        a = [slice(None)] * 3
-        b = [slice(None)] * 3
-        a[axis], b[axis] = slice(0, -1), slice(1, None)
-        ga, gb = G[tuple(a)], G[tuple(b)]
-        cross = (ga < 0) != (gb < 0)
-        t = numpy.where(cross, ga / numpy.where(cross, ga - gb, 1.0), 0.0)
-        p = X[tuple(a)] + t[..., None] * (X[tuple(b)] - X[tuple(a)])
-        o1, o2 = others[axis]
+    crossings = []
+    for axis in range(dim):
+        cross, p = _edge_crossings(G, X, axis)
+        others = _other_axes(axis, dim)
         # A cell c touches the edges whose node indices are c_d and c_d + 1
-        # along the other two axes.
-        for s1 in (0, 1):
-            for s2 in (0, 1):
-                sl = [slice(None)] * 3
-                sl[o1], sl[o2] = slice(s1, s1 + n[o1]), slice(s2, s2 + n[o2])
-                c = cross[tuple(sl)]
-                total += numpy.where(c[..., None], p[tuple(sl)], 0.0)
-                count += c
-        edges.append(cross)
+        # along the other axes.
+        for offsets in itertools.product((0, 1), repeat=dim - 1):
+            sl = [slice(None)] * dim
+            for other, s in zip(others, offsets):
+                sl[other] = slice(s, s + n[other])
+            c = cross[tuple(sl)]
+            total += numpy.where(c[..., None], p[tuple(sl)], 0.0)
+            count += c
+        crossings.append((cross, p))
+    return crossings, total, count
+
+
+def _cell_vertices(X, G, n):
+    """The vertex of each grid cell the surface crosses: the number of the vertex of each cell
+    (-1 where none), the vertices, and which grid edges along each axis the surface crosses."""
+    crossings, total, count = _cell_crossings(G, X, n)
     crossed = count > 0
     vertex = -numpy.ones(tuple(n), dtype=numpy.int64)
     vertex[crossed] = numpy.arange(int(crossed.sum()))
     V = total[crossed] / count[crossed][:, None]
+    return vertex, V, [cross for cross, _p in crossings]
+
+
+def _cell_quads(crossed_edges, vertex, n):
+    """One quadrilateral for each crossed grid edge inside the box, joining the vertices of
+    the four cells around it."""
     quads = []
-    for axis, cross in enumerate(edges):
-        o1, o2 = others[axis]
+    for axis, cross in enumerate(crossed_edges):
+        o1, o2 = _other_axes(axis, 3)
         e = numpy.argwhere(cross)
         e = e[(e[:, o1] >= 1) & (e[:, o1] < n[o1]) & (e[:, o2] >= 1) & (e[:, o2] < n[o2])]
 
@@ -636,107 +698,93 @@ def _surface_nets(g, lo, hi, h):
             c = e.copy()
             c[:, o1] += s1 - 1
             c[:, o2] += s2 - 1
-            return vertex[c[:, 0], c[:, 1], c[:, 2]]
+            return _cell_vertex(vertex, c)
 
         quads.append(numpy.stack([around(0, 0), around(1, 0), around(1, 1), around(0, 1)], 1))
+    return quads
 
-    # Where the surface leaves the box, a net of each face (one vertex in each
-    # face square the cut curve crosses, in the face plane) and a strip of
-    # quadrilaterals from the first layer of cells to it close the surface
-    # along the cut; where the cut curve crosses a line along which two faces
-    # meet, a vertex at the crossing closes the corner.
-    points = [V]
-    count_vertices = len(V)
 
-    def new_vertices(p):
-        nonlocal count_vertices
-        ids = count_vertices + numpy.arange(len(p))
-        count_vertices += len(p)
-        points.append(p)
-        return ids
-
-    faces = {}  # (d, layer) -> (fid over the squares (index along A, index along B), A, B)
-    face_edges = []  # (d, layer, cell_layer, E, cross, ax, p)
+def _face_nets(X, G, n, vertices):
+    """The net of each face of the box: one vertex in each face square the cut curve crosses,
+    added to ``vertices``.  Returns ``faces``, (d, layer) -> (the vertex numbers over the
+    squares, indexed along A and B, A, B), for the face normal to the axis d at the node layer
+    ``layer``, and the crossed face edges, (d, layer, cell_layer, E, cross, ax, p) for the edges
+    along the axis E (the axis ax of the face)."""
+    faces = {}
+    face_edges = []
     for d in range(3):
         A, B = [k for k in range(3) if k != d]
         for layer, cell_layer in ((0, 0), (n[d], n[d] - 1)):
             sl = [slice(None)] * 3
             sl[d] = layer
             Gf, Xf = G[tuple(sl)], X[tuple(sl)]  # shape (n_A + 1, n_B + 1)
-            ftotal = numpy.zeros((n[A], n[B], 3))
-            fcount = numpy.zeros((n[A], n[B]))
-            for E in (A, B):
-                ax = 0 if E == A else 1
-                a = [slice(None)] * 2
-                b = [slice(None)] * 2
-                a[ax], b[ax] = slice(0, -1), slice(1, None)
-                ga, gb = Gf[tuple(a)], Gf[tuple(b)]
-                cross = (ga < 0) != (gb < 0)
-                t = numpy.where(cross, ga / numpy.where(cross, ga - gb, 1.0), 0.0)
-                p = Xf[tuple(a)] + t[..., None] * (Xf[tuple(b)] - Xf[tuple(a)])
-                nF = n[B] if E == A else n[A]
-                for s_ in (0, 1):
-                    sq = [slice(None)] * 2
-                    sq[1 - ax] = slice(s_, s_ + nF)
-                    c = cross[tuple(sq)]
-                    ftotal += numpy.where(c[..., None], p[tuple(sq)], 0.0)
-                    fcount += c
-                face_edges.append((d, layer, cell_layer, E, cross, ax, p))
+            crossings, ftotal, fcount = _cell_crossings(Gf, Xf, (n[A], n[B]))
+            for ax, (cross, p) in enumerate(crossings):
+                face_edges.append((d, layer, cell_layer, (A, B)[ax], cross, ax, p))
             fid = -numpy.ones((n[A], n[B]), dtype=numpy.int64)
             fcrossed = fcount > 0
-            fid[fcrossed] = new_vertices(ftotal[fcrossed] / fcount[fcrossed][:, None])
+            fid[fcrossed] = vertices.add(ftotal[fcrossed] / fcount[fcrossed][:, None])
             faces[(d, layer)] = (fid, A, B)
+    return faces, face_edges
 
-    def square(d, layer, index3):
-        """The face vertex of face (d, layer) over the cells index3 (n x 3)."""
-        fid, A, B = faces[(d, layer)]
-        return fid[index3[:, A], index3[:, B]]
 
+def _face_square(faces, d, layer, index3):
+    """The face vertex of face (d, layer) over the cells index3 (n x 3)."""
+    fid, A, B = faces[(d, layer)]
+    return fid[index3[:, A], index3[:, B]]
+
+
+def _cut_quads(faces, face_edges, vertex, n, vertices):
+    """The quadrilaterals that close the surface along its cut by the box: for each crossed
+    face edge, a strip from the first layer of cells to the face net, and a corner where the
+    edge lies on a line along which two faces meet."""
+    quads = []
     for d, layer, cell_layer, E, cross, ax, p in face_edges:
         A, B = faces[(d, layer)][1:]
         F = B if E == A else A
-        nF = n[F]
         e = numpy.argwhere(cross)  # (index along A, index along B) of the edge
         if len(e) == 0:
             continue
         node_F = e[:, 1 - ax]
         # Edges inside the face: two cells of the first layer, two squares.
-        inner = (node_F >= 1) & (node_F < nF)
-        ei = e[inner]
+        inner = e[(node_F >= 1) & (node_F < n[F])]
         cells2 = []
         for s_ in (0, 1):
-            cell = numpy.zeros((len(ei), 3), dtype=numpy.int64)
-            cell[:, d] = cell_layer
-            cell[:, A], cell[:, B] = ei[:, 0], ei[:, 1]
+            cell = _layer_cells(inner, d, cell_layer, A, B)
             cell[:, F] += s_ - 1
             cells2.append(cell)
-        c0, c1 = (vertex[c[:, 0], c[:, 1], c[:, 2]] for c in cells2)
-        f0, f1 = (square(d, layer, c) for c in cells2)
+        c0, c1 = (_cell_vertex(vertex, c) for c in cells2)
+        f0, f1 = (_face_square(faces, d, layer, c) for c in cells2)
         quads.append(numpy.stack([c0, c1, f1, f0], 1))
         # Edges on a line where this face meets face (F, F-layer): once, from
         # the face of smaller d.
-        for edge_layer, cell_F in ((0, 0), (nF, nF - 1)):
-            if d > F:
+        if d > F:
+            continue
+        for edge_layer, cell_F in ((0, 0), (n[F], n[F] - 1)):
+            on_line = e[node_F == edge_layer]
+            if len(on_line) == 0:
                 continue
-            on_line = node_F == edge_layer
-            el = e[on_line]
-            if len(el) == 0:
-                continue
-            crossing = p[el[:, 0], el[:, 1]]
-            ids = new_vertices(crossing)
-            cell = numpy.zeros((len(el), 3), dtype=numpy.int64)
-            cell[:, d] = cell_layer
-            cell[:, A], cell[:, B] = el[:, 0], el[:, 1]
+            ids = vertices.add(p[on_line[:, 0], on_line[:, 1]])
+            cell = _layer_cells(on_line, d, cell_layer, A, B)
             cell[:, F] = cell_F
-            c = vertex[cell[:, 0], cell[:, 1], cell[:, 2]]
-            here = square(d, layer, cell)
-            there = square(F, edge_layer, cell)
-            quads.append(numpy.stack([c, here, ids, there], 1))
-    V = numpy.concatenate(points)
-    quads = numpy.concatenate(quads)
-    face_vertex = numpy.zeros(len(V), dtype=bool)
-    face_vertex[len(points[0]) :] = True
-    return V, quads, face_vertex
+            here = _face_square(faces, d, layer, cell)
+            there = _face_square(faces, F, edge_layer, cell)
+            quads.append(numpy.stack([_cell_vertex(vertex, cell), here, ids, there], 1))
+    return quads
+
+
+def _layer_cells(edges, d, cell_layer, A, B):
+    """The indices (n x 3) of the cells of the layer ``cell_layer`` along the axis d over the
+    face edges ``edges``, given by their indices along the face axes A and B."""
+    cell = numpy.zeros((len(edges), 3), dtype=numpy.int64)
+    cell[:, d] = cell_layer
+    cell[:, A], cell[:, B] = edges[:, 0], edges[:, 1]
+    return cell
+
+
+def _cell_vertex(vertex, cell):
+    """The vertex numbers of the cells ``cell`` (n x 3)."""
+    return vertex[cell[:, 0], cell[:, 1], cell[:, 2]]
 
 
 def _edges_of(quads: numpy.ndarray) -> tuple[numpy.ndarray, numpy.ndarray]:
@@ -779,7 +827,7 @@ def _corner_angles(points, quads):
 def _split_quads(V, quads, element_type):
     """Cells (type, nodes, block) of the linear elements: the quadrilaterals,
     or each split along its shorter diagonal into two triangles."""
-    if _QUADRATIC.get(element_type, element_type) != "Tri3":
+    if _core.element_corner_type(element_type) != "Tri3":
         return [("Quad4", [int(i) for i in q], 0) for q in quads]
     cells = []
     for q in (list(map(int, q)) for q in quads):
@@ -890,28 +938,6 @@ def generate_surface_mesh(
     """
     name = "generate_surface_mesh"
     scope = _Scope(definitions, name)
-    given = {
-        key
-        for key, value in dict(
-            num_elements=num_elements,
-            center=center,
-            polar_angle=polar_angle,
-            azimuth=azimuth,
-            box=box,
-            element_size=element_size,
-            x_min=x_min,
-            x_max=x_max,
-            y_min=y_min,
-            y_max=y_max,
-            z_min=z_min,
-            z_max=z_max,
-            u_min=u_min,
-            u_max=u_max,
-            v_min=v_min,
-            v_max=v_max,
-        ).items()
-        if value is not None
-    }
     bounds = dict(
         x_min=x_min,
         x_max=x_max,
@@ -924,55 +950,78 @@ def generate_surface_mesh(
         v_min=v_min,
         v_max=v_max,
     )
+    options = dict(
+        num_elements=num_elements,
+        center=center,
+        polar_angle=polar_angle,
+        azimuth=azimuth,
+        box=box,
+        element_size=element_size,
+        **bounds,
+    )
     _check_type(element_type, name)
-
-    def only(mode: str, allowed: set[str]) -> None:
-        extra = sorted(given - allowed)
-        if extra:
-            raise InputError(f"{name}: {', '.join(extra)} do not apply to a {mode}; remove them.")
-
     if not isinstance(surface, str):
-        only("parametric surface", {"num_elements", "u_min", "u_max", "v_min", "v_max"})
+        allowed = {"num_elements", "u_min", "u_max", "v_min", "v_max"}
+        _only(options, "parametric surface", allowed, name)
         mesh = _parametric_surface(surface, scope, num_elements, element_type, bounds, name)
     else:
         lhs, rhs = _split_equation(surface, name)
         if center is None and box is None and lhs in ("x", "y", "z"):
             plan = [c for c in "xyz" if c != lhs]
-            only(
-                "height surface",
-                {"num_elements"} | {f"{c}_{e}" for c in plan for e in ("min", "max")},
-            )
+            allowed = {"num_elements"} | {f"{c}_{e}" for c in plan for e in ("min", "max")}
+            _only(options, "height surface", allowed, name)
             mesh = _height_surface(lhs, rhs, plan, scope, num_elements, element_type, bounds, name)
         else:
-            left = scope.function(lhs, ["x", "y", "z"])
-            right = scope.function(rhs, ["x", "y", "z"])
-
-            def g(x, y, z):
-                return left(x, y, z) - right(x, y, z)
-
-            if (center is None) == (box is None):
-                raise InputError(
-                    f"{name}: for the surface '{surface}' give either center=[...] (structured quadrilaterals, for a surface every ray from the center meets once) or box=[[x_min, y_min, z_min], [x_max, y_max, z_max]] with element_size (quadrilaterals for any surface)."
-                )
-            if center is not None:
-                only(
-                    "surface seen from a center",
-                    {"center", "num_elements", "polar_angle", "azimuth"},
-                )
-                centre = numpy.asarray(center, dtype=float)
-                directions, quads, limits = _directions(polar_angle, azimuth, num_elements, name)
-                mesh = _centred_surface(
-                    directions, quads, limits, element_type, name, _ray_place(g, centre, name)
-                )
-                points = numpy.asarray(mesh.points())
-                _gradient(g, points, _scale(points), name)
-            else:
-                only("surface cut out of a box", {"box", "element_size"})
-                if element_size is None:
-                    raise InputError(f"{name}: with box=[...] give element_size.")
-                mesh = _box_surface(g, box, element_size, element_type, name)
+            mesh = _implicit_surface(surface, lhs, rhs, scope, options, element_type, name)
     scope.check_all_used()
     return mesh
+
+
+def _only(options: dict, mode: str, allowed: set[str], name: str) -> None:
+    """Refuse the keywords given among ``options`` that a surface of the kind ``mode`` does
+    not take."""
+    extra = sorted(
+        key for key, value in options.items() if value is not None and key not in allowed
+    )
+    if extra:
+        raise InputError(f"{name}: {', '.join(extra)} do not apply to a {mode}; remove them.")
+
+
+def _implicit_surface(surface, lhs, rhs, scope, options, element_type, name):
+    """The surface f(x, y, z) = c of the equation ``surface``, ``lhs = rhs``, seen from a
+    center or cut out of a box."""
+    left = scope.function(lhs, ["x", "y", "z"])
+    right = scope.function(rhs, ["x", "y", "z"])
+
+    def g(x, y, z):
+        return left(x, y, z) - right(x, y, z)
+
+    center, box = options["center"], options["box"]
+    if (center is None) == (box is None):
+        raise InputError(
+            f"{name}: for the surface '{surface}' give either center=[...] (structured quadrilaterals, for a surface every ray from the center meets once) or box=[[x_min, y_min, z_min], [x_max, y_max, z_max]] with element_size (quadrilaterals for any surface)."
+        )
+    if center is not None:
+        _only(
+            options,
+            "surface seen from a center",
+            {"center", "num_elements", "polar_angle", "azimuth"},
+            name,
+        )
+        centre = numpy.asarray(center, dtype=float)
+        directions, quads, limits = _directions(
+            options["polar_angle"], options["azimuth"], options["num_elements"], name
+        )
+        mesh = _centred_surface(
+            directions, quads, limits, element_type, _ray_place(g, centre, name)
+        )
+        points = numpy.asarray(mesh.points())
+        _gradient(g, points, _scale(points), name)
+        return mesh
+    _only(options, "surface cut out of a box", {"box", "element_size"}, name)
+    if options["element_size"] is None:
+        raise InputError(f"{name}: with box=[...] give element_size.")
+    return _box_surface(g, box, options["element_size"], element_type, name)
 
 
 def _parametric_surface(surface, scope, num_elements, element_type, bounds, name):
@@ -987,7 +1036,7 @@ def _parametric_surface(surface, scope, num_elements, element_type, bounds, name
     param = _core.generate_rectangle_mesh(
         list(numpy.linspace(u0, u1, n_u + 1)),
         list(numpy.linspace(v0, v1, n_v + 1)),
-        _QUADRATIC.get(element_type, element_type),
+        _core.element_corner_type(element_type),
         "right",
     )
     param = _promote(param, element_type)
@@ -1012,7 +1061,7 @@ def _height_surface(lhs, rhs, plan, scope, num_elements, element_type, bounds, n
     param = _core.generate_rectangle_mesh(
         list(numpy.linspace(a0, a1, n_a + 1)),
         list(numpy.linspace(b0, b1, n_b + 1)),
-        _QUADRATIC.get(element_type, element_type),
+        _core.element_corner_type(element_type),
         "right",
     )
     param = _promote(param, element_type)

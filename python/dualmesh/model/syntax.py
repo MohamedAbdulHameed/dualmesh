@@ -45,10 +45,10 @@ suffix of the wrong length stops the parse. At step 1 the message names the
 rank of the symbol. At step 5, for a name such as `displacement_xy`, the
 registry gives the message.
 
-A call names a function of `calls`, such as `exp`, `grad` or `max`. `aliases` holds the short
-spellings of the equation language, such as `sym` for `symmetric` and `if` for `conditional`,
-which mean the same. `time`, `time_step` and `cell_size` are also calls without arguments, so
-`time()` equals `time`.
+A call names a function of `calls`, such as `exp`, `grad` or `max`. Each function has one
+name. A call of a spelling that other languages use, such as `sym` for `symmetric`, is refused
+with the name of the function. `time`, `time_step` and `cell_size` are also calls without
+arguments, so `time()` equals `time`.
 
 The equations of general_form_PDE parse in an `equation_scope`, which knows the dimension of
 space and the fields. It adds the calls of `space_calls`, which differentiate along the
@@ -60,54 +60,37 @@ condition.
 
 import collections
 import difflib
-import importlib
 import math
-import operator
 import re
 import zlib
 from collections.abc import Mapping
 
-from dualmesh.console import suggestion
-from dualmesh.input import units
-from dualmesh.input.units import dimensionless, input_error
-from dualmesh.model.conservation_law import conservation_law
+from dualmesh import units
+from dualmesh._core import InputError
+from dualmesh.model import calculus, graph
+from dualmesh.model.conservation import conservation_law
 from dualmesh.model.dimensions import comparisons, dimension_error, is_zero
-
-# import_module returns the module itself even when dualmesh.model binds the
-# names expression and differentiate to the class and the function of the same names.
-graph = importlib.import_module("dualmesh.model.expression")
-calculus = importlib.import_module("dualmesh.model.differentiate")
+from dualmesh.parameters import suggestion
+from dualmesh.units import dimensionless
 
 
-class syntax_error(input_error):
+class syntax_error(InputError):
     """A formula that does not follow the grammar."""
 
 
+def engine_call(kind: str):
+    """The call that builds the node of kind on its arguments."""
+    return lambda *arguments: graph.build(kind, arguments)
+
+
+# The functions of the engine's expression language, each called by its name in the engine.
 calls = {
+    name: (engine_call(kind), graph.engine_functions[name])
+    for name, kind in graph.engine_kinds.items()
+}
+# The calls of the model language alone.
+calls |= {
     "grad": (graph.grad, 1),
-    "exp": (graph.exp, 1),
-    "log": (graph.log, 1),
-    "log10": (graph.log10, 1),
-    "sqrt": (graph.sqrt, 1),
-    "sin": (graph.sin, 1),
-    "cos": (graph.cos, 1),
-    "tan": (graph.tan, 1),
-    "asin": (graph.asin, 1),
-    "acos": (graph.acos, 1),
-    "atan": (graph.atan, 1),
-    "sinh": (graph.sinh, 1),
-    "cosh": (graph.cosh, 1),
-    "tanh": (graph.tanh, 1),
-    "erf": (graph.erf, 1),
-    "floor": (graph.floor, 1),
-    "ceil": (graph.ceil, 1),
-    "sign": (graph.sign, 1),
-    "abs": (abs, 1),
-    "max": (graph.maximum, 2),
-    "min": (graph.minimum, 2),
-    "atan2": (graph.atan2, 2),
-    "hypot": (graph.hypot, 2),
-    "pow": (operator.pow, 2),
     "less": (graph.less, 2),
     "greater": (graph.greater, 2),
     "conditional": (graph.conditional, 3),
@@ -128,15 +111,6 @@ calls = {
     "cell_size": (graph.cell_size, 0),
     "normal": (graph.normal, 0),
     "identity": (graph.identity, 0),
-}
-
-# The short spellings, each with the name of its call.
-aliases = {
-    "sym": "symmetric",
-    "dev": "deviatoric",
-    "det": "determinant",
-    "if": "conditional",
-    "ddot": "inner",
 }
 
 # The calls that differentiate along the coordinates or need the dimension of space, with their
@@ -161,7 +135,7 @@ point_names = {"time": graph.time, "time_step": graph.time_step, "cell_size": gr
 
 def check_coordinate_system(coordinate_system: str) -> str:
     if coordinate_system not in units.position_names:
-        raise input_error(
+        raise InputError(
             f"unknown coordinate system '{coordinate_system}'. "
             f"The coordinate systems are {', '.join(units.position_names)}"
         )
@@ -385,12 +359,11 @@ class parser:
         self.index += 2
         return self.scope.derivative_of(field_name, coordinate, 2 if second else 1)
 
-    def parse_call(self, written: str, column: int):
-        name = aliases.get(written, written)
+    def parse_call(self, name: str, column: int):
         if name not in calls and name not in space_calls:
-            nearest = difflib.get_close_matches(written, [*calls, *space_calls, *aliases])
+            nearest = difflib.get_close_matches(name, [*calls, *space_calls])
             hint = f". Did you mean {', '.join(nearest)}?" if nearest else ""
-            self.fail(f"unknown function '{written}'{hint}", column)
+            self.fail(f"unknown function '{name}'{hint}", column)
         arguments = []
         if not self.accept(")"):
             arguments.append(self.parse_expression())
@@ -403,12 +376,12 @@ class parser:
             function, argument_count = calls[name]
         else:
             self.fail(
-                f"{written} takes the space of an equation, its dimension and coordinates, "
+                f"{name} takes the space of an equation, its dimension and coordinates, "
                 f"which only the equations of general_form_PDE have",
                 column,
             )
         if len(arguments) != argument_count:
-            self.fail(f"{written} takes {argument_count} arguments, got {len(arguments)}", column)
+            self.fail(f"{name} takes {argument_count} arguments, got {len(arguments)}", column)
         if self.scope is not None and name in space_calls:
             return self.scope.call(name, arguments)
         return function(*arguments)
@@ -435,7 +408,7 @@ class parser:
         if name in registry or base_name in registry:
             try:
                 entry, component = units.lookup(name, self.coordinate_system)
-            except input_error as error:
+            except InputError as error:
                 self.fail(str(error), column)
             if entry.value is not None:
                 return graph.physical_constant(entry.name)
@@ -452,13 +425,13 @@ def parse(
 ) -> graph.expression:
     """Return the expression graph of a formula. Names resolve first through symbols."""
     if not isinstance(text, str):
-        raise input_error(f"a formula must be a string, got {text!r}")
+        raise InputError(f"a formula must be a string, got {text!r}")
     check_coordinate_system(coordinate_system)
     try:
         return parser(text, {} if symbols is None else symbols, coordinate_system).parse_all()
     except syntax_error:
         raise
-    except input_error as error:
+    except InputError as error:
         raise type(error)(f"formula '{text}': {error}") from None
 
 
@@ -478,13 +451,13 @@ def parse_in_scope(text: str, scope, equation: bool):
     """Return the graph of an expression, or the two sides of an equation, in an equation_scope."""
     what = "equation" if equation else "expression"
     if not isinstance(text, str):
-        raise input_error(f"an {what} must be a string, got {text!r}")
+        raise InputError(f"an {what} must be a string, got {text!r}")
     reader = parser(text, scope, scope.coordinate_system, scope)
     try:
         return reader.parse_equation() if equation else reader.parse_all()
     except syntax_error:
         raise
-    except input_error as error:
+    except InputError as error:
         raise type(error)(f"{what} '{text}': {error}") from None
 
 
@@ -554,14 +527,14 @@ class equation_scope(Mapping):
         if isinstance(value, str):
             try:
                 return parse_in_scope(value, self, equation=False)
-            except input_error as error:
+            except InputError as error:
                 raise type(error)(f"the definition '{name}': {error}") from None
         if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise input_error(
+            raise InputError(
                 f"the definition {name} = {value!r} is not a number or an expression (a text)"
             )
         if not math.isfinite(value):
-            raise input_error(f"the definition {name} = {value!r} is not a finite number")
+            raise InputError(f"the definition {name} = {value!r} is not a finite number")
         return graph.build(
             "constant", name=name, value=float(value), rank=0, physical_dimension=dimensionless
         )
@@ -586,7 +559,7 @@ class equation_scope(Mapping):
 
     def __getitem__(self, name):
         if name in self.pending:
-            raise input_error(
+            raise InputError(
                 f"'{name}' is defined after this expression, or is this expression itself. "
                 f"Define a name before the expressions that read it"
             )
@@ -600,7 +573,7 @@ class equation_scope(Mapping):
         # The engine reads x, y and z as its coordinates whatever the problem calls them, so such
         # a name is refused here rather than passed on as a constant.
         if name in ("x", "y", "z", "r"):
-            raise input_error(
+            raise InputError(
                 f"'{name}' is not a coordinate of this problem, whose coordinates are "
                 f"{', '.join(self.coordinates)}"
             )
@@ -670,14 +643,14 @@ class equation_scope(Mapping):
         if kind == "position_component":
             return graph.number(1.0) if leaf.direction == direction else None
         if kind == "gradient_component":
-            raise input_error(
+            raise InputError(
                 f"this needs a second derivative of {self.variable(leaf.name, leaf.component)} "
                 f"outside a divergence. Second derivatives stand only in div(... grad(...)) or "
                 f"laplacian(...), which are integrated by parts, and a fourth-order equation is "
                 f"written as two second-order ones"
             )
         if kind == "constant" and leaf.name in self.externals:
-            raise input_error(
+            raise InputError(
                 f"'{leaf.name}' would be differentiated, and it is not a field, a coordinate or "
                 f"a definition. Write it as a definition of the coordinates and the fields, or "
                 f"keep it outside derivatives"
@@ -698,7 +671,7 @@ class equation_scope(Mapping):
 
     def refuse_hoop_terms(self, what: str):
         if self.axisymmetric:
-            raise input_error(
+            raise InputError(
                 f"{what} in axisymmetric coordinates has hoop terms that the equation language "
                 f"does not write. Use the axisymmetric physics"
             )
@@ -715,13 +688,13 @@ class equation_scope(Mapping):
                     for row in directions
                 ]
             )
-        raise input_error("grad takes a scalar or a vector, and here it has a tensor")
+        raise InputError("grad takes a scalar or a vector, and here it has a tensor")
 
     def divergence(self, node):
         """Return the divergence of node: a divergence node when node holds a derivative of a
         field, the flux of a term of the equation, and else the divergence itself."""
         if node.rank not in (1, 2):
-            raise input_error(
+            raise InputError(
                 f"div takes a vector or a tensor, and here it has {rank_name(node.rank)}. "
                 f"The gradient is grad"
             )
@@ -760,11 +733,11 @@ class equation_scope(Mapping):
             return along(node[1], 0) - along(node[0], 1)
         if node.rank == 0 and self.dimension == 2:
             return graph.list_of([along(node, 1), -along(node, 0)])
-        raise input_error("curl takes a vector in two or three dimensions, or a scalar in two")
+        raise InputError("curl takes a vector in two or three dimensions, or a scalar in two")
 
     def cross(self, first, second):
         if first.rank != 1 or second.rank != 1:
-            raise input_error("cross takes two vectors")
+            raise InputError("cross takes two vectors")
         if self.dimension == 3:
             return graph.list_of(
                 [
@@ -775,7 +748,7 @@ class equation_scope(Mapping):
             )
         if self.dimension == 2:
             return first[0] * second[1] - first[1] * second[0]
-        raise input_error("cross is defined in two and three dimensions")
+        raise InputError("cross is defined in two and three dimensions")
 
     def call(self, name: str, arguments: list):
         """Return the call of `space_calls` of name on its arguments."""
@@ -784,7 +757,7 @@ class equation_scope(Mapping):
         if name in ("grad_x", "grad_y", "grad_z"):
             direction = "xyz".index(name[-1])
             if direction >= self.dimension:
-                raise input_error(f"{name} is not defined in {self.dimension} dimension(s)")
+                raise InputError(f"{name} is not defined in {self.dimension} dimension(s)")
             return self.partial(arguments[0], direction)
         if name == "div":
             return self.divergence(arguments[0])
@@ -800,19 +773,19 @@ class equation_scope(Mapping):
         node = self[name] if component is None else self[component[0]][component[1]]
         if coordinate == "t":
             if component is not None:
-                raise input_error(
+                raise InputError(
                     f"write the time derivative of the vector field, d{component[0]}/dt, not "
                     f"of one of its components"
                 )
             return graph.rate(node, order, dimensionless)
         if order == 2:
-            raise input_error(
+            raise InputError(
                 f"second derivatives in space are written with div, grad and laplacian, for "
                 f"example laplacian({name})"
             )
         if coordinate == "n":
             if node.rank != 0:
-                raise input_error(f"d{name}/dn is defined for a scalar field")
+                raise InputError(f"d{name}/dn is defined for a scalar field")
             return sum(
                 (
                     graph.normal_component(direction) * self.partial(node, direction)
@@ -823,11 +796,11 @@ class equation_scope(Mapping):
         if coordinate in self.coordinates:
             return self.partial(node, self.coordinates.index(coordinate))
         if coordinate in ("x", "y", "z", "r"):
-            raise input_error(
+            raise InputError(
                 f"d{name}/d{coordinate}: {coordinate} is not a coordinate of this problem"
             )
         listed = ", ".join(f"d{name}/d{letter}" for letter in ("t", *self.coordinates))
-        raise input_error(
+        raise InputError(
             f"'d{name}/d{coordinate}' is not a derivative: the derivatives are {listed} "
             f"and d{name}/dn"
         )
@@ -887,7 +860,7 @@ class sorted_equation:
         if self.rank is None:
             self.rank = rank
         elif self.rank != rank:
-            raise input_error(
+            raise InputError(
                 f"the terms of an equation must be of one kind, and here "
                 f"{rank_name(self.rank)} meets {rank_name(rank)}"
             )
@@ -916,7 +889,7 @@ def collect_terms(node, factor, terms: list, memo: dict):
     elif kind == "multiply":
         first, second = (holds_term(operand, memo) for operand in operands)
         if first and second:
-            raise input_error(
+            raise InputError(
                 "a product of two terms with time derivatives or divergences cannot be sorted. "
                 "Make each of them a term of its own"
             )
@@ -924,14 +897,14 @@ def collect_terms(node, factor, terms: list, memo: dict):
         collect_terms(term, factor * coefficient, terms, memo)
     elif kind == "divide":
         if holds_term(operands[1], memo):
-            raise input_error("a time derivative or a divergence does not divide")
+            raise InputError("a time derivative or a divergence does not divide")
         collect_terms(operands[0], factor / operands[1], terms, memo)
     elif kind == "rate":
         terms.append(("rate", factor, node))
     elif kind == "divergence":
         terms.append(("flux", factor, operands[0]))
     else:
-        raise input_error(
+        raise InputError(
             "a time derivative, div or laplacian stands only as a term of the equation, "
             "multiplied or divided by coefficients, not inside a function or another operator"
         )
@@ -947,14 +920,14 @@ def read_equation(text: str, scope: equation_scope) -> sorted_equation:
         collect_terms(right, graph.number(-1.0), terms, memo)
         for kind, factor, part in terms:
             if kind != "rest" and factor.rank != 0:
-                raise input_error(
+                raise InputError(
                     f"a time derivative or a divergence is multiplied by a scalar only, and here "
                     f"the factor is {rank_name(factor.rank)}"
                 )
             if kind == "rate":
                 field_name = part.operands[0].name
                 if equation.time_field not in (None, field_name):
-                    raise input_error(
+                    raise InputError(
                         f"an equation has the time derivative of one field only, and this one "
                         f"has d{equation.time_field}/dt and d{field_name}/dt"
                     )
@@ -966,7 +939,7 @@ def read_equation(text: str, scope: equation_scope) -> sorted_equation:
                     equation.mass = equation.mass + factor
             elif kind == "flux":
                 if scope.varies_in_space(factor):
-                    raise input_error(
+                    raise InputError(
                         f"a div(...) or laplacian(...) term is multiplied only by a factor that "
                         f"is constant in space, here '{factor}'. Move the factor inside, as in "
                         f"div(k*grad(u)), which is the conservative form"
@@ -985,8 +958,8 @@ def read_equation(text: str, scope: equation_scope) -> sorted_equation:
                 equation.take_rank(term.rank)
                 equation.rest = term if equation.rest is None else equation.rest + term
         if equation.rank is None:
-            raise input_error("the equation has no terms")
-    except input_error as error:
+            raise InputError("the equation has no terms")
+    except InputError as error:
         raise type(error)(f"the equation '{text}': {error}") from None
     return equation
 
@@ -1004,7 +977,7 @@ def match_fields(equations: list, keys: list, fields: list) -> dict:
 
     def assign(index: int, field_name: str):
         if field_name in equation_of:
-            raise input_error(
+            raise InputError(
                 f"the equations '{equations[equation_of[field_name]].text}' and "
                 f"'{equations[index].text}' both govern {field_name}. Give the field of each "
                 f'equation as a key: equations={{"field": "equation", ...}}'
@@ -1034,7 +1007,7 @@ def match_fields(equations: list, keys: list, fields: list) -> dict:
         assign(open_equations[0], open_fields[0])
     elif open_equations:
         listed = ", ".join(f"'{equations[index].text}'" for index in open_equations)
-        raise input_error(
+        raise InputError(
             f"the equations {listed} could govern any of the fields {', '.join(open_fields)}. "
             f'Give the field of each equation as a key: equations={{"field": "equation", ...}}'
         )
@@ -1051,7 +1024,7 @@ def read_equations(texts: list, keys: list, scope: equation_scope) -> dict:
     """
     fields = list(scope.fields)
     if len(texts) != len(fields):
-        raise input_error(
+        raise InputError(
             f"there are {len(fields)} field(s) and {len(texts)} equation(s). Give one equation "
             f"for each field"
         )
@@ -1061,12 +1034,12 @@ def read_equations(texts: list, keys: list, scope: equation_scope) -> dict:
     for name, rank in scope.fields.items():
         equation = equations[equation_of[name]]
         if equation.rank != rank:
-            raise input_error(
+            raise InputError(
                 f"the equation '{equation.text}' is {rank_name(equation.rank)} equation, and it "
                 f"governs {name}, which is {rank_name(rank)} field"
             )
         if equation.time_field not in (None, name):
-            raise input_error(
+            raise InputError(
                 f"the equation '{equation.text}' governs {name} and has the time derivative of "
                 f"{equation.time_field}. The time derivative of a field belongs to its own "
                 f"equation"
@@ -1106,7 +1079,7 @@ def agree(first, second) -> bool:
         try:
             first_value = graph.substitute(first, values)
             second_value = graph.substitute(second, values)
-        except input_error:
+        except InputError:
             return False
         if first_value.kind != "number" or second_value.kind != "number":
             return first == second
@@ -1129,89 +1102,122 @@ def read_condition(text: str, scope: equation_scope, laws: dict) -> list:
     left, right = parse_in_scope(text, scope, equation=True)
     try:
         return condition_terms(left, right, scope, laws)
-    except input_error as error:
+    except InputError as error:
         raise type(error)(f"the boundary condition '{text}': {error}") from None
 
 
 def condition_terms(left, right, scope: equation_scope, laws: dict) -> list:
+    """Return the scalar conditions (field, component, flux, value) of the boundary condition
+    left = right, parsed, as :func:`read_condition` describes them: the value of a field, or
+    the normal flux of the equation of a field."""
     if left.kind == "field" or (left.kind == "component" and left.operands[0].kind == "field"):
-        name = left.name if left.kind == "field" else left.operands[0].name
-        if left.rank != right.rank:
-            raise input_error(
-                f"the field is {rank_name(left.rank)} and the value {rank_name(right.rank)}"
+        return field_condition(left, right, scope)
+    return flux_condition(left, right, scope, laws)
+
+
+def field_condition(left, right, scope: equation_scope) -> list:
+    """The conditions of a field, or one component of a field, on the left: its value on the
+    boundary, which may not depend on derivatives."""
+    name = left.name if left.kind == "field" else left.operands[0].name
+    if left.rank != right.rank:
+        raise InputError(
+            f"the field is {rank_name(left.rank)} and the value {rank_name(right.rank)}"
+        )
+    if left.kind == "component":
+        components = [left.component]
+    else:
+        components = [()] if left.rank == 0 else [(index,) for index in range(scope.dimension)]
+    values = graph.expand(right, scope.dimension)
+    values = values if isinstance(values, list) else [values]
+    for value in values:
+        if any(leaf.kind == "gradient_component" for leaf in graph.leaves(value)):
+            raise InputError(
+                "the value of a field on a boundary may not depend on derivatives. A "
+                "condition on the flux has the flux on the left"
             )
-        if left.kind == "component":
-            components = [left.component]
-        else:
-            components = [()] if left.rank == 0 else [(index,) for index in range(scope.dimension)]
-        values = graph.expand(right, scope.dimension)
-        values = values if isinstance(values, list) else [values]
-        for value in values:
-            if any(leaf.kind == "gradient_component" for leaf in graph.leaves(value)):
-                raise input_error(
-                    "the value of a field on a boundary may not depend on derivatives. A "
-                    "condition on the flux has the flux on the left"
-                )
-        return [
-            (name, component, False, value)
-            for component, value in zip(components, values, strict=True)
-        ]
+    return [
+        (name, component, False, value) for component, value in zip(components, values, strict=True)
+    ]
+
+
+def flux_condition(left, right, scope: equation_scope, laws: dict) -> list:
+    """The conditions of a normal flux on the left, named by a name of scope.flux_names or
+    written out with d<field>/dn: the normal flux of the equation of the field it is the flux
+    of."""
     named = left.kind == "constant" and left.value is None and left.name in scope.flux_names
     written = graph.expand(left, scope.dimension) if left.rank == 0 else left
     normal = any(leaf.kind == "normal_component" for leaf in graph.leaves(written))
     if not named and not normal:
-        raise input_error(
+        raise InputError(
             f"the left side is a field (a value on the boundary), the normal flux written with "
             f"d<field>/dn, or one of the names of the normal flux "
             f"({', '.join(scope.flux_names)})"
         )
     has_flux = [name for name, law in laws.items() if not is_zero(law.flux)]
     if named:
-        candidates = [name for name in has_flux if scope.fields[name] == right.rank]
-        if len(candidates) != 1:
-            told = (
-                "is the flux of no field with a divergence term"
-                if not candidates
-                else f"could be the flux of {', '.join(candidates)}"
-            )
-            raise input_error(
-                f"'{left.name}' with {rank_name(right.rank)} value {told}. Write the flux out "
-                f"with d<field>/dn"
-            )
-        name = candidates[0]
+        name = named_flux_owner(left, right, scope, has_flux)
     else:
-        names = {leaf.name for leaf in graph.leaves(written) if leaf.kind == "gradient_component"}
-        if len(names) != 1:
-            raise input_error("a flux condition is the flux of one field")
-        (name,) = names
-        if left.rank != 0 or scope.fields[name] != 0:
-            raise input_error("a flux written with d<field>/dn is the flux of a scalar field")
+        name = written_flux_owner(left, written, scope)
     law = laws[name]
     if name not in has_flux:
-        raise input_error(
+        raise InputError(
             f"the equation of {name} has no divergence term, so it has no flux to prescribe"
         )
     if right.rank != scope.fields[name]:
-        raise input_error(
+        raise InputError(
             f"the value is {rank_name(right.rank)}, and the flux of {name} is "
             f"{rank_name(scope.fields[name])}"
         )
     if not named:
-        flux = graph.expand(law.flux, scope.dimension)
-        normal_flux = sum(
-            (graph.normal_component(index) * flux[index] for index in range(scope.dimension)),
-            graph.number(0.0),
-        )
-        if not agree(written, normal_flux):
-            raise input_error(
-                f"the left side is not the normal flux of the equation of {name}, which is "
-                f"n . F = {normal_flux}, with n the outward normal. Write that, or the name "
-                f"{scope.flux_names[0]}"
-            )
+        check_written_flux(written, law, name, scope)
     values = graph.expand(right, scope.dimension)
     if right.rank == 0:
         return [(name, (), True, values)]
     return [(name, (index,), True, value) for index, value in enumerate(values)]
+
+
+def named_flux_owner(left, right, scope: equation_scope, has_flux: list) -> str:
+    """The field whose flux the name on the left is: the one field of ``has_flux``, the fields
+    whose equations have a flux, of the rank of the value."""
+    candidates = [name for name in has_flux if scope.fields[name] == right.rank]
+    if len(candidates) != 1:
+        told = (
+            "is the flux of no field with a divergence term"
+            if not candidates
+            else f"could be the flux of {', '.join(candidates)}"
+        )
+        raise InputError(
+            f"'{left.name}' with {rank_name(right.rank)} value {told}. Write the flux out "
+            f"with d<field>/dn"
+        )
+    return candidates[0]
+
+
+def written_flux_owner(left, written, scope: equation_scope) -> str:
+    """The field whose flux the left side, written out with d<field>/dn as ``written``, is:
+    the one scalar field whose derivatives it holds."""
+    names = {leaf.name for leaf in graph.leaves(written) if leaf.kind == "gradient_component"}
+    if len(names) != 1:
+        raise InputError("a flux condition is the flux of one field")
+    (name,) = names
+    if left.rank != 0 or scope.fields[name] != 0:
+        raise InputError("a flux written with d<field>/dn is the flux of a scalar field")
+    return name
+
+
+def check_written_flux(written, law, name: str, scope: equation_scope) -> None:
+    """Check that the flux written out with d<field>/dn is n . F of the equation of ``name``."""
+    flux = graph.expand(law.flux, scope.dimension)
+    normal_flux = sum(
+        (graph.normal_component(index) * flux[index] for index in range(scope.dimension)),
+        graph.number(0.0),
+    )
+    if not agree(written, normal_flux):
+        raise InputError(
+            f"the left side is not the normal flux of the equation of {name}, which is "
+            f"n . F = {normal_flux}, with n the outward normal. Write that, or the name "
+            f"{scope.flux_names[0]}"
+        )
 
 
 # Models of the input
@@ -1234,10 +1240,10 @@ term_keys = ("storage", "inertia", "flux", "source")
 
 def check_keys(mapping, allowed, path: str):
     if not isinstance(mapping, dict):
-        raise input_error(f"{path} must be a mapping, got {mapping!r}")
+        raise InputError(f"{path} must be a mapping, got {mapping!r}")
     for key in mapping:
         if key not in allowed:
-            raise input_error(f"{path}: unknown key '{key}'." + suggestion(key, allowed))
+            raise InputError(f"{path}: unknown key '{key}'." + suggestion(key, allowed))
 
 
 def section(entry: dict, key: str, path: str) -> dict:
@@ -1246,15 +1252,15 @@ def section(entry: dict, key: str, path: str) -> dict:
     if value is None:
         return {}
     if not isinstance(value, dict):
-        raise input_error(f"{path}.{key} must be a mapping, got {value!r}")
+        raise InputError(f"{path}.{key} must be a mapping, got {value!r}")
     return value
 
 
 def at(path: str, function, *arguments, **keywords):
-    """Return function(*arguments, **keywords), with path at the start of every input_error."""
+    """Return function(*arguments, **keywords), with path at the start of every InputError."""
     try:
         return function(*arguments, **keywords)
-    except input_error as error:
+    except InputError as error:
         raise type(error)(f"{path}: {error}") from None
 
 
@@ -1272,11 +1278,11 @@ def check_expression_dimension(node, expression_name: str, unit, path: str):
     standard = units.standard_names().get(expression_name)
     if standard is not None:
         if standard.value is not None:
-            raise input_error(
+            raise InputError(
                 f"{path}: '{expression_name}' is a physical constant and cannot name an expression"
             )
         if unit is not None:
-            raise input_error(
+            raise InputError(
                 f"{path}: '{expression_name}' is a standard name with the unit {standard.unit}. "
                 f"Leave out unit"
             )
@@ -1292,7 +1298,7 @@ def check_expression_dimension(node, expression_name: str, unit, path: str):
         expected, shown_unit = standard.physical_dimension, standard.unit
     else:
         if unit is None:
-            raise input_error(
+            raise InputError(
                 f"{path}: '{expression_name}' is not a standard name, so it needs a unit, "
                 f"for example {{unit: 1/s, value: ...}}"
             )
@@ -1322,13 +1328,13 @@ def conservation_law_from_input(
     check_keys(entry, model_keys, path)
     check_coordinate_system(coordinate_system)
     if "unknown" not in entry:
-        raise input_error(f"{path}: the key 'unknown' is missing")
+        raise InputError(f"{path}: the key 'unknown' is missing")
 
     unknown_entry = entry["unknown"]
     if isinstance(unknown_entry, str):
         unknown_entry = {unknown_entry: None}
     if not isinstance(unknown_entry, dict) or len(unknown_entry) != 1:
-        raise input_error(f"{path}.unknown must name one field, got {unknown_entry!r}")
+        raise InputError(f"{path}.unknown must name one field, got {unknown_entry!r}")
     ((unknown_name, declaration),) = unknown_entry.items()
     unknown_path = f"{path}.unknown.{unknown_name}"
     declaration = declaration or {}
@@ -1346,7 +1352,7 @@ def conservation_law_from_input(
 
     def declare(symbol: str, node, symbol_path: str):
         if symbol in local_symbols:
-            raise input_error(f"{symbol_path}: the name '{symbol}' is declared twice")
+            raise InputError(f"{symbol_path}: the name '{symbol}' is declared twice")
         local_symbols[symbol] = node
 
     def formula(value, value_path: str):
@@ -1357,7 +1363,7 @@ def conservation_law_from_input(
         state_path = f"{path}.states.{state_name}"
         check_keys(state_entry, ("unit", "initial", "shape", "rate"), state_path)
         if "rate" not in state_entry:
-            raise input_error(f"{state_path}: the key 'rate' is missing")
+            raise InputError(f"{state_path}: the key 'rate' is missing")
         node = at(
             state_path,
             graph.state,
@@ -1378,7 +1384,7 @@ def conservation_law_from_input(
             value = value.get("value")
         node = formula(value, expression_path)
         if node is None:
-            raise input_error(f"{expression_path}: the expression has no value")
+            raise InputError(f"{expression_path}: the expression has no value")
         check_expression_dimension(node, expression_name, unit, expression_path)
         declare(expression_name, node, expression_path)
 

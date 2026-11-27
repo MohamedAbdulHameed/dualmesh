@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 #include "dualmesh/modules/Projection.h"
-#include "dualmesh/base/Factory.h"
-#include "dualmesh/core/InputParameters.h"
+#include "ProjectionShared.h"
+#include "dualmesh/core/Coordinates.h"
 #include "dualmesh/fe/Assembly.h"
+#include "dualmesh/modules/FluidSystem.h"
 
 #ifdef _OPENMP
 #include <omp.h>
@@ -16,6 +17,7 @@
 #include <map>
 #include <set>
 #include <stdexcept>
+#include <string>
 
 namespace dualmesh
 {
@@ -23,244 +25,19 @@ namespace dualmesh
 namespace
 {
 
-/// The Jacobian at rest of @p kernels and @p conditions, the operator of terms linear in the unknowns, with every dependent unknown folded into those it depends on (C^T J C, Problem::foldDependents).
-/// A time kernel takes the step one, so that its operator is the coefficient of the rate.
-SparseMatrix
-operatorOf(Problem & problem,
-           const std::vector<const Kernel *> & kernels,
-           const std::vector<const IntegratedBC *> & conditions = {},
-           bool stabilization = true)
-{
-  Problem::AssemblyOptions options;
-  options.kernels = &kernels;
-  options.conditions = &conditions;
-  options.dt = 1.0;
-  options.stabilization = stabilization;
-  const Vector rest = Vector::Zero(problem.numDofs());
-  options.old = &rest;
-  Vector R;
-  SparseMatrix J;
-  problem.assemble(rest, options, R, &J);
-  problem.foldDependents(R, &J);
-  return J;
-}
-
-/// The part of @p A whose rows and columns are of the variables that @p rows and @p columns mark.
-SparseMatrix
-block(const Problem & problem,
-      const SparseMatrix & A,
-      const std::vector<char> & rows,
-      const std::vector<char> & columns)
-{
-  const int nv = problem.numVariables();
-  std::vector<Eigen::Triplet<double>> entries;
-  for (Index col = 0; col < A.outerSize(); ++col)
-    for (SparseMatrix::InnerIterator it(A, col); it; ++it)
-      if (rows[static_cast<std::size_t>(it.row() % nv)] &&
-          columns[static_cast<std::size_t>(col % nv)])
-        entries.emplace_back(it.row(), col, it.value());
-  SparseMatrix out(A.rows(), A.cols());
-  out.setFromTriplets(entries.begin(), entries.end());
-  return out;
-}
-
-/// A kernel or a boundary condition that only this file holds, set up with @p problem.
-template <typename T>
-std::shared_ptr<T>
-privateObject(Problem & problem,
-              const std::string & type,
-              const std::string & name,
-              const std::vector<std::pair<std::string, ParameterValue>> & values)
-{
-  const auto & factory = Factory::instance();
-  InputParameters parameters = factory.validParams(type);
-  for (const auto & [key, value] : values)
-    parameters.set(key, value);
-  auto object = std::dynamic_pointer_cast<T>(factory.create(type, name, parameters));
-  object->initialSetup(problem);
-  return object;
-}
-
-/// The flow coefficients of the mass equation @p constraint at the point @p x.
-FlowCoefficients
-coefficientsAt(const Problem & problem, const Kernel & constraint, const Point & x)
-{
-  QpContext probe;
-  probe.dim = problem.mesh().spaceDimension();
-  probe.time = problem.time();
-  probe.x = x;
-  FlowCoefficients c;
-  constraint.flowCoefficients(probe, c);
-  return c;
-}
-
-/// The term u_r / r of the divergence in axisymmetric coordinates (2 u_r / r in spherical ones), as its factor at @p x.
-double
-hoopFactor(const Problem & problem, const Point & x)
-{
-  if (problem.coordinateSystem() == CoordinateSystem::Cartesian || !(x[0] > 0.0))
-    return 0.0;
-  return (problem.coordinateSystem() == CoordinateSystem::Axisymmetric ? 1.0 : 2.0) / x[0];
-}
+/// The relative difference of the density over the fluid below which it is uniform.
+constexpr double kUniformDensity = 1e-12;
+/// The relative difference below which two step sizes, or the coefficients beta_0 / dt of two
+/// steps, are the same up to the rounding of the times.
+constexpr double kSameStep = 1e-9;
+/// The relative tolerance of the projection of the sources, which goes to round-off.
+constexpr double kSourceTolerance = 1e-14;
+/// The points per direction of the integrals over the boundary, for elements of first order and
+/// of higher order.
+constexpr int kBoundaryPointsLinear = 3;
+constexpr int kBoundaryPointsQuadratic = 4;
 
 } // namespace
-
-/// The rows of a linear system over some variables of a problem, in the global numbering of its nodes (Parallel::globalRows): the row of the k-th variable at a node is width G + k, with G the global number of the node.
-/// The equation of a fixed unknown (a prescribed value, a dependent or an inactive unknown) is a row of the identity, and its value moves to the right-hand side of the others.
-struct ProjectionSolver::Rows
-{
-  Rows(const Problem & problem_, const std::vector<int> & variables_, std::vector<char> fixed_)
-      : problem(problem_), variables(variables_), fixed(std::move(fixed_))
-  {
-    nv = problem.numVariables();
-    width = static_cast<int>(variables.size());
-    slot.assign(static_cast<std::size_t>(nv), -1);
-    for (int k = 0; k < width; ++k)
-      slot[static_cast<std::size_t>(variables[k])] = k;
-    const GlobalRows rows = problem.parallel().globalRows(problem);
-    across = rows.distributed;
-    const Index nodes = problem.mesh().numNodes();
-    node.assign(static_cast<std::size_t>(nodes), -1);
-    owned.assign(static_cast<std::size_t>(nodes), 0);
-    for (Index i = 0; i < nodes; ++i)
-    {
-      const Index g = rows.global_dof[problem.dof(i, 0)];
-      node[i] = g < 0 ? -1 : g / nv;
-      owned[i] = rows.owned_dof[problem.dof(i, 0)];
-    }
-    first = rows.first_row / nv * width;
-    num_owned = rows.num_owned / nv * width;
-    num_global = rows.global_size / nv * width;
-  }
-
-  /// The row of the unknown @p d of the problem, or -1 when it is not in the system.
-  Index row(Index d) const
-  {
-    const int k = slot[static_cast<std::size_t>(d % nv)];
-    const Index g = node[static_cast<std::size_t>(d / nv)];
-    return k < 0 || g < 0 ? -1 : width * g + k;
-  }
-  /// Call @p visit with every unknown of the system that this process owns and its row.
-  template <typename Visit> void forEachOwned(Visit && visit) const
-  {
-    for (Index i = 0; i < static_cast<Index>(node.size()); ++i)
-      if (owned[i] && node[i] >= 0)
-        for (int k = 0; k < width; ++k)
-          visit(problem.dof(i, variables[k]), width * node[i] + k);
-  }
-  /// The entries of the matrix @p A of the unknowns of the problem, in the order of its entries, with the rows and columns of the fixed unknowns replaced by the identity, which keeps a symmetric matrix symmetric.
-  std::vector<petsc::GlobalEntry> entries(const SparseMatrix & A) const
-  {
-    std::vector<petsc::GlobalEntry> out;
-    out.reserve(static_cast<std::size_t>(A.nonZeros() + num_owned));
-    for (Index col = 0; col < A.outerSize(); ++col)
-      for (SparseMatrix::InnerIterator it(A, col); it; ++it)
-      {
-        const Index r = row(it.row()), c = row(col);
-        if (r < 0 || c < 0 || fixed[it.row()] || fixed[col])
-          continue;
-        out.push_back({r, c, it.value()});
-      }
-    forEachOwned(
-        [&](Index d, Index r)
-        {
-          if (fixed[d])
-            out.push_back({r, r, 1.0});
-        });
-    return out;
-  }
-  std::unique_ptr<petsc::LinearSolver> makeSolver(const SparseMatrix & A,
-                                                  const std::string & options,
-                                                  double tolerance,
-                                                  bool symmetric,
-                                                  int projection_vectors = 0) const
-  {
-    petsc::Settings settings;
-    settings.options = options;
-    settings.relative_tolerance = tolerance;
-    settings.projection_vectors = projection_vectors;
-    settings.symmetric = symmetric;
-    return std::make_unique<petsc::LinearSolver>(
-        across, num_global, first, num_owned, entries(A), settings);
-  }
-  /// Solve A x = b for the unknowns of the system: @p rhs is this process's part of b (the
-  /// contributions of its elements), @p values holds the fixed values and a first guess
-  /// elsewhere, and receives the solution, with the values of the owners and of the dependent
-  /// unknowns.  With @p remove_mean the mean of b over the unknowns of the problem is removed
-  /// first, which makes a Neumann problem solvable when its discretization leaves a remainder.
-  int solve(const petsc::LinearSolver & solver,
-            const SparseMatrix & A,
-            Vector rhs,
-            Vector & values,
-            bool remove_mean) const
-  {
-    Vector prescribed = Vector::Zero(values.size());
-    forEachFixed([&](Index d) { prescribed[d] = values[d]; });
-    rhs -= A * prescribed;
-    problem.foldDependents(rhs, nullptr);
-    problem.parallel().addAtNodes(rhs.data(), nv);
-    if (remove_mean)
-    {
-      const std::vector<char> constrained = problem.constrainedDofs();
-      double total = 0.0, count = 0.0;
-      forEachOwned(
-          [&](Index d, Index)
-          {
-            if (!constrained[d])
-            {
-              total += rhs[d];
-              count += 1.0;
-            }
-          });
-      const double mean = problem.parallel().sum(total) / problem.parallel().sum(count);
-      for (Index d = 0; d < rhs.size(); ++d)
-        if (row(d) >= 0)
-          rhs[d] -= mean;
-    }
-    // A dependent or an inactive unknown is no unknown of the system: its row of the identity
-    // holds zero, so that it does not enter the norm of b, which the tolerance is relative to, and
-    // its value follows the solve.
-    const auto & active = problem.activeDofs();
-    Vector b(num_owned), guess(num_owned);
-    forEachOwned(
-        [&](Index d, Index r)
-        {
-          const bool none = problem.isDependent(d) || (!active.empty() && !active[d]);
-          b[r - first] = none ? 0.0 : fixed[d] ? values[d] : rhs[d];
-          guess[r - first] = none ? 0.0 : values[d];
-        });
-    petsc::Result result;
-    const Vector x = solver.solve(b, &guess, result);
-    if (problem.parallel().any(!result.converged))
-      throw std::runtime_error(
-          "dualmesh: a linear solve of the projection time integration did not "
-          "converge (" +
-          result.reason + ", " + std::to_string(result.iterations) + " iterations).");
-    forEachOwned([&](Index d, Index r) { values[d] = x[r - first]; });
-    problem.parallel().copyFromOwners(values.data(), nv);
-    problem.updateDependentDofs(values);
-    return result.iterations;
-  }
-  template <typename Visit> void forEachFixed(Visit && visit) const
-  {
-    for (Index d = 0; d < static_cast<Index>(fixed.size()); ++d)
-      if (fixed[d] && row(d) >= 0)
-        visit(d);
-  }
-
-  const Problem & problem;
-  std::vector<int> variables;
-  int nv = 0, width = 0;
-  /// The place of every variable of the problem in the system, or -1.
-  std::vector<int> slot;
-  /// The global number of every local node (-1: one that no process numbers), and whether this process owns it.
-  std::vector<Index> node;
-  std::vector<char> owned;
-  /// One flag per unknown of the problem.
-  std::vector<char> fixed;
-  Index first = 0, num_owned = 0, num_global = 0;
-  bool across = false;
-};
 
 /// The geometry of the quadrature points of every element of the flow, computed once for the right-hand sides of the steps: the weight (with the Jacobian and the coordinate factor), the position and the inverse transposed Jacobian at each point, and the shape functions and their reference derivatives once per element type, with those of its corners for a pressure of first order (the Taylor-Hood element).
 /// There are two sets of points: those of the element interiors (FEM) or of the control domains, which carry the node that owns them, and, for DMCDM, those of the interfaces between control domains, which carry their two nodes and their area vector.
@@ -453,19 +230,24 @@ ProjectionSolver::coefficients(const std::vector<double> & times,
   }
 }
 
+struct ProjectionSolver::Terms
+{
+  /// The time derivatives (M), and the terms with a flux (A and G), taken at the new time.
+  std::vector<const Kernel *> storage, implicit;
+};
+
 void
 ProjectionSolver::setUp()
 {
   _problem.initialize();
-  const Mesh & mesh = _problem.mesh();
   const int nv = _problem.numVariables();
-  const Kernel * constraint = _problem.flowConstraint();
+  const MassEquation * constraint = _problem.flowConstraint();
   if (!constraint)
     throw InputError("Projection: the projection time integration advances a flow with a "
                      "pressure, the variable of its mass_conservation equation, and this problem "
                      "has none (the penalty formulation eliminates the pressure).");
   _pressure = constraint->variable();
-  const FlowCoefficients flow = coefficientsAt(_problem, *constraint, mesh.node(0));
+  const FlowCoefficients flow = flowCoefficientsAt(_problem, *constraint, _problem.mesh().node(0));
   _velocity.assign(flow.velocities, flow.velocities + flow.num_velocities);
   _stabilized = flow.stabilized;
   if (nv != flow.num_velocities + 1)
@@ -476,7 +258,23 @@ ProjectionSolver::setUp()
     is_velocity[static_cast<std::size_t>(v)] = 1;
   is_pressure[static_cast<std::size_t>(_pressure)] = 1;
 
-  // ---- the terms of the momentum equations, by their roles ----------------------------------
+  const Terms terms = splitTerms(*constraint, is_velocity);
+  setDensity(*constraint, flow.time_density, terms);
+  setElementData(*constraint);
+  setBoundarySides();
+  assembleOperators(terms, is_velocity, is_pressure);
+  buildPoints();
+  const std::vector<char> constrained = _problem.constrainedDofs();
+  checkOpenBoundaries(constrained);
+  buildVelocityRows(constrained);
+  buildPressureSystem(constrained);
+  buildSourceSystem(constrained);
+  _ready = true;
+}
+
+ProjectionSolver::Terms
+ProjectionSolver::splitTerms(const MassEquation & constraint, const std::vector<char> & is_velocity)
+{
   const auto refuse = [](const ResidualObject & object)
   {
     throw InputError("Projection: '" + object.name() +
@@ -486,25 +284,26 @@ ProjectionSolver::setUp()
                      "prescribed velocity. Prescribe the velocity or the pressure on the "
                      "boundary, or use time_integration='monolithic'.");
   };
-  std::vector<const Kernel *> storage, implicit;
+  Terms terms;
   _sources.clear();
   _advection = false;
   for (const auto & k : _problem.kernels())
   {
     if (k->variable() == _pressure)
     {
-      if (k.get() != constraint)
+      if (k.get() != &constraint)
         refuse(*k);
       continue;
     }
     if (k->isTimeKernel())
-      storage.push_back(k.get());
+      terms.storage.push_back(k.get());
     else if (k->isStabilization())
       continue;
-    else if (k->isInertia())
+    else if (const auto * advection = dynamic_cast<const AdvectiveKernel *>(k.get());
+             advection && advection->isInertia())
       _advection = true;
     else if (k->hasFlux())
-      implicit.push_back(k.get());
+      terms.implicit.push_back(k.get());
     else
       _sources.push_back(k.get());
   }
@@ -512,24 +311,35 @@ ProjectionSolver::setUp()
     if (is_velocity[static_cast<std::size_t>(bc->variable())] ||
         (bc->variable() == _pressure && bc->type() != "mass_flux"))
       refuse(*bc);
+  return terms;
+}
 
-  // ---- the density and the viscosity ----------------------------------------------------------
+void
+ProjectionSolver::setDensity(const MassEquation & constraint, double density, const Terms & terms)
+{
   // The pressure equation divides the momentum equations by the density, so the fluid is one of
   // uniform density.
-  _density = flow.time_density;
+  const Mesh & mesh = _problem.mesh();
+  _density = density;
   for (Index i = 0; i < mesh.numNodes(); ++i)
   {
-    const FlowCoefficients c = coefficientsAt(_problem, *constraint, mesh.node(i));
+    const FlowCoefficients c = flowCoefficientsAt(_problem, constraint, mesh.node(i));
     const double scale = std::abs(_density);
-    if (std::abs(c.time_density - _density) > 1e-12 * scale ||
-        (_advection && std::abs(c.density - _density) > 1e-12 * scale))
+    if (std::abs(c.time_density - _density) > kUniformDensity * scale ||
+        (_advection && std::abs(c.density - _density) > kUniformDensity * scale))
       throw InputError("Projection: the projection time integration takes a fluid of one "
                        "uniform density, the coefficient of the time derivative and of the "
                        "advection of its velocity.");
   }
-  if (storage.empty() || !(_density > 0.0))
+  if (terms.storage.empty() || !(_density > 0.0))
     throw InputError("Projection: the projection time integration needs a positive density. A "
                      "flow without inertia (Stokes flow) has no time derivative to integrate.");
+}
+
+void
+ProjectionSolver::setElementData(const MassEquation & constraint)
+{
+  const Mesh & mesh = _problem.mesh();
   const Index elements = _problem.numIntegratedElements();
   const auto & blocks = _problem.variable(_velocity[0]).blocks;
   _in_flow.assign(static_cast<std::size_t>(elements), 0);
@@ -543,42 +353,63 @@ ProjectionSolver::setUp()
     Point centre{0, 0, 0};
     for (int a = 0; a < el.numNodes(); ++a)
       centre = centre + (1.0 / el.numNodes()) * mesh.node(el.nodes[a]);
-    _viscosity[e] = coefficientsAt(_problem, *constraint, centre).viscosity / _density;
+    _viscosity[e] = flowCoefficientsAt(_problem, constraint, centre, e).viscosity / _density;
   }
+}
+
+void
+ProjectionSolver::setBoundarySides()
+{
+  const Index elements = static_cast<Index>(_in_flow.size());
   std::set<std::pair<Index, int>> sides;
-  for (const auto & [name, list] : mesh.sidesets())
+  for (const auto & [name, list] : _problem.mesh().sidesets())
     for (const Side & side : list)
       if (side.first < elements && _in_flow[side.first])
         sides.insert({side.first, side.second});
   _boundary_sides.assign(sides.begin(), sides.end());
+}
 
-  // ---- the operators, from the problem's assembly -----------------------------------------
-  _mass = block(_problem, operatorOf(_problem, storage), is_velocity, is_velocity);
-  const SparseMatrix terms = operatorOf(_problem, implicit);
-  _viscous = block(_problem, terms, is_velocity, is_velocity);
-  _gradient = block(_problem, terms, is_velocity, is_pressure);
-  const auto laplacian = privateObject<Kernel>(_problem,
-                                               "diffusion",
-                                               "projection_pressure_laplacian",
-                                               {{"variable", _problem.variable(_pressure).name}});
-  _laplacian = operatorOf(_problem, {laplacian.get()});
+void
+ProjectionSolver::assembleOperators(const Terms & terms,
+                                    const std::vector<char> & is_velocity,
+                                    const std::vector<char> & is_pressure)
+{
+  Problem::OperatorOptions at_rest;
+  at_rest.kernels = terms.storage;
+  _mass = projection::block(_problem, _problem.operatorOf(at_rest), is_velocity, is_velocity);
+  at_rest.kernels = terms.implicit;
+  const SparseMatrix implicit = _problem.operatorOf(at_rest);
+  _viscous = projection::block(_problem, implicit, is_velocity, is_velocity);
+  _gradient = projection::block(_problem, implicit, is_velocity, is_pressure);
+  const auto laplacian =
+      projection::privateObject<Kernel>(_problem,
+                                        "diffusion",
+                                        "projection_pressure_laplacian",
+                                        {{"variable", _problem.variable(_pressure).name}});
+  at_rest.kernels = std::vector<const Kernel *>{laplacian.get()};
+  _laplacian = _problem.operatorOf(at_rest);
   _helmholtz = _viscous + _mass;
   _helmholtz.makeCompressed();
   _helmholtz_c = -1.0;
+}
 
-  // ---- the points of the right-hand sides --------------------------------------------------------
+void
+ProjectionSolver::buildPoints()
+{
   _points = std::make_unique<Points>();
   const auto corners = [&](const Element & el) { return _problem.usesCornerShape(el, _pressure); };
   _points->volume.build(_problem, _in_flow, PointSet::Volume, corners);
   if (_problem.isDual())
     _points->faces.build(_problem, _in_flow, PointSet::Faces, corners);
+}
 
-  // ---- the systems ------------------------------------------------------------------------------
-  const std::vector<char> constrained = _problem.constrainedDofs();
-  const auto & active = _problem.activeDofs();
-  const bool dual = _problem.isDual();
+void
+ProjectionSolver::checkOpenBoundaries(const std::vector<char> & constrained) const
+{
   // A boundary without a prescribed velocity, open to the outside, takes the pressure from the
   // traction there, which the pressure equation needs as its condition on that boundary.
+  const Mesh & mesh = _problem.mesh();
+  const Index elements = static_cast<Index>(_in_flow.size());
   std::set<std::string> periodic;
   for (const auto & constraint_object : _problem.constraints())
     if (constraint_object->type() == "periodic")
@@ -606,6 +437,12 @@ ProjectionSolver::setUp()
       }
     }
   }
+}
+
+void
+ProjectionSolver::buildVelocityRows(const std::vector<char> & constrained)
+{
+  const int nv = _problem.numVariables();
   bool coupled = false;
   for (Index col = 0; col < _viscous.outerSize() && !coupled; ++col)
     for (SparseMatrix::InnerIterator it(_viscous, col); it; ++it)
@@ -617,10 +454,18 @@ ProjectionSolver::setUp()
   else
     for (int v : _velocity)
       _velocity_rows.push_back(std::make_unique<Rows>(_problem, std::vector<int>{v}, constrained));
+  // The solvers follow at the first step, with the Helmholtz matrix of its step size.
+  _velocity_solvers.clear();
+}
+
+void
+ProjectionSolver::buildPressureSystem(const std::vector<char> & constrained)
+{
   // An enclosed flow, whose pressure no condition gives, determines it up to a constant: the
   // constant is fixed at the free unknown of the smallest row, after the right-hand side is made
   // compatible, and the pressure is then shifted to a mean of zero, as the monolithic solve
   // reports it.
+  const auto & active = _problem.activeDofs();
   std::vector<char> pressure_fixed = constrained;
   _pressure_rows = std::make_unique<Rows>(_problem, std::vector<int>{_pressure}, constrained);
   bool given = false;
@@ -646,35 +491,43 @@ ProjectionSolver::setUp()
     _pressure_weight = _problem.nodeWeights(_pressure);
     _problem.parallel().addAtNodes(_pressure_weight.data(), 1);
     double total = 0.0;
-    for (Index i = 0; i < mesh.numNodes(); ++i)
+    for (Index i = 0; i < _problem.mesh().numNodes(); ++i)
       if (_pressure_rows->owned[i])
         total += _pressure_weight[i];
     _total_weight = _problem.parallel().sum(total);
   }
-  const std::string krylov = dual ? "-ksp_type gmres" : "-ksp_type cg";
-  _pressure_solver = _pressure_rows->makeSolver(
-      _laplacian,
-      _settings.pressure_solver.empty() ? krylov + " -pc_type hypre -pc_hypre_type boomeramg"
-                                        : _settings.pressure_solver,
-      _settings.pressure_tolerance,
-      !dual,
-      _settings.pressure_projection_vectors);
-  _velocity_solvers.clear();
+  _pressure_solver =
+      _pressure_rows->makeSolver(_laplacian,
+                                 krylovOption() + " -pc_type hypre -pc_hypre_type boomeramg",
+                                 _settings.pressure_tolerance,
+                                 !_problem.isDual(),
+                                 _settings.pressure_projection_vectors);
+}
+
+void
+ProjectionSolver::buildSourceSystem(const std::vector<char> & constrained)
+{
   // The sources per unit mass are the L2 projection of their residual onto the velocity, a
   // solve with the mass matrix whose rows only the dependent and inactive unknowns fix.  A source
   // that does not change is projected once, so the solve goes to round-off, below the
   // tolerances of the steps.
+  const auto & active = _problem.activeDofs();
   _source_solver.reset();
   _source_residual.resize(0);
-  if (!_sources.empty())
-  {
-    std::vector<char> free_fixed(constrained.size(), 0);
-    for (Index d = 0; d < _problem.numDofs(); ++d)
-      free_fixed[d] = _problem.isDependent(d) || (!active.empty() && !active[d]) ? 1 : 0;
-    _source_rows = std::make_unique<Rows>(_problem, _velocity, free_fixed);
-    _source_solver = _source_rows->makeSolver(_mass, krylov + " -pc_type jacobi", 1e-14, !dual);
-  }
-  _ready = true;
+  if (_sources.empty())
+    return;
+  std::vector<char> free_fixed(constrained.size(), 0);
+  for (Index d = 0; d < _problem.numDofs(); ++d)
+    free_fixed[d] = _problem.isDependent(d) || (!active.empty() && !active[d]) ? 1 : 0;
+  _source_rows = std::make_unique<Rows>(_problem, _velocity, free_fixed);
+  _source_solver = _source_rows->makeSolver(
+      _mass, krylovOption() + " -pc_type jacobi", kSourceTolerance, !_problem.isDual());
+}
+
+std::string
+ProjectionSolver::krylovOption() const
+{
+  return _problem.isDual() ? "-ksp_type gmres" : "-ksp_type cg";
 }
 
 void
@@ -714,29 +567,59 @@ ProjectionSolver::start(const Vector & solution, double time)
 }
 
 double
+ProjectionSolver::elementTau(Index e, double speed2) const
+{
+  return stabilizationTau(_element_size[e], speed2, _viscosity[e], 0.0);
+}
+
+double
+ProjectionSolver::largestNodalSpeed2(Index e, const Vector & solution) const
+{
+  const Element & el = _problem.mesh().element(e);
+  double speed2 = 0;
+  for (int a = 0; a < el.numNodes(); ++a)
+  {
+    double s2 = 0;
+    for (int v : _velocity)
+    {
+      const double u = solution[_problem.dof(el.nodes[a], v)];
+      s2 += u * u;
+    }
+    speed2 = std::max(speed2, s2);
+  }
+  return speed2;
+}
+
+double
 ProjectionSolver::courantNumber(const Vector & solution, double dt) const
 {
-  const Mesh & mesh = _problem.mesh();
   double largest = 0;
   for (Index e = 0; e < static_cast<Index>(_in_flow.size()); ++e)
-  {
-    if (!_in_flow[e])
-      continue;
-    const Element & el = mesh.element(e);
-    double speed2 = 0;
-    for (int a = 0; a < el.numNodes(); ++a)
-    {
-      double s2 = 0;
-      for (int v : _velocity)
-      {
-        const double u = solution[_problem.dof(el.nodes[a], v)];
-        s2 += u * u;
-      }
-      speed2 = std::max(speed2, s2);
-    }
-    largest = std::max(largest, std::sqrt(speed2) / _element_size[e]);
-  }
+    if (_in_flow[e])
+      largest = std::max(largest, std::sqrt(largestNodalSpeed2(e, solution)) / _element_size[e]);
   return dt * _problem.parallel().maximum(largest);
+}
+
+double
+ProjectionSolver::largestStep(const Vector & solution) const
+{
+  if (!_stabilized)
+    return std::numeric_limits<double>::infinity();
+  // The pressure equation weighs the divergence by min(beta_0 / dt, 1 / tau), with tau at the
+  // speed of each point.  The largest nodal speed of an element gives its smallest tau.
+  double smallest = std::numeric_limits<double>::infinity();
+  for (Index e = 0; e < static_cast<Index>(_in_flow.size()); ++e)
+    if (_in_flow[e])
+      smallest = std::min(smallest, elementTau(e, largestNodalSpeed2(e, solution)));
+  // The next step starts from the accepted states and takes the order k of step(): 1 in the
+  // first step, then one more per accepted state up to the order of the settings.  Its beta_0 is
+  // that of a constant step, 1 + 1/2 + ... + 1/k.
+  const int k = stepOrder(_history.size());
+  std::vector<double> times, beta, alpha;
+  for (int j = 0; j <= k; ++j)
+    times.push_back(-static_cast<double>(j));
+  coefficients(times, beta, alpha);
+  return beta[0] * _problem.parallel().minimum(smallest);
 }
 
 void
@@ -784,215 +667,288 @@ ProjectionSolver::predict(double dt, Vector & predicted, double & factor) const
   return true;
 }
 
+std::vector<double>
+ProjectionSolver::controlDomainWeights(const Vector & extrapolated, double c) const
+{
+  // DMCDM weighs the divergence of each control domain as the flux through its sides, so its
+  // weight is one value per control domain: that is what leaves a velocity without divergence
+  // without weighted divergence.  It is min(c, 1 / tau) with 1 / tau averaged over the control
+  // domain at the velocity of its node.  The two integrals of the average add over the processes,
+  // so every process gives a node the same weight.
+  std::vector<double> node_weight(static_cast<std::size_t>(_problem.mesh().numNodes()), c);
+  if (!_stabilized)
+    return node_weight;
+  const Points & geo = *_points;
+  std::vector<double> inverse_tau(node_weight.size(), 0.0), measure(node_weight.size(), 0.0);
+  for (Index e = 0; e < static_cast<Index>(_in_flow.size()); ++e)
+  {
+    if (!_in_flow[e])
+      continue;
+    for (int q = 0; q < geo.volume.count(e); ++q)
+    {
+      const Index point = geo.volume.first[e] + q;
+      const auto n = static_cast<std::size_t>(geo.volume.owner[point]);
+      double speed2 = 0;
+      for (int v : _velocity)
+      {
+        const double u = extrapolated[_problem.dof(static_cast<Index>(n), v)];
+        speed2 += u * u;
+      }
+      const double w = geo.volume.weight[point];
+      inverse_tau[n] += w / elementTau(e, speed2);
+      measure[n] += w;
+    }
+  }
+  _problem.parallel().addAtNodes(inverse_tau.data(), 1);
+  _problem.parallel().addAtNodes(measure.data(), 1);
+  for (std::size_t n = 0; n < node_weight.size(); ++n)
+    if (measure[n] > 0)
+      node_weight[n] = std::min(c, inverse_tau[n] / measure[n]);
+  return node_weight;
+}
+struct ProjectionSolver::StepData
+{
+  /// The levels of the step, the latest first, and its order k.
+  std::vector<const std::pair<double, Vector> *> levels;
+  int k = 0;
+  /// The step size, the coefficients beta_j and alpha_j, and c = beta_0 / dt.
+  double dt = 0.0, c = 0.0;
+  std::vector<double> beta, alpha;
+  /// The extrapolated solution, with the values prescribed at the new time: the boundary velocity
+  /// of the pressure equation, the velocity of the sources and the first guess of the solves.
+  Vector extrapolated;
+  /// Whether the momentum equations have sources (_source).
+  bool with_source = false;
+  /// DMCDM: the weight of the divergence of each control domain (controlDomainWeights).
+  std::vector<double> node_weight;
+};
+
+struct ProjectionSolver::Scratch
+{
+  std::vector<IntegrationPoint> points;
+  MappedPoint mp;
+  /// The velocity of the steps before, and its gradient, at one point: [level][component] and
+  /// [level][component][direction].
+  double u[3][3], grad[3][3][3];
+  /// The right-hand sides that this thread adds into.
+  Vector pressure_rhs, advection_rhs;
+};
+
+struct ProjectionSolver::RightHandSides
+{
+  Vector pressure, advection;
+};
+
 SolveResult
 ProjectionSolver::step(
-    Vector & solution, const Vector & old, double time, double dt, bool continues)
+    Vector & solution, const Vector & /* old */, double time, double dt, bool continues)
 {
-  const Mesh & mesh = _problem.mesh();
-  const bool dual = _problem.isDual();
-  const int dim = static_cast<int>(_velocity.size());
-  const double rho = _density;
+  StepData s = stepData(time, dt, continues);
+  updateHelmholtz(s.c);
+  s.extrapolated = extrapolate(s, time, solution.size());
+  sources(s.extrapolated, time);
+  s.with_source = _source.size() > 0;
+  if (_problem.isDual())
+    s.node_weight = controlDomainWeights(s.extrapolated, s.c);
+  RightHandSides rhs = assembleRightHandSides(s, solution.size());
+  addBoundaryTerms(s, rhs.pressure);
+  const Vector P = solvePressure(s, rhs.pressure);
+  solveVelocity(s, rhs.advection, P, solution);
+  _trial = {time, solution};
+
+  SolveResult result;
+  result.converged = true;
+  result.total_iterations = 1;
+  result.linear_iterations = _pressure_iterations + _velocity_iterations;
+  return result;
+}
+
+ProjectionSolver::StepData
+ProjectionSolver::stepData(double time, double dt, bool continues) const
+{
   // The levels of the step: the accepted states, after the state of the step just taken when
-  // this step continues it (the second half of a doubled step).  The newest is @p old.
-  (void) old;
-  std::vector<const std::pair<double, Vector> *> levels;
+  // this step continues it (the second half of a doubled step).  The solver keeps these states
+  // with their times, which the coefficients of a variable step need, so its newest level holds
+  // the state that the interface passes as old, and that argument is not read.
+  StepData s;
   if (continues)
-    levels.push_back(&_trial);
+    s.levels.push_back(&_trial);
   for (const auto & level : _history)
-    levels.push_back(&level);
-  const int k = std::min<int>(_settings.order, static_cast<int>(levels.size()));
+    s.levels.push_back(&level);
+  s.k = stepOrder(s.levels.size());
   std::vector<double> times{time};
-  for (int j = 0; j < k; ++j)
-    times.push_back(levels[static_cast<std::size_t>(j)]->first);
-  if (std::abs((times[0] - times[1]) - dt) > 1e-9 * dt)
+  for (int j = 0; j < s.k; ++j)
+    times.push_back(s.levels[static_cast<std::size_t>(j)]->first);
+  if (std::abs((times[0] - times[1]) - dt) > kSameStep * dt)
     throw std::logic_error(
         "Projection: a step starts from the last accepted solution or from the step just taken.");
-  std::vector<double> beta, alpha;
-  coefficients(times, beta, alpha);
+  coefficients(times, s.beta, s.alpha);
+  s.dt = dt;
+  s.c = s.beta[0] / dt;
+  return s;
+}
 
+void
+ProjectionSolver::updateHelmholtz(double c)
+{
   // The Helmholtz matrix changes with beta_0 / dt: in the first steps, at a step shortened to land on an output time, and at every step of the cfl stepper.
   // Its structure does not, so the solver is made once and later given the new values.
-  const double c = beta[0] / dt;
   // A step of the same size gives the same coefficient up to the rounding of the times, which must not touch the solver.
-  if (std::abs(c - _helmholtz_c) > 1e-9 * std::abs(c))
-  {
-    _helmholtz = c * _mass + _viscous;
-    _helmholtz.makeCompressed();
-    for (std::size_t i = 0; i < _velocity_rows.size(); ++i)
-      if (_velocity_solvers.size() <= i)
-        _velocity_solvers.push_back(_velocity_rows[i]->makeSolver(
-            _helmholtz,
-            _settings.velocity_solver.empty()
-                ? std::string(dual ? "-ksp_type gmres" : "-ksp_type cg") + " -pc_type jacobi"
-                : _settings.velocity_solver,
-            _settings.velocity_tolerance,
-            !dual));
-      else
-      {
-        std::vector<double> values;
-        for (const auto & entry : _velocity_rows[i]->entries(_helmholtz))
-          values.push_back(entry.value);
-        _velocity_solvers[i]->setValues(values);
-      }
-    _helmholtz_c = c;
-  }
+  if (!(std::abs(c - _helmholtz_c) > kSameStep * std::abs(c)))
+    return;
+  _helmholtz = c * _mass + _viscous;
+  _helmholtz.makeCompressed();
+  for (std::size_t i = 0; i < _velocity_rows.size(); ++i)
+    if (_velocity_solvers.size() <= i)
+      _velocity_solvers.push_back(_velocity_rows[i]->makeSolver(_helmholtz,
+                                                                krylovOption() + " -pc_type jacobi",
+                                                                _settings.velocity_tolerance,
+                                                                !_problem.isDual()));
+    else
+    {
+      std::vector<double> values;
+      for (const auto & entry : _velocity_rows[i]->entries(_helmholtz))
+        values.push_back(entry.value);
+      _velocity_solvers[i]->setValues(values);
+    }
+  _helmholtz_c = c;
+}
 
-  // The extrapolated solution, with the values prescribed at the new time: the boundary velocity of the pressure equation, the velocity of the sources and the first guess of the solves.
-  Vector extrapolated = Vector::Zero(solution.size());
-  for (int j = 1; j <= k; ++j)
-    extrapolated += alpha[j] * levels[static_cast<std::size_t>(j - 1)]->second;
+Vector
+ProjectionSolver::extrapolate(const StepData & s, double time, Index size)
+{
+  Vector extrapolated = Vector::Zero(size);
+  for (int j = 1; j <= s.k; ++j)
+    extrapolated += s.alpha[j] * s.levels[static_cast<std::size_t>(j - 1)]->second;
   _problem.setTime(time);
   _problem.applyDirichlet(extrapolated, 1.0);
-  sources(extrapolated, time);
-  const bool with_source = _source.size() > 0;
+  return extrapolated;
+}
 
-  // ---- the right-hand sides: (grad q, u*) / dt for the pressure and the advection for the velocity ----
-  QuadratureSpec spec;
-  spec.points =
-      mesh.numElements() > 0 && ReferenceElement::get(mesh.element(0).type).order() > 1 ? 4 : 3;
-  // The velocity of the steps before, and its gradient, at one point: [level][component] and [level][component][direction].
-  struct Scratch
+void
+ProjectionSolver::evaluateLevels(const Element & el, const StepData & s, Scratch & sc) const
+{
+  const int dim = static_cast<int>(_velocity.size());
+  for (int j = 0; j < s.k; ++j)
   {
-    std::vector<IntegrationPoint> points;
-    MappedPoint mp;
-    double u[3][3], grad[3][3][3];
-    Vector pressure_rhs, advection_rhs;
-  };
-  const auto evaluate = [&](const Element & el, Scratch & sc)
-  {
-    for (int j = 0; j < k; ++j)
-    {
-      const Vector & U = levels[static_cast<std::size_t>(j)]->second;
-      for (int d = 0; d < 3; ++d)
-      {
-        sc.u[j][d] = 0;
-        for (int m = 0; m < 3; ++m)
-          sc.grad[j][d][m] = 0;
-      }
-      for (int a = 0; a < el.numNodes(); ++a)
-        for (int d = 0; d < dim; ++d)
-        {
-          const double value = U[_problem.dof(el.nodes[a], _velocity[d])];
-          sc.u[j][d] += sc.mp.N[a] * value;
-          for (int m = 0; m < dim; ++m)
-            sc.grad[j][d][m] += sc.mp.dN[a][m] * value;
-        }
-    }
-  };
-  // The extrapolated advection (sum_j alpha_j (u^{n-j} . grad) u^{n-j}) and u* at the point of sc.mp.
-  const auto computeStar =
-      [&](const Element & el, const Scratch & sc, double advection[3], double star[3])
-  {
+    const Vector & U = s.levels[static_cast<std::size_t>(j)]->second;
     for (int d = 0; d < 3; ++d)
-      advection[d] = star[d] = 0;
-    for (int d = 0; d < dim; ++d)
     {
-      for (int j = 1; j <= k; ++j)
-      {
-        double carried = 0;
-        if (_advection)
-          for (int m = 0; m < dim; ++m)
-            carried += sc.u[j - 1][m] * sc.grad[j - 1][d][m];
-        advection[d] += alpha[j] * carried;
-        star[d] -= beta[j] * sc.u[j - 1][d];
-      }
-      star[d] -= dt * advection[d];
-      if (with_source)
-        for (int a = 0; a < el.numNodes(); ++a)
-          star[d] += dt * sc.mp.N[a] * _source[_problem.dof(el.nodes[a], _velocity[d])];
+      sc.u[j][d] = 0;
+      for (int m = 0; m < 3; ++m)
+        sc.grad[j][d][m] = 0;
     }
-  };
-  const Points & geo = *_points;
+    for (int a = 0; a < el.numNodes(); ++a)
+      for (int d = 0; d < dim; ++d)
+      {
+        const double value = U[_problem.dof(el.nodes[a], _velocity[d])];
+        sc.u[j][d] += sc.mp.N[a] * value;
+        for (int m = 0; m < dim; ++m)
+          sc.grad[j][d][m] += sc.mp.dN[a][m] * value;
+      }
+  }
+}
+
+void
+ProjectionSolver::explicitTerms(const Element & el,
+                                const StepData & s,
+                                const Scratch & sc,
+                                double advection[3],
+                                double star[3]) const
+{
+  const int dim = static_cast<int>(_velocity.size());
+  for (int d = 0; d < 3; ++d)
+    advection[d] = star[d] = 0;
+  for (int d = 0; d < dim; ++d)
+  {
+    for (int j = 1; j <= s.k; ++j)
+    {
+      double carried = 0;
+      if (_advection)
+        for (int m = 0; m < dim; ++m)
+          carried += sc.u[j - 1][m] * sc.grad[j - 1][d][m];
+      advection[d] += s.alpha[j] * carried;
+      star[d] -= s.beta[j] * sc.u[j - 1][d];
+    }
+    star[d] -= s.dt * advection[d];
+    if (s.with_source)
+      for (int a = 0; a < el.numNodes(); ++a)
+        star[d] += s.dt * sc.mp.N[a] * _source[_problem.dof(el.nodes[a], _velocity[d])];
+  }
+}
+
+double
+ProjectionSolver::divergenceWeight(Index e,
+                                   const Element & el,
+                                   const MappedPoint & mp,
+                                   const StepData & s) const
+{
+  // The splitting weighs the divergence of the velocity in the pressure equation by beta_0 / dt, as a pressure stabilization of parameter dt / beta_0 would.
+  // That parameter vanishes with the step, and equal-order elements then lose their pressure stability, so the weight is capped at 1 / tau, with the parameter tau of Tezduyar (1991) of the monolithic solver without its time term (stabilizationTau): the scheme is unchanged where dt / beta_0 exceeds tau, and tends to the stabilized monolithic discretization as dt goes to zero.
+  // The Taylor-Hood element is stable without it and keeps beta_0 / dt.  The weight at a point takes the extrapolated velocity there.
+  if (!_stabilized)
+    return s.c;
+  double u[3];
+  extrapolatedVelocity(el, mp, s, u);
+  double speed2 = 0;
+  for (int d = 0; d < static_cast<int>(_velocity.size()); ++d)
+    speed2 += u[d] * u[d];
+  return std::min(s.c, 1.0 / elementTau(e, speed2));
+}
+
+void
+ProjectionSolver::extrapolatedVelocity(const Element & el,
+                                       const MappedPoint & mp,
+                                       const StepData & s,
+                                       double u[3]) const
+{
+  const int dim = static_cast<int>(_velocity.size());
+  for (int d = 0; d < 3; ++d)
+    u[d] = 0;
+  for (int d = 0; d < dim; ++d)
+    for (int a = 0; a < el.numNodes(); ++a)
+      u[d] += mp.N[a] * s.extrapolated[_problem.dof(el.nodes[a], _velocity[d])];
+}
+
+void
+ProjectionSolver::extrapolatedVorticity(const StepData & s,
+                                        const Scratch & sc,
+                                        double omega[3]) const
+{
+  for (int d = 0; d < 3; ++d)
+    omega[d] = 0;
+  for (int j = 1; j <= s.k; ++j)
+  {
+    const auto & g = sc.grad[j - 1];
+    omega[0] += s.alpha[j] * (g[2][1] - g[1][2]);
+    omega[1] += s.alpha[j] * (g[0][2] - g[2][0]);
+    omega[2] += s.alpha[j] * (g[1][0] - g[0][1]);
+  }
+}
+
+ProjectionSolver::RightHandSides
+ProjectionSolver::assembleRightHandSides(const StepData & s, Index size) const
+{
+  // (grad q, u*) / dt for the pressure and the advection for the velocity.  Every thread adds
+  // into vectors of its own.
+  const Mesh & mesh = _problem.mesh();
+  const bool dual = _problem.isDual();
+  const int threads = _problem.effectiveThreads();
+  std::vector<Scratch> scratch(static_cast<std::size_t>(threads));
+  for (auto & sc : scratch)
+  {
+    sc.pressure_rhs = Vector::Zero(size);
+    sc.advection_rhs = Vector::Zero(size);
+  }
   const auto element = [&](Index e, Scratch & sc)
   {
     if (!_in_flow[e])
       return;
     const Element & el = mesh.element(e);
-    const double h = _element_size[e], nu = _viscosity[e];
-    const bool corner = _problem.usesCornerShape(el, _pressure);
-    MappedPoint & mp = sc.mp;
-    for (int q = 0; q < geo.volume.count(e); ++q)
-    {
-      geo.volume.at(el, e, q, mp);
-      const Index point = geo.volume.first[e] + q;
-      const double w = geo.volume.weight[point];
-      evaluate(el, sc);
-      // The splitting weighs the divergence of the velocity in the pressure equation by beta_0 / dt, as a pressure stabilization of parameter dt / beta_0 would.
-      // That parameter vanishes with the step, and equal-order elements then lose their pressure stability, so the weight is capped at 1 / tau, with the parameter tau of Tezduyar (1991) of the monolithic solver without its time term (stabilizationTau): the scheme is unchanged where dt / beta_0 exceeds tau, and tends to the stabilized monolithic discretization as dt goes to zero.
-      // The Taylor-Hood element is stable without it and keeps beta_0 / dt.
-      // The weighted divergence is that of the combination - sum_j beta_j u^{n-j} / beta_0 of the steps before, which enters the pressure equation through u*.
-      const double hoop = hoopFactor(_problem, mp.x);
-      double speed2 = 0, divergence = 0;
-      for (int d = 0; d < dim; ++d)
-      {
-        double value = 0;
-        for (int a = 0; a < el.numNodes(); ++a)
-          value += mp.N[a] * extrapolated[_problem.dof(el.nodes[a], _velocity[d])];
-        speed2 += value * value;
-        for (int j = 1; j <= k; ++j)
-          divergence -=
-              beta[j] / beta[0] * (sc.grad[j - 1][d][d] + (d == 0 ? hoop * sc.u[j - 1][0] : 0.0));
-      }
-      const double weight =
-          _stabilized ? std::min(c, 1.0 / stabilizationTau(h, speed2, nu, 0.0)) : c;
-      double advection[3], star[3];
-      computeStar(el, sc, advection, star);
-      if (dual)
-      {
-        // The integral over the control domain of the node that owns the point.
-        // The part c of the weighted divergence is the flux out of the control domain (below), as the term (grad q, u*) / dt is, so that the two cancel where the velocity of the steps before has no divergence of its own, also where the velocity is not continuous across the sides of a cell with hanging nodes.
-        const Index o = geo.volume.owner[point];
-        for (int d = 0; d < dim; ++d)
-          sc.advection_rhs[_problem.dof(o, _velocity[d])] += w * rho * advection[d];
-        sc.pressure_rhs[_problem.dof(o, _pressure)] -= w * weight * divergence;
-        continue;
-      }
-      for (int a = 0; a < el.numNodes(); ++a)
-        for (int d = 0; d < dim; ++d)
-          sc.advection_rhs[_problem.dof(el.nodes[a], _velocity[d])] +=
-              w * rho * mp.N[a] * advection[d];
-      const int tests = corner ? el.numCorners() : el.numNodes();
-      for (int a = 0; a < tests; ++a)
-      {
-        const double test = corner ? mp.corner_shape[a] : mp.N[a];
-        const Point & gradient = corner ? mp.corner_gradient[a] : mp.dN[a];
-        double flux = 0;
-        for (int d = 0; d < dim; ++d)
-          flux += gradient[d] * star[d];
-        sc.pressure_rhs[_problem.dof(el.nodes[a], _pressure)] +=
-            w * (flux / dt + (c - weight) * test * divergence);
-      }
-    }
-    if (!dual)
-      return;
-    // (grad q, u*) / dt of a control domain is - the flux of u* / dt out of it.
-    for (int q = 0; q < geo.faces.count(e); ++q)
-    {
-      geo.faces.at(el, e, q, mp);
-      const Index point = geo.faces.first[e] + q;
-      evaluate(el, sc);
-      double advection[3], star[3];
-      computeStar(el, sc, advection, star);
-      const Point & a = geo.faces.area[point];
-      double flux = 0;
-      for (int d = 0; d < dim; ++d)
-      {
-        flux += star[d] * a[d];
-        for (int j = 1; j <= k; ++j)
-          flux += dt * c * beta[j] / beta[0] * sc.u[j - 1][d] * a[d];
-      }
-      sc.pressure_rhs[_problem.dof(geo.faces.owner[point], _pressure)] -= flux / dt;
-      sc.pressure_rhs[_problem.dof(geo.faces.neighbor[point], _pressure)] += flux / dt;
-    }
+    addVolumeTerms(e, el, s, sc);
+    if (dual)
+      addInterfaceTerms(e, el, s, sc);
   };
-  // Every thread adds into vectors of its own.
-  const int threads = _problem.effectiveThreads();
-  std::vector<Scratch> scratch(static_cast<std::size_t>(threads));
-  for (auto & sc : scratch)
-  {
-    sc.pressure_rhs = Vector::Zero(solution.size());
-    sc.advection_rhs = Vector::Zero(solution.size());
-  }
   const Index elements = static_cast<Index>(_in_flow.size());
   std::string failure;
 #ifdef _OPENMP
@@ -1019,16 +975,126 @@ ProjectionSolver::step(
   }
   if (!failure.empty())
     throw std::runtime_error(failure);
-  Vector pressure_rhs = std::move(scratch[0].pressure_rhs);
-  Vector advection_rhs = std::move(scratch[0].advection_rhs);
+  RightHandSides rhs;
+  rhs.pressure = std::move(scratch[0].pressure_rhs);
+  rhs.advection = std::move(scratch[0].advection_rhs);
   for (std::size_t t = 1; t < scratch.size(); ++t)
   {
-    pressure_rhs += scratch[t].pressure_rhs;
-    advection_rhs += scratch[t].advection_rhs;
+    rhs.pressure += scratch[t].pressure_rhs;
+    rhs.advection += scratch[t].advection_rhs;
   }
+  return rhs;
+}
 
-  // ---- the boundary terms of the pressure equation -----------------------------------------
+void
+ProjectionSolver::addVolumeTerms(Index e,
+                                 const Element & el,
+                                 const StepData & s,
+                                 Scratch & sc) const
+{
+  const bool dual = _problem.isDual();
+  const int dim = static_cast<int>(_velocity.size());
+  const double rho = _density;
+  const std::vector<double> & beta = s.beta;
+  const double c = s.c;
+  const Points & geo = *_points;
+  const bool corner = _problem.usesCornerShape(el, _pressure);
+  MappedPoint & mp = sc.mp;
+  for (int q = 0; q < geo.volume.count(e); ++q)
+  {
+    geo.volume.at(el, e, q, mp);
+    const Index point = geo.volume.first[e] + q;
+    const double w = geo.volume.weight[point];
+    evaluateLevels(el, s, sc);
+    double advection[3], star[3];
+    explicitTerms(el, s, sc, advection, star);
+    if (dual)
+    {
+      // The integral over the control domain of the node that owns the point.  Its weighted
+      // divergence is a flux through the sides of the control domain (addInterfaceTerms).
+      const Index o = geo.volume.owner[point];
+      for (int d = 0; d < dim; ++d)
+        sc.advection_rhs[_problem.dof(o, _velocity[d])] += w * rho * advection[d];
+      continue;
+    }
+    // The weighted divergence is that of the combination - sum_j beta_j u^{n-j} / beta_0 of the
+    // steps before, which enters the pressure equation through u* with the weight c: the part
+    // c - weight comes off.
+    // The hoop term n u_r / r of the divergence, with n the hoop factor, as its factor n / r.
+    const double hoop = hoopOverRadius(_problem.coordinateSystem(), mp.x[0]);
+    double divergence = 0;
+    for (int d = 0; d < dim; ++d)
+      for (int j = 1; j <= s.k; ++j)
+        divergence -=
+            beta[j] / beta[0] * (sc.grad[j - 1][d][d] + (d == 0 ? hoop * sc.u[j - 1][0] : 0.0));
+    const double weight = divergenceWeight(e, el, mp, s);
+    for (int a = 0; a < el.numNodes(); ++a)
+      for (int d = 0; d < dim; ++d)
+        sc.advection_rhs[_problem.dof(el.nodes[a], _velocity[d])] +=
+            w * rho * mp.N[a] * advection[d];
+    const int tests = corner ? el.numCorners() : el.numNodes();
+    for (int a = 0; a < tests; ++a)
+    {
+      const double test = corner ? mp.corner_shape[a] : mp.N[a];
+      const Point & gradient = corner ? mp.corner_gradient[a] : mp.dN[a];
+      double flux = 0;
+      for (int d = 0; d < dim; ++d)
+        flux += gradient[d] * star[d];
+      sc.pressure_rhs[_problem.dof(el.nodes[a], _pressure)] +=
+          w * (flux / s.dt + (c - weight) * test * divergence);
+    }
+  }
+}
+
+void
+ProjectionSolver::addInterfaceTerms(Index e,
+                                    const Element & el,
+                                    const StepData & s,
+                                    Scratch & sc) const
+{
+  // (grad q, u*) / dt of a control domain is - the flux of u* / dt out of it.  The velocity of
+  // the steps before enters u* with the weight c of its divergence, of which the part c - weight
+  // of the control domain comes off: the weighted divergence is the flux through the same sides
+  // as that of u*.
+  const int dim = static_cast<int>(_velocity.size());
+  const std::vector<double> & beta = s.beta;
+  const double c = s.c;
+  const Points & geo = *_points;
+  for (int q = 0; q < geo.faces.count(e); ++q)
+  {
+    geo.faces.at(el, e, q, sc.mp);
+    const Index point = geo.faces.first[e] + q;
+    evaluateLevels(el, s, sc);
+    double advection[3], star[3];
+    explicitTerms(el, s, sc, advection, star);
+    const Point & a = geo.faces.area[point];
+    double flux = 0, old = 0;
+    for (int d = 0; d < dim; ++d)
+    {
+      flux += star[d] * a[d];
+      for (int j = 1; j <= s.k; ++j)
+        old += beta[j] / beta[0] * sc.u[j - 1][d] * a[d];
+    }
+    const Index owner = geo.faces.owner[point], neighbor = geo.faces.neighbor[point];
+    const auto part = [&](Index n) { return c - s.node_weight[static_cast<std::size_t>(n)]; };
+    sc.pressure_rhs[_problem.dof(owner, _pressure)] -= flux / s.dt + part(owner) * old;
+    sc.pressure_rhs[_problem.dof(neighbor, _pressure)] += flux / s.dt + part(neighbor) * old;
+  }
+}
+
+void
+ProjectionSolver::addBoundaryTerms(const StepData & s, Vector & pressure_rhs) const
+{
   // - (beta_0 / dt) int q n . u_b - nu int n . (omega x grad q), with omega the extrapolated vorticity.
+  const Mesh & mesh = _problem.mesh();
+  const bool dual = _problem.isDual();
+  const int dim = static_cast<int>(_velocity.size());
+  const std::vector<double> & beta = s.beta;
+  const double c = s.c;
+  QuadratureSpec spec;
+  spec.points = mesh.numElements() > 0 && ReferenceElement::get(mesh.element(0).type).order() > 1
+                    ? kBoundaryPointsQuadratic
+                    : kBoundaryPointsLinear;
   Scratch boundary;
   MappedPoint & mp = boundary.mp;
   for (const Side & side : _boundary_sides)
@@ -1042,28 +1108,21 @@ ProjectionSolver::step(
       mapPoint(mesh, el, p.xi, mp);
       if (corner)
         mapCornerShape(el, mp);
-      evaluate(el, boundary);
-      double ub[3] = {0, 0, 0};
-      for (int a = 0; a < el.numNodes(); ++a)
-        for (int d = 0; d < dim; ++d)
-          ub[d] += mp.N[a] * extrapolated[_problem.dof(el.nodes[a], _velocity[d])];
-      double omega[3] = {0, 0, 0};
-      for (int j = 1; j <= k; ++j)
-      {
-        const auto & g = boundary.grad[j - 1];
-        omega[0] += alpha[j] * (g[2][1] - g[1][2]);
-        omega[1] += alpha[j] * (g[0][2] - g[2][0]);
-        omega[2] += alpha[j] * (g[1][0] - g[0][1]);
-      }
+      evaluateLevels(el, s, boundary);
+      double ub[3], omega[3];
+      extrapolatedVelocity(el, mp, s, ub);
+      extrapolatedVorticity(s, boundary, omega);
       const Point area = _problem.coordFactor(mp.x) * p.area;
+      // The weighted divergence of DMCDM through the boundary: the velocity of the steps before
+      // with the part c - weight of its weight c (the sides inside, addInterfaceTerms).
+      const double old_part =
+          dual ? (c - s.node_weight[static_cast<std::size_t>(el.nodes[p.owner])]) / c : 0.0;
       double normal_velocity = 0;
       for (int d = 0; d < dim; ++d)
       {
         normal_velocity += area[d] * ub[d];
-        // The part c of the weighted divergence of DMCDM, through the boundary.
-        if (dual)
-          for (int j = 1; j <= k; ++j)
-            normal_velocity += beta[j] / beta[0] * boundary.u[j - 1][d] * area[d];
+        for (int j = 1; j <= s.k; ++j)
+          normal_velocity += old_part * beta[j] / beta[0] * boundary.u[j - 1][d] * area[d];
       }
       const int tests = corner ? el.numCorners() : el.numNodes();
       for (int a = 0; a < tests; ++a)
@@ -1082,12 +1141,16 @@ ProjectionSolver::step(
       }
     }
   }
+}
 
-  // ---- the pressure -----------------------------------------------------------------------------
+Vector
+ProjectionSolver::solvePressure(const StepData & s, const Vector & pressure_rhs)
+{
+  const Mesh & mesh = _problem.mesh();
   const Rows & pressure_rows = *_pressure_rows;
   Vector P = _kinematic_pressure;
   pressure_rows.forEachFixed([&](Index d)
-                             { P[d] = _pressure_pinned ? 0.0 : extrapolated[d] / rho; });
+                             { P[d] = _pressure_pinned ? 0.0 : s.extrapolated[d] / _density; });
   _pressure_iterations =
       pressure_rows.solve(*_pressure_solver, _laplacian, pressure_rhs, P, _pressure_pinned);
   // The pressure of an enclosed flow with a mean of zero, as the monolithic solve reports it.
@@ -1102,16 +1165,24 @@ ProjectionSolver::step(
       P[_problem.dof(i, _pressure)] -= mean;
   }
   _kinematic_pressure = P;
+  return P;
+}
 
-  // ---- the velocity -------------------------------------------------------------------------------
+void
+ProjectionSolver::solveVelocity(const StepData & s,
+                                const Vector & advection_rhs,
+                                const Vector & P,
+                                Vector & solution)
+{
   // The explicit terms of the momentum equations: the backward difference of the steps before, the advection, the sources and the pressure.
+  const double rho = _density;
   Vector history = Vector::Zero(solution.size());
-  for (int j = 1; j <= k; ++j)
-    history += beta[j] * levels[static_cast<std::size_t>(j - 1)]->second;
-  Vector rhs = -(1.0 / dt) * (_mass * history) - advection_rhs - rho * (_gradient * P);
-  if (with_source)
+  for (int j = 1; j <= s.k; ++j)
+    history += s.beta[j] * s.levels[static_cast<std::size_t>(j - 1)]->second;
+  Vector rhs = -(1.0 / s.dt) * (_mass * history) - advection_rhs - rho * (_gradient * P);
+  if (s.with_source)
     rhs -= _source_residual;
-  solution = extrapolated;
+  solution = s.extrapolated;
   _velocity_iterations = 0;
   for (std::size_t i = 0; i < _velocity_rows.size(); ++i)
     _velocity_iterations +=
@@ -1120,315 +1191,13 @@ ProjectionSolver::step(
   Vector residual = _helmholtz * solution - rhs;
   _problem.foldDependents(residual, nullptr);
   _problem.parallel().addAtNodes(residual.data(), _problem.numVariables());
-  for (Index i = 0; i < mesh.numNodes(); ++i)
+  for (Index i = 0; i < _problem.mesh().numNodes(); ++i)
   {
     const Index d = _problem.dof(i, _pressure);
     residual[d] = 0.0;
     solution[d] = rho * P[d];
   }
   _problem.setLastResidual(residual);
-  _trial = {time, solution};
-
-  SolveResult result;
-  result.converged = true;
-  result.total_iterations = 1;
-  result.linear_iterations = _pressure_iterations + _velocity_iterations;
-  return result;
-}
-
-double
-projectInitialVelocity(Problem & problem,
-                       const std::vector<int> & velocities,
-                       int pressure,
-                       Vector & solution)
-{
-  problem.initialize();
-  const Mesh & mesh = problem.mesh();
-  const int nv = problem.numVariables();
-  const int dim = static_cast<int>(velocities.size());
-  std::vector<char> is_velocity(static_cast<std::size_t>(nv), 0);
-  for (int v : velocities)
-    is_velocity[static_cast<std::size_t>(v)] = 1;
-  // The norm of the kinetic energy: the storage of the momentum equations.
-  std::vector<const Kernel *> storage;
-  for (const auto & k : problem.kernels())
-    if (k->isTimeKernel() && is_velocity[static_cast<std::size_t>(k->variable())])
-      storage.push_back(k.get());
-  if (storage.empty())
-    return 0.0;
-
-  // ---- the divergence D and the Laplacian of the multiplier --------------------------------
-  // D is the mass balance of the flow without its stabilization, tested with the functions of the
-  // pressure, or of the first velocity for a flow without a pressure: (q, div u) with the
-  // coordinate factor under FEM, and the flux of u out of the control domain of each node under
-  // DMCDM.
-  const int m = pressure >= 0 ? pressure : velocities[0];
-  std::vector<std::string> names;
-  for (int v : velocities)
-    names.push_back(problem.variable(v).name);
-  const std::string multiplier = problem.variable(m).name;
-  std::vector<std::string> boundaries;
-  for (const auto & [name, list] : mesh.sidesets())
-    boundaries.push_back(name);
-  const auto balance = privateObject<Kernel>(problem,
-                                             "mass_conservation",
-                                             "start_projection_divergence",
-                                             {{"variable", multiplier}, {"velocities", names}});
-  std::vector<std::shared_ptr<IntegratedBC>> outflow;
-  if (!boundaries.empty())
-    outflow.push_back(privateObject<IntegratedBC>(
-        problem,
-        "mass_flux",
-        "start_projection_outflow",
-        {{"variable", multiplier}, {"velocities", names}, {"boundary", boundaries}}));
-  const auto diffusion = privateObject<Kernel>(
-      problem, "diffusion", "start_projection_laplacian", {{"variable", multiplier}});
-  std::vector<const IntegratedBC *> conditions;
-  for (const auto & bc : outflow)
-    conditions.push_back(bc.get());
-  std::vector<char> is_multiplier(static_cast<std::size_t>(nv), 0);
-  is_multiplier[static_cast<std::size_t>(m)] = 1;
-  const SparseMatrix D = block(
-      problem, operatorOf(problem, {balance.get()}, conditions, false), is_multiplier, is_velocity);
-  const SparseMatrix laplacian = operatorOf(problem, {diffusion.get()});
-  const double density = coefficientsAt(problem, *balance, mesh.node(0)).time_density;
-  const SparseMatrix M = (1.0 / (density > 0.0 ? density : 1.0)) *
-                         block(problem, operatorOf(problem, storage), is_velocity, is_velocity);
-
-  // ---- the numbering: the velocity components and the multiplier at every node --------------
-  const Parallel & parallel = problem.parallel();
-  std::vector<int> fields = velocities;
-  fields.push_back(m);
-  const ProjectionSolver::Rows numbering(problem, fields, {});
-  const int width = dim + 1;
-  std::vector<int> field(static_cast<std::size_t>(nv), -1);
-  for (int d = 0; d < dim; ++d)
-    field[static_cast<std::size_t>(velocities[d])] = d;
-  const Index nodes = mesh.numNodes();
-  const std::vector<Index> & global = numbering.node;
-  const std::vector<char> & owned = numbering.owned;
-  const Index first = numbering.first, num_owned = numbering.num_owned;
-
-  // ---- the rows of the multiplier ----------------------------------------------------------
-  // The multiplier is zero where the pressure is prescribed, whose mass balance is not an equation of the flow, at a dependent unknown, and at a node that tests no divergence (a node outside the flow).
-  const std::vector<char> constrained = problem.constrainedDofs();
-  Vector tested = Vector::Zero(problem.numDofs());
-  for (Index col = 0; col < D.outerSize(); ++col)
-    for (SparseMatrix::InnerIterator it(D, col); it; ++it)
-      tested[it.row()] += std::abs(it.value());
-  parallel.addAtNodes(tested.data(), nv);
-  std::vector<char> fixed(static_cast<std::size_t>(nodes), 0);
-  for (Index i = 0; i < nodes; ++i)
-  {
-    const Index d = problem.dof(i, m);
-    const bool given = pressure >= 0 ? constrained[d] != 0 : problem.isDependent(d);
-    fixed[i] = given || !(tested[d] > 0.0) ? 1 : 0;
-  }
-  std::vector<std::vector<char>> velocity_fixed(static_cast<std::size_t>(dim));
-  for (int d = 0; d < dim; ++d)
-  {
-    velocity_fixed[d].resize(static_cast<std::size_t>(nodes));
-    for (Index i = 0; i < nodes; ++i)
-      velocity_fixed[d][i] = constrained[problem.dof(i, velocities[d])];
-  }
-  // A flow whose normal velocity is prescribed on the whole boundary (an enclosed flow, or one
-  // with a prescribed inflow and outflow) leaves the multiplier free up to a constant: D^T 1 is
-  // zero at every free velocity.  The constant is fixed at the node of the smallest global
-  // number, and the divergence that the data give the whole flow is spread over its volume.
-  bool enclosed = true;
-  if (pressure >= 0)
-  {
-    bool given = false;
-    for (Index i = 0; i < nodes; ++i)
-    {
-      const Index d = problem.dof(i, pressure);
-      given = given || (constrained[d] && problem.activeDofs()[d] && !problem.isDependent(d));
-    }
-    enclosed = !parallel.any(given);
-  }
-  if (enclosed)
-  {
-    Vector column = Vector::Zero(problem.numDofs()), size = Vector::Zero(problem.numDofs());
-    for (Index col = 0; col < D.outerSize(); ++col)
-      for (SparseMatrix::InnerIterator it(D, col); it; ++it)
-      {
-        column[col] += it.value();
-        size[col] += std::abs(it.value());
-      }
-    parallel.addAtNodes(column.data(), nv);
-    parallel.addAtNodes(size.data(), nv);
-    double open = 0.0, scale = 0.0;
-    for (Index i = 0; i < nodes; ++i)
-      for (int d = 0; d < dim; ++d)
-      {
-        const Index dof = problem.dof(i, velocities[d]);
-        scale = std::max(scale, size[dof]);
-        if (!velocity_fixed[d][i])
-          open = std::max(open, std::abs(column[dof]));
-      }
-    enclosed = parallel.maximum(open) <= 1e-10 * parallel.maximum(scale);
-  }
-  // The rows of the multiplier: its equation is D u = - D u_0.
-  const auto multiplierOf = [&](const Vector & u)
-  {
-    Vector r = D * u;
-    parallel.addAtNodes(r.data(), nv);
-    return r;
-  };
-  Vector rhs = -multiplierOf(solution);
-  // The measure of the test function of every node, over which the divergence is spread.
-  Vector volume = problem.nodeWeights(m);
-  parallel.addAtNodes(volume.data(), 1);
-  if (enclosed)
-  {
-    double total = 0.0, measure = 0.0;
-    for (Index i = 0; i < nodes; ++i)
-      if (owned[i] && !fixed[i])
-      {
-        total += rhs[problem.dof(i, m)];
-        measure += volume[i];
-      }
-    const double mean = parallel.sum(total) / parallel.sum(measure);
-    double smallest = std::numeric_limits<double>::infinity();
-    for (Index i = 0; i < nodes; ++i)
-      if (!fixed[i])
-      {
-        rhs[problem.dof(i, m)] -= mean * volume[i];
-        if (owned[i])
-          smallest = std::min(smallest, static_cast<double>(global[i]));
-      }
-    smallest = parallel.minimum(smallest);
-    for (Index i = 0; i < nodes; ++i)
-      if (static_cast<double>(global[i]) == smallest)
-        fixed[i] = 1;
-  }
-
-  // ---- the saddle point system -------------------------------------------------------------
-  //     [ M      D^T    ] [ du     ]   [ 0       ]
-  //     [ D   -eps K_l  ] [ lambda ] = [ - D u_0 ]
-  // with M the mass matrix of the velocity and K_l the Laplacian of the multiplier, which has the spectrum of D M^-1 D^T on the smooth fields.
-  // The small regularization eps K_l fixes the multiplier where D^T has a null space (the spurious pressure modes of equal-order elements), whose divergence no velocity changes.
-  const double eps = 1e-4;
-  const auto row = [&](Index i, int f) { return width * global[i] + f; };
-  const auto free = [&](Index i, int f)
-  {
-    if (global[i] < 0)
-      return false;
-    return f < dim ? !velocity_fixed[static_cast<std::size_t>(f)][i] : !fixed[i];
-  };
-  std::vector<petsc::GlobalEntry> entries;
-  const auto add = [&](Index i, int fi, Index j, int fj, double value)
-  {
-    if (free(i, fi) && free(j, fj))
-      entries.push_back({row(i, fi), row(j, fj), value});
-  };
-  const auto fieldOf = [&](Index d) { return field[static_cast<std::size_t>(d % nv)]; };
-  for (Index col = 0; col < M.outerSize(); ++col)
-    for (SparseMatrix::InnerIterator it(M, col); it; ++it)
-      add(it.row() / nv, fieldOf(it.row()), col / nv, fieldOf(col), it.value());
-  for (Index col = 0; col < D.outerSize(); ++col)
-    for (SparseMatrix::InnerIterator it(D, col); it; ++it)
-    {
-      add(it.row() / nv, dim, col / nv, fieldOf(col), it.value());
-      add(col / nv, fieldOf(col), it.row() / nv, dim, it.value());
-    }
-  for (Index col = 0; col < laplacian.outerSize(); ++col)
-    for (SparseMatrix::InnerIterator it(laplacian, col); it; ++it)
-      if (it.row() % nv == m && col % nv == m)
-        add(it.row() / nv, dim, col / nv, dim, -eps * it.value());
-  for (Index i = 0; i < nodes; ++i)
-    if (owned[i] && global[i] >= 0)
-      for (int f = 0; f <= dim; ++f)
-        if (!free(i, f))
-          entries.push_back({row(i, f), row(i, f), 1.0});
-  petsc::Settings settings;
-  settings.relative_tolerance = 1e-12;
-  settings.symmetric = false;
-  const petsc::LinearSolver system(
-      numbering.across, numbering.num_global, first, num_owned, entries, settings);
-  // The regularization moves the smooth part of the solution by about eps relative to its size, which corrections with the residual of the system without it take back (iterated regularization), until a correction changes the velocity by less than 1e-13 of the speed.
-  // A spurious mode that D^T nearly annihilates keeps a part of its divergence, which a velocity of bounded size cannot remove.
-  const auto at = [&](Index i, int f) { return row(i, f) - first; };
-  // The velocity correction, in the unknowns of the problem, and the multiplier, one per node.
-  Vector du = Vector::Zero(problem.numDofs());
-  Vector lambda = Vector::Zero(problem.numDofs());
-  Vector b = Vector::Zero(num_owned);
-  for (Index i = 0; i < nodes; ++i)
-    if (owned[i] && free(i, dim))
-      b[at(i, dim)] = rhs[problem.dof(i, m)];
-  double speed0 = 0.0;
-  for (Index i = 0; i < nodes; ++i)
-    for (int v : velocities)
-      speed0 = std::max(speed0, std::abs(solution[problem.dof(i, v)]));
-  speed0 = parallel.maximum(speed0);
-  for (int pass = 0; pass < 20; ++pass)
-  {
-    petsc::Result result;
-    const Vector x = system.solve(b, nullptr, result);
-    if (parallel.any(!result.converged))
-      throw std::runtime_error("dualmesh: the projection of the initial velocity onto a field "
-                               "without divergence did not converge (" +
-                               result.reason + ", " + std::to_string(result.iterations) +
-                               " iterations).");
-    // The update of the velocity at its unknowns, and of the multiplier at those of m.
-    Vector velocity_update = Vector::Zero(problem.numDofs());
-    Vector multiplier_update = Vector::Zero(problem.numDofs());
-    for (Index i = 0; i < nodes; ++i)
-      if (owned[i])
-        for (int f = 0; f <= dim; ++f)
-          if (free(i, f))
-            (f < dim ? velocity_update[problem.dof(i, velocities[f])]
-                     : multiplier_update[problem.dof(i, m)]) = x[at(i, f)];
-    parallel.copyFromOwners(velocity_update.data(), nv);
-    parallel.copyFromOwners(multiplier_update.data(), nv);
-    problem.updateDependentDofs(velocity_update);
-    du += velocity_update;
-    lambda += multiplier_update;
-    double moved = 0.0, reached = speed0;
-    for (Index i = 0; i < nodes; ++i)
-      for (int v : velocities)
-      {
-        moved = std::max(moved, std::abs(velocity_update[problem.dof(i, v)]));
-        reached = std::max(reached, std::abs(du[problem.dof(i, v)]));
-      }
-    if (parallel.maximum(moved) <= 1e-13 * parallel.maximum(reached))
-      break;
-    // The residual of the system without the regularization: the momentum rows M du + D^T lambda
-    // and the divergence left, - D u_0 - D du.
-    Vector momentum = M * du + D.transpose() * lambda;
-    parallel.addAtNodes(momentum.data(), nv);
-    const Vector divergence_left = rhs - multiplierOf(du);
-    for (Index i = 0; i < nodes; ++i)
-      if (owned[i])
-        for (int f = 0; f <= dim; ++f)
-          if (free(i, f))
-            b[at(i, f)] = f < dim ? -momentum[problem.dof(i, velocities[f])]
-                                  : divergence_left[problem.dof(i, m)];
-  }
-
-  // ---- the velocity ------------------------------------------------------------------------
-  double change = 0.0, speed = 0.0;
-  for (Index i = 0; i < nodes; ++i)
-  {
-    double change2 = 0.0, speed2 = 0.0;
-    for (int d = 0; d < dim; ++d)
-    {
-      const Index dof = problem.dof(i, velocities[d]);
-      double & u = solution[dof];
-      // A dependent unknown follows those it depends on.
-      if (!velocity_fixed[d][i] || problem.isDependent(dof))
-      {
-        u += du[dof];
-        change2 += du[dof] * du[dof];
-      }
-      speed2 += u * u;
-    }
-    change = std::max(change, std::sqrt(change2));
-    speed = std::max(speed, std::sqrt(speed2));
-  }
-  change = parallel.maximum(change);
-  speed = parallel.maximum(speed);
-  return speed > 0.0 ? change / speed : 0.0;
 }
 
 } // namespace dualmesh

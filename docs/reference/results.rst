@@ -39,6 +39,12 @@ and the problem keeps the numbers as a history
    Minimum
    Integral
    Average
+   PropertyPointValue
+   PropertyMaximum
+   PropertyMinimum
+   PropertyIntegral
+   PropertyAverage
+   VonMisesStressPointValue
    HeatFlow
    ReactionForce
    Force

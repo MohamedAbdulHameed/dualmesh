@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 """Tests of the parallel machinery.
 
-These run in a single process.  They check that the mesh partitioners produce
-valid, balanced partitions, that a sub-mesh keeps everything a rank needs, that
-the distributed code path reproduces the serial answer, and that threading the
-assembly does not change the result.  The behaviour on several MPI ranks is
-checked by the C++ program ``dualmesh_parallel_tests``, which is launched with
+They check that the mesh partitioners produce valid, balanced partitions, that
+a sub-mesh keeps everything a rank needs, that the distributed code path
+reproduces the serial answer, and that threading the assembly does not change
+the result.  They run in one process or under ``mpirun`` on several MPI ranks,
+and the continuous integration runs them on one to four ranks.  The C++
+program ``dualmesh_parallel_tests`` checks the same machinery from C++ under
 ``mpirun`` (see docs/theory/parallel.rst).
 """
 
@@ -349,7 +350,6 @@ def _creep_block(distributed):
     return p
 
 
-@pytest.mark.skipif(not dualmesh._core.have_checkpoints(), reason="checkpoints need PETSc")
 @pytest.mark.parametrize("distributed", [False, True])
 def test_a_restarted_creep_run_ends_where_an_uninterrupted_one_ends(distributed):
     """The checkpoint holds the solution, the history of the material (the creep strain) and the history of the post-processors, so the restarted run continues exactly."""
@@ -393,6 +393,97 @@ def test_a_restarted_creep_run_ends_where_an_uninterrupted_one_ends(distributed)
     # The creep strain is in the history: without it the restarted run would end elsewhere.
     assert values(whole).max() > 1.05 * values(_creep_block(distributed)).max()
     if not distributed or restarted.rank == 0:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+@pytest.mark.parametrize("distributed", [False, True])
+def test_the_postprocessor_history_is_written_with_each_checkpoint(distributed):
+    """A run of three steps with a checkpoint every two writes its last checkpoint at step 3, so
+    the restart from it counts its own steps from there: it writes a checkpoint after its second
+    step (step 5) and stops at max_steps after its third.  The history of the post-processors
+    beside the checkpoint ends at the time of the checkpoint."""
+    import json
+    import pathlib
+    import shutil
+
+    owner = "all" if distributed else str(dualmesh.parallel.rank())
+    directory = pathlib.Path(f"dualmesh_checkpoint_history_test_{owner}")
+    directory.mkdir(exist_ok=True)
+    output = dualmesh.Output(directory=str(directory), file_base="creep", checkpoint_interval=2)
+    steps = dict(time_step=1e5, time_stepper="fixed", report="none", output=output)
+    _creep_block(distributed).solve_transient(end_time=3e5, **steps)
+    checkpoint = str(directory / "creep.chk")
+    restarted = _creep_block(distributed)
+    result = restarted.solve_transient(end_time=1e6, restart=checkpoint, max_steps=3, **steps)
+    assert result.time_steps == 3
+    time, _, step = dualmesh._core.checkpoint_time(checkpoint, distributed)
+    assert step == 5
+    assert time == pytest.approx(5e5)
+    with open(checkpoint + ".postprocessors.json") as f:
+        history = json.load(f)
+    assert history["time"][-1] == pytest.approx(time)
+    if not distributed or restarted.rank == 0:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+def _cooling_plate(mesh, distributed):
+    """A plate whose sides are held at zero, cooling from a sine bump: its checkpoint holds the temperature alone."""
+    problem = dualmesh.Problem(mesh, distributed=distributed)
+    problem.add_variable(
+        "temperature",
+        initial_condition=lambda x, y, z, t: numpy.sin(numpy.pi * x) * numpy.sin(numpy.pi * y),
+    )
+    problem.add_kernel("diffusion", variable="temperature")
+    problem.add_kernel("time_derivative", variable="temperature")
+    problem.add_boundary_condition(
+        "Dirichlet", ["left", "right", "bottom", "top"], variable="temperature", value=0.0
+    )
+    return problem
+
+
+def _same_counts(mesh, change):
+    """A mesh with the numbers of nodes and elements of mesh, whose nodes are moved or numbered in reverse, or whose elements are numbered in reverse."""
+    if change == "moved nodes":
+        return dualmesh.generate_rectangle_mesh(0.0, 1.0, 0.0, 1.0, 6, 6, x_bias=1.3)
+    points, cells = mesh.points(), mesh.cells()
+    if change == "renumbered nodes":
+        last = len(points) - 1
+        points = points[::-1]
+        cells = [(kind, [last - node for node in nodes], block) for kind, nodes, block in cells]
+    else:
+        cells = cells[::-1]
+    other = dualmesh.mesh_from_arrays(points, cells)
+    other.add_bounding_box_sidesets()
+    return other
+
+
+@pytest.mark.parametrize("distributed", [False, True])
+@pytest.mark.parametrize(
+    "change, part",
+    [("moved nodes", "nodes"), ("renumbered nodes", "nodes"), ("renumbered elements", "elements")],
+)
+def test_a_restart_on_another_mesh_with_the_same_counts_is_refused(change, part, distributed):
+    """The checkpoint holds a fingerprint of its mesh, so a restart on a mesh with the same numbers of nodes and elements stops when the nodes or the elements differ, instead of putting the solution on the wrong nodes."""
+    import pathlib
+    import shutil
+
+    owner = "all" if distributed else str(dualmesh.parallel.rank())
+    directory = pathlib.Path(f"dualmesh_fingerprint_test_{owner}")
+    directory.mkdir(exist_ok=True)
+    steps = {"time_step": 0.005, "time_stepper": "fixed", "report": "none"}
+    mesh = dualmesh.generate_rectangle_mesh(0.0, 1.0, 0.0, 1.0, 6, 6)
+    output = dualmesh.Output(directory=str(directory), file_base="plate", checkpoint_interval=1)
+    _cooling_plate(mesh, distributed).solve_transient(end_time=0.01, output=output, **steps)
+    checkpoint = str(directory / "plate.chk")
+    # The same mesh restarts.
+    result = _cooling_plate(mesh, distributed).solve_transient(
+        end_time=0.02, restart=checkpoint, **steps
+    )
+    assert result.time_steps == 2
+    other = _cooling_plate(_same_counts(mesh, change), distributed)
+    with pytest.raises(dualmesh.InputError, match=f"another mesh: the {part} of the mesh"):
+        other.solve_transient(end_time=0.02, restart=checkpoint, **steps)
+    if not distributed or other.rank == 0:
         shutil.rmtree(directory, ignore_errors=True)
 
 
@@ -698,6 +789,45 @@ def test_a_distributed_mesh_with_hanging_nodes_passes_the_patch_test(
     points = numpy.asarray(mesh.points())
     expected = 1.0 + 2.0 * points[:, 0] - 3.0 * points[:, 1] + points[:, 2]
     assert numpy.asarray(problem.gathered_values("u")) == pytest.approx(expected, abs=1e-10)
+
+
+@pytest.mark.parametrize("partitioner", ["automatic", "simple"])
+@pytest.mark.parametrize("method", ["fem", "dmcdm"])
+def test_the_projection_across_hanging_nodes_gives_the_serial_answer(method, partitioner):
+    """A channel flow on the square refined at a corner, marched by the projection under the
+    default error control.  Its steps stay below beta_0 tau, where the weight of the divergence
+    in the pressure equation is 1 / tau, which DMCDM takes per control domain from integrals that
+    the processes add, so every process weighs a shared node alike and the flow is the serial
+    one."""
+    mesh = refined_toward_the_corner(2)
+
+    def solve(distributed):
+        problem = dualmesh.Problem(
+            mesh,
+            method=method,
+            distributed=distributed,
+            **({"partitioner": partitioner} if distributed else {}),
+        )
+        physics = problem.add_physics(
+            "fluid_dynamics",
+            density=1.0,
+            dynamic_viscosity=0.1,
+            formulation="equal_order",
+            time_integration="projection",
+        )
+        physics.add_boundary_condition(
+            ["velocity_x = 4*y*(1 - y)", "velocity_y = 0"], boundary="left"
+        )
+        physics.add_boundary_condition(
+            ["velocity_x = 0", "velocity_y = 0"], boundary=["top", "bottom"]
+        )
+        physics.add_boundary_condition("pressure = 0", boundary="right")
+        problem.solve_transient(end_time=0.2, time_step=0.01, report="none")
+        return numpy.concatenate(
+            [problem.gathered_values(name) for name in ("velocity_x", "velocity_y", "pressure")]
+        )
+
+    assert solve(True) == pytest.approx(solve(False), abs=1e-7)
 
 
 @pytest.mark.parametrize("partitioner", ["automatic", "simple"])

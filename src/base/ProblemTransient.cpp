@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
+#include "dualmesh/base/Checkpoint.h"
 #include "dualmesh/base/Problem.h"
-#include "dualmesh/parallel/Checkpoint.h"
 
 #include <algorithm>
 #include <cmath>
@@ -12,6 +12,22 @@
 
 namespace dualmesh
 {
+
+namespace
+{
+/// Whether any entry of the mask @p mask is set.
+bool
+anySet(const std::vector<char> & mask)
+{
+  return std::any_of(mask.begin(), mask.end(), [](char c) { return c != 0; });
+}
+} // namespace
+
+bool
+Problem::hasSecondOrderVariables() const
+{
+  return anySet(_second_order_variables);
+}
 
 /// The time integration of the problem's own assembly.  The theta family weights the steady part
 /// of the residual between the old and the new state:
@@ -32,10 +48,10 @@ public:
 
   /// Take the scheme of @p transient and the solver options @p options of the next run.
   void configure(const TransientOptions & transient, const SolverOptions & options);
-  void start(const Vector & solution, double time) override;
+  void start(const Vector & solution, double /*time*/) override;
   SolveResult
   step(Vector & solution, const Vector & old, double time, double dt, bool continues) override;
-  void accept(const Vector & solution, double time) override;
+  void accept(const Vector & solution, double /*time*/) override;
   /// The trapezoidal rule (theta = 1/2, Crank-Nicolson) is second order and every other member of
   /// the theta family first.  The generalized-alpha and Newmark methods are second order.
   int order() const override
@@ -78,9 +94,7 @@ Problem::ThetaIntegrator::configure(const TransientOptions & transient,
 {
   _transient = transient;
   _options = options;
-  _dynamic = std::any_of(_problem._second_order_variables.begin(),
-                         _problem._second_order_variables.end(),
-                         [](char c) { return c != 0; });
+  _dynamic = _problem.hasSecondOrderVariables();
   _theta = transient.theta;
   _alpha_m = _alpha_f = 0.0;
   _beta = 0.25;
@@ -112,19 +126,17 @@ Problem::ThetaIntegrator::configure(const TransientOptions & transient,
 }
 
 void
-Problem::ThetaIntegrator::start(const Vector & solution, double time)
+Problem::ThetaIntegrator::start(const Vector & solution, double /*time*/)
 {
-  (void) time;
   _accepted = {{solution, 0.0}};
   _trial.reset();
 }
 
 SolveResult
 Problem::ThetaIntegrator::step(
-    Vector & solution, const Vector & old, double time, double dt, bool continues)
+    Vector & /*solution*/, const Vector & old, double time, double dt, bool continues)
 {
   // The nonlinear solve advances the problem's own solution at the problem's time.
-  (void) solution;
   Problem & p = _problem;
   // Runs @p f with the problem's clock at the start of the step, where the old state and its
   // prescribed values and loads belong, and puts the clock back at the end, @p time.
@@ -156,6 +168,10 @@ Problem::ThetaIntegrator::step(
   {
     Level begin;
     begin.u = old;
+    if (p._initial_velocity.size() != 0 && p._initial_velocity.size() != old.size())
+      throw InputError("Transient: the initial velocity has " +
+                       std::to_string(p._initial_velocity.size()) + " values, and the problem " +
+                       std::to_string(old.size()) + " unknowns.");
     begin.v = p._initial_velocity.size() == old.size() ? p._initial_velocity
                                                        : Vector(Vector::Zero(old.size()));
     atStart([&] { begin.a = p.initialAcceleration(old, begin.v, dt, _options); });
@@ -209,9 +225,7 @@ Problem::ThetaIntegrator::step(
     base.accel_shift = &accel_shift;
   }
   // An explicit step still takes the equations without a time derivative at the new time.
-  base.include_steady_terms =
-      _theta > 0 ||
-      std::any_of(p._new_time_only.begin(), p._new_time_only.end(), [](char c) { return c != 0; });
+  base.include_steady_terms = _theta > 0 || anySet(p._new_time_only);
   SolveResult result = p.nonlinearSolve(_options, base, _theta < 1.0 ? &old_residual : nullptr);
   if (!result.converged)
     return result;
@@ -230,9 +244,8 @@ Problem::ThetaIntegrator::step(
 }
 
 void
-Problem::ThetaIntegrator::accept(const Vector & solution, double time)
+Problem::ThetaIntegrator::accept(const Vector & solution, double /*time*/)
 {
-  (void) time;
   _committed = _trial;
   _accepted.emplace_front(solution, _span);
   if (_accepted.size() > 3)
@@ -368,57 +381,138 @@ Problem::velocity() const
   return _theta ? _theta->velocity() : Vector();
 }
 
-SolveResult
-Problem::runTransient(TimeIntegrator & integrator,
-                      const TransientOptions & tr,
-                      const SolverOptions & options,
-                      const CheckpointLayout & layout,
-                      int first_step)
+namespace
+{
+/// Times closer to the end of a run than this fraction of its span count as the end.
+constexpr double kEndTolerance = 1e-12;
+/// An output time closer to the time of the run than this fraction of its span is reached.
+constexpr double kOutputTolerance = 1e-10;
+/// The span that the tolerance of the output times takes for a run of zero span.
+constexpr double kSmallestSpan = 1e-300;
+/// A step that would leave less than this fraction of the span of the run before its target
+/// reaches the target.
+constexpr double kSliverFraction = 1e-8;
+/// Step sizes that differ by less than this fraction of the step count as equal.
+constexpr double kStepRounding = 1e-8;
+/// The smallest step, as a fraction of the given step, when the options set none.
+constexpr double kSmallestStepFraction = 1e-6;
+/// The safety factor of the step that the error controller asks for, and the smallest fraction
+/// of a rejected step that it retries with.
+constexpr double kSafetyFactor = 0.9;
+constexpr double kSmallestRetryFraction = 0.1;
+/// The step after a step shortened to land on a target is at most this multiple of it.
+constexpr double kShortenedGrowth = 2.0;
+
+/// The step controllers of TransientOptions::time_stepper.
+enum class Stepper
+{
+  fixed,
+  error,
+  iteration,
+  courant
+};
+
+/// The step controller of @p tr, after its options are checked for @p integrator.
+Stepper
+checkTransientOptions(const TransientOptions & tr, const TimeIntegrator & integrator)
 {
   if (tr.dt <= 0)
     throw InputError("Transient: the time step must be positive.");
   if (tr.theta < 0 || tr.theta > 1)
     throw InputError("Transient: theta must be in [0, 1].");
-  const bool error_control = tr.time_stepper == "error";
-  const bool iteration_control = tr.time_stepper == "iteration";
-  const bool courant_control = tr.time_stepper == "cfl";
-  if (!error_control && !iteration_control && !courant_control && tr.time_stepper != "fixed")
+  Stepper stepper = Stepper::fixed;
+  if (tr.time_stepper == "error")
+    stepper = Stepper::error;
+  else if (tr.time_stepper == "iteration")
+    stepper = Stepper::iteration;
+  else if (tr.time_stepper == "cfl")
+    stepper = Stepper::courant;
+  else if (tr.time_stepper != "fixed")
     throw InputError("Transient: unknown time stepper '" + tr.time_stepper +
                      "' (use fixed, error, iteration or cfl).");
-  if (courant_control && !integrator.measuresCourantNumber())
+  if (stepper == Stepper::courant && !integrator.measuresCourantNumber())
     throw InputError("Transient: the cfl stepper needs a time integration that measures the "
                      "Courant number, the projection integration of a flow.");
-  if (courant_control && !(tr.courant_number > 0))
+  if (stepper == Stepper::courant && !(tr.courant_number > 0))
     throw InputError("Transient: the Courant number of the cfl stepper must be positive.");
   if (tr.growth_factor < 1.0)
     throw InputError("Transient: growth_factor must be at least one.");
   if (tr.cutback_factor <= 0.0 || tr.cutback_factor >= 1.0)
     throw InputError("Transient: cutback_factor must lie strictly between zero and one.");
-  const Parallel & par = parallel();
+  for (std::size_t k = 1; k < tr.output_times.size(); ++k)
+    if (!(tr.output_times[k] > tr.output_times[k - 1]))
+      throw InputError("Transient: the output times must increase.");
+  return stepper;
+}
 
-  // The scale of each equation in the error of a step: the largest of the range of its variables,
-  // their change from the start of the run and the square root of the machine epsilon times their
-  // magnitude, the largest that the accepted states and the step have reached, with the
-  // components of a vector unknown together as in the convergence test of the nonlinear solver.
-  // The change is offset-free, so a temperature in kelvin is not measured against its 300 K, and
-  // a field that is uniform, or zero to round-off, has the scale of its motion (a rigid motion, a
-  // uniform flow).  The floor keeps the round-off of a field at rest from counting as an error.
-  // The error of a step is that of the variables with a time derivative, of the first or the
-  // second order.  A variable without one (the pressure of an incompressible flow) is algebraic:
-  // it has no truncation error of its own, and the theta method leaves its value at the new time
-  // with oscillations that are no error of the step, so it is left out of the test (as the error
-  // test of IDA can leave out the algebraic variables).  A problem without a time derivative
-  // measures every variable.  Every process takes the same numbers, so they all take the same
-  // steps and accept or reject together.
-  std::vector<char> differential(_new_time_only.size(), 0);
-  for (std::size_t v = 0; v < differential.size(); ++v)
-    differential[v] = !_new_time_only[v] || _second_order_variables[v];
-  if (std::none_of(differential.begin(), differential.end(), [](char c) { return c != 0; }))
-    differential.clear();
-  const std::vector<int> equation_of = vectorEquations();
-  const Vector initial = _U;
-  VariableSizes reached = variableSizes(_U, initial);
-  const auto largest = [](VariableSizes & to, const VariableSizes & from)
+/// The error of a step, which the error controller takes.  The scale of each equation is the
+/// largest of the range of its variables, their change from the start of the run and the square
+/// root of the machine epsilon times their magnitude, the largest that the accepted states and
+/// the step have reached, with the components of a vector unknown together as in the convergence
+/// test of the nonlinear solver.  The change is offset-free, so a temperature in kelvin is not
+/// measured against its 300 K, and a field that is uniform, or zero to round-off, has the scale
+/// of its motion (a rigid motion, a uniform flow).  The floor keeps the round-off of a field at
+/// rest from counting as an error.
+///
+/// The error of a step is that of the variables with a time derivative, of the first or the
+/// second order.  A variable without one (the pressure of an incompressible flow) is algebraic:
+/// it has no truncation error of its own, and the theta method leaves its value at the new time
+/// with oscillations that are no error of the step, so it is left out of the test (as the error
+/// test of IDA can leave out the algebraic variables).  A problem without a time derivative
+/// measures every variable.  Every process takes the same numbers, so they all take the same
+/// steps and accept or reject together.
+class StepError
+{
+public:
+  /// The error of the steps of @p problem from its current solution, the start of the run, whose
+  /// variables have no time derivative where @p new_time_only is set unless @p second_order is.
+  StepError(const Problem & problem,
+            const std::vector<char> & new_time_only,
+            const std::vector<char> & second_order)
+      : _problem(problem), _differential(new_time_only.size(), 0),
+        _equation_of(problem.vectorEquations()), _initial(problem.solution()),
+        _reached(problem.variableSizes(_initial, _initial))
+  {
+    for (std::size_t v = 0; v < _differential.size(); ++v)
+      _differential[v] = !new_time_only[v] || second_order[v];
+    if (!anySet(_differential))
+      _differential.clear();
+  }
+
+  /// The error of the step from @p before to @p after.
+  double estimate(const Vector & after, const Vector & before) const
+  {
+    Problem::VariableSizes sizes = _problem.variableSizes(after, _initial);
+    takeLargest(sizes, _reached);
+    const double floor = std::sqrt(std::numeric_limits<double>::epsilon());
+    std::vector<double> scale(sizes.range.size(), 0.0);
+    for (std::size_t v = 0; v < scale.size(); ++v)
+    {
+      const std::size_t e = static_cast<std::size_t>(_equation_of[v]);
+      scale[e] = std::max({scale[e], sizes.range[v], sizes.change[v], floor * sizes.magnitude[v]});
+    }
+    const std::vector<double> step = _problem.variableSizes(after, before).change;
+    double estimate = 0.0;
+    for (std::size_t v = 0; v < step.size(); ++v)
+    {
+      if ((!_differential.empty() && !_differential[v]) || !(step[v] > 0.0))
+        continue;
+      const double s = scale[static_cast<std::size_t>(_equation_of[v])];
+      estimate =
+          std::max(estimate, s > 0.0 ? step[v] / s : std::numeric_limits<double>::infinity());
+    }
+    return estimate;
+  }
+
+  /// Take the sizes of the accepted state @p state into the scales.
+  void accept(const Vector & state)
+  {
+    takeLargest(_reached, _problem.variableSizes(state, _initial));
+  }
+
+private:
+  /// Raise every size of @p to to that of @p from where it is larger.
+  static void takeLargest(Problem::VariableSizes & to, const Problem::VariableSizes & from)
   {
     for (std::size_t v = 0; v < to.range.size(); ++v)
     {
@@ -426,250 +520,460 @@ Problem::runTransient(TimeIntegrator & integrator,
       to.change[v] = std::max(to.change[v], from.change[v]);
       to.magnitude[v] = std::max(to.magnitude[v], from.magnitude[v]);
     }
-  };
-  const auto error = [&](const Vector & after, const Vector & before)
-  {
-    VariableSizes sizes = variableSizes(after, initial);
-    largest(sizes, reached);
-    const double floor = std::sqrt(std::numeric_limits<double>::epsilon());
-    std::vector<double> scale(sizes.range.size(), 0.0);
-    for (std::size_t v = 0; v < scale.size(); ++v)
-    {
-      const std::size_t e = static_cast<std::size_t>(equation_of[v]);
-      scale[e] = std::max({scale[e], sizes.range[v], sizes.change[v], floor * sizes.magnitude[v]});
-    }
-    const std::vector<double> step = variableSizes(after, before).change;
-    double estimate = 0.0;
-    for (std::size_t v = 0; v < step.size(); ++v)
-    {
-      if ((!differential.empty() && !differential[v]) || !(step[v] > 0.0))
-        continue;
-      const double s = scale[static_cast<std::size_t>(equation_of[v])];
-      estimate =
-          std::max(estimate, s > 0.0 ? step[v] / s : std::numeric_limits<double>::infinity());
-    }
-    return estimate;
-  };
-
-  const double span = tr.end_time - tr.start_time;
-  const double dt_min = tr.dt_min > 0 ? tr.dt_min : tr.dt * 1.0e-6;
-  const double dt_max = tr.dt_max > 0 ? tr.dt_max : std::abs(span);
-  const double order = integrator.order();
-
-  SolveResult total;
-  _time = tr.start_time;
-  int step = 0;
-  // A trial step from @p from to @p end of size @p h: the last accepted state, or, when it
-  // continues, the state of the step just taken.
-  const auto trial = [&](const Vector & from, double end, double h, bool continues)
-  {
-    _time = end;
-    SolveResult r = integrator.step(_U, from, _time, h, continues);
-    total.total_iterations += r.total_iterations;
-    total.linear_iterations += r.linear_iterations;
-    total.history.insert(total.history.end(), r.history.begin(), r.history.end());
-    return r;
-  };
-
-  double dt = std::min(std::max(tr.dt, dt_min), dt_max);
-  int rejected_in_a_row = 0;
-
-  // The output times: the solution is written at each of them, and the steps
-  // land on them.  The times at the start are written before the first step.
-  const double time_tolerance = 1e-10 * std::max(std::abs(span), 1e-300);
-  for (std::size_t k = 1; k < tr.output_times.size(); ++k)
-    if (!(tr.output_times[k] > tr.output_times[k - 1]))
-      throw InputError("Transient: the output times must increase.");
-  std::size_t next_output = 0;
-  // An output time before the start belongs to an earlier run (a restart continues one), so only the times at the start are written.
-  while (next_output < tr.output_times.size() &&
-         tr.output_times[next_output] <= _time + time_tolerance)
-  {
-    if (_output_callback && tr.output_times[next_output] >= _time - time_tolerance)
-      _output_callback(static_cast<int>(next_output));
-    ++next_output;
   }
 
-  while (_time < tr.end_time - 1e-12 * std::abs(span))
+  const Problem & _problem;
+  std::vector<char> _differential;
+  const std::vector<int> _equation_of;
+  const Vector _initial;
+  Problem::VariableSizes _reached;
+};
+
+/// The output times of a run: the solution is written at each of them, and the steps land on
+/// them.  Times closer than @p tolerance count as equal.
+class OutputSchedule
+{
+public:
+  OutputSchedule(const std::vector<double> & times, double tolerance)
+      : _times(times), _tolerance(tolerance)
   {
-    // Land exactly on the next output time or on the end time, and do not
-    // leave a sliver behind: if one step would nearly reach the target, reach
-    // it.
-    const double target = next_output < tr.output_times.size()
-                              ? std::min(tr.output_times[next_output], tr.end_time)
-                              : tr.end_time;
-    const double remaining = target - _time;
-    double step_size = std::min(dt, remaining);
-    if (remaining - step_size < 1e-8 * std::abs(span))
-      step_size = remaining;
-    // A step that is shortened to land on an output time is not the choice of
-    // the step controller, so the step after it starts from the size that the
-    // controller chose.
-    const bool shortened = step_size < dt;
+  }
 
-    const Vector old = _U;
-    const double start = _time;
+  /// The time that the next step aims at: the next output time, or @p end_time.
+  double target(double end_time) const
+  {
+    return _next < _times.size() ? std::min(_times[_next], end_time) : end_time;
+  }
+
+  /// Write with @p write the output times at the start time @p time.  An output time before the
+  /// start belongs to an earlier run (a restart continues one), so it is passed unwritten.
+  void writeAtStart(double time, const std::function<void(int)> & write)
+  {
+    writeUpTo(time, time - _tolerance, write);
+  }
+
+  /// Write with @p write every output time up to @p time that is not yet written.
+  void writeUpTo(double time, const std::function<void(int)> & write)
+  {
+    writeUpTo(time, -std::numeric_limits<double>::infinity(), write);
+  }
+
+private:
+  /// Pass every output time up to @p time, and write those from @p earliest on.
+  void writeUpTo(double time, double earliest, const std::function<void(int)> & write)
+  {
+    while (_next < _times.size() && _times[_next] <= time + _tolerance)
+    {
+      if (write && _times[_next] >= earliest)
+        write(static_cast<int>(_next));
+      ++_next;
+    }
+  }
+
+  const std::vector<double> & _times;
+  const double _tolerance;
+  std::size_t _next = 0;
+};
+
+/// The size of a step from @p time towards @p target, and whether it is shorter than the step
+/// @p dt that the controller chose.
+struct Landing
+{
+  double size;
+  bool shortened;
+};
+
+/// Land exactly on the next output time or on the end time, @p target, from @p time with the
+/// chosen step @p dt, in a run of span @p span, and do not leave a sliver behind: if one step
+/// would nearly reach the target, reach it, and if the target is less than two steps away, reach
+/// it in two equal steps.  A step is then shorter than half the size the controller chose only
+/// where two targets are closer than that, and the step after a shortened one is at most twice
+/// it, which keeps the step ratio below the bound 1 + sqrt 2 of the zero-stability of
+/// variable-step BDF2 (Grigorieff, Numerische Mathematik 42, 1983).  Sizes that differ by less
+/// than kStepRounding dt count as equal, so the rounding of the times neither halves a step
+/// whose target is two steps away nor marks a step of the chosen size as shortened.
+Landing
+landOnTarget(double time, double target, double dt, double span)
+{
+  const double rounding = kStepRounding * dt;
+  const double remaining = target - time;
+  double size = std::min(dt, remaining);
+  if (remaining - size < kSliverFraction * std::abs(span))
+    size = remaining;
+  else if (remaining < 2.0 * dt - rounding)
+    size = 0.5 * remaining;
+  return {size, size < dt - rounding};
+}
+} // namespace
+
+/// The time-stepping loop of one transient run (Problem::runTransient) and the state its steps
+/// share: the step size, the counts of the steps, the output times passed and the error scales.
+class Problem::TransientRun
+{
+public:
+  TransientRun(Problem & problem,
+               TimeIntegrator & integrator,
+               const TransientOptions & tr,
+               const SolverOptions & options,
+               const CheckpointLayout & layout,
+               int first_step);
+  /// Take the steps from the start time to the end time.
+  SolveResult run();
+
+private:
+  /// The decision on a step: whether it is accepted, the size of the step after it (or of the
+  /// retry of a rejected one), the largest next step that the controller allows without its
+  /// growth cap (the step that the error estimate or the Courant number asks for, the given step
+  /// of the fixed stepper, or the choice of the iteration stepper), and the nonlinear iterations
+  /// of the step.
+  struct Decision
+  {
     bool accepted = true;
-    double next_dt = dt;
+    double next_dt = 0.0;
+    double uncapped = 0.0;
     int iterations = 0;
-    const auto cutBack = [&]
-    {
-      accepted = false;
-      next_dt = step_size * tr.cutback_factor;
-    };
-    // The decision of the error controller on the estimate of the local error of the step.  A
-    // rejected step is retried at the size that the estimate asks for, at least a tenth of the
-    // step (Hairer, Norsett and Wanner 1993, Sect. II.4).
-    const auto control = [&](double estimate)
-    {
-      const double ratio = estimate > 0
-                               ? 0.9 * std::pow(tr.error_tolerance / estimate, 1.0 / (order + 1.0))
-                               : tr.growth_factor;
-      if (estimate > tr.error_tolerance)
-      {
-        accepted = false;
-        next_dt = step_size * std::max(0.1, ratio);
-      }
-      else
-        next_dt = step_size * std::min(tr.growth_factor, std::max(1.0, ratio));
-    };
-    // A step with a predictor takes one solve, and its difference from the predictor, times the
-    // factor of the predictor, estimates its local error (Milne's device).
-    Vector predicted;
-    double factor = 0.0;
-    if (error_control && integrator.predict(step_size, predicted, factor))
-    {
-      const SolveResult r = trial(old, start + step_size, step_size, false);
-      iterations = r.total_iterations;
-      if (!r.converged)
-        cutBack();
-      else
-        control(factor * error(_U, predicted));
-    }
-    else if (error_control)
-    {
-      // One coarse step, and two half steps from the same starting state.
-      const SolveResult coarse = trial(old, start + step_size, step_size, false);
-      const Vector coarse_solution = _U;
-      SolveResult fine_a, fine_b;
-      if (coarse.converged)
-      {
-        _U = old;
-        fine_a = trial(old, start + 0.5 * step_size, 0.5 * step_size, false);
-        if (fine_a.converged)
-        {
-          const Vector half = _U;
-          fine_b = trial(half, start + step_size, 0.5 * step_size, true);
-        }
-      }
-      iterations =
-          std::max({coarse.total_iterations, fine_a.total_iterations, fine_b.total_iterations});
-      if (!coarse.converged || !fine_a.converged || !fine_b.converged)
-        cutBack();
-      else
-        // Richardson estimate of the error of the two half steps, which are the more accurate
-        // answer and the one kept.
-        control(error(_U, coarse_solution) / (std::pow(2.0, order) - 1.0));
-    }
-    else
-    {
-      const SolveResult r = trial(old, start + step_size, step_size, false);
-      iterations = r.total_iterations;
-      if (!r.converged)
-        cutBack();
-      else if (courant_control)
-      {
-        // The step that gives the Courant number aimed at, at the velocity just reached.
-        const double courant = integrator.courantNumber(_U, step_size);
-        next_dt =
-            courant > 0 ? step_size * tr.courant_number / courant : step_size * tr.growth_factor;
-        next_dt = std::min(next_dt, step_size * tr.growth_factor);
-      }
-      else if (iteration_control)
-      {
-        if (iterations < tr.optimal_iterations - tr.iteration_window)
-          next_dt = step_size * tr.growth_factor;
-        else if (iterations > tr.optimal_iterations + tr.iteration_window)
-          next_dt = step_size * tr.cutback_factor;
-        else
-          next_dt = step_size;
-      }
-      else
-        // The fixed stepper grows back to the given step after a cutback.
-        next_dt = std::min(std::max(dt, step_size * tr.growth_factor), tr.dt);
-    }
+  };
 
-    if (!accepted)
+  /// A step is kept within [dt_min, dt_max].  An adaptive stepper also keeps it at most the
+  /// largest whose discretization does not depend on it: a larger step would change the answer
+  /// by more than its error estimate measures.  A fixed step is the one given.
+  double bounded(double h) const;
+  /// A trial step from @p from to @p end of size @p h: the last accepted state, or, when it
+  /// continues, the state of the step just taken.
+  SolveResult trial(const Vector & from, double end, double h, bool continues);
+  /// The step of size @p size from the accepted state @p old at @p start, and its decision.
+  Decision attempt(const Vector & old, double start, double size);
+  /// A step with a predictor takes one solve, and its difference from the predictor
+  /// @p predicted, times the factor @p factor of the predictor, estimates its local error
+  /// (Milne's device).
+  Decision predictedStep(
+      const Vector & old, double start, double size, const Vector & predicted, double factor);
+  /// One coarse step, and two half steps from the same starting state, whose difference
+  /// estimates the local error (Richardson).
+  Decision doubledStep(const Vector & old, double start, double size);
+  /// One step, sized by the Courant number, the iterations or the given step.
+  Decision singleStep(const Vector & old, double start, double size);
+  /// The decision of the error controller on the estimate @p estimate of the local error of a
+  /// step of size @p size.  A rejected step is retried at the size that the estimate asks for, at
+  /// least a tenth of the step (Hairer, Norsett and Wanner 1993, Sect. II.4).
+  Decision control(double estimate, double size, int iterations) const;
+  /// The rejection of a step of size @p size whose solve failed: a retry at a cut-back size.
+  Decision cutBack(double size, int iterations) const;
+  /// Return to the state @p old at @p start after the rejected step @p d, and take the size of
+  /// the retry.  False when the run stops because the size fell below dt_min or the steps were
+  /// rejected more than max_rejected_steps times in a row, which throws when the solver options
+  /// ask for it.
+  bool reject(const Decision & d, const Vector & old, double start);
+  /// Count, check and commit the accepted step of size @p size, and write the output times it
+  /// passed.
+  void accept(double size, int iterations);
+  /// The size of the step after the accepted step @p d of @p landing.
+  double nextStep(const Decision & d, const Landing & landing);
+  /// Write a checkpoint after the accepted step when one is due.
+  void checkpoint() const;
+
+  Problem & _p;
+  TimeIntegrator & _integrator;
+  const TransientOptions & _tr;
+  const SolverOptions & _options;
+  const CheckpointLayout & _layout;
+  const int _first_step;
+  const Parallel & _par;
+  const Stepper _stepper;
+  StepError _error;
+  const double _span, _end, _dt_min, _dt_max, _order;
+  OutputSchedule _outputs;
+  SolveResult _total;
+  int _step = 0;
+  double _dt = 0.0;
+  /// The step that the controller chose before an output time shortened a step, which the steps
+  /// after it return to (zero when there is none).
+  double _resume = 0.0;
+  int _rejected_in_a_row = 0;
+};
+
+Problem::TransientRun::TransientRun(Problem & problem,
+                                    TimeIntegrator & integrator,
+                                    const TransientOptions & tr,
+                                    const SolverOptions & options,
+                                    const CheckpointLayout & layout,
+                                    int first_step)
+    : _p(problem), _integrator(integrator), _tr(tr), _options(options), _layout(layout),
+      _first_step(first_step), _par(problem.parallel()),
+      _stepper(checkTransientOptions(tr, integrator)),
+      _error(problem, problem._new_time_only, problem._second_order_variables),
+      _span(tr.end_time - tr.start_time), _end(tr.end_time - kEndTolerance * std::abs(_span)),
+      _dt_min(tr.dt_min > 0 ? tr.dt_min : tr.dt * kSmallestStepFraction),
+      _dt_max(tr.dt_max > 0 ? tr.dt_max : std::abs(_span)), _order(integrator.order()),
+      _outputs(tr.output_times, kOutputTolerance * std::max(std::abs(_span), kSmallestSpan))
+{
+}
+
+SolveResult
+Problem::TransientRun::run()
+{
+  _p._time = _tr.start_time;
+  _dt = bounded(_tr.dt);
+  _outputs.writeAtStart(_p._time, _p._output_callback);
+  while (_p._time < _end)
+  {
+    const Landing landing = landOnTarget(_p._time, _outputs.target(_tr.end_time), _dt, _span);
+    const Vector old = _p._U;
+    const double start = _p._time;
+    const Decision d = attempt(old, start, landing.size);
+    if (!d.accepted)
     {
-      ++total.rejected_steps;
-      ++rejected_in_a_row;
-      _U = old;
-      _time = start;
-      dt = std::max(next_dt, dt_min);
-      if (options.verbose && par.isRoot())
-        std::cout << "  step rejected at t = " << start << "; retrying with dt = " << dt << "\n";
-      if (next_dt < dt_min || rejected_in_a_row > tr.max_rejected_steps)
-      {
-        if (options.error_on_divergence)
-        {
-          std::ostringstream os;
-          os << "dualmesh: the transient solve failed at t = " << start
-             << ". The step was rejected " << rejected_in_a_row << " times in a row";
-          if (next_dt < dt_min)
-            os << " and the step size reached " << next_dt << ", below the minimum " << dt_min
-               << ".";
-          else
-            os << ", more than max_rejected_steps = " << tr.max_rejected_steps << ".";
-          throw std::runtime_error(os.str());
-        }
-        return total;
-      }
+      if (!reject(d, old, start))
+        return _total;
       continue;
     }
-
-    rejected_in_a_row = 0;
-    ++step;
-    ++total.time_steps;
-    total.step_history.emplace_back(_time, step_size);
-    if (options.verbose && par.isRoot())
-      std::cout << "  step " << step << ": t = " << _time << ", dt = " << step_size
-                << ", iterations " << iterations << "\n";
-    // A step whose solver reports success can still hold NaN or infinite values (an unstable
-    // explicit term): the run stops there, before the values reach the output.
-    if (par.any(!_U.allFinite()))
-    {
-      std::ostringstream os;
-      os << "dualmesh: the solution has NaN or infinite values after the step to t = " << _time
-         << ". Either the time step is too large for the explicit terms (lower time_step or "
-            "courant_number), or a property is not finite at the solution.";
-      throw std::runtime_error(os.str());
-    }
-    integrator.accept(_U, _time);
-    commitState();
-    notifyStepAccepted();
-    largest(reached, variableSizes(_U, initial));
-    while (next_output < tr.output_times.size() &&
-           tr.output_times[next_output] <= _time + time_tolerance)
-    {
-      if (_output_callback)
-        _output_callback(static_cast<int>(next_output));
-      ++next_output;
-    }
-    if (shortened)
-      next_dt = std::max(next_dt, dt);
-    dt = std::min(std::max(next_dt, dt_min), dt_max);
-    if (!tr.checkpoint_file.empty())
-    {
-      const bool last = _time >= tr.end_time - 1e-12 * std::abs(span);
-      if ((tr.checkpoint_interval > 0 && step % tr.checkpoint_interval == 0) || last)
-        writeCheckpoint(tr.checkpoint_file, *this, layout, {_time, dt, first_step + step});
-    }
-    total.next_time_step = dt;
-    if (tr.max_steps > 0 && step >= tr.max_steps)
+    accept(landing.size, d.iterations);
+    _dt = nextStep(d, landing);
+    checkpoint();
+    _total.next_time_step = _dt;
+    if (_tr.max_steps > 0 && _step >= _tr.max_steps)
       break;
   }
-  total.converged = true;
-  return total;
+  _total.converged = true;
+  return _total;
+}
+
+double
+Problem::TransientRun::bounded(double h) const
+{
+  h = std::min(std::max(h, _dt_min), _dt_max);
+  return _stepper != Stepper::fixed ? std::min(h, _integrator.largestStep(_p._U)) : h;
+}
+
+SolveResult
+Problem::TransientRun::trial(const Vector & from, double end, double h, bool continues)
+{
+  _p._time = end;
+  SolveResult r = _integrator.step(_p._U, from, _p._time, h, continues);
+  _total.total_iterations += r.total_iterations;
+  _total.linear_iterations += r.linear_iterations;
+  _total.history.insert(_total.history.end(), r.history.begin(), r.history.end());
+  return r;
+}
+
+Problem::TransientRun::Decision
+Problem::TransientRun::attempt(const Vector & old, double start, double size)
+{
+  Vector predicted;
+  double factor = 0.0;
+  if (_stepper == Stepper::error && _integrator.predict(size, predicted, factor))
+    return predictedStep(old, start, size, predicted, factor);
+  if (_stepper == Stepper::error)
+    return doubledStep(old, start, size);
+  return singleStep(old, start, size);
+}
+
+Problem::TransientRun::Decision
+Problem::TransientRun::predictedStep(
+    const Vector & old, double start, double size, const Vector & predicted, double factor)
+{
+  const SolveResult r = trial(old, start + size, size, false);
+  if (!r.converged)
+    return cutBack(size, r.total_iterations);
+  return control(factor * _error.estimate(_p._U, predicted), size, r.total_iterations);
+}
+
+Problem::TransientRun::Decision
+Problem::TransientRun::doubledStep(const Vector & old, double start, double size)
+{
+  const SolveResult coarse = trial(old, start + size, size, false);
+  const Vector coarse_solution = _p._U;
+  SolveResult fine_a, fine_b;
+  if (coarse.converged)
+  {
+    _p._U = old;
+    fine_a = trial(old, start + 0.5 * size, 0.5 * size, false);
+    if (fine_a.converged)
+    {
+      const Vector half = _p._U;
+      fine_b = trial(half, start + size, 0.5 * size, true);
+    }
+  }
+  const int iterations =
+      std::max({coarse.total_iterations, fine_a.total_iterations, fine_b.total_iterations});
+  if (!coarse.converged || !fine_a.converged || !fine_b.converged)
+    return cutBack(size, iterations);
+  // Richardson estimate of the error of the two half steps, which are the more accurate answer
+  // and the one kept.
+  return control(
+      _error.estimate(_p._U, coarse_solution) / (std::pow(2.0, _order) - 1.0), size, iterations);
+}
+
+Problem::TransientRun::Decision
+Problem::TransientRun::singleStep(const Vector & old, double start, double size)
+{
+  const SolveResult r = trial(old, start + size, size, false);
+  const int iterations = r.total_iterations;
+  if (!r.converged)
+    return cutBack(size, iterations);
+  Decision d;
+  d.iterations = iterations;
+  if (_stepper == Stepper::courant)
+  {
+    // The step that gives the Courant number aimed at, at the velocity just reached.
+    const double courant = _integrator.courantNumber(_p._U, size);
+    d.uncapped =
+        courant > 0 ? size * _tr.courant_number / courant : std::numeric_limits<double>::infinity();
+    d.next_dt = std::min(d.uncapped, size * _tr.growth_factor);
+  }
+  else if (_stepper == Stepper::iteration)
+  {
+    if (iterations < _tr.optimal_iterations - _tr.iteration_window)
+      d.next_dt = size * _tr.growth_factor;
+    else if (iterations > _tr.optimal_iterations + _tr.iteration_window)
+      d.next_dt = size * _tr.cutback_factor;
+    else
+      d.next_dt = size;
+    d.uncapped = d.next_dt;
+  }
+  else
+  {
+    // The fixed stepper grows back to the given step after a cutback.
+    d.uncapped = _tr.dt;
+    d.next_dt = std::min(size * _tr.growth_factor, _tr.dt);
+  }
+  return d;
+}
+
+Problem::TransientRun::Decision
+Problem::TransientRun::control(double estimate, double size, int iterations) const
+{
+  const double ratio =
+      estimate > 0 ? kSafetyFactor * std::pow(_tr.error_tolerance / estimate, 1.0 / (_order + 1.0))
+                   : _tr.growth_factor;
+  Decision d;
+  d.iterations = iterations;
+  if (estimate > _tr.error_tolerance)
+  {
+    d.accepted = false;
+    d.next_dt = size * std::max(kSmallestRetryFraction, ratio);
+  }
+  else
+  {
+    d.uncapped =
+        estimate > 0 ? size * std::max(1.0, ratio) : std::numeric_limits<double>::infinity();
+    d.next_dt = std::min(d.uncapped, size * _tr.growth_factor);
+  }
+  return d;
+}
+
+Problem::TransientRun::Decision
+Problem::TransientRun::cutBack(double size, int iterations) const
+{
+  Decision d;
+  d.accepted = false;
+  d.next_dt = size * _tr.cutback_factor;
+  d.iterations = iterations;
+  return d;
+}
+
+bool
+Problem::TransientRun::reject(const Decision & d, const Vector & old, double start)
+{
+  ++_total.rejected_steps;
+  ++_rejected_in_a_row;
+  _p._U = old;
+  _p._time = start;
+  // A rejected step asks for a smaller one, so the step chosen before a shortening is dropped.
+  _resume = 0.0;
+  _dt = std::max(d.next_dt, _dt_min);
+  if (_options.verbose && _par.isRoot())
+    std::cout << "  step rejected at t = " << start << "; retrying with dt = " << _dt << "\n";
+  const bool stops = d.next_dt < _dt_min || _rejected_in_a_row > _tr.max_rejected_steps;
+  if (!stops)
+    return true;
+  if (_options.error_on_divergence)
+  {
+    std::ostringstream os;
+    os << "dualmesh: the transient solve failed at t = " << start << ". The step was rejected "
+       << _rejected_in_a_row << " times in a row";
+    if (d.next_dt < _dt_min)
+      os << " and the step size reached " << d.next_dt << ", below the minimum " << _dt_min << ".";
+    else
+      os << ", more than max_rejected_steps = " << _tr.max_rejected_steps << ".";
+    throw std::runtime_error(os.str());
+  }
+  return false;
+}
+
+void
+Problem::TransientRun::accept(double size, int iterations)
+{
+  _rejected_in_a_row = 0;
+  ++_step;
+  ++_total.time_steps;
+  _total.step_history.emplace_back(_p._time, size);
+  if (_options.verbose && _par.isRoot())
+    std::cout << "  step " << _step << ": t = " << _p._time << ", dt = " << size << ", iterations "
+              << iterations << "\n";
+  // A step whose solver reports success can still hold NaN or infinite values (an unstable
+  // explicit term): the run stops there, before the values reach the output.
+  if (_par.any(!_p._U.allFinite()))
+  {
+    std::ostringstream os;
+    os << "dualmesh: the solution has NaN or infinite values after the step to t = " << _p._time
+       << ". Either the time step is too large for the explicit terms (lower time_step or "
+          "courant_number), or a property is not finite at the solution.";
+    throw std::runtime_error(os.str());
+  }
+  _integrator.accept(_p._U, _p._time);
+  _p.commitState();
+  _p.notifyStepAccepted();
+  _error.accept(_p._U);
+  _outputs.writeUpTo(_p._time, _p._output_callback);
+}
+
+double
+Problem::TransientRun::nextStep(const Decision & d, const Landing & landing)
+{
+  // A shortened step is not the choice of the controller, so its growth cap, a multiple of that
+  // step, is no limit of the controller.  Where the cap binds, the steps after it return to the
+  // step chosen before the shortening by at most a doubling each, and never beyond the step that
+  // the controller allows without its cap (the step of the Courant number aimed at, or that the
+  // error estimate allows).  Where the cap does not bind, the step the controller chose stands.
+  // The step after a shortened one is at most twice it, so that two output times close together
+  // do not leave a step ratio beyond the stability of the backward differences.
+  double next_dt = d.next_dt;
+  if (landing.shortened)
+    _resume = std::max(_resume, _dt);
+  if (_resume > 0.0)
+  {
+    next_dt = std::max(next_dt, std::min({_resume, d.uncapped, kShortenedGrowth * landing.size}));
+    if (next_dt >= _resume || d.uncapped < _resume)
+      _resume = 0.0;
+  }
+  if (landing.shortened)
+    next_dt = std::min(next_dt, kShortenedGrowth * landing.size);
+  return bounded(next_dt);
+}
+
+void
+Problem::TransientRun::checkpoint() const
+{
+  if (_tr.checkpoint_file.empty())
+    return;
+  const bool last = _p._time >= _end;
+  if ((_tr.checkpoint_interval > 0 && _step % _tr.checkpoint_interval == 0) || last)
+  {
+    writeCheckpoint(_tr.checkpoint_file, _p, _layout, {_p._time, _dt, _first_step + _step});
+    if (_p._checkpoint_callback)
+      _p._checkpoint_callback();
+  }
+}
+
+SolveResult
+Problem::runTransient(TimeIntegrator & integrator,
+                      const TransientOptions & tr,
+                      const SolverOptions & options,
+                      const CheckpointLayout & layout,
+                      int first_step)
+{
+  return TransientRun(*this, integrator, tr, options, layout, first_step).run();
 }
 
 SolveResult
@@ -694,9 +998,7 @@ Problem::solveTransient(const TransientOptions & transient, const SolverOptions 
   }
   _time = tr.start_time;
   applyDirichlet(_U, 1.0);
-  if (!tr.restart_file.empty() && std::any_of(_second_order_variables.begin(),
-                                              _second_order_variables.end(),
-                                              [](char c) { return c != 0; }))
+  if (!tr.restart_file.empty() && hasSecondOrderVariables())
     throw InputError("A run with inertia does not restart from a checkpoint: the checkpoint "
                      "holds no velocity and acceleration.");
   // The run continues the last transient run of the problem when it starts from the state that
@@ -707,7 +1009,7 @@ Problem::solveTransient(const TransientOptions & transient, const SolverOptions 
   const bool continues = !par.any(!(_transient_end.size() == _U.size() && _transient_end == _U));
   std::optional<double> start_correction;
   if (tr.restart_file.empty() && !continues)
-    start_correction = projectInitialVelocity();
+    start_correction = _flow->projectInitialVelocity(*this);
   TimeIntegrator * integrator = _time_integrator.get();
   if (!integrator)
   {
@@ -721,19 +1023,6 @@ Problem::solveTransient(const TransientOptions & transient, const SolverOptions 
   result.start_correction = start_correction;
   _transient_end = _U;
   return result;
-}
-
-std::optional<double>
-Problem::projectInitialVelocity()
-{
-  initialize();
-  if (_start_projections.empty())
-    return std::nullopt;
-  applyDirichlet(_U, 1.0);
-  double correction = 0.0;
-  for (const auto & project : _start_projections)
-    correction = std::max(correction, project(_U));
-  return correction;
 }
 
 } // namespace dualmesh

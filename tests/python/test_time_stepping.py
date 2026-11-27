@@ -15,7 +15,7 @@ from __future__ import annotations
 import dualmesh
 import numpy
 import pytest
-from dualmesh.input import units
+from dualmesh import units
 
 
 def slab(num_elements=40, method="dmcdm"):
@@ -290,3 +290,77 @@ def test_the_distributed_solver_takes_the_same_steps():
     assert distributed_result.time_steps == serial_result.time_steps
     got = numpy.asarray(distributed.gathered_values("temperature"))
     assert got == pytest.approx(serial.values("temperature"), abs=1e-8)
+
+
+def test_a_step_that_lands_on_a_time_leaves_no_sliver():
+    """A fixed step of 0.01 to the end time 0.1003: a time less than two steps away is reached in
+    two equal steps of 0.00515, so no step is below half the given step.  A sliver of 0.0003
+    would leave the step after it, in a run that goes on, 33 times larger."""
+    result = slab().solve_transient(
+        end_time=0.1003, time_step=0.01, time_stepper="fixed", report="none"
+    )
+    times = [time for time, _ in result.step_history]
+    steps = numpy.array([step for _, step in result.step_history])
+    assert times[-1] == pytest.approx(0.1003)
+    assert steps.min() >= 0.5 * 0.01 - 1e-12
+
+
+def test_the_step_after_two_close_output_times_grows_by_at_most_twice(tmp_path):
+    """Output times 0.1 and 0.1003 force a step of 0.0003.  The steps after it double back to the
+    given step of 0.01, so no step is more than twice the one before it, below the ratio
+    1 + sqrt(2) at which the backward difference of order 2 is zero-stable."""
+    output = dualmesh.Output(directory=str(tmp_path), times=[0.1, 0.1003, 0.2])
+    result = slab().solve_transient(
+        end_time=0.2, time_step=0.01, time_stepper="fixed", output=output, report="none"
+    )
+    times = numpy.array([time for time, _ in result.step_history])
+    steps = numpy.array([step for _, step in result.step_history])
+    assert numpy.min(numpy.abs(times - 0.1003)) < 1e-12
+    assert steps.min() == pytest.approx(0.0003, rel=1e-6)
+    assert (steps[1:] / steps[:-1]).max() <= 2.0 + 1e-9
+    assert steps[times > 0.15].max() == pytest.approx(0.01)
+
+
+def test_a_fixed_step_that_may_not_grow_still_returns_after_two_close_output_times(tmp_path):
+    """With growth_factor 1 the fixed stepper never grows a step that it chose.  The step of
+    0.0003 forced by the output times 0.1 and 0.1003 is not its choice, so the steps after it
+    double back to the given step of 0.01 (0.0006, 0.0012, 0.0024, 0.0048, 0.0096, then 0.01)
+    instead of staying at twice the forced step."""
+    output = dualmesh.Output(directory=str(tmp_path), times=[0.1, 0.1003, 0.2])
+    result = slab().solve_transient(
+        end_time=0.2,
+        time_step=0.01,
+        time_stepper="fixed",
+        growth_factor=1.0,
+        output=output,
+        report="none",
+    )
+    times = numpy.array([time for time, _ in result.step_history])
+    steps = numpy.array([step for _, step in result.step_history])
+    landing = int(numpy.argmin(numpy.abs(times - 0.1003)))
+    assert steps[landing] == pytest.approx(0.0003, rel=1e-6)
+    assert steps[landing + 1 : landing + 7] == pytest.approx(
+        [0.0006, 0.0012, 0.0024, 0.0048, 0.0096, 0.01], rel=1e-6
+    )
+    assert (steps[1:] / steps[:-1]).max() <= 2.0 + 1e-9
+
+
+def test_the_error_stepper_across_two_close_output_times_keeps_the_step_ratio_stable(tmp_path):
+    """Output times 0.1 and 0.1003 force a step of 0.0003 on the error stepper.  The step after it
+    is at most twice it, and every other step grows by at most the default growth factor of 2, so
+    no step reaches 1 + sqrt(2) times the one before it, the ratio at which the backward
+    difference of order 2 stops being zero-stable.  A step that reaches its target may exceed
+    twice the one before by the sliver of 1e-8 of the interval only, so the bound holds by a
+    margin of about 0.4 and needs no tolerance.  The landing time is compared to 1e-12 and the
+    forced step to a relative 1e-9, both far above the rounding of one sum or difference of
+    times near 0.1, which is about 1e-17."""
+    output = dualmesh.Output(directory=str(tmp_path), times=[0.1, 0.1003, 0.2])
+    result = slab().solve_transient(
+        end_time=0.2, time_step=0.01, time_stepper="error", output=output, report="none"
+    )
+    times = numpy.array([time for time, _ in result.step_history])
+    steps = numpy.array([step for _, step in result.step_history])
+    landing = int(numpy.argmin(numpy.abs(times - 0.1003)))
+    assert abs(times[landing] - 0.1003) < 1e-12
+    assert steps[landing] == pytest.approx(0.0003, rel=1e-9)
+    assert (steps[1:] / steps[:-1]).max() < 1.0 + numpy.sqrt(2.0)

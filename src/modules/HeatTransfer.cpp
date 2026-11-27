@@ -7,12 +7,9 @@
 // the heat transfer across a gap.
 #include "dualmesh/base/Deformation.h"
 #include "dualmesh/base/Factory.h"
-#include "dualmesh/base/FieldExpression.h"
 #include "dualmesh/base/Kernel.h"
 #include "dualmesh/base/Problem.h"
 #include "dualmesh/modules/Framework.h"
-
-#include <cmath>
 
 namespace dualmesh
 {
@@ -98,6 +95,19 @@ public:
   bool needsLaplacian() const override { return true; }
   void computeFlux(const QpContext & ctx, ADVector3 & F) const override
   {
+    double capacity = 0.0;
+    for (const Advection * a : _advection)
+      if (a->activeOnBlock(ctx.block))
+        capacity += a->coefficient(ctx).value();
+    // Where no advection kernel carries heat (none active on the block, or a zero heat capacity
+    // rho c_p), the flow carries no heat along the streamlines, so there is no streamline term.
+    // The diffusivity k / (rho c_p) of the parameter tau would also be infinite, or 0 / 0.
+    if (capacity <= 0.0)
+    {
+      for (std::size_t d = 0; d < _v.size(); ++d)
+        F[d] = ADReal(0.0);
+      return;
+    }
     // The assembly weights this kernel as a steady term, so r holds the steady terms at the
     // state of ctx, and the time terms with the weight that makes the time derivative enter a
     // step of the theta method with the weight 1.
@@ -109,10 +119,6 @@ public:
     for (const Diffusion * d : _diffusion)
       if (d->activeOnBlock(ctx.block))
         conductivity += d->diffusivity(ctx);
-    double capacity = 0.0;
-    for (const Advection * a : _advection)
-      if (a->activeOnBlock(ctx.block))
-        capacity += a->coefficient(ctx).value();
     ADReal speed2(1e-300);
     for (int v : _v)
       speed2 += ctx.coefficientValue(v) * ctx.coefficientValue(v);
@@ -156,15 +162,15 @@ public:
                   "0, no conduction across the gap.");
     p.addOptional("primary_emissivity",
                   ParameterKind::Real,
-                  0.0,
-                  "Emissivity e_p of the primary surface. The radiation term acts only when both "
-                  "emissivities are positive, and the temperatures must then be in K. Default 0, "
+                  std::monostate{},
+                  "Emissivity e_p of the primary surface, a number in (0, 1]. The radiation term "
+                  "needs both emissivities, and the temperatures must then be in K. Default none, "
                   "no radiation across the gap.");
     p.addOptional("secondary_emissivity",
                   ParameterKind::Real,
-                  0.0,
-                  "Emissivity e_s of the secondary surface. Default 0, no radiation across the "
-                  "gap.");
+                  std::monostate{},
+                  "Emissivity e_s of the secondary surface, a number in (0, 1]. Default none, no "
+                  "radiation across the gap.");
     deformation::addParameter(p,
                               "the conductance is per unit deformed primary area, and the code "
                               "multiplies the flux by the area ratio da/dA = |J F_d^-T N| of the "
@@ -175,9 +181,25 @@ public:
   }
   explicit GapHeatTransfer(const InputParameters & p) : InterfaceBC(p)
   {
-    const double ep = p.getReal("primary_emissivity");
-    const double es = p.getReal("secondary_emissivity");
-    _radiation = ep > 0 && es > 0 ? kStefanBoltzmann / (1.0 / ep + 1.0 / es - 1.0) : 0.0;
+    const bool primary = p.isSet("primary_emissivity");
+    const bool secondary = p.isSet("secondary_emissivity");
+    if (primary != secondary)
+      throw InputError("gap_heat_transfer '" + name() +
+                       "': radiation across the gap needs both "
+                       "'primary_emissivity' and 'secondary_emissivity'.");
+    if (!primary)
+      return;
+    for (const char * key : {"primary_emissivity", "secondary_emissivity"})
+    {
+      const double e = p.getReal(key);
+      // The negated test also refuses NaN.
+      if (!(e > 0.0 && e <= 1.0))
+        throw InputError("gap_heat_transfer '" + name() + "': '" + key + "' is " +
+                         std::to_string(e) + ", and an emissivity lies in (0, 1].");
+    }
+    // The exchange factor of two parallel grey surfaces, 1 / (1/e_p + 1/e_s - 1).
+    _radiation = kStefanBoltzmann / (1.0 / p.getReal("primary_emissivity") +
+                                     1.0 / p.getReal("secondary_emissivity") - 1.0);
   }
   void initialSetup(Problem & problem) override
   {

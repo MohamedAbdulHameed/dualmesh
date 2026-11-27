@@ -39,10 +39,11 @@ DMCDM balances the equation over the control domain of each node, a cell of a
 second mesh, the dual mesh, built around the node inside the elements of the
 primal mesh.  The finite element interpolation gives the flux through each face
 of a control domain, and that flux leaves one control domain and enters its
-neighbour, so DMCDM conserves mass and heat in every control domain.  A flow
-with an equal-order velocity and pressure takes DMCDM by default, and every
-other problem takes FEM.  One keyword, ``method``, chooses the other method and
-leaves the rest of the input unchanged.  :doc:`concepts` gives the two
+neighbour, so DMCDM conserves mass and heat in every control domain.  A
+problem with an equal-order flow takes DMCDM by default, together with any
+solid or heat conduction beside the flow, and every other problem takes FEM.
+One keyword, ``method``, chooses the other method and leaves the rest of the
+input unchanged.  :doc:`concepts` gives the two
 statements of the balance, and :doc:`theory/index` derives them.
 
 

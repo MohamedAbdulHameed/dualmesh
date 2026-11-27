@@ -2,7 +2,7 @@
 #include "dualmesh/mesh/Subdivision.h"
 
 #include "dualmesh/core/InputParameters.h"
-#include "dualmesh/fe/ReferenceElement.h"
+#include "dualmesh/mesh/ReferenceElement.h"
 
 #include <algorithm>
 #include <cmath>

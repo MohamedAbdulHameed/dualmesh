@@ -2,17 +2,14 @@
 #include "dualmesh/parallel/Partition.h"
 
 #include "dualmesh/core/InputParameters.h"
-#include "dualmesh/fe/ReferenceElement.h"
+#include "dualmesh/mesh/ReferenceElement.h"
 
 #include <algorithm>
 #include <map>
-#include <set>
 
-#ifdef DUALMESH_HAVE_PETSC
 #include "Plex.h"
 #include "dualmesh/linalg/PetscSolver.h"
 #define DM_PETSC(call) petsc::check((call), #call)
-#endif
 
 namespace dualmesh
 {
@@ -56,7 +53,6 @@ std::vector<std::string>
 availablePartitioners()
 {
   std::vector<std::string> out;
-#ifdef DUALMESH_HAVE_PETSC
 #ifdef PETSC_HAVE_PTSCOTCH
   out.push_back("ptscotch");
 #endif
@@ -64,7 +60,6 @@ availablePartitioners()
   out.push_back("parmetis");
 #endif
   out.push_back("simple");
-#endif
   return out;
 }
 
@@ -90,6 +85,89 @@ MeshPartition::partSizes() const
           *std::min_element(sizes.begin(), sizes.end())};
 }
 
+namespace
+{
+/// Partition the graph of num_vertices vertices, in which the neighbours of vertex v are
+/// adjacency[k] for offsets[v] <= k < offsets[v + 1], into num_parts parts with no vertex or edge
+/// weights.  The section parts receives the number of vertices of each part, and partition lists
+/// the vertices part after part.  PETSc 3.21 added the section of the edge weights.
+void
+partitionGraph(PetscPartitioner partitioner,
+               int num_parts,
+               PetscInt num_vertices,
+               PetscInt * offsets,
+               PetscInt * adjacency,
+               PetscSection parts,
+               IS & partition)
+{
+#if PETSC_VERSION_GE(3, 21, 0)
+  DM_PETSC(PetscPartitionerPartition(partitioner,
+                                     num_parts,
+                                     num_vertices,
+                                     offsets,
+                                     adjacency,
+                                     nullptr,
+                                     nullptr,
+                                     nullptr,
+                                     parts,
+                                     &partition));
+#else
+  DM_PETSC(PetscPartitionerPartition(partitioner,
+                                     num_parts,
+                                     num_vertices,
+                                     offsets,
+                                     adjacency,
+                                     nullptr,
+                                     nullptr,
+                                     parts,
+                                     &partition));
+#endif
+}
+
+/// The part of every element of mesh among num_parts parts, from the PETSc partitioner of the
+/// given type.  The partitioner divides the graph of the elements that share a face, built by
+/// DMPlex from the corner topology.
+std::vector<int>
+elementParts(const Mesh & mesh, int num_parts, const std::string & type)
+{
+  std::vector<int> element_part(mesh.numElements(), 0);
+  DM dm = plex::cornerTopology(mesh, PETSC_COMM_SELF, true);
+  PetscInt num_vertices = 0;
+  PetscInt * offsets = nullptr;
+  PetscInt * adjacency = nullptr;
+  IS numbering = nullptr;
+  DM_PETSC(DMPlexCreatePartitionerGraph(dm, 0, &num_vertices, &offsets, &adjacency, &numbering));
+  PetscPartitioner partitioner;
+  DM_PETSC(PetscPartitionerCreate(PETSC_COMM_SELF, &partitioner));
+  DM_PETSC(PetscPartitionerSetType(partitioner, type.c_str()));
+  PetscSection parts;
+  DM_PETSC(PetscSectionCreate(PETSC_COMM_SELF, &parts));
+  IS partition = nullptr;
+  partitionGraph(partitioner, num_parts, num_vertices, offsets, adjacency, parts, partition);
+  // The partition lists the elements part after part, and the section gives the number of
+  // elements of each part.
+  const PetscInt * elements = nullptr;
+  DM_PETSC(ISGetIndices(partition, &elements));
+  for (int p = 0; p < num_parts; ++p)
+  {
+    PetscInt count = 0, offset = 0;
+    DM_PETSC(PetscSectionGetDof(parts, p, &count));
+    DM_PETSC(PetscSectionGetOffset(parts, p, &offset));
+    for (PetscInt k = offset; k < offset + count; ++k)
+      element_part[elements[k]] = p;
+  }
+  DM_PETSC(ISRestoreIndices(partition, &elements));
+  DM_PETSC(ISDestroy(&partition));
+  DM_PETSC(PetscSectionDestroy(&parts));
+  DM_PETSC(PetscPartitionerDestroy(&partitioner));
+  DM_PETSC(ISDestroy(&numbering));
+  DM_PETSC(PetscFree(offsets));
+  DM_PETSC(PetscFree(adjacency));
+  DM_PETSC(DMDestroy(&dm));
+  return element_part;
+}
+} // namespace
+
 MeshPartition
 partitionMesh(const Mesh & mesh, int num_parts, const std::string & method)
 {
@@ -102,71 +180,7 @@ partitionMesh(const Mesh & mesh, int num_parts, const std::string & method)
   out.num_parts = num_parts;
   out.element_part.assign(mesh.numElements(), 0);
   if (num_parts > 1)
-  {
-#ifdef DUALMESH_HAVE_PETSC
-    // PETSc's partitioner divides the graph of the elements that share a face, built by DMPlex from the corner topology.
-    const std::string type = plex::partitionerType(method);
-    DM dm = plex::cornerTopology(mesh, PETSC_COMM_SELF, true);
-    PetscInt num_vertices = 0;
-    PetscInt * offsets = nullptr;
-    PetscInt * adjacency = nullptr;
-    IS numbering = nullptr;
-    DM_PETSC(DMPlexCreatePartitionerGraph(dm, 0, &num_vertices, &offsets, &adjacency, &numbering));
-    PetscPartitioner partitioner;
-    DM_PETSC(PetscPartitionerCreate(PETSC_COMM_SELF, &partitioner));
-    DM_PETSC(PetscPartitionerSetType(partitioner, type.c_str()));
-    PetscSection parts;
-    DM_PETSC(PetscSectionCreate(PETSC_COMM_SELF, &parts));
-    IS partition = nullptr;
-    // PETSc 3.21 added the section of the edge weights.
-#if PETSC_VERSION_GE(3, 21, 0)
-    DM_PETSC(PetscPartitionerPartition(partitioner,
-                                       num_parts,
-                                       num_vertices,
-                                       offsets,
-                                       adjacency,
-                                       nullptr,
-                                       nullptr,
-                                       nullptr,
-                                       parts,
-                                       &partition));
-#else
-    DM_PETSC(PetscPartitionerPartition(partitioner,
-                                       num_parts,
-                                       num_vertices,
-                                       offsets,
-                                       adjacency,
-                                       nullptr,
-                                       nullptr,
-                                       parts,
-                                       &partition));
-#endif
-    // The partition lists the elements part after part, and the section gives the number of elements of each part.
-    const PetscInt * elements = nullptr;
-    DM_PETSC(ISGetIndices(partition, &elements));
-    for (int p = 0; p < num_parts; ++p)
-    {
-      PetscInt count = 0, offset = 0;
-      DM_PETSC(PetscSectionGetDof(parts, p, &count));
-      DM_PETSC(PetscSectionGetOffset(parts, p, &offset));
-      for (PetscInt k = offset; k < offset + count; ++k)
-        out.element_part[elements[k]] = p;
-    }
-    DM_PETSC(ISRestoreIndices(partition, &elements));
-    DM_PETSC(ISDestroy(&partition));
-    DM_PETSC(PetscSectionDestroy(&parts));
-    DM_PETSC(PetscPartitionerDestroy(&partitioner));
-    DM_PETSC(ISDestroy(&numbering));
-    DM_PETSC(PetscFree(offsets));
-    DM_PETSC(PetscFree(adjacency));
-    DM_PETSC(DMDestroy(&dm));
-#else
-    (void) method;
-    throw InputError(
-        "Partitioning a mesh needs a build with PETSc (MPI, or -DDUALMESH_ENABLE_PETSC=ON).");
-#endif
-  }
-
+    out.element_part = elementParts(mesh, num_parts, plex::partitionerType(method));
   // Which parts touch each node, and which of them owns it.
   out.node_parts.assign(mesh.numNodes(), {});
   for (Index e = 0; e < mesh.numElements(); ++e)

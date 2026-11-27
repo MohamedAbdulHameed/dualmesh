@@ -3,8 +3,8 @@
 `expression` calls `dimension_of` in its constructor, so a node with
 inconsistent dimensions never exists. The function reads only the attributes
 `kind`, `value` and `dimension` of the operands, so this module does not
-import `expression`. It also holds the set of leaf kinds, the length dimension
-and the zero test, which `expression` and `differentiate` import from here.
+import `graph`. It also holds the set of leaf kinds, the length dimension
+and the zero test, which `graph` and `calculus` import from here.
 
 The rules:
 
@@ -31,10 +31,11 @@ The rules:
 
 from fractions import Fraction
 
-from dualmesh.input.units import base, dimension, dimensionless, input_error
+from dualmesh._core import InputError
+from dualmesh.units import base, dimension, dimensionless
 
 
-class dimension_error(input_error):
+class dimension_error(InputError):
     """An expression whose dimensions do not agree."""
 
 

@@ -7,8 +7,8 @@ import copy
 import re
 
 import pytest
+from dualmesh._core import InputError
 from dualmesh.input import schema
-from dualmesh.input.units import input_error
 
 
 def plate() -> dict:
@@ -52,9 +52,9 @@ def changed(tree: dict, path: tuple, value) -> dict:
 
 
 def raises_naming(*parts: str):
-    """Expects input_error with a message that holds every part."""
+    """Expects InputError with a message that holds every part."""
     return pytest.raises(
-        input_error, match="(?s)" + "".join(f"(?=.*{re.escape(part)})" for part in parts)
+        InputError, match="(?s)" + "".join(f"(?=.*{re.escape(part)})" for part in parts)
     )
 
 

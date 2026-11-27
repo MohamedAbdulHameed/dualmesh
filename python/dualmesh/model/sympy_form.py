@@ -7,23 +7,23 @@ A comparison becomes 1 where it holds and 0 elsewhere, and a `conditional` a
 `Piecewise`.
 
 `from_sympy` reads a SymPy expression back into a dimensionless graph, which
-the printer of the engine (`dualmesh.input.lower.write_expression`) writes.
+the printer of the engine (`dualmesh.model.engine_form.write_expression`) writes.
 The symbols x, y and z become the coordinates and t the time, and any other
 symbol a name that the engine resolves.
+
+`coordinate_symbols`, `sympy_expression` and `sympy_gradient` give the SymPy
+forms that a manufactured solution is written in, in the symbols x, y, z and t.
 
 SymPy is needed only here, and it is imported when a conversion runs.
 """
 
-import importlib
 import operator
 from functools import reduce
 
-from dualmesh.input.units import dimensionless, input_error
+from dualmesh._core import InputError
+from dualmesh.model import graph
 from dualmesh.model.dimensions import comparisons
-
-# import_module returns the module itself, which dualmesh.model hides behind the class of the
-# same name.
-graph = importlib.import_module("dualmesh.model.expression")
+from dualmesh.units import dimensionless
 
 
 def sympy_module():
@@ -31,9 +31,31 @@ def sympy_module():
         import sympy
     except ImportError as error:  # pragma: no cover - depends on the environment
         raise ImportError(
-            "the conversion to SymPy needs SymPy. Install it with 'pip install sympy'"
+            "the manufactured solutions and the conversion to SymPy need SymPy. Install it with "
+            "'pip install sympy'"
         ) from error
     return sympy
+
+
+def coordinate_symbols():
+    """Return the real SymPy symbols x, y, z and t."""
+    return sympy_module().symbols("x y z t", real=True)
+
+
+def sympy_expression(value):
+    """Return a number, a text or a SymPy expression as a SymPy expression in x, y, z and t."""
+    sympy = sympy_module()
+    if isinstance(value, str):
+        x, y, z, t = coordinate_symbols()
+        names = {"x": x, "y": y, "z": z, "t": t, "pi": sympy.pi, "e": sympy.E}
+        return sympy.sympify(value, locals=names)
+    return sympy.sympify(value)
+
+
+def sympy_gradient(u):
+    """Return the derivatives of the SymPy expression u along x, y and z."""
+    x, y, z, _t = coordinate_symbols()
+    return [u.diff(x), u.diff(y), u.diff(z)]
 
 
 def number_form(value: float):
@@ -114,7 +136,7 @@ def to_sympy(node, leaf):
             condition, if_true, if_false = current.operands
             result = sympy.Piecewise((walk(if_true), relation(condition)), (walk(if_false), True))
         else:
-            raise input_error(
+            raise InputError(
                 f"'{current}' has no SymPy form. Expand it into scalar expressions first"
             )
         converted[current] = result
@@ -195,7 +217,7 @@ def from_sympy(expression):
             arguments = [walk(argument) for argument in current.args]
             result = function(*arguments) if len(arguments) == 1 else reduce(function, arguments)
         else:
-            raise input_error(
+            raise InputError(
                 f"the SymPy expression '{current}' holds {type(current).__name__}, which the "
                 f"engine does not evaluate"
             )

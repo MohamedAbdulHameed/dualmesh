@@ -3,11 +3,11 @@
 // The gather-scatter of shared entities: the one communication primitive of every distributed operation on the nodes (or other entities) that several ranks hold.
 // The caller gives the global index of every local entity, and the operations then combine the values of each index across the ranks that hold it, as gs_setup and gs_op of gslib do (Nek5000).
 // Two libraries can do the communication: PETSc's star forests (PetscSF, the default), in which the owner of an entity is a root and the copies on the other ranks are its leaves, and gslib itself, which chooses between pairwise exchanges, a crystal router and an all-reduce by timing them at setup.
-// Without MPI, or on one rank, every operation leaves the values unchanged.
+// On one rank every operation leaves the values unchanged.
 #pragma once
 
 #include "dualmesh/core/Types.h"
-#include "dualmesh/parallel/Communicator.h"
+#include "dualmesh/linalg/Communicator.h"
 
 #include <memory>
 #include <string>
@@ -25,7 +25,7 @@ public:
     Petsc,
     Gslib
   };
-  /// Whether this build has gslib (a build with MPI, unless configured without it).
+  /// Whether this build has gslib (unless configured with DUALMESH_ENABLE_GSLIB off).
   static bool haveGslib();
   /// The library named "petsc" or "gslib".
   static Library library(const std::string & name);

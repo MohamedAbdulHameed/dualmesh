@@ -29,6 +29,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import numpy
+
 
 @dataclass(frozen=True)
 class BeamStiffness:
@@ -39,11 +41,6 @@ class BeamStiffness:
     bending: float  # D_xx
     shear: float  # S_xz
 
-    @property
-    def reduced_bending(self) -> float:
-        r"""The reduced bending stiffness :math:`D^{*} = D_{xx} A_{xx} - B_{xx}^2`."""
-        return self.bending * self.extensional - self.coupling**2
-
 
 def beam_stiffness(
     modulus_top: float,
@@ -51,15 +48,18 @@ def beam_stiffness(
     power_law_index: float,
     height: float,
     width: float = 1.0,
-    poissons_ratio: float = 1.0 / 3.0,
+    *,
+    poissons_ratio: float,
     shear_correction_factor: float = 5.0 / 6.0,
     plate: bool = False,
 ) -> BeamStiffness:
     r"""Closed-form stiffnesses of a power-law functionally graded section.
 
     ``modulus_top`` is :math:`E_1` (at :math:`z = +h/2`) and ``modulus_bottom``
-    is :math:`E_2` (at :math:`z = -h/2`).  With ``plate=True`` the coefficients
-    are divided by :math:`1 - \nu^2`, as required by the plate theories.
+    is :math:`E_2` (at :math:`z = -h/2`).  ``poissons_ratio`` is :math:`\nu`,
+    which sets the shear stiffness and has no default, because no one value
+    suits every material.  With ``plate=True`` the coefficients are divided by
+    :math:`1 - \nu^2`, as required by the plate theories.
     """
     n = float(power_law_index)
     if n < 0:
@@ -104,8 +104,6 @@ def stiffness_by_quadrature(
     num_points: int = 400,
 ) -> tuple[float, float, float]:
     """``(A, B, D)`` obtained by numerical integration (used to check the formulas)."""
-    import numpy
-
     z, w = numpy.polynomial.legendre.leggauss(num_points)
     z = z * height / 2
     w = w * height / 2

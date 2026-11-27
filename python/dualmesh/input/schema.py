@@ -16,35 +16,29 @@ the whole tree, for the names that one section takes from another.
 
 import collections
 import copy
-import importlib
 import inspect
 import itertools
 import os
 import re
 from pathlib import Path
 
-from dualmesh.console import suggestion
+from dualmesh._core import InputError
 from dualmesh.input.physics_options import option_choices, physics_functions, read_only_with
 from dualmesh.input.read import read_table
-from dualmesh.input.units import (
+from dualmesh.model import conservation_law_from_input, field, graph, parse
+from dualmesh.model.syntax import formula_text
+from dualmesh.parameters import suggestion
+from dualmesh.tables import is_number
+from dualmesh.units import (
     SI_unit_text,
     dimensionless,
     fail,
-    input_error,
     lookup,
     parse_unit,
     position_names,
     standard_names,
     to_SI,
 )
-from dualmesh.model import conservation_law_from_input, field, parse
-from dualmesh.model.parse import formula_text
-from dualmesh.tables import is_number
-
-# import_module returns the module itself, which dualmesh.model hides behind the class of the
-# same name.
-graph = importlib.import_module("dualmesh.model.expression")
-graph_leaves = graph.leaves
 
 section_order = (
     "mesh",
@@ -201,7 +195,7 @@ class context:
             return
         try:
             node = parse(flux, self.symbols, self.coordinate_system)
-        except input_error:
+        except InputError:
             return
         self.declared[flux_name] = (node.dimension, "vector", 1.0)
         self.symbols[flux_name] = field(
@@ -220,7 +214,7 @@ class context:
             return
         try:
             factor, physical_dimension = parse_unit(unit)
-        except input_error:
+        except InputError:
             return
         self.declared[name] = (physical_dimension, shape, factor)
 
@@ -257,7 +251,7 @@ class context:
             return physical_dimension, SI_unit_text(physical_dimension), ranks_of_shape[shape]
         try:
             entry, component = lookup(name, self.coordinate_system)
-        except input_error as error:
+        except InputError as error:
             fail(
                 path,
                 f"{error} A name outside the vocabulary declares its unit once in properties, "
@@ -438,7 +432,7 @@ def check_formula(
     """
     try:
         node = parse(formula, tree_context.symbols, tree_context.coordinate_system)
-    except input_error as error:
+    except InputError as error:
         fail(path, str(error))
     if node.dimension != expected:
         fail(
@@ -466,7 +460,7 @@ def table_columns(value, path, tree_context) -> tuple[dict, str]:
         file = text()(given["file"], file_path, tree_context)
         try:
             return read_table(tree_context.path_of(file)), file_path
-        except input_error as error:
+        except InputError as error:
             fail(file_path, str(error))
     column = table({"unit": (text(), "1"), "values": (sequence(numeric_value), required)})
     return {
@@ -518,7 +512,7 @@ def table_value(value, name: str, expected, path: str, tree_context) -> dict:
         else:
             try:
                 node = parse(column_name, tree_context.symbols, tree_context.coordinate_system)
-            except input_error as error:
+            except InputError as error:
                 fail(column_path, str(error))
             if node.rank != 0:
                 fail(
@@ -528,7 +522,7 @@ def table_value(value, name: str, expected, path: str, tree_context) -> dict:
             column_dimension = node.dimension
         try:
             factor, unit_dimension = parse_unit(column["unit"])
-        except input_error as error:
+        except InputError as error:
             fail(column_path, str(error))
         if unit_dimension != column_dimension:
             fail(
@@ -656,13 +650,13 @@ def properties(value, path, tree_context):
             )
             try:
                 parse_unit(declaration["unit"])
-            except input_error as error:
+            except InputError as error:
                 fail(join(name_path, "unit"), str(error))
             given, name_path = declaration["value"], join(name_path, "value")
         elif entry is None:
             try:
                 entry, _ = lookup(name, tree_context.coordinate_system)
-            except input_error as error:
+            except InputError as error:
                 fail(
                     name_path,
                     f"{error} A name outside the vocabulary declares its unit once, "
@@ -745,7 +739,7 @@ def initial_component(value, name: str, path: str, tree_context, expected, unit:
         others = sorted(
             {
                 leaf.name if leaf.name else leaf.kind
-                for leaf in graph_leaves(formula.node)
+                for leaf in graph.leaves(formula.node)
                 if leaf.kind not in coordinate_leaves
                 or (leaf.kind == "constant" and leaf.value is None)
             }
@@ -891,7 +885,7 @@ def one_method(value, path, tree_context) -> str:
 
 
 def models(value, path, tree_context):
-    """User models keep their strings, which model.parse reads and checks.
+    """User models keep their strings, which model.syntax reads and checks.
 
     The whole tree parses each model into its conservation law and checks the dimensions of its
     terms, of its state rates and of its flux_name. One section alone checks the keys only,
@@ -916,7 +910,7 @@ def check_model(name: str, entry: dict, path: str, tree_context) -> None:
     )
     try:
         law.check()
-    except input_error as error:
+    except InputError as error:
         raise type(error)(f"{path}: {error}") from None
     check_eigenvalue(law, path, tree_context)
     flux_name = entry.get("flux_name")
@@ -940,7 +934,7 @@ def check_model(name: str, entry: dict, path: str, tree_context) -> None:
 
 def reads_eigenvalue(node) -> bool:
     return node is not None and any(
-        leaf.kind == "constant" and leaf.name == eigenvalue_symbol for leaf in graph_leaves(node)
+        leaf.kind == "constant" and leaf.name == eigenvalue_symbol for leaf in graph.leaves(node)
     )
 
 
@@ -1098,7 +1092,7 @@ def length_unit(value, path, tree_context):
     unit = text()(value, path, tree_context)
     try:
         factor, unit_dimension = parse_unit(unit)
-    except input_error as error:
+    except InputError as error:
         fail(path, str(error))
     if unit_dimension != parse_unit("m")[1]:
         fail(path, f"expects a unit of length, such as m or mm, got '{unit}'.")
@@ -1182,7 +1176,7 @@ def eigenvalues(value, path, tree_context):
     """The eigenvalue study: the count eigenvalues closest to near. Every field varies in time as
     u e^(-lambda t), so the time terms of the problem define the eigenvalue lambda in 1/s. A
     problem without a time derivative defines it by the source of a model, where it is a
-    number."""
+    number. A vibration has lambda = i omega, and near is then the angular frequency omega."""
     tree = tree_context.tree
     for section in ("time", "mesh_adaptivity"):
         if section in tree:

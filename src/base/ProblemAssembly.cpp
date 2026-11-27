@@ -1,29 +1,19 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 //
-// Residual/Jacobian assembly and the steady and transient executioners.
-#include "dualmesh/base/Console.h"
+// Residual and Jacobian assembly, the prescribed values, and the checks of the assembled system.
 #include "dualmesh/base/Problem.h"
-#include "dualmesh/parallel/Checkpoint.h"
-
-#include "dualmesh/linalg/LinearSolverChoice.h"
-#include "dualmesh/linalg/PetscSolver.h"
-#include "dualmesh/linalg/SaddlePointBlocks.h"
 
 #ifdef _OPENMP
 #include <omp.h>
 #endif
 
 #include <algorithm>
-#include <chrono>
 #include <cmath>
-#include <deque>
 #include <exception>
-#include <iostream>
 #include <limits>
-#include <numeric>
-#include <optional>
 #include <set>
 #include <sstream>
+#include <stdexcept>
 #include <tuple>
 
 namespace dualmesh
@@ -103,10 +93,59 @@ scatter(const std::vector<ADReal> & Rloc,
     }
   }
 }
+/// The flux of kernel @p k through the interface @p ip of two control domains, times @p scale,
+/// into @p ro and @p rn: out of the control domain of the owner (-F.n) and into that of the
+/// neighbour, with the sizes of the two terms added to @p ro_size and @p rn_size (from the term
+/// sizes when @p sizes).  @p per_side: the flux differs between the two sides, as a
+/// non-conservative face flux of an advective kernel does
+/// (AdvectiveKernel::nonConservativeFaceFlux), and rn takes that of the neighbour's equation.
+void
+faceFlux(QpContext & ctx,
+         const Kernel & k,
+         const IntegrationPoint & ip,
+         int dim,
+         double scale,
+         bool per_side,
+         bool sizes,
+         ADReal & ro,
+         ADReal & rn,
+         double & ro_size,
+         double & rn_size)
+{
+  ADVector3 F{ADReal(0.0), ADReal(0.0), ADReal(0.0)};
+  if (per_side)
+    ctx.reference_side = 0;
+  k.computeFlux(ctx, F);
+  ADVector3 FN = F;
+  if (per_side)
+  {
+    ctx.reference_side = 1;
+    FN = {ADReal(0.0), ADReal(0.0), ADReal(0.0)};
+    k.computeFlux(ctx, FN);
+    ctx.reference_side = -1;
+  }
+  double F_size[3] = {0.0, 0.0, 0.0}, FN_size[3] = {0.0, 0.0, 0.0};
+  if (sizes)
+  {
+    k.fluxTermSize(ctx, F, F_size);
+    if (per_side)
+      k.fluxTermSize(ctx, FN, FN_size);
+    else
+      std::copy(F_size, F_size + 3, FN_size);
+  }
+  for (int d = 0; d < dim; ++d)
+    if (ip.area[d] != 0.0)
+    {
+      ro.addScaledBy(F[d], -scale * ip.area[d]);
+      rn.addScaledBy(FN[d], scale * ip.area[d]);
+      ro_size += std::abs(scale * ip.area[d]) * F_size[d];
+      rn_size += std::abs(scale * ip.area[d]) * FN_size[d];
+    }
+}
 } // namespace
 
 int
-Problem::effectiveThreads() const
+Problem::effectiveThreads()
 {
 #ifdef _OPENMP
   if (!threadSafe())
@@ -126,23 +165,82 @@ void
 Problem::assemble(const Vector & U, const AssemblyOptions & opts, Vector & R, SparseMatrix * J)
 {
   initialize();
+  checkAssemblyOptions(U, opts, R);
   const Index ndof = numDofs();
-  const int nv = numVariables();
-  const int dim = _mesh->spaceDimension();
-  const bool dual = isDual();
   const bool want_jac = J != nullptr;
   R.setZero(ndof);
   if (opts.reference)
     opts.reference->setZero(ndof);
   if (opts.term_size)
     opts.term_size->setZero(ndof);
-  Vector * const term_size = opts.term_size;
   const int nthreads = effectiveThreads();
-  const bool atomic = nthreads > 1;
+  std::vector<ThreadScratch> scratch = assemblyScratch(opts, nthreads, want_jac);
+  // The kernels of the assembly in groups of one rule: the problem's, or those of the options.
+  const std::vector<Group> chosen =
+      opts.kernels ? kernelGroups(*opts.kernels) : std::vector<Group>{};
+  const std::vector<Group> & groups = opts.kernels ? chosen : _groups;
+  const AssemblyPass pass{U, opts, R, want_jac, nthreads > 1};
+
+  assembleElements(pass, groups, scratch);
+  // The boundary terms are a small fraction of the work and are assembled serially, in the first
+  // thread's scratch space.
+  assembleConditions(pass, scratch[0]);
+  if (isDual() && opts.include_steady_terms && !opts.kernels)
+    assembleAdvectiveBoundary(pass, scratch[0]);
+  if (opts.include_steady_terms && !opts.kernels)
+    assembleNodalLoads(pass);
+  if (want_jac)
+    mergeJacobian(scratch, *J);
+}
+
+void
+Problem::checkAssemblyOptions(const Vector & U,
+                              const AssemblyOptions & opts,
+                              const Vector & R) const
+{
+  const auto fail = [](const std::string & rule)
+  { throw std::logic_error("dualmesh: internal error: the options of an assembly " + rule + "."); };
+  const Index ndof = numDofs();
+  const std::pair<const Vector *, const char *> states[] = {{&U, "the solution"},
+                                                            {opts.lagged, "lagged"},
+                                                            {opts.old, "old"},
+                                                            {opts.rate_shift, "rate_shift"},
+                                                            {opts.accel_shift, "accel_shift"}};
+  for (const auto & [state, name] : states)
+    if (state && state->size() != ndof)
+      fail("give " + std::string(name) + " with " + std::to_string(state->size()) +
+           " entries for " + std::to_string(ndof) + " degrees of freedom");
+  // A vector the assembly writes is zeroed first, so it must be no other vector of the assembly.
+  const std::pair<const Vector *, const char *> outputs[] = {
+      {&R, "the residual"}, {opts.reference, "reference"}, {opts.term_size, "term_size"}};
+  for (std::size_t i = 0; i < std::size(outputs); ++i)
+  {
+    const auto & [output, name] = outputs[i];
+    if (!output)
+      continue;
+    for (const auto & [state, state_name] : states)
+      if (output == state)
+        fail("write " + std::string(name) + " into " + state_name + ", which they read");
+    for (std::size_t j = i + 1; j < std::size(outputs); ++j)
+      if (output == outputs[j].first)
+        fail("write " + std::string(name) + " and " + outputs[j].second + " into one vector");
+  }
+  if (opts.previous_step && !(opts.old_level && opts.old))
+    fail("take the previous step without old_level and old");
+  if ((opts.rate_shift != nullptr) != (opts.accel_shift != nullptr))
+    fail("give one of rate_shift and accel_shift without the other");
+  if (opts.rate_shift && !opts.second_order)
+    fail("give rate_shift and accel_shift without second_order");
+}
+
+std::vector<Problem::ThreadScratch>
+Problem::assemblyScratch(const AssemblyOptions & opts, int nthreads, bool want_jac) const
+{
+  const int nv = numVariables();
   std::vector<ThreadScratch> scratch(nthreads);
   for (auto & s : scratch)
   {
-    s.ctx.dim = dim;
+    s.ctx.dim = _mesh->spaceDimension();
     s.ctx.time = _time;
     s.ctx.dt = opts.dt;
     s.ctx.eigenvalue = _eigenvalue;
@@ -169,347 +267,39 @@ Problem::assemble(const Vector & U, const AssemblyOptions & opts, Vector & R, Sp
       s.triplets.reserve(static_cast<std::size_t>(_mesh->numElements()) * 16 * nv * nv * 4 /
                          nthreads);
   }
-  const bool mixed = _mixed_order;
-  // The kernels of the assembly in groups of one rule: the problem's, or those of the options.
-  std::vector<Group> chosen;
-  if (opts.kernels)
-    for (const Kernel * k : *opts.kernels)
-    {
-      const QuadratureSpec spec =
-          _eigenvalue_study ? k->eigenvalueStudyQuadrature() : k->quadrature();
-      auto it = std::find_if(
-          chosen.begin(), chosen.end(), [&](const Group & g) { return g.spec == spec; });
-      if (it == chosen.end())
-        it = chosen.insert(chosen.end(), Group{spec, {}});
-      it->kernels.push_back(k);
-    }
-  const std::vector<Group> & groups = opts.kernels ? chosen : _groups;
+  return scratch;
+}
 
-  const auto assembleElement = [&](ThreadScratch & s, Index e)
+std::vector<Problem::Group>
+Problem::kernelGroups(const std::vector<const Kernel *> & kernels) const
+{
+  std::vector<Group> groups;
+  for (const Kernel * k : kernels)
   {
-    auto & cur = s.cur;
-    auto & dofs = s.dofs;
-    auto & Rloc = s.Rloc;
-    auto & touched = s.touched;
-    auto & sizes = s.sizes;
-    auto & pts = s.pts;
-    // The mapped point of the current integration point: the one built with
-    // the points when there is one (no copy), otherwise s.geo.
-    const MappedPoint * gp = &s.geo;
-    auto & ctx = s.ctx;
-    const Element & el = _mesh->element(e);
-    const int nn = el.numNodes();
-    const PolygonCell * polygon = polygonCell(e);
-    const int all = gatherLocal(s, el, U, opts, polygon);
-    const int nd = want_jac ? all : 0;
-    const auto nodeOf = [&](int slot)
-    { return slot < nn ? el.nodes[slot] : polygon->nodes[static_cast<std::size_t>(slot)]; };
-    ctx.element = e;
-    ctx.block = el.block;
-    ctx.on_boundary = false;
-    bool any = false;
+    const QuadratureSpec spec = studyQuadrature(*k);
+    auto it =
+        std::find_if(groups.begin(), groups.end(), [&](const Group & g) { return g.spec == spec; });
+    if (it == groups.end())
+      it = groups.insert(groups.end(), Group{spec, {}, {}});
+    it->add(k);
+  }
+  return groups;
+}
 
-    for (const auto & group : groups)
-    {
-      const unsigned group_index = static_cast<unsigned>(&group - groups.data());
-      unsigned point_set = 0;
-      std::vector<const Kernel *> & ks = s.kernels;
-      ks.clear();
-      bool has_flux = false, has_source = false;
-      for (const Kernel * k : group.kernels)
-      {
-        if (!k->activeOnBlock(el.block))
-          continue;
-        const auto & vb = _vars[k->variable()].blocks;
-        if (!vb.empty() && !vb.count(el.block))
-          continue;
-        if (k->isTimeKernel() ? !opts.include_time_kernels : !opts.include_steady_terms)
-          continue;
-        if (k->isTimeKernel() && opts.dt <= 0)
-          continue;
-        ks.push_back(k);
-        has_flux = has_flux || k->hasFlux();
-        has_source = has_source || k->hasSource();
-      }
-      if (ks.empty())
-        continue;
-      any = true;
+const QuadratureSpec &
+Problem::studyQuadrature(const Kernel & kernel) const
+{
+  if (_eigenvalue_study)
+    if (const auto * storage = dynamic_cast<const StorageKernel *>(&kernel))
+      return storage->eigenvalueStudyQuadrature();
+  return kernel.quadrature();
+}
 
-      const auto weightOf = [&](const Kernel * k)
-      {
-        if (!k->isTimeKernel())
-          return steadyWeight(*k, opts);
-        return k->isLoad() ? opts.data_fraction : 1.0;
-      };
-      // The points were mapped when they were built; reuse those maps.
-      const auto evaluateAt = [&](const IntegrationPoint & ip, std::size_t q)
-      {
-        gp = &evaluatePoint(s,
-                            el,
-                            ip,
-                            q < s.mapped.size() ? &s.mapped[q] : nullptr,
-                            group.spec.reduced,
-                            opts,
-                            nd,
-                            e,
-                            stateKey(point_set, group_index, 0, static_cast<unsigned>(q)));
-        return coordFactor(gp->x);
-      };
-
-      // Volume integrals (DMCDM: control volumes; FEM: element interior).
-      if (has_source || (!dual && has_flux))
-      {
-        buildElementPoints(*_mesh, e, dual, PointSet::Volume, group.spec, pts, &s.mapped, polygon);
-        point_set = 0;
-        for (std::size_t q = 0; q < pts.size(); ++q)
-        {
-          const IntegrationPoint & ip = pts[q];
-          const double cf = evaluateAt(ip, q) * ip.weight;
-          for (const Kernel * k : ks)
-          {
-            const int v = k->variable();
-            const double w = cf * weightOf(k);
-            ctx.time_weight = timeWeight(*k, opts);
-            // The test functions of the equation of variable v: the element's
-            // shape functions, or its corners' for a first-order variable.
-            const bool corner = mixed && usesCornerShape(el, v);
-            const MappedPoint & geo = *gp;
-            const double * testN = corner ? geo.corner_shape : geo.N;
-            const Point * testdN = corner ? geo.corner_gradient : geo.dN;
-            const int ntest = corner ? geo.num_corners : nn;
-            const auto slot = [&](int a) { return mixed ? localDofIndex(el, a, v) : a * nv + v; };
-            if (k->hasSource())
-            {
-              const ADReal S = k->computeSource(ctx);
-              const double S_size = term_size ? k->sourceTermSize(ctx, S) : 0.0;
-              if (ip.owner >= 0)
-              {
-                Rloc[ip.owner * nv + v].addScaledBy(S, w);
-                touched[ip.owner * nv + v] = 1;
-                if (term_size)
-                  sizes[ip.owner * nv + v] += std::abs(w) * S_size;
-              }
-              else
-                for (int a = 0; a < ntest; ++a)
-                {
-                  const int i = slot(a);
-                  Rloc[i].addScaledBy(S, w * testN[a]);
-                  touched[i] = 1;
-                  if (term_size)
-                    sizes[i] += std::abs(w * testN[a]) * S_size;
-                }
-            }
-            if (!dual && k->hasFlux() && ip.owner < 0)
-            {
-              ADVector3 F{ADReal(0.0), ADReal(0.0), ADReal(0.0)};
-              k->computeFlux(ctx, F);
-              double F_size[3] = {0.0, 0.0, 0.0};
-              if (term_size)
-                k->fluxTermSize(ctx, F, F_size);
-              for (int a = 0; a < ntest; ++a)
-              {
-                const int i = slot(a);
-                ADReal & r = Rloc[i];
-                for (int d = 0; d < dim; ++d)
-                  if (testdN[a][d] != 0.0)
-                  {
-                    r.addScaledBy(F[d], w * testdN[a][d]);
-                    if (term_size)
-                      sizes[i] += std::abs(w * testdN[a][d]) * F_size[d];
-                  }
-                touched[i] = 1;
-              }
-            }
-          }
-        }
-      }
-
-      // Interfaces between control volumes (DMCDM only).
-      if (dual && has_flux)
-      {
-        buildElementPoints(*_mesh, e, dual, PointSet::Faces, group.spec, pts, &s.mapped, polygon);
-        point_set = 1;
-        // The flux of kernel k through interface ip, times scale: out of the control domain of the
-        // owner (-F.n) and into that of the neighbour, with the sizes of the two terms.  A
-        // non-conservative face flux of an advective kernel differs between the two sides
-        // (Kernel::nonConservativeFaceFlux): FN is that of the neighbour's equation.
-        const auto faceFlux = [&](const Kernel * k,
-                                  const IntegrationPoint & ip,
-                                  double scale,
-                                  bool advective,
-                                  ADReal & ro,
-                                  ADReal & rn,
-                                  double & ro_size,
-                                  double & rn_size)
-        {
-          const bool per_side = advective && k->nonConservativeFaceFlux();
-          ADVector3 F{ADReal(0.0), ADReal(0.0), ADReal(0.0)};
-          if (per_side)
-            ctx.reference_side = 0;
-          k->computeFlux(ctx, F);
-          ADVector3 FN = F;
-          if (per_side)
-          {
-            ctx.reference_side = 1;
-            FN = {ADReal(0.0), ADReal(0.0), ADReal(0.0)};
-            k->computeFlux(ctx, FN);
-            ctx.reference_side = -1;
-          }
-          double F_size[3] = {0.0, 0.0, 0.0}, FN_size[3] = {0.0, 0.0, 0.0};
-          if (term_size)
-          {
-            k->fluxTermSize(ctx, F, F_size);
-            if (per_side)
-              k->fluxTermSize(ctx, FN, FN_size);
-            else
-              std::copy(F_size, F_size + 3, FN_size);
-          }
-          for (int d = 0; d < dim; ++d)
-            if (ip.area[d] != 0.0)
-            {
-              ro.addScaledBy(F[d], -scale * ip.area[d]);
-              rn.addScaledBy(FN[d], scale * ip.area[d]);
-              ro_size += std::abs(scale * ip.area[d]) * F_size[d];
-              rn_size += std::abs(scale * ip.area[d]) * FN_size[d];
-            }
-        };
-        const bool sides =
-            std::any_of(ks.begin(), ks.end(), [](const Kernel * k) { return k->usesFaceSides(); });
-        for (std::size_t q = 0; q < pts.size(); ++q)
-        {
-          const IntegrationPoint & ip = pts[q];
-          const double cf = evaluateAt(ip, q);
-          if (sides)
-          {
-            // The two nodes of the face, for an advective flux: their values (with their
-            // derivatives), their positions, and the normal from the owner to the neighbour.
-            // A node has no gradient of its own, so the sides carry none.
-            ctx.on_face = true;
-            const int ends[2] = {ip.owner, ip.neighbor};
-            for (int side = 0; side < 2; ++side)
-            {
-              ctx.side_u[side].resize(nv);
-              ctx.side_grad[side].clear();
-              ctx.side_x[side] = _mesh->node(nodeOf(ends[side]));
-              for (int v = 0; v < nv; ++v)
-              {
-                const int slot = ends[side] * nv + v;
-                ADReal value = ADReal::withZeroDerivatives(cur[slot], nd);
-                if (nd > 0)
-                  value.setDerivative(slot, 1.0);
-                ctx.side_u[side][v] = value;
-              }
-            }
-            ctx.side_weight = 0.5;
-            const double area = std::sqrt(dot(ip.area, ip.area));
-            ctx.normal = area > 0.0 ? (1.0 / area) * ip.area : Point{0, 0, 0};
-          }
-          for (const Kernel * k : ks)
-          {
-            if (!k->hasFlux())
-              continue;
-            const int v = k->variable();
-            ctx.time_weight = timeWeight(*k, opts);
-            if (sides && k->needsSideGradients() && !_gradient_offsets.empty())
-            {
-              // The linear upwind and limited schemes take the gradient at the upstream node,
-              // reconstructed from the nodes around it, so the flux depends on those nodes too.
-              // They take the slots after the element's own; the two rows of the face go out
-              // here with those columns.
-              auto & columns = s.columns;
-              columns.assign(dofs.begin(), dofs.end());
-              // A slot beyond the derivatives of this build is refused before it is written.
-              const auto slotOf = [&](Index node)
-              {
-                const Index d = dof(node, v);
-                for (std::size_t i = 0; i < columns.size(); ++i)
-                  if (columns[i] == d)
-                    return static_cast<int>(i);
-                if (static_cast<int>(columns.size()) >= kMaxDerivatives)
-                  throw InputError("The face flux of '" + k->name() + "' depends on more than " +
-                                   std::to_string(kMaxDerivatives) +
-                                   " unknowns, the derivatives of this build. Use the upwind "
-                                   "scheme here.");
-                columns.push_back(d);
-                return static_cast<int>(columns.size()) - 1;
-              };
-              for (int side = 0; side < 2; ++side)
-              {
-                const Index node = nodeOf(side == 0 ? ip.owner : ip.neighbor);
-                ctx.side_grad[side].assign(nv, {ADReal(0.0), ADReal(0.0), ADReal(0.0)});
-                ADVector3 & g = ctx.side_grad[side][v];
-                const ADReal & ua = ctx.side_u[side][v];
-                const auto a = static_cast<std::size_t>(node);
-                for (Index i = _gradient_offsets[a]; i < _gradient_offsets[a + 1]; ++i)
-                {
-                  const Index b = _gradient_nodes[static_cast<std::size_t>(i)];
-                  ADReal ub(U[dof(b, v)]);
-                  if (want_jac)
-                  {
-                    const int slot = slotOf(b);
-                    ub = ADReal::withZeroDerivatives(U[dof(b, v)], slot + 1);
-                    ub.setDerivative(slot, 1.0);
-                  }
-                  const ADReal difference = ub - ua;
-                  const Point & w = _gradient_weights[static_cast<std::size_t>(i)];
-                  for (int c = 0; c < dim; ++c)
-                    g[c].addScaledBy(difference, w[c]);
-                }
-              }
-              ADReal ro(0.0), rn(0.0);
-              double ro_size = 0.0, rn_size = 0.0;
-              faceFlux(k, ip, cf * weightOf(k), true, ro, rn, ro_size, rn_size);
-              ctx.side_grad[0].clear();
-              ctx.side_grad[1].clear();
-              for (const auto & [row, r, size] : {std::tuple<Index, const ADReal *, double>{
-                                                      dofs[ip.owner * nv + v], &ro, ro_size},
-                                                  std::tuple<Index, const ADReal *, double>{
-                                                      dofs[ip.neighbor * nv + v], &rn, rn_size}})
-              {
-                addToResidual(R, opts.reference, term_size, row, r->value(), size, atomic);
-                if (want_jac)
-                {
-                  const double * dr = r->derivatives();
-                  for (int j = 0; j < r->size(); ++j)
-                    if (dr[j] != 0.0)
-                      s.triplets.emplace_back(row, columns[static_cast<std::size_t>(j)], dr[j]);
-                }
-              }
-              continue;
-            }
-            double ro_size = 0.0, rn_size = 0.0;
-            faceFlux(k,
-                     ip,
-                     cf * weightOf(k),
-                     sides,
-                     Rloc[ip.owner * nv + v],
-                     Rloc[ip.neighbor * nv + v],
-                     ro_size,
-                     rn_size);
-            if (term_size)
-            {
-              sizes[ip.owner * nv + v] += ro_size;
-              sizes[ip.neighbor * nv + v] += rn_size;
-            }
-            touched[ip.owner * nv + v] = 1;
-            touched[ip.neighbor * nv + v] = 1;
-          }
-        }
-        ctx.on_face = false;
-      }
-    }
-    if (any)
-      scatter(Rloc,
-              dofs,
-              touched,
-              R,
-              opts.reference,
-              term_size,
-              term_size ? &sizes : nullptr,
-              want_jac ? &s.triplets : nullptr,
-              atomic);
-  };
-
+void
+Problem::assembleElements(const AssemblyPass & pass,
+                          const std::vector<Group> & groups,
+                          std::vector<ThreadScratch> & scratch) const
+{
   // The element loop is the expensive part and it is embarrassingly parallel:
   // every thread keeps its own scratch space and its own list of matrix
   // entries, and the only shared write is the atomic update of the residual.
@@ -519,6 +309,7 @@ Problem::assemble(const Vector & U, const AssemblyOptions & opts, Vector & R, Sp
   // The first error of a thread, rethrown as it is, so that its type (InputError) is kept.
   std::exception_ptr thread_error;
 #ifdef _OPENMP
+  const int nthreads = static_cast<int>(scratch.size());
 #pragma omp parallel num_threads(nthreads) if (nthreads > 1)
   {
     ThreadScratch & s = scratch[omp_get_thread_num()];
@@ -527,7 +318,7 @@ Problem::assemble(const Vector & U, const AssemblyOptions & opts, Vector & R, Sp
     {
       try
       {
-        assembleElement(s, e);
+        assembleElement(s, e, pass, groups);
       }
       catch (...)
       {
@@ -539,67 +330,422 @@ Problem::assemble(const Vector & U, const AssemblyOptions & opts, Vector & R, Sp
   }
 #else
   for (Index e = 0; e < numIntegratedElements(); ++e)
-    assembleElement(scratch[0], e);
+    assembleElement(scratch[0], e, pass, groups);
 #endif
   if (thread_error)
     std::rethrow_exception(thread_error);
+}
 
-  // The boundary terms are a small fraction of the work and are assembled
-  // serially, in the first thread's scratch space.
-  ThreadScratch & s0 = scratch[0];
-  auto & cur = s0.cur;
-  auto & dofs = s0.dofs;
-  auto & Rloc = s0.Rloc;
-  auto & touched = s0.touched;
-  auto & pts = s0.pts;
-  auto & ctx = s0.ctx;
+void
+Problem::assembleElement(ThreadScratch & s,
+                         Index e,
+                         const AssemblyPass & pass,
+                         const std::vector<Group> & groups) const
+{
+  const AssemblyOptions & opts = pass.opts;
+  const bool dual = isDual();
+  const Element & el = _mesh->element(e);
+  const PolygonCell * polygon = polygonCell(e);
+  const int all = gatherLocal(s, el, pass.U, opts, polygon);
+  const int nd = pass.want_jac ? all : 0;
+  s.ctx.element = e;
+  s.ctx.block = el.block;
+  s.ctx.on_boundary = false;
+  bool any = false;
+  for (const auto & group : groups)
+  {
+    // The kernels of the group that act on this element in this assembly.
+    std::vector<const Kernel *> & ks = s.kernels;
+    ks.clear();
+    s.advective.clear();
+    bool has_flux = false, has_source = false;
+    for (std::size_t i = 0; i < group.kernels.size(); ++i)
+    {
+      const Kernel * k = group.kernels[i];
+      if (!k->activeOnBlock(el.block))
+        continue;
+      const auto & vb = _vars[k->variable()].blocks;
+      if (!vb.empty() && !vb.count(el.block))
+        continue;
+      if (k->isTimeKernel() ? !opts.include_time_kernels : !opts.include_steady_terms)
+        continue;
+      if (k->isTimeKernel() && opts.dt <= 0)
+        continue;
+      ks.push_back(k);
+      s.advective.push_back(group.advective[i]);
+      has_flux = has_flux || k->hasFlux();
+      has_source = has_source || k->hasSource();
+    }
+    if (ks.empty())
+      continue;
+    any = true;
+    const unsigned group_index = static_cast<unsigned>(&group - groups.data());
+    // Volume integrals: the control volumes of DMCDM, or the interior of a finite element.
+    if (has_source || (!dual && has_flux))
+      elementVolume(s, e, polygon, group, group_index, nd, pass);
+    // Interfaces between control volumes (DMCDM only).
+    if (dual && has_flux)
+      controlDomainFaces(s, e, polygon, group, group_index, nd, pass);
+  }
+  if (any)
+    scatter(s.Rloc,
+            s.dofs,
+            s.touched,
+            pass.R,
+            opts.reference,
+            opts.term_size,
+            opts.term_size ? &s.sizes : nullptr,
+            pass.want_jac ? &s.triplets : nullptr,
+            pass.atomic);
+}
 
-  // ---- integrated boundary conditions ------------------------------------
+void
+Problem::elementVolume(ThreadScratch & s,
+                       Index e,
+                       const PolygonCell * polygon,
+                       const Group & group,
+                       unsigned group_index,
+                       int nd,
+                       const AssemblyPass & pass) const
+{
+  const AssemblyOptions & opts = pass.opts;
+  const bool dual = isDual();
+  const bool mixed = _mixed_order;
+  const bool sizes = opts.term_size != nullptr;
+  const int nv = numVariables();
+  const int dim = _mesh->spaceDimension();
+  const Element & el = _mesh->element(e);
+  QpContext & ctx = s.ctx;
+  buildElementPoints(
+      *_mesh, e, dual, PointSet::Volume, group.spec, s.pts, &s.mapped, polygon, _coord);
+  for (std::size_t q = 0; q < s.pts.size(); ++q)
+  {
+    const IntegrationPoint & ip = s.pts[q];
+    // The points were mapped when they were built, and evaluatePoint reuses those maps.
+    const MappedPoint & geo = evaluatePoint(s,
+                                            el,
+                                            ip,
+                                            q < s.mapped.size() ? &s.mapped[q] : nullptr,
+                                            group.spec.reduced,
+                                            opts,
+                                            nd,
+                                            e,
+                                            stateKey(0, group_index, 0, static_cast<unsigned>(q)));
+    const double cf = pointMeasure(ip, coordFactor(geo.x));
+    for (const Kernel * k : s.kernels)
+    {
+      const int v = k->variable();
+      const double w = cf * kernelWeight(*k, opts);
+      ctx.time_weight = timeWeight(*k, opts);
+      // The test functions of the equation of variable v: the element's
+      // shape functions, or its corners' for a first-order variable.
+      const bool corner = mixed && usesCornerShape(el, v);
+      const double * testN = corner ? geo.corner_shape : geo.N;
+      const Point * testdN = corner ? geo.corner_gradient : geo.dN;
+      const int ntest = corner ? geo.num_corners : el.numNodes();
+      const auto slot = [&](int a) { return mixed ? localDofIndex(el, a, v) : a * nv + v; };
+      if (k->hasSource())
+      {
+        const ADReal S = k->computeSource(ctx);
+        const double S_size = sizes ? k->sourceTermSize(ctx, S) : 0.0;
+        if (ip.owner >= 0)
+        {
+          s.Rloc[ip.owner * nv + v].addScaledBy(S, w);
+          s.touched[ip.owner * nv + v] = 1;
+          if (sizes)
+            s.sizes[ip.owner * nv + v] += std::abs(w) * S_size;
+        }
+        else
+          for (int a = 0; a < ntest; ++a)
+          {
+            const int i = slot(a);
+            s.Rloc[i].addScaledBy(S, w * testN[a]);
+            s.touched[i] = 1;
+            if (sizes)
+              s.sizes[i] += std::abs(w * testN[a]) * S_size;
+          }
+      }
+      if (!dual && k->hasFlux() && ip.owner < 0)
+      {
+        ADVector3 F{ADReal(0.0), ADReal(0.0), ADReal(0.0)};
+        k->computeFlux(ctx, F);
+        double F_size[3] = {0.0, 0.0, 0.0};
+        if (sizes)
+          k->fluxTermSize(ctx, F, F_size);
+        for (int a = 0; a < ntest; ++a)
+        {
+          const int i = slot(a);
+          ADReal & r = s.Rloc[i];
+          for (int d = 0; d < dim; ++d)
+            if (testdN[a][d] != 0.0)
+            {
+              r.addScaledBy(F[d], w * testdN[a][d]);
+              if (sizes)
+                s.sizes[i] += std::abs(w * testdN[a][d]) * F_size[d];
+            }
+          s.touched[i] = 1;
+        }
+      }
+    }
+  }
+}
+
+void
+Problem::controlDomainFaces(ThreadScratch & s,
+                            Index e,
+                            const PolygonCell * polygon,
+                            const Group & group,
+                            unsigned group_index,
+                            int nd,
+                            const AssemblyPass & pass) const
+{
+  const AssemblyOptions & opts = pass.opts;
+  const bool sizes = opts.term_size != nullptr;
+  const int nv = numVariables();
+  const int dim = _mesh->spaceDimension();
+  const Element & el = _mesh->element(e);
+  const int nn = el.numNodes();
+  const auto nodeOf = [&](int slot)
+  { return slot < nn ? el.nodes[slot] : polygon->nodes[static_cast<std::size_t>(slot)]; };
+  QpContext & ctx = s.ctx;
+  buildElementPoints(*_mesh, e, true, PointSet::Faces, group.spec, s.pts, &s.mapped, polygon);
+  const bool sides = std::any_of(s.advective.begin(),
+                                 s.advective.end(),
+                                 [](const AdvectiveKernel * a) { return a && a->usesFaceSides(); });
+  for (std::size_t q = 0; q < s.pts.size(); ++q)
+  {
+    const IntegrationPoint & ip = s.pts[q];
+    // The points were mapped when they were built, and evaluatePoint reuses those maps.
+    const MappedPoint & geo = evaluatePoint(s,
+                                            el,
+                                            ip,
+                                            q < s.mapped.size() ? &s.mapped[q] : nullptr,
+                                            group.spec.reduced,
+                                            opts,
+                                            nd,
+                                            e,
+                                            stateKey(1, group_index, 0, static_cast<unsigned>(q)));
+    const double cf = coordFactor(geo.x);
+    if (sides)
+    {
+      // The two nodes of the face, for an advective flux, and the normal from the owner to the
+      // neighbour.
+      setFaceSides(ctx,
+                   s.cur,
+                   nd,
+                   ip.owner,
+                   ip.neighbor,
+                   _mesh->node(nodeOf(ip.owner)),
+                   _mesh->node(nodeOf(ip.neighbor)));
+      const double area = std::sqrt(dot(ip.area, ip.area));
+      ctx.normal = area > 0.0 ? (1.0 / area) * ip.area : Point{0, 0, 0};
+    }
+    for (std::size_t i = 0; i < s.kernels.size(); ++i)
+    {
+      const Kernel * k = s.kernels[i];
+      if (!k->hasFlux())
+        continue;
+      const AdvectiveKernel * a = sides ? s.advective[i] : nullptr;
+      const int v = k->variable();
+      ctx.time_weight = timeWeight(*k, opts);
+      const double scale = cf * kernelWeight(*k, opts);
+      if (a && a->needsSideGradients() && !_gradient_offsets.empty())
+      {
+        sideGradientFaceFlux(s, *a, ip, scale, nodeOf(ip.owner), nodeOf(ip.neighbor), pass);
+        continue;
+      }
+      double ro_size = 0.0, rn_size = 0.0;
+      faceFlux(ctx,
+               *k,
+               ip,
+               dim,
+               scale,
+               a && a->nonConservativeFaceFlux(),
+               sizes,
+               s.Rloc[ip.owner * nv + v],
+               s.Rloc[ip.neighbor * nv + v],
+               ro_size,
+               rn_size);
+      if (sizes)
+      {
+        s.sizes[ip.owner * nv + v] += ro_size;
+        s.sizes[ip.neighbor * nv + v] += rn_size;
+      }
+      s.touched[ip.owner * nv + v] = 1;
+      s.touched[ip.neighbor * nv + v] = 1;
+    }
+  }
+  ctx.on_face = false;
+}
+
+void
+Problem::sideGradientFaceFlux(ThreadScratch & s,
+                              const AdvectiveKernel & kernel,
+                              const IntegrationPoint & ip,
+                              double scale,
+                              Index owner_node,
+                              Index neighbor_node,
+                              const AssemblyPass & pass) const
+{
+  // The linear upwind and limited schemes take the gradient at the upstream node, reconstructed
+  // from the nodes around it, so the flux depends on those nodes too.  They take the slots after
+  // the element's own, and the two rows of the face go out here with those columns.
+  const int v = kernel.variable();
+  const int dim = _mesh->spaceDimension();
+  QpContext & ctx = s.ctx;
+  auto & columns = s.columns;
+  columns.assign(s.dofs.begin(), s.dofs.end());
+  // A slot beyond the derivatives of this build is refused before it is written.
+  const auto slotOf = [&](Index node)
+  {
+    const Index d = dof(node, v);
+    for (std::size_t i = 0; i < columns.size(); ++i)
+      if (columns[i] == d)
+        return static_cast<int>(i);
+    if (static_cast<int>(columns.size()) >= kMaxDerivatives)
+      throw InputError("The face flux of '" + kernel.name() + "' depends on more than " +
+                       std::to_string(kMaxDerivatives) +
+                       " unknowns, the derivatives of this build. Use the upwind scheme here.");
+    columns.push_back(d);
+    return static_cast<int>(columns.size()) - 1;
+  };
+  for (int side = 0; side < 2; ++side)
+  {
+    const Index node = side == 0 ? owner_node : neighbor_node;
+    ctx.side_grad[side].assign(numVariables(), {ADReal(0.0), ADReal(0.0), ADReal(0.0)});
+    ADVector3 & g = ctx.side_grad[side][v];
+    const ADReal & ua = ctx.side_u[side][v];
+    const auto a = static_cast<std::size_t>(node);
+    for (Index i = _gradient_offsets[a]; i < _gradient_offsets[a + 1]; ++i)
+    {
+      const Index b = _gradient_nodes[static_cast<std::size_t>(i)];
+      ADReal ub(pass.U[dof(b, v)]);
+      if (pass.want_jac)
+      {
+        const int slot = slotOf(b);
+        ub = ADReal::withZeroDerivatives(pass.U[dof(b, v)], slot + 1);
+        ub.setDerivative(slot, 1.0);
+      }
+      const ADReal difference = ub - ua;
+      const Point & w = _gradient_weights[static_cast<std::size_t>(i)];
+      for (int c = 0; c < dim; ++c)
+        g[c].addScaledBy(difference, w[c]);
+    }
+  }
+  ADReal ro(0.0), rn(0.0);
+  double ro_size = 0.0, rn_size = 0.0;
+  faceFlux(ctx,
+           kernel,
+           ip,
+           dim,
+           scale,
+           kernel.nonConservativeFaceFlux(),
+           pass.opts.term_size != nullptr,
+           ro,
+           rn,
+           ro_size,
+           rn_size);
+  ctx.side_grad[0].clear();
+  ctx.side_grad[1].clear();
+  const int nv = numVariables();
+  for (const auto & [row, r, size] :
+       {std::tuple<Index, const ADReal *, double>{s.dofs[ip.owner * nv + v], &ro, ro_size},
+        std::tuple<Index, const ADReal *, double>{s.dofs[ip.neighbor * nv + v], &rn, rn_size}})
+  {
+    addToResidual(
+        pass.R, pass.opts.reference, pass.opts.term_size, row, r->value(), size, pass.atomic);
+    if (pass.want_jac)
+    {
+      const double * dr = r->derivatives();
+      for (int j = 0; j < r->size(); ++j)
+        if (dr[j] != 0.0)
+          s.triplets.emplace_back(row, columns[static_cast<std::size_t>(j)], dr[j]);
+    }
+  }
+}
+
+void
+Problem::setFaceSides(QpContext & ctx,
+                      const std::vector<double> & values,
+                      int nd,
+                      int owner,
+                      int neighbor,
+                      const Point & x_owner,
+                      const Point & x_neighbor) const
+{
+  const int nv = numVariables();
+  const int ends[2] = {owner, neighbor};
+  ctx.on_face = true;
+  for (int side = 0; side < 2; ++side)
+  {
+    ctx.side_u[side].resize(nv);
+    ctx.side_grad[side].clear();
+    ctx.side_x[side] = side == 0 ? x_owner : x_neighbor;
+    for (int v = 0; v < nv; ++v)
+    {
+      const int slot = ends[side] * nv + v;
+      ADReal value = ADReal::withZeroDerivatives(values[slot], nd);
+      if (nd > 0)
+        value.setDerivative(slot, 1.0);
+      ctx.side_u[side][v] = value;
+    }
+  }
+  ctx.side_weight = 0.5;
+}
+
+void
+Problem::assembleConditions(const AssemblyPass & pass, ThreadScratch & s)
+{
+  const AssemblyOptions & opts = pass.opts;
+  if (!opts.include_steady_terms)
+    return;
   std::vector<const IntegratedBC *> conditions;
   if (opts.conditions)
     conditions = *opts.conditions;
   else if (!opts.kernels)
     for (const auto & bc : _ibcs)
       conditions.push_back(bc.get());
-  if (opts.include_steady_terms)
-    for (std::size_t index = 0; index < conditions.size(); ++index)
+  std::vector<Eigen::Triplet<double>> * const triplets = pass.want_jac ? &s.triplets : nullptr;
+  for (std::size_t index = 0; index < conditions.size(); ++index)
+  {
+    const IntegratedBC * bc = conditions[index];
+    if (bc->isConstraint())
     {
-      const IntegratedBC * bc = conditions[index];
-      if (bc->isConstraint())
-      {
-        // A constraint holds at the new time only.
-        if (!opts.old_level)
-          bc->assembleConstraint(
-              *this, U, opts.old, R, opts.reference, want_jac ? &s0.triplets : nullptr);
-        continue;
-      }
-      const double wfac = steadyWeight(*bc, opts);
-      if (const auto * ib = dynamic_cast<const InterfaceBC *>(bc))
-      {
-        assembleInterface(*ib, U, opts, wfac, R, want_jac ? &s0.triplets : nullptr, s0);
-        continue;
-      }
-      for (const Side & side : boundarySides(bc->boundaries()))
-      {
-        const Element & el = _mesh->element(side.first);
-        if (!bc->activeOnBlock(el.block))
-          continue;
-        const int ld = gatherLocal(s0, el, U, opts);
-        conditionResidual(
-            *bc, static_cast<unsigned>(index), side, wfac, opts, want_jac ? ld : 0, s0);
-        scatter(s0.Rloc,
-                s0.dofs,
-                s0.touched,
-                R,
-                opts.reference,
-                term_size,
-                nullptr,
-                want_jac ? &s0.triplets : nullptr,
-                false);
-      }
+      // A constraint holds at the new time only.
+      if (!opts.old_level)
+        bc->assembleConstraint(*this, pass.U, opts.old, pass.R, opts.reference, triplets);
+      continue;
     }
+    const double wfac = steadyWeight(*bc, opts);
+    if (const auto * ib = dynamic_cast<const InterfaceBC *>(bc))
+    {
+      assembleInterface(*ib, pass.U, opts, wfac, pass.R, triplets, s);
+      continue;
+    }
+    for (const Side & side : boundarySides(bc->boundaries()))
+    {
+      const Element & el = _mesh->element(side.first);
+      if (!bc->activeOnBlock(el.block))
+        continue;
+      const int ld = gatherLocal(s, el, pass.U, opts);
+      conditionResidual(
+          *bc, static_cast<unsigned>(index), side, wfac, opts, pass.want_jac ? ld : 0, s);
+      scatter(s.Rloc,
+              s.dofs,
+              s.touched,
+              pass.R,
+              opts.reference,
+              opts.term_size,
+              nullptr,
+              triplets,
+              false);
+    }
+  }
+}
 
-  // ---- advective flux through the boundary (DMCDM) ----------------------------
+void
+Problem::assembleAdvectiveBoundary(const AssemblyPass & pass, ThreadScratch & s) const
+{
   // An advective face flux passes through the boundary faces of the control volumes too.  Both
   // sides of such a face are the node whose control volume the face bounds: at an outflow that
   // node is upstream, and at an inflow without a condition it holds the only value there is.
@@ -610,114 +756,128 @@ Problem::assemble(const Vector & U, const AssemblyOptions & opts, Vector & R, Sp
   // flow is exact on quadratic elements).  The boundary is that of the side sets, which hold the
   // boundary of the whole mesh (the part of a distributed run has none on its interfaces with
   // the other parts).
-  if (dual && opts.include_steady_terms && !opts.kernels)
+  std::vector<const AdvectiveKernel *> advective;
+  for (const auto & k : _kernels)
+    if (const auto * a = dynamic_cast<const AdvectiveKernel *>(k.get()); a && a->usesFaceSides())
+      advective.push_back(a);
+  if (advective.empty())
+    return;
+  checkAdvectiveBoundary();
+  std::set<Side> sides;
+  for (const auto & [name, list] : _mesh->sidesets())
+    for (const Side & side : list)
+      if (side.first < numIntegratedElements())
+        sides.insert(side);
+  for (const Side & side : sides)
   {
-    std::vector<const Kernel *> advective;
-    for (const auto & k : _kernels)
-      if (k->usesFaceSides())
-        advective.push_back(k.get());
-    if (!advective.empty())
+    const Element & el = _mesh->element(side.first);
+    for (const AdvectiveKernel * k : advective)
     {
-      checkAdvectiveBoundary();
-      std::set<Side> sides;
-      for (const auto & [name, list] : _mesh->sidesets())
-        for (const Side & side : list)
-          if (side.first < numIntegratedElements())
-            sides.insert(side);
-      for (const Side & side : sides)
-      {
-        const Element & el = _mesh->element(side.first);
-        for (const Kernel * k : advective)
-        {
-          if (!k->activeOnBlock(el.block))
-            continue;
-          const int v = k->variable();
-          const auto & vb = _vars[v].blocks;
-          if (!vb.empty() && !vb.count(el.block))
-            continue;
-          const double wfac = steadyWeight(*k, opts);
-          const int ld = gatherLocal(s0, el, U, opts);
-          const int nd = want_jac ? ld : 0;
-          ctx.element = side.first;
-          ctx.block = el.block;
-          ctx.on_boundary = true;
-          buildSidePoints(*_mesh, side, dual, k->quadrature(), pts);
-          for (const auto & ip : pts)
-          {
-            ctx.normal = (1.0 / ip.weight) * ip.area;
-            const MappedPoint & geo =
-                evaluatePoint(s0, el, ip, nullptr, k->quadrature().reduced, opts, nd, -1, 0);
-            // Both sides are the owner node, so that every scheme takes its value.
-            ctx.on_face = true;
-            ctx.side_u[0].resize(nv);
-            for (int u = 0; u < nv; ++u)
-            {
-              const int slot = ip.owner * nv + u;
-              ctx.side_u[0][u] = ADReal::withZeroDerivatives(cur[slot], nd);
-              if (nd > 0)
-                ctx.side_u[0][u].setDerivative(slot, 1.0);
-            }
-            ctx.side_u[1] = ctx.side_u[0];
-            ctx.side_grad[0].clear();
-            ctx.side_grad[1].clear();
-            ctx.side_x[0] = ctx.side_x[1] = _mesh->node(el.nodes[ip.owner]);
-            ctx.side_weight = 0.5;
-            ctx.reference_side = k->nonConservativeFaceFlux() ? 0 : -1;
-            ADVector3 F{ADReal(0.0), ADReal(0.0), ADReal(0.0)};
-            k->computeFlux(ctx, F);
-            ctx.reference_side = -1;
-            ADReal Fn(0.0);
-            for (int d = 0; d < _mesh->spaceDimension(); ++d)
-              Fn += F[d] * ctx.normal[d];
-            const double w = ip.weight * coordFactor(geo.x) * wfac;
-            Rloc[ip.owner * nv + v].addScaledBy(Fn, -w);
-            touched[ip.owner * nv + v] = 1;
-          }
-          ctx.on_face = false;
-          scatter(Rloc,
-                  dofs,
-                  touched,
-                  R,
-                  opts.reference,
-                  term_size,
-                  nullptr,
-                  want_jac ? &s0.triplets : nullptr,
-                  false);
-        }
-      }
+      if (!k->activeOnBlock(el.block))
+        continue;
+      const auto & vb = _vars[k->variable()].blocks;
+      if (!vb.empty() && !vb.count(el.block))
+        continue;
+      advectiveBoundaryFlux(*k, side, pass, s);
     }
   }
+}
 
-  // ---- concentrated nodal loads ----------------------------------------------
-  if (opts.include_steady_terms && !opts.kernels)
-    for (const auto & load : _loads)
-    {
-      const int v = load->variable();
-      const double wfac = steadyWeight(*load, opts);
-      for (Index n : load->nodes())
-      {
-        if (!_owned_node.empty() && !_owned_node[n])
-          continue;
-        const double value = -wfac * load->computeValue(_mesh->node(n), _time);
-        addToResidual(R, opts.reference, term_size, dof(n, v), value, std::abs(value), false);
-      }
-    }
-
-  if (want_jac)
+void
+Problem::advectiveBoundaryFlux(const AdvectiveKernel & kernel,
+                               const Side & side,
+                               const AssemblyPass & pass,
+                               ThreadScratch & s) const
+{
+  const AssemblyOptions & opts = pass.opts;
+  const int nv = numVariables();
+  const int v = kernel.variable();
+  const Element & el = _mesh->element(side.first);
+  QpContext & ctx = s.ctx;
+  const double wfac = steadyWeight(kernel, opts);
+  const int ld = gatherLocal(s, el, pass.U, opts);
+  const int nd = pass.want_jac ? ld : 0;
+  ctx.element = side.first;
+  ctx.block = el.block;
+  ctx.on_boundary = true;
+  buildSidePoints(*_mesh, side, true, kernel.quadrature(), s.pts, _coord);
+  for (const auto & ip : s.pts)
   {
-    // Merge the per-thread lists of matrix entries.  setFromTriplets sums
-    // duplicates, so the order of the merge does not change the result beyond
-    // floating-point round-off.
-    std::vector<Triplet> trip;
-    std::size_t total = 0;
-    for (const auto & s : scratch)
-      total += s.triplets.size();
-    trip.reserve(total);
-    for (const auto & s : scratch)
-      trip.insert(trip.end(), s.triplets.begin(), s.triplets.end());
-    J->resize(ndof, ndof);
-    J->setFromTriplets(trip.begin(), trip.end());
+    ctx.normal = (1.0 / ip.weight) * ip.area;
+    const MappedPoint & geo =
+        evaluatePoint(s, el, ip, nullptr, kernel.quadrature().reduced, opts, nd, -1, 0);
+    // Both sides are the owner node, so that every scheme takes its value.
+    const Point & x = _mesh->node(el.nodes[ip.owner]);
+    setFaceSides(ctx, s.cur, nd, ip.owner, ip.owner, x, x);
+    ctx.reference_side = kernel.nonConservativeFaceFlux() ? 0 : -1;
+    ADVector3 F{ADReal(0.0), ADReal(0.0), ADReal(0.0)};
+    kernel.computeFlux(ctx, F);
+    ctx.reference_side = -1;
+    ADReal Fn(0.0);
+    for (int d = 0; d < _mesh->spaceDimension(); ++d)
+      Fn += F[d] * ctx.normal[d];
+    const double w = pointMeasure(ip, coordFactor(geo.x)) * wfac;
+    s.Rloc[ip.owner * nv + v].addScaledBy(Fn, -w);
+    s.touched[ip.owner * nv + v] = 1;
   }
+  ctx.on_face = false;
+  scatter(s.Rloc,
+          s.dofs,
+          s.touched,
+          pass.R,
+          opts.reference,
+          opts.term_size,
+          nullptr,
+          pass.want_jac ? &s.triplets : nullptr,
+          false);
+}
+
+void
+Problem::assembleNodalLoads(const AssemblyPass & pass) const
+{
+  for (const auto & load : _loads)
+  {
+    const int v = load->variable();
+    const double wfac = steadyWeight(*load, pass.opts);
+    for (Index n : load->nodes())
+    {
+      if (!_owned_node.empty() && !_owned_node[n])
+        continue;
+      const double value = -wfac * load->computeValue(_mesh->node(n), _time);
+      addToResidual(pass.R,
+                    pass.opts.reference,
+                    pass.opts.term_size,
+                    dof(n, v),
+                    value,
+                    std::abs(value),
+                    false);
+    }
+  }
+}
+
+void
+Problem::mergeJacobian(const std::vector<ThreadScratch> & scratch, SparseMatrix & J) const
+{
+  // Merge the per-thread lists of matrix entries.  setFromTriplets sums
+  // duplicates, so the order of the merge does not change the result beyond
+  // floating-point round-off.
+  std::vector<Triplet> trip;
+  std::size_t total = 0;
+  for (const auto & s : scratch)
+    total += s.triplets.size();
+  trip.reserve(total);
+  for (const auto & s : scratch)
+    trip.insert(trip.end(), s.triplets.begin(), s.triplets.end());
+  J.resize(numDofs(), numDofs());
+  J.setFromTriplets(trip.begin(), trip.end());
+}
+
+double
+Problem::kernelWeight(const Kernel & kernel, const AssemblyOptions & options) const
+{
+  if (!kernel.isTimeKernel())
+    return steadyWeight(kernel, options);
+  return kernel.isLoad() ? options.data_fraction : 1.0;
 }
 
 int
@@ -816,7 +976,7 @@ Problem::conditionResidual(const IntegratedBC & bc,
   s.ctx.element = side.first;
   s.ctx.block = el.block;
   s.ctx.on_boundary = true;
-  buildSidePoints(*_mesh, side, isDual(), bc.quadrature(), s.pts);
+  buildSidePoints(*_mesh, side, isDual(), bc.quadrature(), s.pts, _coord);
   const bool corner = usesCornerShape(el, v);
   for (std::size_t q = 0; q < s.pts.size(); ++q)
   {
@@ -833,7 +993,8 @@ Problem::conditionResidual(const IntegratedBC & bc,
         side.first,
         stateKey(2, index, static_cast<unsigned>(side.second), static_cast<unsigned>(q)));
     // The flux of the condition enters the body.
-    const ADReal flux = bc.computeBoundaryFlux(s.ctx) * (ip.weight * coordFactor(geo.x) * wfac);
+    const ADReal flux =
+        bc.computeBoundaryFlux(s.ctx) * (pointMeasure(ip, coordFactor(geo.x)) * wfac);
     if (ip.owner >= 0)
     {
       s.Rloc[ip.owner * nv + v] -= flux;
@@ -852,6 +1013,38 @@ Problem::conditionResidual(const IntegratedBC & bc,
 }
 
 void
+Problem::setInterfaceValues(QpContext & ctx,
+                            const Element & el,
+                            const MappedPoint & geo,
+                            const Element & sel,
+                            const MappedPoint & sgeo,
+                            const Vector & U,
+                            const Vector * old,
+                            int nd) const
+{
+  const int nv = numVariables();
+  const int dim = _mesh->spaceDimension();
+  ctx.u.resize(nv);
+  ctx.grad_u.resize(nv);
+  ctx.u_other.resize(nv);
+  ctx.u_old.assign(nv, 0.0);
+  ctx.grad_u_old.assign(nv, Point{0, 0, 0});
+  for (int v = 0; v < nv; ++v)
+  {
+    const auto current = [&](int a) { return U[dof(el.nodes[a], v)]; };
+    const auto previous = [&](int a) { return (*old)[dof(el.nodes[a], v)]; };
+    const auto paired = [&](int b) { return U[dof(sel.nodes[b], v)]; };
+    Point g;
+    const double val = interpolate(geo.N, geo.dN, el.numNodes(), dim, current, g);
+    ctx.u[v] = ADReal::withZeroDerivatives(val, nd);
+    ctx.u_other[v] = ADReal::withZeroDerivatives(interpolate(sgeo.N, sel.numNodes(), paired), nd);
+    ctx.grad_u[v] = {ADReal(g[0]), ADReal(g[1]), ADReal(g[2])};
+    ctx.u_old[v] = old ? interpolate(geo.N, el.numNodes(), previous) : val;
+    ctx.grad_u_old[v] = g;
+  }
+}
+
+void
 Problem::assembleInterface(const InterfaceBC & bc,
                            const Vector & U,
                            const AssemblyOptions & opts,
@@ -864,8 +1057,6 @@ Problem::assembleInterface(const InterfaceBC & bc,
   // primary side, then at the nodes of the paired secondary side.  Only the
   // side nodes are included, because the shape functions of every other node
   // vanish on a side, and at an interface point only values are needed.
-  const int nv = numVariables();
-  const int dim = _mesh->spaceDimension();
   const bool dual = isDual();
   const bool want_jac = triplets != nullptr;
   const auto & coupled = bc.coupledVariables();
@@ -874,25 +1065,46 @@ Problem::assembleInterface(const InterfaceBC & bc,
   { return static_cast<int>(std::find(coupled.begin(), coupled.end(), v) - coupled.begin()); };
   const int cp = slot(bc.variable());
   const int cs = slot(bc.secondaryVariable());
-  const auto & pairs = _interface_pairs.at(&bc);
-  unsigned bc_index = 0;
-  for (std::size_t i = 0; i < _ibcs.size(); ++i)
-    if (_ibcs[i].get() == &bc)
-      bc_index = static_cast<unsigned>(i);
+  const InterfacePairs & interface = _interface_pairs.at(&bc);
   auto & ctx = s.ctx;
   auto & pts = s.pts;
   auto & geo = s.geo;
   MappedPoint sgeo;
+  // The flux @p flux times @p sign into the equation of the coupled variable @p c at the side
+  // nodes @p nodes, numbered locally from @p first: at the node @p owner alone when @p at_owner
+  // (the control domain that owns the point), and otherwise through the shape functions @p N.
+  const auto addFlux = [&](const ADReal & flux,
+                           double sign,
+                           const std::vector<int> & nodes,
+                           int first,
+                           int c,
+                           bool at_owner,
+                           int owner,
+                           const double * N)
+  {
+    if (at_owner)
+    {
+      const int j = static_cast<int>(std::find(nodes.begin(), nodes.end(), owner) - nodes.begin());
+      s.Rloc[(first + j) * nc + c].addScaledBy(flux, sign);
+      s.touched[(first + j) * nc + c] = 1;
+      return;
+    }
+    for (int j = 0; j < static_cast<int>(nodes.size()); ++j)
+    {
+      s.Rloc[(first + j) * nc + c].addScaledBy(flux, sign * N[nodes[j]]);
+      s.touched[(first + j) * nc + c] = 1;
+    }
+  };
   std::size_t side_index = 0;
   for (const Side & side : boundarySides(bc.boundaries()))
   {
-    const auto & side_pairs = pairs[side_index++];
+    const auto & side_pairs = interface.points[side_index++];
     const Element & el = _mesh->element(side.first);
     if (!bc.activeOnBlock(el.block))
       continue;
     const auto & sn = ReferenceElement::get(el.type).sideNodes(side.second);
     const int np = static_cast<int>(sn.size());
-    buildSidePoints(*_mesh, side, dual, bc.quadrature(), pts);
+    buildSidePoints(*_mesh, side, dual, bc.quadrature(), pts, _coord);
     for (std::size_t q = 0; q < pts.size(); ++q)
     {
       const IntegrationPoint & ip = pts[q];
@@ -909,32 +1121,7 @@ Problem::assembleInterface(const InterfaceBC & bc,
       const int nd = want_jac ? ld : 0;
       mapPoint(*_mesh, el, ip.xi, geo);
       mapPoint(*_mesh, sel, pair.xi, sgeo);
-      ctx.u.resize(nv);
-      ctx.grad_u.resize(nv);
-      ctx.u_other.resize(nv);
-      ctx.u_old.assign(nv, 0.0);
-      ctx.grad_u_old.assign(nv, Point{0, 0, 0});
-      for (int v = 0; v < nv; ++v)
-      {
-        double val = 0, other = 0, old_val = 0;
-        Point g{0, 0, 0};
-        for (int a = 0; a < el.numNodes(); ++a)
-        {
-          const Index d = dof(el.nodes[a], v);
-          val += geo.N[a] * U[d];
-          if (opts.old)
-            old_val += geo.N[a] * (*opts.old)[d];
-          for (int k = 0; k < dim; ++k)
-            g[k] += geo.dN[a][k] * U[d];
-        }
-        for (int b = 0; b < sel.numNodes(); ++b)
-          other += sgeo.N[b] * U[dof(sel.nodes[b], v)];
-        ctx.u[v] = ADReal::withZeroDerivatives(val, nd);
-        ctx.u_other[v] = ADReal::withZeroDerivatives(other, nd);
-        ctx.grad_u[v] = {ADReal(g[0]), ADReal(g[1]), ADReal(g[2])};
-        ctx.u_old[v] = opts.old ? old_val : val;
-        ctx.grad_u_old[v] = g;
-      }
+      setInterfaceValues(ctx, el, geo, sel, sgeo, U, opts.old, nd);
       if (nd > 0)
         for (int c = 0; c < nc; ++c)
         {
@@ -953,13 +1140,13 @@ Problem::assembleInterface(const InterfaceBC & bc,
       ctx.block = el.block;
       ctx.on_boundary = true;
       ctx.x = geo.x;
-      ctx.x_other = sgeo.x;
+      ctx.x_field = geo.x;
       ctx.normal = (1.0 / ip.weight) * ip.area;
       ctx.state_owner = side.first;
-      ctx.state_key =
-          stateKey(3, bc_index, static_cast<unsigned>(side.second), static_cast<unsigned>(q));
+      ctx.state_key = stateKey(
+          3, interface.index, static_cast<unsigned>(side.second), static_cast<unsigned>(q));
       evaluateProperties(ctx);
-      const double w = ip.weight * coordFactor(geo.x) * wfac;
+      const double w = pointMeasure(ip, coordFactor(geo.x)) * wfac;
       const ADReal flux = bc.computeInterfaceFlux(ctx) * w;
 
       s.dofs.resize(ld);
@@ -975,30 +1162,8 @@ Problem::assembleInterface(const InterfaceBC & bc,
       // The primary body receives +flux through its test functions (or
       // the control domain that owns the point), the secondary body -flux
       // at the paired point.
-      if (ip.owner >= 0)
-      {
-        const int j = static_cast<int>(std::find(sn.begin(), sn.end(), ip.owner) - sn.begin());
-        s.Rloc[j * nc + cp] -= flux;
-        s.touched[j * nc + cp] = 1;
-      }
-      else
-        for (int j = 0; j < np; ++j)
-        {
-          s.Rloc[j * nc + cp].addScaledBy(flux, -geo.N[sn[j]]);
-          s.touched[j * nc + cp] = 1;
-        }
-      if (dual)
-      {
-        const int j = static_cast<int>(std::find(ssn.begin(), ssn.end(), pair.owner) - ssn.begin());
-        s.Rloc[(np + j) * nc + cs] += flux;
-        s.touched[(np + j) * nc + cs] = 1;
-      }
-      else
-        for (int j = 0; j < ns; ++j)
-        {
-          s.Rloc[(np + j) * nc + cs].addScaledBy(flux, sgeo.N[ssn[j]]);
-          s.touched[(np + j) * nc + cs] = 1;
-        }
+      addFlux(flux, -1.0, sn, 0, cp, ip.owner >= 0, ip.owner, geo.N);
+      addFlux(flux, 1.0, ssn, np, cs, dual, pair.owner, sgeo.N);
       scatter(
           s.Rloc, s.dofs, s.touched, R, opts.reference, opts.term_size, nullptr, triplets, false);
     }
@@ -1012,9 +1177,9 @@ Problem::buildInterfacePairs()
   const bool dual = isDual();
   std::vector<IntegrationPoint> pts;
   MappedPoint mp;
-  for (const auto & bc : _ibcs)
+  for (std::size_t index = 0; index < _ibcs.size(); ++index)
   {
-    const auto * ib = dynamic_cast<const InterfaceBC *>(bc.get());
+    const auto * ib = dynamic_cast<const InterfaceBC *>(_ibcs[index].get());
     if (!ib)
       continue;
     // The candidate sides of the other body, with their centroids for a
@@ -1064,7 +1229,8 @@ Problem::buildInterfacePairs()
         best.owner = sideControlOwner(*_mesh, {best.element, best.side}, best.xi);
       return best;
     };
-    auto & out = _interface_pairs[bc.get()];
+    InterfacePairs & out = _interface_pairs[_ibcs[index].get()];
+    out.index = static_cast<unsigned>(index);
     for (const Side & side : boundarySides(ib->boundaries()))
     {
       const Element & el = _mesh->element(side.first);
@@ -1075,7 +1241,7 @@ Problem::buildInterfacePairs()
         mapPoint(*_mesh, el, ip.xi, mp);
         row.push_back(pair(mp.x));
       }
-      out.push_back(std::move(row));
+      out.points.push_back(std::move(row));
     }
   }
 }
@@ -1121,9 +1287,8 @@ Problem::constrainedDofs() const
   for (std::size_t i = 0; i < _extra_constrained.size() && i < fixed.size(); ++i)
     if (_extra_constrained[i])
       fixed[i] = 1;
-  for (const auto & level : _levels)
-    if (level.dof >= 0)
-      fixed[level.dof] = 1;
+  for (Index d : _flow->heldPressureDofs())
+    fixed[d] = 1;
   return fixed;
 }
 
@@ -1241,27 +1406,6 @@ Problem::timeWeight(const Kernel & kernel, const AssemblyOptions & options) cons
   return w > 0.0 ? 1.0 / w : 0.0;
 }
 
-bool
-Problem::flowAtRest() const
-{
-  const int nv = numVariables();
-  std::vector<char> inertial(static_cast<std::size_t>(nv), 0);
-  bool any = false;
-  for (const auto & k : _kernels)
-    if (k->isInertia())
-    {
-      inertial[static_cast<std::size_t>(k->variable())] = 1;
-      any = true;
-    }
-  if (!any)
-    return false;
-  const std::vector<char> fixed = constrainedDofs();
-  bool moving = false;
-  for (Index i = 0; i < numDofs() && !moving; ++i)
-    moving = inertial[static_cast<std::size_t>(i % nv)] && !fixed[i] && _U[i] != 0.0;
-  return !parallel().any(moving);
-}
-
 void
 Problem::checkAdvectiveBoundary() const
 {
@@ -1283,301 +1427,21 @@ Problem::checkAdvectiveBoundary() const
   _advective_boundary_checked = true;
 }
 
-const Kernel *
+const MassEquation *
 Problem::flowConstraint() const
 {
-  const Kernel * constraint = nullptr;
+  const MassEquation * constraint = nullptr;
   for (const auto & k : _kernels)
-    if (k->isMassConservation())
+    if (const auto * mass = dynamic_cast<const MassEquation *>(k.get()))
     {
-      if (constraint && constraint->variable() != k->variable())
+      if (constraint && constraint->variable() != mass->variable())
         throw InputError("The block preconditioner of the flow found two mass conservation "
                          "equations ('" +
-                         constraint->name() + "' and '" + k->name() +
+                         constraint->name() + "' and '" + mass->name() +
                          "') on different variables; it handles one pressure.");
-      constraint = k.get();
+      constraint = mass;
     }
   return constraint;
-}
-
-SaddlePointBlocks
-Problem::saddlePointBlocks(const SparseMatrix & J, SchurApproximation approximation) const
-{
-  const_cast<Problem *>(this)->initialize();
-  const Kernel * constraint = flowConstraint();
-  QpContext probe;
-  probe.dim = _mesh->spaceDimension();
-  probe.time = _time;
-  probe.x = _mesh->node(0);
-  if (!constraint)
-    throw InputError("The preconditioners pressure_mass, pcd and lsc are for pressure-velocity "
-                     "flow, and this problem has no mass conservation equation "
-                     "(mass_conservation). Use another preconditioner.");
-  const int p = constraint->variable();
-  const int nv = numVariables();
-  SaddlePointBlocks blocks;
-  blocks.approximation = approximation;
-  blocks.pressure_variable = _vars[p].name;
-  blocks.constrained = constrainedDofs();
-  std::vector<char> is_pressure(numDofs(), 0);
-  for (Index d = 0; d < numDofs(); ++d)
-    if (d % nv == p)
-    {
-      is_pressure[d] = 1;
-      blocks.pressure_dofs.push_back(d);
-    }
-    else
-      blocks.other_dofs.push_back(d);
-
-  // The sign of S = C - D F^{-1} G relative to G^T F^{-1} G: the Frobenius
-  // product <G, D^T> is negative when G = -D^T, and then -D F^{-1} G is
-  // G^T F^{-1} G.  It is taken over the velocities only: the other unknowns
-  // that the flow couples to the pressure (the temperature) have other units,
-  // and would make the sign depend on them.
-  FlowCoefficients velocities;
-  constraint->flowCoefficients(probe, velocities);
-  std::vector<char> is_velocity(static_cast<std::size_t>(nv), 0);
-  for (int d = 0; d < velocities.num_velocities; ++d)
-    is_velocity[static_cast<std::size_t>(velocities.velocities[d])] = 1;
-  double product = 0.0;
-  for (Index d : blocks.pressure_dofs)
-    for (SparseMatrix::InnerIterator it(J, d); it; ++it)
-      if (is_velocity[static_cast<std::size_t>(it.row() % nv)])
-        product += it.value() * J.coeff(d, it.row());
-  blocks.coupling = product;
-  blocks.sign = product < 0.0 ? 1 : -1;
-
-  const bool pcd = approximation == SchurApproximation::ConvectionDiffusion;
-  const bool lsc = approximation == SchurApproximation::LeastSquaresCommutator;
-  // The time derivative and the weight theta of the steady terms of the
-  // equations whose Jacobian is solved (zero and one for a steady solve).
-  const double dt = _linear_dt;
-  const double theta = _linear_theta;
-  const int dim = _mesh->dimension();
-  blocks.lumped_mass = Eigen::VectorXd::Zero(numDofs());
-  const auto keep = [&](Index a, Index b)
-  { return !blocks.constrained[a] && !blocks.constrained[b]; };
-
-  std::vector<IntegrationPoint> points;
-  std::vector<MappedPoint> mapped;
-  MappedPoint geo;
-  QpContext context = probe;
-  FlowCoefficients c;
-  constexpr int kMax = kMaxElementNodes;
-  for (Index e = 0; e < numIntegratedElements(); ++e)
-  {
-    const Element & el = _mesh->element(e);
-    if (!constraint->activeOnBlock(el.block))
-      continue;
-    const auto & vb = _vars[p].blocks;
-    if (!vb.empty() && !vb.count(el.block))
-      continue;
-    QuadratureSpec spec;
-    spec.kind = QuadratureSpec::Kind::Gauss;
-    spec.points = ReferenceElement::get(el.type).order() + 2;
-    buildElementPoints(*_mesh, e, false, PointSet::Volume, spec, points, &mapped);
-    const bool corner = usesCornerShape(el, p);
-    const int np = corner ? el.numCorners() : el.numNodes();
-    const int nn = el.numNodes();
-    // Element matrices on the pressure nodes: the mass M_k, the integrals m_k
-    // of the shape functions, (1/mu) M_k, and F_p; and the diagonal of the
-    // velocity mass matrix.
-    double M[kMax][kMax] = {}, Mmu[kMax][kMax] = {}, F[kMax][kMax] = {};
-    double m[kMax] = {}, velocity_diagonal[kMax] = {};
-    double volume = 0.0, area = 0.0, viscosity = 0.0, time_density = 0.0;
-    for (std::size_t q = 0; q < points.size(); ++q)
-    {
-      if (q < mapped.size())
-        geo = mapped[q];
-      else
-        mapPoint(*_mesh, el, points[q].xi, geo);
-      if (corner)
-        mapCornerShape(el, geo);
-      const double * N = corner ? geo.corner_shape : geo.N;
-      const Point * dN = corner ? geo.corner_gradient : geo.dN;
-      context.x = geo.x;
-      context.element = e;
-      context.block = el.block;
-      constraint->flowCoefficients(context, c);
-      if (!(c.viscosity > 0.0))
-        blocks.refusal = "The block preconditioners of the flow (pressure_mass, pcd, lsc) scale "
-                         "their operators by the dynamic_viscosity, which must be positive "
-                         "everywhere.";
-      const double w = points[q].weight * coordFactor(geo.x);
-      // The measure of the element itself, without the factor of the
-      // coordinate system, gives its size.
-      area += points[q].weight;
-      volume += w;
-      viscosity += w * c.viscosity;
-      time_density += w * c.time_density;
-      // The current velocity, the wind of the convective term.
-      Point wind{0.0, 0.0, 0.0};
-      for (int d = 0; d < c.num_velocities; ++d)
-        for (int a = 0; a < nn; ++a)
-          wind[d] += geo.N[a] * _U[dof(el.nodes[a], c.velocities[d])];
-      for (int a = 0; a < nn; ++a)
-        velocity_diagonal[a] += w * geo.N[a] * geo.N[a];
-      const double mass_rate = dt > 0.0 ? c.time_density / dt : 0.0;
-      for (int a = 0; a < np; ++a)
-      {
-        m[a] += w * N[a];
-        for (int b = 0; b < np; ++b)
-        {
-          M[a][b] += w * N[a] * N[b];
-          Mmu[a][b] += w * N[a] * N[b] / c.viscosity;
-          if (pcd)
-          {
-            double diffusion = 0.0, convection = 0.0;
-            for (int d = 0; d < 3; ++d)
-            {
-              diffusion += dN[a][d] * dN[b][d];
-              convection += wind[d] * dN[b][d];
-            }
-            F[a][b] += w * (mass_rate * N[a] * N[b] +
-                            theta * (c.viscosity * diffusion + c.density * convection * N[a]));
-          }
-        }
-      }
-    }
-    // Lumped masses, by the diagonal scaled to the element measure (Hinton,
-    // Rock and Zienkiewicz), which is positive for quadratic elements too.
-    double pressure_trace = 0.0, velocity_trace = 0.0;
-    for (int a = 0; a < np; ++a)
-      pressure_trace += M[a][a];
-    for (int a = 0; a < nn; ++a)
-      velocity_trace += velocity_diagonal[a];
-    for (int a = 0; a < np; ++a)
-      blocks.lumped_mass[dof(el.nodes[a], p)] += M[a][a] * volume / pressure_trace;
-    for (int d = 0; d < c.num_velocities; ++d)
-      for (int a = 0; a < nn; ++a)
-        blocks.lumped_mass[dof(el.nodes[a], c.velocities[d])] +=
-            velocity_diagonal[a] * volume / velocity_trace;
-    // The stabilisation of A_p and of the middle factor of lsc for an
-    // equal-order element: the L2 distance from the element mean, scaled.
-    const bool stabilized = c.stabilized;
-    const double h2 = std::pow(area, 2.0 / dim);
-    viscosity /= volume;
-    time_density /= volume;
-    // pcd applies A_p^{-1} to F_p Q_p^{-1} r, which holds the spurious modes at
-    // full size, and needs C_1 a hundred times larger than lsc does (see
-    // SaddlePointBlocks.h).
-    const double c1 = (pcd ? 100.0 : 1.0) / h2;
-    const double c2 = theta * viscosity / (h2 * h2) + (dt > 0.0 ? time_density / (dt * h2) : 0.0);
-    for (int a = 0; a < np; ++a)
-      for (int b = 0; b < np; ++b)
-      {
-        const Index da = dof(el.nodes[a], p), db = dof(el.nodes[b], p);
-        if (!keep(da, db))
-          continue;
-        if (approximation == SchurApproximation::PressureMass)
-          blocks.mass.emplace_back(da, db, Mmu[a][b]);
-        if (pcd)
-          blocks.convection_diffusion.emplace_back(da, db, F[a][b]);
-        const double distance = M[a][b] - m[a] * m[b] / volume;
-        if ((pcd || lsc) && stabilized)
-          blocks.stabilization.emplace_back(da, db, c1 * distance);
-        if (lsc && stabilized)
-          blocks.commutator_stabilization.emplace_back(da, db, c2 * distance);
-      }
-  }
-
-  if (pcd)
-    addInflowRobin(*constraint, theta, blocks);
-  return blocks;
-}
-
-void
-Problem::addInflowRobin(const Kernel & constraint, double theta, SaddlePointBlocks & blocks) const
-{
-  // The Robin condition of F_p, mu dp/dn = rho (w . n) p, on the sides where
-  // every velocity is prescribed: it adds theta rho max(0, -w . n) (p, q) on
-  // the side, which is zero on a wall and acts at an inflow only.
-  const int p = constraint.variable();
-  QpContext context;
-  context.dim = _mesh->spaceDimension();
-  context.time = _time;
-  FlowCoefficients c;
-  std::vector<IntegrationPoint> points;
-  MappedPoint side_geo;
-  for (const Side & side : _mesh->exteriorSides())
-  {
-    if (side.first >= numIntegratedElements())
-      continue;
-    const Element & el = _mesh->element(side.first);
-    if (!constraint.activeOnBlock(el.block))
-      continue;
-    const auto & vb = _vars[p].blocks;
-    if (!vb.empty() && !vb.count(el.block))
-      continue;
-    context.element = side.first;
-    context.block = el.block;
-    context.x = _mesh->sideCentroid(side);
-    constraint.flowCoefficients(context, c);
-    bool prescribed = true;
-    for (Index node : _mesh->sideNodes(side))
-      for (int d = 0; d < c.num_velocities; ++d)
-        prescribed = prescribed && blocks.constrained[dof(node, c.velocities[d])];
-    if (!prescribed)
-      continue;
-    QuadratureSpec spec;
-    spec.kind = QuadratureSpec::Kind::Gauss;
-    spec.points = ReferenceElement::get(el.type).order() + 2;
-    buildSidePoints(*_mesh, side, false, spec, points);
-    const bool corner = usesCornerShape(el, p);
-    const int np = corner ? el.numCorners() : el.numNodes();
-    for (const auto & ip : points)
-    {
-      mapPoint(*_mesh, el, ip.xi, side_geo);
-      if (corner)
-        mapCornerShape(el, side_geo);
-      context.x = side_geo.x;
-      constraint.flowCoefficients(context, c);
-      double inflow = 0.0;
-      for (int d = 0; d < c.num_velocities; ++d)
-      {
-        double w_d = 0.0;
-        for (int a = 0; a < el.numNodes(); ++a)
-          w_d += side_geo.N[a] * _U[dof(el.nodes[a], c.velocities[d])];
-        inflow -= w_d * ip.area[d];
-      }
-      if (!(inflow > 0.0))
-        continue;
-      const double * N = corner ? side_geo.corner_shape : side_geo.N;
-      const double w = theta * c.density * inflow * coordFactor(side_geo.x);
-      for (int a = 0; a < np; ++a)
-        for (int b = 0; b < np; ++b)
-        {
-          const Index da = dof(el.nodes[a], p), db = dof(el.nodes[b], p);
-          if (!blocks.constrained[da] && !blocks.constrained[db] && N[a] * N[b] != 0.0)
-            blocks.convection_diffusion.emplace_back(da, db, w * N[a] * N[b]);
-        }
-    }
-  }
-}
-
-std::vector<std::vector<int>>
-Problem::displacementGroups() const
-{
-  const int nv = numVariables();
-  std::vector<std::vector<int>> groups;
-  std::vector<char> grouped(nv, 0);
-  for (const auto & material : _property_objects)
-  {
-    const auto & p = material->parameters();
-    if (!p.has("displacements") || !p.isSet("displacements"))
-      continue;
-    std::vector<int> group;
-    for (const auto & name : p.getStringList("displacements"))
-      for (int v = 0; v < nv; ++v)
-        if (_vars[v].name == name)
-          group.push_back(v);
-    if (group.empty() || std::any_of(group.begin(), group.end(), [&](int v) { return grouped[v]; }))
-      continue;
-    for (int v : group)
-      grouped[v] = 1;
-    groups.push_back(group);
-  }
-  return groups;
 }
 
 std::vector<std::vector<int>>
@@ -1589,7 +1453,7 @@ Problem::physicsBlocks() const
                      "a flow. Use the Schur complement split of the flow (-dualmesh_schur lsc or "
                      "pcd), which takes the other unknowns (a temperature, for instance) into its "
                      "first block.");
-  std::vector<std::vector<int>> blocks = displacementGroups();
+  std::vector<std::vector<int>> blocks = _solid->displacementGroups(*this);
   std::vector<char> grouped(numVariables(), 0);
   for (const auto & group : blocks)
     for (int v : group)
@@ -1621,131 +1485,54 @@ Problem::physicsBlockDofs() const
   return blocks;
 }
 
-Eigen::MatrixXd
-Problem::nearNullspace() const
+namespace
 {
-  const int nv = numVariables();
-  const Index entities = _mesh->numNodes();
-  const int dim = _mesh->spaceDimension();
-  // The displacement variables of the elastic property objects, in component order.
-  const std::vector<std::vector<int>> groups = displacementGroups();
-  std::vector<char> grouped(nv, 0);
-  for (const auto & group : groups)
-    for (int v : group)
-      grouped[v] = 1;
-  const bool cartesian = _coord == CoordinateSystem::Cartesian;
-  int columns = 0;
-  for (const auto & group : groups)
-  {
-    const int d = static_cast<int>(group.size());
-    columns += d + (cartesian && d == 2 && dim >= 2 ? 1 : 0) + (cartesian && d == 3 ? 3 : 0);
-  }
-  for (int v = 0; v < nv; ++v)
-    if (!grouped[v])
-      ++columns;
-  Eigen::MatrixXd B = Eigen::MatrixXd::Zero(numDofs(), columns);
-  // Rotations about the centroid of the entities, for a well-conditioned basis.
-  Point centre{0.0, 0.0, 0.0};
-  for (Index e = 0; e < entities; ++e)
-    centre = centre + _mesh->node(e);
-  centre = (1.0 / std::max<Index>(entities, 1)) * centre;
-  int column = 0;
-  for (const auto & group : groups)
-  {
-    const int d = static_cast<int>(group.size());
-    for (int c = 0; c < d; ++c, ++column)
-      for (Index e = 0; e < entities; ++e)
-        B(dof(e, group[c]), column) = 1.0;
-    if (!cartesian)
-      continue;
-    if (d == 2 && dim >= 2)
-    {
-      for (Index e = 0; e < entities; ++e)
-      {
-        const Point x = _mesh->node(e) - centre;
-        B(dof(e, group[0]), column) = -x[1];
-        B(dof(e, group[1]), column) = x[0];
-      }
-      ++column;
-    }
-    if (d == 3)
-    {
-      for (Index e = 0; e < entities; ++e)
-      {
-        const Point x = _mesh->node(e) - centre;
-        B(dof(e, group[0]), column) = -x[1]; // about z
-        B(dof(e, group[1]), column) = x[0];
-        B(dof(e, group[1]), column + 1) = -x[2]; // about x
-        B(dof(e, group[2]), column + 1) = x[1];
-        B(dof(e, group[2]), column + 2) = -x[0]; // about y
-        B(dof(e, group[0]), column + 2) = x[2];
-      }
-      column += 3;
-    }
-  }
-  for (int v = 0; v < nv; ++v)
-    if (!grouped[v])
-    {
-      for (Index e = 0; e < entities; ++e)
-        B(dof(e, v), column) = 1.0;
-      ++column;
-    }
-  return B;
-}
+/// A near null space vector whose image under the Jacobian on a component is at most this
+/// fraction of its image under the diagonal of the Jacobian solves the homogeneous problem there.
+constexpr double kSingularImage = 1e-9;
 
-void
-Problem::checkSingularity(const SparseMatrix & J) const
+/// The groups of coupled unknowns: the connected components of the graph of @p J without the
+/// unknowns that @p fixed marks.  Returns the component of every unknown (-1 for a fixed one),
+/// numbered in the order of their first unknown, and sets @p count to their number.
+std::vector<Index>
+coupledComponents(const SparseMatrix & J, const std::vector<char> & fixed, Index & count)
 {
   const Index n = J.rows();
-  const int nv = numVariables();
-  const std::vector<char> fixed = constrainedDofs();
-  // The groups of coupled unknowns: the connected components of the graph of
-  // the Jacobian without the prescribed unknowns (union-find with path halving).
-  std::vector<Index> parent(n);
-  for (Index i = 0; i < n; ++i)
-    parent[i] = i;
-  const auto root = [&parent](Index i)
-  {
-    while (parent[i] != i)
-    {
-      parent[i] = parent[parent[i]];
-      i = parent[i];
-    }
-    return i;
-  };
+  DisjointSet sets(n);
   for (Index col = 0; col < J.outerSize(); ++col)
   {
     if (fixed[col])
       continue;
     for (SparseMatrix::InnerIterator it(J, col); it; ++it)
       if (!fixed[it.row()] && it.row() != col && it.value() != 0.0)
-      {
-        const Index a = root(it.row()), b = root(col);
-        if (a != b)
-          parent[a] = b;
-      }
+        sets.join(it.row(), col);
   }
-  Eigen::MatrixXd B = nearNullspace();
+  std::vector<Index> component(n, -1);
+  count = 0;
+  for (Index i = 0; i < n; ++i)
+    if (!fixed[i])
+    {
+      const Index r = sets.root(i);
+      if (component[r] < 0)
+        component[r] = count++;
+      component[i] = component[r];
+    }
+  return component;
+}
+} // namespace
+
+void
+Problem::checkSingularity(const SparseMatrix & J) const
+{
+  const Index n = J.rows();
+  const std::vector<char> fixed = constrainedDofs();
+  Index nc = 0;
+  const std::vector<Index> component = coupledComponents(J, fixed, nc);
+  Eigen::MatrixXd B = _solid->nearNullspace(*this);
   for (Index i = 0; i < n; ++i)
     if (fixed[i])
       B.row(i).setZero();
   const Eigen::MatrixXd JB = J * B;
-  // For every component and every near null space vector: the norms of the
-  // vector and of its image on the component, and the largest diagonal entry.
-  std::vector<Index> component(n, -1);
-  std::vector<Index> roots;
-  for (Index i = 0; i < n; ++i)
-    if (!fixed[i])
-    {
-      const Index r = root(i);
-      if (component[r] < 0)
-      {
-        component[r] = static_cast<Index>(roots.size());
-        roots.push_back(r);
-      }
-      component[i] = component[r];
-    }
-  const Index nc = static_cast<Index>(roots.size());
   const Eigen::Index k = B.cols();
   // For every component and every near null space vector b: the norms of J b
   // and of D b, D being the diagonal of J, so that the comparison is made row
@@ -1766,133 +1553,56 @@ Problem::checkSingularity(const SparseMatrix & J) const
       image_norm(c, j) += JB(i, j) * JB(i, j);
     }
   }
+  // A vector that J takes to zero on a component, relative to D, is a solution of the
+  // homogeneous problem there.
   for (Index c = 0; c < nc; ++c)
     for (Eigen::Index j = 0; j < k; ++j)
     {
       const double reference = std::sqrt(scaled_norm(c, j));
-      if (!(reference > 0.0) || std::sqrt(image_norm(c, j)) > 1e-9 * reference)
-        continue;
-      // Describe the part of the mesh and the variables involved.
-      Point lo{1e300, 1e300, 1e300}, hi{-1e300, -1e300, -1e300};
-      std::set<int> variables;
-      std::set<Index> entities;
-      for (Index i = 0; i < n; ++i)
-        if (!fixed[i] && component[i] == c && B(i, j) != 0.0)
-        {
-          variables.insert(static_cast<int>(i % nv));
-          entities.insert(i / nv);
-          const Point & x = _mesh->node(i / nv);
-          for (int d = 0; d < 3; ++d)
-          {
-            lo[d] = std::min(lo[d], x[d]);
-            hi[d] = std::max(hi[d], x[d]);
-          }
-        }
-      std::ostringstream os;
-      os << "The system is singular: ";
-      std::string names;
-      for (int v : variables)
-        names += (names.empty() ? "'" : ", '") + _vars[v].name + "'";
-      os << (variables.size() > 1 ? "the variables " : "the variable ") << names
-         << " on a part of the mesh with " << entities.size()
-         << (entities.size() == 1 ? " node" : " nodes") << " (";
-      const char * axes = "xyz";
-      for (int d = 0; d < _mesh->spaceDimension(); ++d)
-        os << (d ? ", " : "") << axes[d] << " from " << lo[d] << " to " << hi[d];
-      os << ") " << (variables.size() > 1 ? "are" : "is")
-         << " not held by any boundary condition. A "
-         << (variables.size() > 1 ? "rigid body motion" : "constant")
-         << " can be added there without changing the equations, so the solution is not unique. "
-            "Give this part a Dirichlet condition (for a solid, the word fixed), or connect it to the rest "
-            "of the mesh, e.g., by checking that the parts of an imported mesh share their nodes.";
-      throw InputError(os.str());
+      if (reference > 0.0 && !(std::sqrt(image_norm(c, j)) > kSingularImage * reference))
+        throw InputError(singularPartMessage(component, c, B.col(j)));
     }
 }
 
-const char *
-Problem::enclosedLevelMessage()
+std::string
+Problem::singularPartMessage(const std::vector<Index> & component, Index c, const Vector & b) const
 {
-  return "The pressure of this enclosed flow enters its equations (through a viscosity, a density "
-         "or a source that depends on it), so its level changes the flow, and no boundary fixes "
-         "it. Give the pressure at a point, flow.add_boundary_condition(\"pressure = 0\", "
-         "point=[...]), or a boundary with a pressure or traction condition.";
-}
-
-bool
-Problem::holdPressureLevels(const SparseMatrix & J)
-{
-  const Parallel & par = parallel();
-  const std::vector<char> fixed = constrainedDofs();
-  for (const auto & k : _kernels)
-  {
-    if (!k->isMassConservation())
-      continue;
-    PressureLevel level;
-    level.variable = k->variable();
-    const int p = level.variable;
-    std::vector<Index> free;
-    for (Index n = 0; n < _mesh->numNodes(); ++n)
-      if (!fixed[dof(n, p)])
-        free.push_back(n);
-    // The constant pressure, one at every free unknown, its image under J against that under |J|
-    // for the scale, and the sum of the mass equations (J^T 1).
-    Vector e = Vector::Zero(numDofs());
-    for (Index n : free)
-      e[dof(n, p)] = 1.0;
-    const SparseMatrix size = J.cwiseAbs();
-    Vector image = J * e, scale = size * e;
-    Vector rows = J.transpose() * e, row_scale = size.transpose() * e;
-    for (Vector * v : {&image, &scale, &rows, &row_scale})
-      par.addAtNodes(v->data(), numVariables());
-    // Each equation is compared with itself, in its own units: the heat that a flow carries
-    // depends on the pressure through the conserved velocity, in numbers that would hide the
-    // momentum equations.
-    level.scales = equationNorms(scale);
-    if (std::none_of(level.scales.begin(), level.scales.end(), [](double s) { return s > 0.0; }))
-      continue;
-    const std::vector<double> images = equationNorms(image);
-    bool changes = false;
-    for (std::size_t v = 0; v < images.size(); ++v)
-      changes = changes || images[v] > 1e-9 * level.scales[v];
-    if (changes)
+  // The part of the mesh and the variables involved.
+  const int nv = numVariables();
+  const Index n = static_cast<Index>(component.size());
+  constexpr double huge = 1e300;
+  Point lo{huge, huge, huge}, hi{-huge, -huge, -huge};
+  std::set<int> variables;
+  std::set<Index> entities;
+  for (Index i = 0; i < n; ++i)
+    if (component[i] == c && b[i] != 0.0)
     {
-      // The level changes the equations.  The mass equations of an enclosed flow sum to its
-      // boundary flux whatever the solution (J^T 1 = 0, in the columns of every variable), so
-      // they do not fix the level either.
-      const std::vector<double> sums = equationNorms(rows), sum_scales = equationNorms(row_scale);
-      bool enclosed = true;
-      for (std::size_t v = 0; v < sums.size(); ++v)
-        enclosed = enclosed && sums[v] <= 1e-9 * sum_scales[v];
-      if (enclosed)
+      variables.insert(static_cast<int>(i % nv));
+      entities.insert(i / nv);
+      const Point & x = _mesh->node(i / nv);
+      for (int d = 0; d < 3; ++d)
       {
-        _levels.clear();
-        throw InputError(enclosedLevelMessage());
+        lo[d] = std::min(lo[d], x[d]);
+        hi[d] = std::max(hi[d], x[d]);
       }
-      continue;
     }
-    // Hold the unknown nearest the centre of the free unknowns: one in a corner slows the Krylov
-    // solvers by about 40 % (the cavity with the pressure mass and pcd preconditioners).
-    Point centre{0, 0, 0};
-    for (Index n : free)
-      centre = centre + _mesh->node(n);
-    const double count = par.sum(static_cast<double>(free.size()));
-    for (int c = 0; c < 3; ++c)
-      centre[c] = par.sum(centre[c]) / std::max(count, 1.0);
-    std::vector<char> candidate(static_cast<std::size_t>(_mesh->numNodes()), 0);
-    for (Index n : free)
-      candidate[static_cast<std::size_t>(n)] = par.globalDof(dof(n, p)) >= 0 ? 1 : 0;
-    double distance = 0.0;
-    const Index held = nearestNode(
-        centre, [&](Index n) { return candidate[static_cast<std::size_t>(n)] != 0; }, &distance);
-    if (!std::isfinite(distance))
-      continue;
-    if (held >= 0)
-      level.dof = dof(held, p);
-    level.weight = nodeWeights(p);
-    _levels.push_back(std::move(level));
-  }
-  _levels_checked = true;
-  return !_levels.empty();
+  std::ostringstream os;
+  os << "The system is singular: ";
+  std::string names;
+  for (int v : variables)
+    names += (names.empty() ? "'" : ", '") + _vars[v].name + "'";
+  os << (variables.size() > 1 ? "the variables " : "the variable ") << names
+     << " on a part of the mesh with " << entities.size()
+     << (entities.size() == 1 ? " node" : " nodes") << " (";
+  const char * axes = "xyz";
+  for (int d = 0; d < _mesh->spaceDimension(); ++d)
+    os << (d ? ", " : "") << axes[d] << " from " << lo[d] << " to " << hi[d];
+  os << ") " << (variables.size() > 1 ? "are" : "is") << " not held by any boundary condition. A "
+     << (variables.size() > 1 ? "rigid body motion" : "constant")
+     << " can be added there without changing the equations, so the solution is not unique. "
+        "Give this part a Dirichlet condition (for a solid, the word fixed), or connect it to the rest "
+        "of the mesh, e.g., by checking that the parts of an imported mesh share their nodes.";
+  return os.str();
 }
 
 Index
@@ -1923,7 +1633,8 @@ Vector
 Problem::nodeWeights(int v) const
 {
   // The points of the nodal rule: one per node of each element, weighted by the measure of the
-  // control domain of the node in the element (DMCDM) or the integral of its shape function (FEM).
+  // control domain of the node in the element (DMCDM) or the integral of its shape function (FEM),
+  // with the coordinate factor integrated over it (IntegrationPoint::coordinate_measure).
   QuadratureSpec nodal;
   nodal.kind = QuadratureSpec::Kind::Nodal;
   const bool dual = isDual();
@@ -1937,13 +1648,13 @@ Problem::nodeWeights(int v) const
     if (blocks && !blocks->empty() && !blocks->count(el.block))
       continue;
     const PolygonCell * polygon = polygonCell(e);
-    buildElementPoints(*_mesh, e, dual, PointSet::Volume, nodal, points, nullptr, polygon);
+    buildElementPoints(*_mesh, e, dual, PointSet::Volume, nodal, points, nullptr, polygon, _coord);
     for (const auto & ip : points)
     {
       mapPoint(*_mesh, el, ip.xi, mp);
       const Index node = polygon ? polygon->nodes[static_cast<std::size_t>(ip.owner)]
                                  : el.nodes[static_cast<std::size_t>(ip.owner)];
-      weight[node] += ip.weight * coordFactor(mp.x);
+      weight[node] += pointMeasure(ip, coordFactor(mp.x));
     }
   }
   return weight;
@@ -1959,62 +1670,6 @@ Problem::nodeMeasures() const
   // A node shared by several processes takes the elements of all of them.
   parallel().addAtNodes(measure.data(), 1);
   return {measure.data(), measure.data() + measure.size()};
-}
-
-std::vector<double>
-Problem::shiftPressureLevels(Vector & U) const
-{
-  const Parallel & par = parallel();
-  std::vector<double> shifts;
-  for (const auto & level : _levels)
-  {
-    double integral = 0.0;
-    for (Index n = 0; n < _mesh->numNodes(); ++n)
-      integral += level.weight[n] * U[dof(n, level.variable)];
-    const double shift = -par.sum(integral) / par.sum(level.weight.sum());
-    for (Index n = 0; n < _mesh->numNodes(); ++n)
-      if (_active_dof[dof(n, level.variable)])
-        U[dof(n, level.variable)] += shift;
-    shifts.push_back(shift);
-  }
-  updateDependentDofs(U);
-  return shifts;
-}
-
-std::vector<double>
-Problem::testShiftPressureLevels(Vector & U, const std::vector<double> & forces) const
-{
-  const Parallel & par = parallel();
-  std::vector<double> shifts;
-  for (const auto & level : _levels)
-  {
-    double largest = 0.0;
-    for (Index n = 0; n < _mesh->numNodes(); ++n)
-      if (_active_dof[dof(n, level.variable)])
-        largest = std::max(largest, std::abs(U[dof(n, level.variable)]));
-    double shift = par.maximum(largest);
-    for (std::size_t v = 0; v < forces.size(); ++v)
-      if (level.scales[v] > 0.0)
-        shift = std::max(shift, forces[v] / level.scales[v]);
-    if (!(shift > 0.0))
-      shift = 1.0;
-    for (Index n = 0; n < _mesh->numNodes(); ++n)
-      if (_active_dof[dof(n, level.variable)])
-        U[dof(n, level.variable)] += shift;
-    shifts.push_back(shift);
-  }
-  updateDependentDofs(U);
-  return shifts;
-}
-
-std::vector<double>
-Problem::pressureLevelChange(const std::vector<double> & shifts) const
-{
-  std::vector<double> change(static_cast<std::size_t>(numVariables()), 0.0);
-  for (std::size_t l = 0; l < _levels.size(); ++l)
-    for (std::size_t v = 0; v < change.size(); ++v)
-      change[v] += std::abs(shifts[l]) * _levels[l].scales[v];
-  return change;
 }
 
 std::vector<Side>
@@ -2092,117 +1747,11 @@ Problem::relativeStep(const Vector & after, const Vector & before) const
   return largest;
 }
 
-void
-Problem::notePressureLevelFlux()
-{
-  const Parallel & par = parallel();
-  const std::vector<char> fixed = constrainedDofs();
-  for (auto & level : _levels)
-  {
-    Vector flux = Vector::Zero(numDofs());
-    for (Index n = 0; n < _mesh->numNodes(); ++n)
-      if (!fixed[dof(n, level.variable)])
-        flux[dof(n, level.variable)] = _last_residual[dof(n, level.variable)];
-    level.flux = std::max(level.flux, par.norm(flux));
-  }
-}
-
-void
-Problem::checkPressureLevelBalance(const Vector & R)
-{
-  const Parallel & par = parallel();
-  for (auto & level : _levels)
-  {
-    const double imbalance = par.maximum(level.dof >= 0 ? std::abs(R[level.dof]) : 0.0);
-    if (level.warned || !(level.flux > 0.0) || imbalance <= 1e-6 * level.flux)
-      continue;
-    level.warned = true;
-    if (par.isRoot())
-      std::fprintf(stderr,
-                   "dualmesh: warning: the velocity prescribed on the boundary of the enclosed "
-                   "flow of '%s' carries a net flux of %.3g (%.2g of its boundary flux). An "
-                   "incompressible flow cannot take it in, so it goes to the mass equation of "
-                   "the one pressure unknown that fixes the pressure level, and the pressure has "
-                   "a spike there. Prescribe a velocity whose net flux is zero, or give the flow "
-                   "an outlet.\n",
-                   _vars[level.variable].name.c_str(),
-                   imbalance,
-                   imbalance / level.flux);
-  }
-}
-
-// ---------------------------------------------------------------------------
-// The serial identity of the parallel interface
-// ---------------------------------------------------------------------------
-CheckpointLayout
-Parallel::checkpointLayout(const Problem & problem) const
-{
-  // One process holds the whole problem, numbered as it is.
-  CheckpointLayout layout;
-  layout.num_global_nodes = problem.mesh().numNodes();
-  layout.global_nodes.resize(static_cast<std::size_t>(problem.mesh().numNodes()));
-  std::iota(layout.global_nodes.begin(), layout.global_nodes.end(), 0);
-  layout.num_global_elements = problem.mesh().numElements();
-  layout.global_elements.resize(static_cast<std::size_t>(problem.mesh().numElements()));
-  std::iota(layout.global_elements.begin(), layout.global_elements.end(), 0);
-  return layout;
-}
-
 const Parallel &
 Problem::parallel() const
 {
   static const Parallel serial;
   return _parallel ? *_parallel : serial;
-}
-
-SolveResult
-Problem::solveSteady(const SolverOptions & options)
-{
-  initialize();
-  AssemblyOptions base;
-  base.include_time_kernels = false;
-  base.theta = 1.0;
-  // A flow at rest starts from the Stokes solution, the same problem without the inertia.  The
-  // linearisation about the state at rest, whose prescribed velocities next to zero values make
-  // steep gradients, can send Newton's method far from the solution; the Stokes solution is the
-  // usual first guess of the Navier-Stokes equations.  The equations are unchanged.
-  SolveResult start;
-  Vector initial = _U;
-  if (options.nonlinear_solver != "linear" && flowAtRest())
-  {
-    if (options.verbose && parallel().isRoot())
-      std::cout << "  The flow is at rest: Newton's method starts from the Stokes solution, the "
-                   "same problem without the inertia.\n";
-    const Vector at_rest = _U;
-    AssemblyOptions stokes = base;
-    stokes.inertia = 0.0;
-    SolverOptions quiet = options;
-    quiet.error_on_divergence = false;
-    // The Schur complement of a Stokes problem is spectrally equivalent to the pressure mass
-    // matrix, so pressure_mass is its Schur approximation.  pcd and lsc approximate the
-    // convection that the Stokes problem does not have.
-    const user_options_parts user = user_choice(options.petsc_options);
-    if (user.split.Schur && *user.split.Schur != SchurApproximation::PressureMass)
-      quiet.petsc_options = user.linear + " " + user.nonlinear + " -dualmesh_schur pressure_mass";
-    start = nonlinearSolve(quiet, stokes, nullptr);
-    if (!start.converged)
-      _U = at_rest;
-    initial = at_rest;
-  }
-  // A continuation ramps the prescribed values from the state the solve was given (a flow from
-  // rest, which takes it through the lower Reynolds numbers).
-  SolveResult result = nonlinearSolve(options, base, nullptr, &initial);
-  result.total_iterations += start.total_iterations;
-  result.linear_iterations += start.linear_iterations;
-  result.history.insert(result.history.begin(), start.history.begin(), start.history.end());
-  // A converged steady state is a state the history of stateful property objects
-  // has reached: commit it, so that a following solve or time step starts
-  // from it.  Without this, a transient run after a steady solve would
-  // restart the history from the undeformed state and take the whole
-  // steady deformation as its first increment.
-  if (result.converged)
-    commitState();
-  return result;
 }
 
 } // namespace dualmesh

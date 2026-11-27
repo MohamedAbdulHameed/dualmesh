@@ -1,27 +1,22 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 #include "dualmesh/parallel/DistributedProblem.h"
 
+#include "dualmesh/base/Checkpoint.h"
 #include "dualmesh/base/Console.h"
 #include "dualmesh/linalg/PetscSolver.h"
-#include "dualmesh/modules/Framework.h"
-#include "dualmesh/parallel/Checkpoint.h"
 #include "dualmesh/parallel/Partition.h"
 
 #include <algorithm>
 #include <cmath>
 #include <fstream>
 #include <iomanip>
-#include <iostream>
-#include <limits>
 #include <map>
 #include <set>
 #include <sstream>
 #include <unordered_map>
 
-#ifdef DUALMESH_HAVE_PETSC
 #include <petscsf.h>
 #define DM_PETSC(call) petsc::check((call), #call)
-#endif
 
 namespace dualmesh
 {
@@ -99,6 +94,102 @@ DistributedProblem::completeBoundaryNodes()
   }
 }
 
+namespace
+{
+/// The elements of the sides of a side set as a rank shares them with the others.  For each side,
+/// integers holds the global element, the side, the type, the block, the number of nodes and the
+/// global nodes, and coordinates holds the three coordinates of each node.
+struct SharedSides
+{
+  std::vector<Index> integers;
+  std::vector<double> coordinates;
+};
+
+/// One side read back from SharedSides, with its nodes and their coordinates in the buffers.
+struct SharedSide
+{
+  Index global_element;
+  int side;
+  ElementType type;
+  int block;
+  /// The number of nodes of the element.
+  std::size_t count;
+  /// The global nodes of the element.
+  const Index * nodes;
+  /// The coordinates of the nodes, three per node.
+  const double * x;
+};
+
+/// Pack the elements of the given sides of mesh, whose global element and node numbers are
+/// global_elements and local_to_global.
+SharedSides
+packSides(const Mesh & mesh,
+          const std::vector<Side> & sides,
+          const std::vector<Index> & global_elements,
+          const std::vector<Index> & local_to_global)
+{
+  SharedSides out;
+  for (const Side & side : sides)
+  {
+    const Element & el = mesh.element(side.first);
+    out.integers.insert(out.integers.end(),
+                        {global_elements[side.first],
+                         side.second,
+                         static_cast<Index>(el.type),
+                         el.block,
+                         el.numNodes()});
+    for (int k = 0; k < el.numNodes(); ++k)
+    {
+      out.integers.push_back(local_to_global[el.nodes[k]]);
+      const Point & x = mesh.node(el.nodes[k]);
+      out.coordinates.insert(out.coordinates.end(), x.begin(), x.end());
+    }
+  }
+  return out;
+}
+
+/// Read the side that starts at position at of all.integers and xyz of all.coordinates, and move
+/// both positions past it.
+SharedSide
+unpackSide(const SharedSides & all, std::size_t & at, std::size_t & xyz)
+{
+  SharedSide out;
+  out.global_element = all.integers[at++];
+  out.side = static_cast<int>(all.integers[at++]);
+  out.type = static_cast<ElementType>(all.integers[at++]);
+  out.block = static_cast<int>(all.integers[at++]);
+  out.count = static_cast<std::size_t>(all.integers[at++]);
+  out.nodes = all.integers.data() + at;
+  out.x = all.coordinates.data() + xyz;
+  at += out.count;
+  xyz += 3 * out.count;
+  return out;
+}
+
+/// Add the element of a shared side to mesh, with those of its nodes that mesh lacks, and return
+/// its local number.  local_node maps the global node numbers to the local ones, and
+/// local_to_global maps them back.  Both receive the added nodes.
+Index
+addGhostElement(const SharedSide & shared,
+                Mesh & mesh,
+                std::unordered_map<Index, Index> & local_node,
+                std::vector<Index> & local_to_global)
+{
+  std::vector<Index> local(shared.count);
+  for (std::size_t k = 0; k < shared.count; ++k)
+  {
+    auto [it, added] = local_node.try_emplace(shared.nodes[k], mesh.numNodes());
+    if (added)
+    {
+      mesh.addNode({shared.x[3 * k], shared.x[3 * k + 1], shared.x[3 * k + 2]});
+      local_to_global.push_back(shared.nodes[k]);
+    }
+    local[k] = it->second;
+  }
+  return mesh.addElement(shared.type, local, shared.block);
+}
+} // namespace
+
 void
 DistributedProblem::fetchInterfaceGhosts()
 {
@@ -132,62 +223,29 @@ DistributedProblem::fetchInterfaceGhosts()
       if (std::count(ib->secondaryBoundaries().begin(), ib->secondaryBoundaries().end(), name))
         for (const auto & primary : ib->boundaries())
           needs = needs || !_mesh->sideset(primary).empty();
-    // Every rank shares the elements of its sides of the side set: global element, side, type, block, global nodes, and the coordinates of the nodes.
-    std::vector<Index> integers;
-    std::vector<double> coordinates;
-    for (const Side & side : _mesh->sideset(name))
-    {
-      const Element & el = _mesh->element(side.first);
-      integers.insert(integers.end(),
-                      {_global_elements[side.first],
-                       side.second,
-                       static_cast<Index>(el.type),
-                       el.block,
-                       el.numNodes()});
-      for (int k = 0; k < el.numNodes(); ++k)
-      {
-        integers.push_back(_local_to_global[el.nodes[k]]);
-        const Point & x = _mesh->node(el.nodes[k]);
-        coordinates.insert(coordinates.end(), x.begin(), x.end());
-      }
-    }
-    const auto all_integers = _comm.allGather(integers);
-    const auto all_coordinates = _comm.allGather(coordinates);
+    // Every rank shares the elements of its sides of the side set.
+    const SharedSides own =
+        packSides(*_mesh, _mesh->sideset(name), _global_elements, _local_to_global);
+    const SharedSides all{_comm.allGather(own.integers), _comm.allGather(own.coordinates)};
     if (!needs)
       continue;
     std::vector<Side> candidates;
     std::size_t at = 0, xyz = 0;
-    while (at < all_integers.size())
+    while (at < all.integers.size())
     {
-      const Index global_element = all_integers[at++];
-      const int side = static_cast<int>(all_integers[at++]);
-      const auto type = static_cast<ElementType>(all_integers[at++]);
-      const int block = static_cast<int>(all_integers[at++]);
-      const auto count = static_cast<std::size_t>(all_integers[at++]);
-      const Index * nodes = all_integers.data() + at;
-      const double * x = all_coordinates.data() + xyz;
-      at += count;
-      xyz += 3 * count;
-      auto found = local_element.find(global_element);
+      const SharedSide shared = unpackSide(all, at, xyz);
+      auto found = local_element.find(shared.global_element);
       if (found != local_element.end() && found->second < _num_owned_elements)
-        continue; // this rank holds the element and its side already
+        continue; // This rank holds the element and its side already
       if (found == local_element.end())
       {
-        std::vector<Index> local(count);
-        for (std::size_t k = 0; k < count; ++k)
-        {
-          auto [it, added] = local_node.try_emplace(nodes[k], _mesh->numNodes());
-          if (added)
-          {
-            _mesh->addNode({x[3 * k], x[3 * k + 1], x[3 * k + 2]});
-            _local_to_global.push_back(nodes[k]);
-          }
-          local[k] = it->second;
-        }
-        found = local_element.emplace(global_element, _mesh->addElement(type, local, block)).first;
-        _global_elements.push_back(global_element);
+        found = local_element
+                    .emplace(shared.global_element,
+                             addGhostElement(shared, *_mesh, local_node, _local_to_global))
+                    .first;
+        _global_elements.push_back(shared.global_element);
       }
-      candidates.push_back({found->second, side});
+      candidates.push_back({found->second, shared.side});
     }
     if (!candidates.empty())
       _local->addInterfaceCandidates(name, candidates);
@@ -223,7 +281,7 @@ DistributedProblem::joinConstraints()
   std::vector<std::pair<Index, Index>> pairs; // (secondary, primary) global node indices
   for (const auto & c : constraints)
   {
-    const auto * periodic = dynamic_cast<const PeriodicBC *>(c.get());
+    const auto * periodic = dynamic_cast<const PeriodicConstraint *>(c.get());
     if (!periodic)
       throw InputError("'" + c->name() +
                        "': the distributed solver joins periodic constraints only.");
@@ -358,11 +416,9 @@ DistributedProblem::prepare()
   // A concentrated load and a value given at a point resolve to the node nearest the point over
   // every process (Problem::nearestNode).
   agreePrescribedValues();
-  // A global numbering of the degrees of freedom, for assembling one distributed matrix, and of
-  // the entities, for systems with one unknown per entity.
+  // A global numbering of the degrees of freedom, for assembling one distributed matrix.
   _global_dof =
       globalNumbers(_owned_node, _local->numVariables(), _first_owned_dof, _num_global_dofs);
-  _global_entity = globalNumbers(_owned_node, 1, _first_owned_entity, _num_global_entities);
   _prepared = true;
 }
 
@@ -394,12 +450,6 @@ DistributedProblem::globalNumbers(const std::vector<char> & owned,
   for (std::size_t i = 0; i < number.size(); ++i)
     out[i] = static_cast<Index>(std::llround(number[i]));
   return out;
-}
-
-Index
-DistributedProblem::numOwnedEntities() const
-{
-  return static_cast<Index>(std::count(_owned_node.begin(), _owned_node.end(), 1));
 }
 
 Index

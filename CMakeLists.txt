@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.18)
 project(dualmesh VERSION 0.2.0 LANGUAGES CXX)
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
@@ -108,6 +108,9 @@ endif()
 # ---- core library ------------------------------------------------------------
 file(GLOB_RECURSE DUALMESH_SOURCES CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/src/*.cpp)
 add_library(dualmesh_core STATIC ${DUALMESH_SOURCES})
+# The Python module is built with hidden symbols, and the core is linked into it, so the core
+# hides its symbols too: one visibility for every translation unit of the module.
+set_target_properties(dualmesh_core PROPERTIES CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
 target_include_directories(dualmesh_core PUBLIC ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dualmesh_core PUBLIC Eigen3::Eigen)
 target_compile_definitions(dualmesh_core
@@ -122,7 +125,6 @@ if(DUALMESH_ENABLE_OPENMP AND OpenMP_CXX_FOUND)
   target_link_libraries(dualmesh_core PUBLIC OpenMP::OpenMP_CXX)
 endif()
 target_link_libraries(dualmesh_core PUBLIC MPI::MPI_CXX PkgConfig::PETSC)
-target_compile_definitions(dualmesh_core PUBLIC DUALMESH_HAVE_MPI DUALMESH_HAVE_PETSC)
 if(DUALMESH_ENABLE_GSLIB)
   target_sources(dualmesh_core PRIVATE ${PROJECT_SOURCE_DIR}/src/parallel/GslibShim.c)
   set_source_files_properties(${PROJECT_SOURCE_DIR}/src/parallel/GslibShim.c PROPERTIES LANGUAGE C)
@@ -152,7 +154,14 @@ if(DUALMESH_BUILD_PYTHON)
                     OUTPUT_VARIABLE pybind11_DIR OUTPUT_STRIP_TRAILING_WHITESPACE)
     find_package(pybind11 CONFIG REQUIRED)
   endif()
-  pybind11_add_module(_core MODULE python/bindings/module.cpp)
+  pybind11_add_module(_core MODULE
+    python/bindings/module.cpp
+    python/bindings/conversions.cpp
+    python/bindings/functions.cpp
+    python/bindings/mesh.cpp
+    python/bindings/objects.cpp
+    python/bindings/problem.cpp
+    python/bindings/parallel.cpp)
   target_link_libraries(_core PRIVATE dualmesh_core)
   if(SKBUILD)
     install(TARGETS _core LIBRARY DESTINATION dualmesh)

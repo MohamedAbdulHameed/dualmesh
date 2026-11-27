@@ -11,7 +11,7 @@ E, B, H, L, P = 200e9, 0.02, 0.01, 1.0, 1000.0
 second_moment = B * H**3 / 12
 
 
-def pinned_column(theory, n):
+def pinned_column(theory, n, end_force=-P):
     mesh = dualmesh.generate_line_mesh(start=0.0, end=L, num_elements=n)
     problem = dualmesh.Problem(mesh)
     beam = problem.add_physics(
@@ -25,7 +25,7 @@ def pinned_column(theory, n):
     )
     beam.add_boundary_condition("disp_x = 0", boundary="left")
     beam.add_boundary_condition("disp_z = 0", boundary=["left", "right"])
-    problem.add_point_source(variable="disp_x", value=-P, points=[L])
+    problem.add_point_source(variable="disp_x", value=end_force, points=[L])
     problem.solve(report="none")
     return problem
 
@@ -89,3 +89,16 @@ def test_buckling_needs_a_geometric_stiffness():
     problem.solve(report="none")
     with pytest.raises(ValueError, match="no geometric stiffness"):
         problem.solve_buckling(report="none")
+
+
+def test_a_column_in_tension_is_refused_as_it_cannot_buckle():
+    """A tensile axial force stiffens the column, so no positive multiple of it buckles it."""
+    problem = pinned_column("Euler-Bernoulli", 16, end_force=P)
+    with pytest.raises(ValueError, match="has 0 positive load factors"):
+        problem.solve_buckling(report="none")
+
+
+def test_buckling_needs_at_least_one_mode():
+    problem = pinned_column("Euler-Bernoulli", 8)
+    with pytest.raises(ValueError, match="num_modes must be at least 1"):
+        problem.solve_buckling(num_modes=0, report="none")

@@ -1,6 +1,6 @@
 # dualmesh
 
-dualmesh solves coupled problems of heat transfer, solid mechanics and incompressible flow, and partial differential equations that you write yourself. It discretizes a problem by the finite element method (FEM), and a problem with a flow by the dual mesh control domain method (DMCDM), which conserves the transported quantity in every control domain. The `method` argument chooses the other method where it applies. The core is C++17 with PETSc and MPI, and you drive it from Python or from a YAML case file.
+dualmesh solves coupled problems of heat transfer, solid mechanics and incompressible flow, and partial differential equations that you write yourself. It discretizes a problem by the finite element method (FEM), and a problem with an equal-order flow, with any solid or heat conduction beside it, by the dual mesh control domain method (DMCDM), which conserves the transported quantity in every control domain. The `method` argument chooses the other method where it applies. The core is C++20 with PETSc and MPI, and you drive it from Python or from a YAML case file.
 
 ## A first case
 
@@ -89,7 +89,7 @@ with $`\mathbf{n}`$ the outward unit normal. The flux leaving one control domain
 
 ## Installation
 
-The build needs a C++17 compiler on Linux or macOS, CMake 3.18 or later, Python 3.11 or later, MPI and PETSc. With conda:
+The build needs a C++20 compiler (GCC 10 or Clang 10, or newer) on Linux or macOS, CMake 3.18 or later, Python 3.11 or later, MPI and PETSc. With conda:
 
 ```bash
 conda install -c conda-forge openmpi petsc pkg-config

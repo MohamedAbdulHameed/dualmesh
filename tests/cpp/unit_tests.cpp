@@ -4,11 +4,13 @@
 // The extensive verification suite against Reddy's book lives in tests/python.
 #include "dualmesh/base/Problem.h"
 #include "dualmesh/core/ADReal.h"
+#include "dualmesh/core/Coordinates.h"
 #include "dualmesh/core/ParsedFunction.h"
 #include "dualmesh/fe/Assembly.h"
 #include "dualmesh/linalg/LinearSolverChoice.h"
 #include "dualmesh/mesh/Bisection.h"
 #include "dualmesh/mesh/Subdivision.h"
+#include "dualmesh/modules/Registry.h"
 
 #include <algorithm>
 #include <array>
@@ -132,6 +134,22 @@ TEST(parsed_expression_infinite_slope_times_zero_derivative)
   CHECK_NEAR(g.value(x).derivative(0), 0.25, 1e-15);
 }
 
+TEST(pow_with_a_constant_exponent_matches_the_power_operator)
+{
+  // pow(u, 2) is u^2 for every u: a constant exponent differentiates as p u^(p-1), which is
+  // defined for a zero or negative base, where exp(p log u) is not.
+  const ParsedExpression call("pow(u, 2) + pow(u, 3)", {"u"});
+  const ParsedExpression power("u^2 + u^3", {"u"});
+  for (double u : {-1.5, 0.0, 2.0})
+  {
+    const ADReal a[1] = {ADReal::independent(u, 0, 1)};
+    const ADReal f = call.value(a), g = power.value(a);
+    CHECK_NEAR(f.value(), u * u + u * u * u, 1e-14);
+    CHECK_NEAR(f.derivative(0), 2 * u + 3 * u * u, 1e-14);
+    CHECK_NEAR(f.derivative(0), g.derivative(0), 0.0);
+  }
+}
+
 TEST(the_size_of_terms_that_cancel_is_kept)
 {
   // mu (F - 1/F) at F = 1 + 1e-7: the value is about 2e-7 mu, and its terms are of the size of mu,
@@ -158,27 +176,8 @@ TEST(the_second_derivatives_of_every_function_match_differences_of_the_first)
   // The gradient of secondOrder equals the exact first derivatives of the ADReal evaluation, and
   // its Hessian equals their central differences, for every function and operator.
   std::vector<std::string> texts;
-  for (const char * f : {"sin",
-                         "cos",
-                         "tan",
-                         "asin",
-                         "acos",
-                         "atan",
-                         "sinh",
-                         "cosh",
-                         "tanh",
-                         "exp",
-                         "log",
-                         "log10",
-                         "sqrt",
-                         "abs",
-                         "floor",
-                         "ceil",
-                         "erf",
-                         "sign"})
-    texts.push_back(std::string(f) + "(0.7*x + 0.3*y*y)");
-  for (const char * f : {"atan2", "pow", "hypot", "min", "max"})
-    texts.push_back(std::string(f) + "(x*y + 0.5, x - 0.2*y)");
+  for (const auto & [name, arguments] : ParsedExpression::functions())
+    texts.push_back(name + (arguments == 1 ? "(0.7*x + 0.3*y*y)" : "(x*y + 0.5, x - 0.2*y)"));
   texts.push_back("x^3/y - 2^x + x*y^-2 - -x + x^y");
   const double point[2] = {0.4, 0.5};
   const auto first = [](const ParsedExpression & e, double x, double y)
@@ -280,6 +279,120 @@ TEST(gauss_rules)
     CHECK_NEAR(s, 2.0 / (2 * n - 1), 1e-13);
     CHECK_NEAR(t, 0.0, 1e-13);
   }
+}
+
+TEST(lumped_points_carry_the_coordinate_measure_of_their_region)
+{
+  // One Quad4 element [0, 1] x [0, 1] in (r, z), with the axis r = 0 on its left side, in
+  // axisymmetric coordinates (factor 2 pi r).  Under DMCDM the control domain of a corner is
+  // [r_lo, r_hi] x [z_lo, z_hi] with a z extent of 1/2, of measure pi (r_hi^2 - r_lo^2) / 2: pi / 8
+  // at r = 0 and 3 pi / 8 at r = 1.  Under FEM the shape function L(r) M(z) of a corner has
+  // int M dz = 1/2, and int L r dr = int_0^1 (1 - r) r dr = 1/6 at r = 0 and int_0^1 r^2 dr = 1/3
+  // at r = 1, so int psi 2 pi r dA = pi / 6 and pi / 3.  Both sets sum to int 2 pi r dA = pi.
+  const double pi = std::acos(-1.0);
+  const Mesh m = generateRectangleMesh({0, 1}, {0, 1}, "Quad4");
+  const auto & el = m.element(0);
+  const auto radius = [&](const IntegrationPoint & p) { return m.node(el.nodes[p.owner])[0]; };
+  for (bool dual : {true, false})
+    for (auto kind : {QuadratureSpec::Kind::Nodal, QuadratureSpec::Kind::Interface})
+    {
+      QuadratureSpec q;
+      q.kind = kind;
+      std::vector<IntegrationPoint> pts;
+      buildElementPoints(m, 0, dual, PointSet::Volume, q, pts);
+      for (const auto & p : pts)
+        CHECK(!p.coordinate_measure);
+      buildElementPoints(
+          m, 0, dual, PointSet::Volume, q, pts, nullptr, nullptr, CoordinateSystem::Axisymmetric);
+      CHECK(pts.size() == 4);
+      double total = 0;
+      for (const auto & p : pts)
+      {
+        CHECK(p.coordinate_measure);
+        const bool axis = radius(p) < 0.5;
+        const double expected = dual ? (axis ? pi / 8 : 3 * pi / 8) : (axis ? pi / 6 : pi / 3);
+        CHECK_NEAR(*p.coordinate_measure, expected, 1e-13);
+        // The weight stays the Cartesian measure, 1/4 for each corner of the unit square.
+        CHECK_NEAR(p.weight, 0.25, 1e-14);
+        total += *p.coordinate_measure;
+      }
+      CHECK_NEAR(total, pi, 1e-13);
+    }
+
+  // A side lumped at its corners under DMCDM: the half of the side in the control domain of a
+  // corner.  On the base z = 0 it is [0, 1/2] or [1/2, 1] in r, of measure
+  // int 2 pi r dr = pi / 4 and 3 pi / 4.  On r = 1 it has the measure 2 pi / 2 = pi.  On the axis
+  // r = 0 it has the measure zero, and the point keeps its unit normal.
+  QuadratureSpec nodal;
+  nodal.kind = QuadratureSpec::Kind::Nodal;
+  for (int s = 0; s < ReferenceElement::get(el.type).numSides(); ++s)
+  {
+    std::vector<IntegrationPoint> pts;
+    buildSidePoints(m, {0, s}, true, nodal, pts, CoordinateSystem::Axisymmetric);
+    CHECK(pts.size() == 2);
+    for (const auto & p : pts)
+    {
+      CHECK(p.coordinate_measure);
+      const Point n = (1.0 / p.weight) * p.area;
+      CHECK_NEAR(norm(n), 1.0, 1e-14);
+      double expected = radius(p) < 0.5 ? pi / 4 : 3 * pi / 4;
+      if (n[0] < -0.5)
+        expected = 0.0;
+      else if (n[0] > 0.5)
+        expected = pi;
+      CHECK_NEAR(*p.coordinate_measure, expected, 1e-13);
+    }
+  }
+}
+
+TEST(the_coordinate_terms_match_the_divergence_and_the_strain_of_each_coordinate_system)
+{
+  // In one dimension the volume within the radius r is V(r) = r per unit area (Cartesian),
+  // pi r^2 per unit height (axisymmetric) and 4 pi r^3 / 3 (spherical), and the factor c of the
+  // volume element is dV/dr.  The divergence of a radial vector v_r(r) is (1/c) d(c v_r)/dr, which
+  // is dv_r/dr + v_r / r in axisymmetric and dv_r/dr + 2 v_r / r in spherical coordinates.  Each
+  // hoop direction carries the strain u_r / r.  The derivatives below are central differences of
+  // step h, exact to O(h^2).
+  const double pi = std::acos(-1.0);
+  const double r = 0.7, h = 1e-5;
+  // A radial field that vanishes on the axis, as a radial displacement or velocity does.
+  const auto v = [](double s) { return std::sin(s) + s * s; };
+  const auto dv = [](double s) { return std::cos(s) + 2.0 * s; };
+  const std::array<CoordinateSystem, 3> systems = {CoordinateSystem::Cartesian,
+                                                   CoordinateSystem::Axisymmetric,
+                                                   CoordinateSystem::SphericalRadial};
+  const std::array<std::function<double(double)>, 3> volume = {
+      [](double s) { return s; },
+      [pi](double s) { return pi * s * s; },
+      [pi](double s) { return 4.0 * pi * s * s * s / 3.0; }};
+  for (int k = 0; k < 3; ++k)
+  {
+    const CoordinateSystem coord = systems[k];
+    // The number of hoop directions: none, theta, and theta and phi.
+    CHECK(hoopFactor(coord) == k);
+    const auto c = [&](double s) { return coordinateFactor(coord, s); };
+    CHECK_NEAR(c(r), (volume[k](r + h) - volume[k](r - h)) / (2 * h), 1e-9);
+    CHECK_NEAR(coordinateFactor(coord, Point{r, 0.3, 0.0}), c(r), 0.0);
+    const double divergence = (c(r + h) * v(r + h) - c(r - h) * v(r - h)) / (2 * h) / c(r);
+    CHECK_NEAR(dv(r) + hoopDivergence(coord, v(r), r), divergence, 1e-9);
+    // The hoop strains add up to the hoop term of the divergence of the displacement, so the
+    // trace of the strain is div u.
+    CHECK_NEAR(hoopStrain(v(r), dv(r), r), v(r) / r, 0.0);
+    CHECK_NEAR(hoopFactor(coord) * hoopStrain(v(r), dv(r), r), hoopDivergence(coord, v(r), r), 0.0);
+    // On the axis the hoop term of the divergence is zero, and the hoop strain is its limit
+    // du_r/dr.
+    CHECK_NEAR(hoopDivergence(coord, v(0.0), 0.0), 0.0, 0.0);
+    CHECK_NEAR(hoopStrain(v(0.0), dv(0.0), 0.0), dv(0.0), 0.0);
+  }
+  // With automatic differentiation the terms carry their derivatives: 2 / r with respect to v_r
+  // for the hoop term of the spherical divergence, and 8 pi r with respect to r for 4 pi r^2.
+  const ADReal vr = ADReal::independent(v(r), 0, 1);
+  CHECK_NEAR(
+      hoopDivergence(CoordinateSystem::SphericalRadial, vr, r).derivative(0), 2.0 / r, 1e-15);
+  const ADReal radius = ADReal::independent(r, 0, 1);
+  CHECK_NEAR(coordinateFactor(CoordinateSystem::SphericalRadial, radius).derivative(0),
+             8.0 * pi * r,
+             1e-14);
 }
 
 TEST(dual_mesh_partitions_element)
@@ -1210,9 +1323,94 @@ TEST(restriction_keeps_the_content_of_a_field_through_coarsening)
   }
 }
 
+TEST(a_boolean_or_an_integer_parameter_refuses_a_value_it_cannot_hold)
+{
+  InputParameters p;
+  p.addOptional("flag", ParameterKind::Boolean, false, "A switch.");
+  p.addOptional("count", ParameterKind::Integer, 1L, "A count.");
+  p.set("flag", true);
+  CHECK(p.getBool("flag"));
+  p.set("count", 3.0);
+  CHECK(p.getInt("count") == 3);
+  const auto refused = [&](const std::string & name, const ParameterValue & value)
+  {
+    try
+    {
+      p.set(name, value);
+    }
+    catch (const InputError &)
+    {
+      return true;
+    }
+    return false;
+  };
+  CHECK(refused("flag", 1L));
+  CHECK(refused("flag", 0L));
+  CHECK(refused("flag", 1.0));
+  CHECK(refused("count", true));
+  CHECK(refused("count", 2.5));
+  CHECK(refused("count", std::nan("")));
+  CHECK(refused("count", 1e300));
+}
+
+// The stabilisation parameter of Tezduyar (1991), "Stabilized finite element formulations for
+// incompressible flow computations", Adv. Appl. Mech. 28:1-44, in the form of the comment of
+// stabilizationTau (Kernel.h):
+//
+//   tau = [ 4 a^2 / h^2 + 9 (4 d / h^2)^2 + s^2 ]^(-1/2) ,
+//
+// with h the element size, a the speed, d the diffusivity and s = 2 / dt the rate of the time
+// derivative.  Each of the three regimes has the limit of its own dominant term: h / (2 a),
+// h^2 / (12 d) and dt / 2.  The derivative with respect to the speed is that of the AD type,
+// taken through the square a^2 the function reads, and it matches a central difference.
+TEST(the_stabilization_parameter_matches_its_formula_and_its_derivative)
+{
+  struct Regime
+  {
+    double h, speed, diffusivity, dt, limit;
+  };
+  const double h = 0.1;
+  const std::array<Regime, 3> regimes{{
+      // Advection dominated: 2 a / h = 200 against 12 d / h^2 = 1.2.
+      {h, 10.0, 1e-3, 0.0, h / (2 * 10.0)},
+      // Diffusion dominated: 12 d / h^2 = 1200 against 2 a / h = 12.
+      {h, 0.6, 1.0, 0.0, h * h / (12 * 1.0)},
+      // Transient dominated: 2 / dt = 2000 against 2 a / h = 20 and 12 d / h^2 = 1.2.
+      {h, 1.0, 1e-3, 1e-3, 1e-3 / 2},
+  }};
+  // Each other term is at most 1 % of the dominant one, so together they change tau by about
+  // 5e-5 of its limit.  They also keep the speed derivative large enough for a central difference
+  // of step 1e-4 a to resolve it well within the tolerance 1e-6.
+  for (const Regime & r : regimes)
+  {
+    const double s = r.dt > 0.0 ? 2.0 / r.dt : 0.0;
+    const auto formula = [&](double a)
+    {
+      const double diffusive = 4 * r.diffusivity / (r.h * r.h);
+      return 1.0 / std::sqrt(4 * a * a / (r.h * r.h) + 9 * diffusive * diffusive + s * s);
+    };
+    const double expected = formula(r.speed);
+    const double value = stabilizationTau(r.h, r.speed * r.speed, r.diffusivity, s);
+    CHECK_NEAR(value, expected, 1e-14 * expected);
+    CHECK_NEAR(value, r.limit, 1e-4 * r.limit);
+
+    const ADReal speed = ADReal::independent(r.speed, 0, 1);
+    const ADReal tau = stabilizationTau(r.h, ADReal(speed * speed), ADReal(r.diffusivity), s);
+    CHECK_NEAR(tau.value(), expected, 1e-14 * expected);
+    const double step = 1e-4 * r.speed;
+    const double difference = (formula(r.speed + step) - formula(r.speed - step)) / (2 * step);
+    // d tau / d a = -4 a tau^3 / h^2, from the formula.
+    CHECK_NEAR(difference,
+               -4 * r.speed * std::pow(expected, 3) / (r.h * r.h),
+               1e-6 * std::abs(difference));
+    CHECK_NEAR(tau.derivative(0), difference, 1e-6 * std::abs(difference));
+  }
+}
+
 int
 main()
 {
+  registerAllObjects();
   int passed = 0;
   for (const auto & t : registry())
   {

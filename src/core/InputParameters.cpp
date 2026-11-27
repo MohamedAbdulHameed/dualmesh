@@ -4,7 +4,10 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
+#include <limits>
 #include <sstream>
+#include <type_traits>
 #include <vector>
 
 namespace dualmesh
@@ -25,8 +28,6 @@ parameterKindName(ParameterKind kind)
     return "string";
   case ParameterKind::RealList:
     return "list of reals";
-  case ParameterKind::IntegerList:
-    return "list of integers";
   case ParameterKind::StringList:
     return "list of strings";
   case ParameterKind::Function:
@@ -35,8 +36,6 @@ parameterKindName(ParameterKind kind)
     return "string or list of strings";
   case ParameterKind::RealMap:
     return "mapping of names to reals";
-  case ParameterKind::StringMap:
-    return "mapping of names to strings";
   }
   return "unknown";
 }
@@ -103,8 +102,9 @@ valueTypeName(const ParameterValue & v)
                                  "list of integers",
                                  "list of strings",
                                  "function",
-                                 "mapping of names to reals",
-                                 "mapping of names to strings"};
+                                 "mapping of names to reals"};
+  static_assert(std::extent_v<decltype(names)> == std::variant_size_v<ParameterValue>,
+                "Each alternative of ParameterValue needs a name.");
   return names[v.index()];
 }
 } // namespace
@@ -135,18 +135,18 @@ InputParameters::set(const std::string & name, ParameterValue v)
   switch (p.kind)
   {
   case ParameterKind::Boolean:
-    if (std::holds_alternative<long>(v))
-      v = bool(std::get<long>(v));
+    // Only true or false: a number is refused, so that a typo such as 2 is not read as true.
     if (!std::holds_alternative<bool>(v))
       bad();
     break;
   case ParameterKind::Integer:
-    if (std::holds_alternative<bool>(v))
-      v = long(std::get<bool>(v));
+    // A real is accepted only when it is a whole number that a long holds, such as 3.0.
     if (std::holds_alternative<double>(v))
     {
-      double d = std::get<double>(v);
-      if (d != static_cast<double>(static_cast<long>(d)))
+      const double d = std::get<double>(v);
+      if (!std::isfinite(d) || std::trunc(d) != d ||
+          d < static_cast<double>(std::numeric_limits<long>::min()) ||
+          d >= -static_cast<double>(std::numeric_limits<long>::min()))
         bad();
       v = static_cast<long>(d);
     }
@@ -177,15 +177,6 @@ InputParameters::set(const std::string & name, ParameterValue v)
       v = std::vector<double>(l.begin(), l.end());
     }
     if (!std::holds_alternative<std::vector<double>>(v))
-      bad();
-    break;
-  case ParameterKind::IntegerList:
-    if (std::holds_alternative<std::vector<std::string>>(v) &&
-        std::get<std::vector<std::string>>(v).empty())
-      v = std::vector<long>{};
-    if (std::holds_alternative<long>(v))
-      v = std::vector<long>{std::get<long>(v)};
-    if (!std::holds_alternative<std::vector<long>>(v))
       bad();
     break;
   case ParameterKind::Names:
@@ -224,17 +215,6 @@ InputParameters::set(const std::string & name, ParameterValue v)
     break;
   case ParameterKind::RealMap:
     if (!std::holds_alternative<RealMap>(v))
-      bad();
-    break;
-  case ParameterKind::StringMap:
-    if (std::holds_alternative<RealMap>(v))
-    {
-      StringMap texts;
-      for (const auto & [key, d] : std::get<RealMap>(v))
-        texts[key] = numberText(d);
-      v = texts;
-    }
-    if (!std::holds_alternative<StringMap>(v))
       bad();
     break;
   }
@@ -366,11 +346,6 @@ InputParameters::getRealList(const std::string & name) const
 {
   return std::get<std::vector<double>>(info(name).value);
 }
-std::vector<long>
-InputParameters::getIntList(const std::string & name) const
-{
-  return std::get<std::vector<long>>(info(name).value);
-}
 std::vector<std::string>
 InputParameters::getStringList(const std::string & name) const
 {
@@ -380,11 +355,6 @@ RealMap
 InputParameters::getRealMap(const std::string & name) const
 {
   return std::get<RealMap>(info(name).value);
-}
-StringMap
-InputParameters::getStringMap(const std::string & name) const
-{
-  return std::get<StringMap>(info(name).value);
 }
 const ParameterValue &
 InputParameters::getRaw(const std::string & name) const

@@ -11,8 +11,9 @@
 // "-ksp_type gmres -pc_type hypre -pc_hypre_type boomeramg" or "-ksp_type preonly -pc_type lu
 // -pc_factor_mat_solver_type mumps".  The options of one solver are kept in a private options
 // database, so they do not leak into the next solver or into other PETSc users in the same
-// process.  The default, when no options are given, is GMRES with a direct factorisation (MUMPS
-// when PETSc has it), the robust choice for the non-symmetric and saddle-point matrices that the
+// process.  The default, when no options are given, is GMRES with a direct factorisation (PETSc
+// LU on one process, MUMPS on several, which needs PETSc built with MUMPS), the
+// robust choice for the non-symmetric and saddle-point matrices that the
 // dual mesh and pressure-velocity discretisations produce.
 //
 // solveNonlinear runs Newton's method with PETSc's SNES on the matrix and the Krylov solver of a
@@ -54,6 +55,10 @@ std::string multigridOptions(bool smoothed_aggregation);
 
 /// PETSc's version, "major.minor.subminor".
 std::string version();
+
+/// Whether PETSc has MUMPS, the direct solver of a matrix distributed over several processes.
+/// PETSc's own LU factorises a matrix on one process only.
+bool haveMumps();
 
 /// Initialize PETSc if it is not yet initialized.  MPI must already be running
 /// (the Communicator starts it).  Called by the solve functions.
@@ -119,10 +124,6 @@ struct Settings
   /// PETSc option string; empty selects the default described above.
   std::string options;
   double relative_tolerance = 1e-12;
-  /// Zero, so that the Krylov solve stops on relative_tolerance alone.  A Newton correction has
-  /// the units and the size of the solution, and a fixed absolute tolerance ends the solve of a
-  /// small correction at its first iteration with a zero correction.
-  double absolute_tolerance = 0.0;
   int max_iterations = 5000;
   /// Degrees of freedom per node (the number of variables), which the
   /// dualmesh numbering interlaces.  It is given to PETSc as the matrix block

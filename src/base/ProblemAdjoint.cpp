@@ -9,7 +9,6 @@
 #include "dualmesh/linalg/LinearSolverChoice.h"
 
 #include <cmath>
-#include <stdexcept>
 
 namespace dualmesh
 {
@@ -17,12 +16,7 @@ namespace dualmesh
 void
 Problem::addParameter(const std::string & name, double value)
 {
-  if (_functions.count(name))
-    throw InputError("add_parameter: the name '" + name +
-                     "' is already a registered function, and replacing it would leave the "
-                     "objects that resolved it reading the old one. Register a parameter under "
-                     "a new name.");
-  _functions[name] = std::make_shared<SettableFunction>(value);
+  addFunction(name, std::make_shared<SettableFunction>(value));
   _initialized = false;
 }
 
@@ -61,9 +55,9 @@ Problem::parameterValue(const std::string & name) const
 }
 
 Vector
-Problem::objectiveGradient(const Objective & objective) const
+Problem::objectiveGradient(const Objective & objective)
 {
-  const_cast<Problem *>(this)->initialize();
+  initialize();
   if (!hasVariable(objective.variable))
     throw InputError("sensitivities: the objective names the variable '" + objective.variable +
                      "', which the problem does not have.");
@@ -136,7 +130,7 @@ Problem::objectiveGradient(const Objective & objective) const
 }
 
 double
-Problem::objectiveValue(const Objective & objective) const
+Problem::objectiveValue(const Objective & objective)
 {
   return objectiveGradient(objective).dot(_U);
 }

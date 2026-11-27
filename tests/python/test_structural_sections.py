@@ -5,9 +5,12 @@ material law through the thickness at every integration point.  The checks:
 
 * a homogeneous section given by its material equals the same section given
   by its stiffnesses;
-* a power-law functionally graded section, E(z), equals the closed-form
-  stiffnesses of dualmesh.fgm, for integer power-law indices exactly;
-* a modulus that depends on the temperature, E(T), gives the exact Jacobian.
+* a power-law functionally graded section, E(z) with the index 2, has the
+  closed-form stiffnesses A, B and D, and with a graded expansion coefficient
+  the closed-form thermal force and moment;
+* a modulus that depends on the temperature, E(T), gives the exact Jacobian;
+* an expansion coefficient of the temperature, alpha(T), gives the secant
+  thermal strain alpha(T) (T - T_0) of the continuum.
 """
 
 import numpy
@@ -92,33 +95,120 @@ def test_a_heated_cantilever_expands_freely(theory, form):
     [("Euler-Bernoulli", None), ("Timoshenko", None), ("Timoshenko", "displacement")],
 )
 def test_a_heated_graded_cantilever_bends_as_its_section_requires(theory, form):
-    # A graded section expands more on its stiff side: with no load, [A B; B D] [e0; k] = [N_T;
-    # M_T] gives a uniform strain and curvature, so u(L) = e0 L and w(L) = -k L^2 / 2.
-    top, bottom, width, height, length = 30.0e6, 3.0e6, 0.1, 0.2, 2.0
+    r"""A cantilever of alumina on aluminium, free of load and heated uniformly by
+    $\Delta T = 100$ K, with Young's modulus $E = E_b + \Delta E\, s$ and the expansion
+    coefficient $\alpha = \alpha_b + \Delta\alpha\, s$ both linear in $s = 1/2 + z/h$, where
+    $z$ is the height above the mid-surface, $h$ the height of the section, $b$ its width, and
+    $\Delta E = E_t - E_b$, $\Delta\alpha = \alpha_t - \alpha_b$ the differences between top
+    and bottom.  A graded $\alpha$ is what bends it: with a uniform $\alpha$ the thermal strain
+    is uniform and the free beam only stretches, whatever the grade of $E$.
+
+    The free beam carries no axial force and no moment, so its strain $e_0$ and its curvature
+    $k = -w''$ are uniform and solve $[A, B; B, D] [e_0; k] = \Delta T [F; G]$.  With
+    $z = h (s - 1/2)$ and $\int_0^1 s^m (s - 1/2) ds = m / (2 (m + 1) (m + 2))$, the section
+    integrals are
+
+    $$ A = \int E dA = b h \left( E_b + \frac{\Delta E}{2} \right), \qquad
+       B = \int E z dA = \frac{b h^2 \Delta E}{12}, \qquad
+       D = \int E z^2 dA = b h^3 \left( \frac{E_b}{12} + \frac{\Delta E}{24} \right), $$
+
+    $$ F = \int E \alpha dA = b h \left( E_b \alpha_b + \frac{E_b \Delta\alpha + \Delta E
+       \alpha_b}{2} + \frac{\Delta E \Delta\alpha}{3} \right), \qquad
+       G = \int E \alpha z dA = \frac{b h^2}{12} (E_b \Delta\alpha + \Delta E \alpha_b +
+       \Delta E \Delta\alpha), $$
+
+    and $e_0 = \Delta T (D F - B G) / (A D - B^2)$, $k = \Delta T (A G - B F) / (A D - B^2)$.
+    From the clamped end $u(L) = e_0 L$ and $w(L) = -k L^2 / 2$."""
+    top, bottom = 3.8e11, 7.0e10
+    top_alpha, bottom_alpha = 7.0e-6, 2.3e-5
+    width, height, length = 0.1, 0.2, 2.0
     problem = _heated(dualmesh.generate_line_mesh(start=0.0, end=length, num_elements=32))
-    graded = f"({top} - {bottom})*(0.5 + z/{height}) + {bottom}"
     beam = problem.add_physics(
         "solid_mechanics",
         formulation="beam",
         theory=theory,
         beam_formulation=form,
-        youngs_modulus=graded,
+        youngs_modulus=f"{bottom!r} + {top - bottom!r}*(0.5 + z/{height!r})",
         poissons_ratio=nu,
         cross_section={"width": width, "height": height},
     )
     beam.add_boundary_condition("fixed", boundary="left")
-    _expand(problem, beam)
-    z, w = numpy.polynomial.legendre.leggauss(12)
-    z, w = 0.5 * height * z, 0.5 * height * w * width
-    modulus = (top - bottom) * (0.5 + z / height) + bottom
-    a, b, d = (w * modulus).sum(), (w * modulus * z).sum(), (w * modulus * z * z).sum()
-    thermal_force = (w * modulus).sum() * alpha * (t1 - t0)
-    thermal_moment = (w * modulus * z).sum() * alpha * (t1 - t0)
-    strain, curvature = numpy.linalg.solve([[a, b], [b, d]], [thermal_force, thermal_moment])
+    problem.add_coupling(
+        "thermal_expansion",
+        heat_conduction=None,
+        solid_mechanics=beam,
+        linear_expansion_coefficient=(
+            f"{bottom_alpha!r} + {top_alpha - bottom_alpha!r}*(0.5 + z/{height!r})"
+        ),
+        stress_free_temperature=t0,
+    )
+    problem.solve(report="none")
+    modulus, expansion = top - bottom, top_alpha - bottom_alpha
+    a = width * height * (bottom + modulus / 2)
+    b = width * height**2 * modulus / 12
+    d = width * height**3 * (bottom / 12 + modulus / 24)
+    force = (
+        width
+        * height
+        * (
+            bottom * bottom_alpha
+            + (bottom * expansion + modulus * bottom_alpha) / 2
+            + modulus * expansion / 3
+        )
+    )
+    moment = (
+        width * height**2 / 12 * (bottom * expansion + modulus * bottom_alpha + modulus * expansion)
+    )
+    heating = t1 - t0
+    strain = heating * (d * force - b * moment) / (a * d - b**2)
+    curvature = heating * (a * moment - b * force) / (a * d - b**2)
+    # The bending is of the order of the stretching, so the second check is not one of zero.
+    assert abs(curvature) * height > 0.1 * abs(strain)
     u_tip = problem.sample("disp_x", [[length, 0.0, 0.0]])[0]
     w_tip = problem.sample("disp_z", [[length, 0.0, 0.0]])[0]
-    assert u_tip == pytest.approx(strain * length, rel=1e-8)
+    assert u_tip == pytest.approx(strain * length, rel=1e-6)
     assert w_tip == pytest.approx(-curvature * length**2 / 2, rel=1e-3)
+
+
+def test_an_unevenly_heated_beam_expands_by_its_secant_strain():
+    r"""A free cantilever of length $L$, its temperature linear from $T_l$ at the clamped end to
+    $T_r$ at the free end, with the secant expansion coefficient $\alpha(T) = a + b T$, an
+    expression of the temperature, as in the continuum.  The free beam carries no axial force,
+    so $u' = \alpha(T) (T - T_0)$, and with $\mathrm{d}x = L\,\mathrm{d}T / (T_r - T_l)$
+
+    $$ u(L) = \frac{L}{T_r - T_l} \int_{T_l}^{T_r} (a + b T) (T - T_0)\,\mathrm{d}T
+            = \frac{L}{T_r - T_l} \left[ a \left( \frac{T^2}{2} - T_0 T \right)
+              + b \left( \frac{T^3}{3} - \frac{T_0 T^2}{2} \right) \right]_{T_l}^{T_r} . $$
+
+    The strain is quadratic in $x$, which the two-point Gauss rule integrates exactly, so the
+    nodal displacement is exact."""
+    a, b, t_left, t_right, length = 1.0e-5, 2.0e-8, 293.0, 793.0, 2.0
+    mesh = dualmesh.generate_line_mesh(start=0.0, end=length, num_elements=8)
+    problem = dualmesh.Problem(mesh, method="fem")
+    heat = problem.add_physics("heat_conduction", thermal_conductivity=50.0)
+    heat.add_boundary_condition("temperature = T", boundary="left", T=t_left)
+    heat.add_boundary_condition("temperature = T", boundary="right", T=t_right)
+    beam = problem.add_physics(
+        "solid_mechanics",
+        formulation="beam",
+        youngs_modulus=E,
+        cross_section={"width": 0.1, "height": 0.2},
+    )
+    beam.add_boundary_condition("fixed", boundary="left")
+    problem.add_coupling(
+        "thermal_expansion",
+        linear_expansion_coefficient=f"{a!r} + {b!r}*temperature",
+        stress_free_temperature=t0,
+    )
+    problem.solve(report="none")
+
+    def primitive(T):
+        return a * (T**2 / 2 - t0 * T) + b * (T**3 / 3 - t0 * T**2 / 2)
+
+    expected = length / (t_right - t_left) * (primitive(t_right) - primitive(t_left))
+    tip = problem.sample("disp_x", [[length, 0.0, 0.0]])[0]
+    assert tip == pytest.approx(expected, rel=1e-10)
+    assert numpy.abs(problem.values("disp_z")).max() < 1e-12
 
 
 def test_a_heated_plate_expands_freely():
@@ -341,9 +431,28 @@ def test_half_of_a_simply_supported_beam_with_a_plane_of_symmetry(theory, form):
     "inputs, message",
     [
         (dict(formulation="plate", youngs_modulus=E, poissons_ratio=nu), "give the thickness"),
+        (dict(formulation="plate", youngs_modulus=E, thickness=0.1), "give the poissons_ratio"),
+        (
+            dict(
+                formulation="beam",
+                theory="Timoshenko",
+                youngs_modulus=E,
+                cross_section={"width": 0.1, "height": 0.2},
+            ),
+            "give the poissons_ratio",
+        ),
         (
             dict(formulation="beam", bending_stiffness=1.0e5),
             "needs extensional_stiffness as well",
+        ),
+        (
+            dict(
+                formulation="plate",
+                extensional_stiffness=1.0e8,
+                bending_stiffness=1.0e5,
+                shear_stiffness=1.0e7,
+            ),
+            "give the poissons_ratio",
         ),
         (
             dict(
@@ -383,6 +492,16 @@ def test_half_of_a_simply_supported_beam_with_a_plane_of_symmetry(theory, form):
             ),
             "takes its cross_section",
         ),
+        (
+            dict(
+                formulation="plate",
+                youngs_modulus=E,
+                poissons_ratio=nu,
+                thickness=0.1,
+                axial_load=1.0e3,
+            ),
+            "as 'in_plane_load', not 'axial_load'",
+        ),
     ],
 )
 def test_an_incomplete_or_redundant_section_is_refused_by_name(inputs, message):
@@ -393,8 +512,10 @@ def test_an_incomplete_or_redundant_section_is_refused_by_name(inputs, message):
         else dualmesh.generate_line_mesh(start=0.0, end=1.0, num_elements=4)
     )
     problem = dualmesh.Problem(mesh, method="fem")
+    # A section the kernels refuse is refused when the problem builds them.
     with pytest.raises(ValueError, match=message):
         problem.add_physics("solid_mechanics", **inputs)
+        problem.initialize()
 
 
 def test_a_beam_on_a_quadratic_mesh_is_refused():
@@ -506,3 +627,148 @@ def test_a_very_thin_displacement_beam_converges_at_its_round_off_level(method):
     inertia, area = width * height**3 / 12, width * height
     exact = length**4 / (8 * E * inertia) + length**2 / (2 * 5 / 6 * E / (2 * (1 + nu)) * area)
     assert problem.sample("disp_z", [[length, 0.0, 0.0]])[0] == pytest.approx(exact, rel=1e-4)
+
+
+# ---------------------------------------------------------------------------
+# A power-law graded section
+# ---------------------------------------------------------------------------
+# Alumina on top of aluminium: Young's modulus (Pa) and linear expansion coefficient (1/K).
+top_modulus, bottom_modulus = 3.8e11, 7.0e10
+top_expansion, bottom_expansion = 7.0e-6, 2.3e-5
+
+
+def _power_law_modulus(height):
+    """E(z) = E_b + (E_t - E_b) ((z + h/2)/h)^2, an expression of the height z above the
+    mid-surface."""
+    return (
+        f"{bottom_modulus!r} + {top_modulus - bottom_modulus!r}*((z + {height / 2!r})/{height!r})^2"
+    )
+
+
+def _power_law_section(height):
+    r"""The section integrals per unit width of the grade $E(z) = E_b + (E_t - E_b) s^2$, with
+    $s = (z + h/2)/h$ running from 0 at the bottom to 1 at the top, $h$ the height (m) and $E_b$
+    and $E_t$ the moduli (Pa) of the bottom and the top.  With $z = h (s - 1/2)$ and
+    $\int_0^1 s^m (s - 1/2) ds = m / (2 (m + 1) (m + 2))$:
+
+    $$ \int E dz = h \left( E_b + \frac{E_t - E_b}{3} \right), \qquad
+       \int E z dz = \frac{h^2 (E_t - E_b)}{12}, \qquad
+       \int E z^2 dz = h^3 \left( \frac{E_b}{12} + \frac{E_t - E_b}{30} \right). $$
+
+    They are the stiffnesses of :func:`dualmesh.fgm.beam_stiffness`, Reddy's power law, at the
+    index $n = 2$."""
+    contrast = top_modulus - bottom_modulus
+    return (
+        height * (bottom_modulus + contrast / 3),
+        height**2 * contrast / 12,
+        height**3 * (bottom_modulus / 12 + contrast / 30),
+    )
+
+
+@pytest.mark.parametrize("theory, form", beam_forms)
+def test_a_power_law_graded_cantilever_stretches_and_bends_as_its_section_requires(theory, form):
+    r"""A cantilever of the $n = 2$ grade under the uniform load $q$ and the tip tension $P$.
+    Statics gives the axial force $N = P$ and the moment $M(x) = -q (L - x)^2 / 2$.  The section
+    law $N = A e_0 + B k$, $M = B e_0 + D k$, with the curvature $k = -w''$ and $A$, $B$, $D$
+    the integrals of :func:`_power_law_section` times the width $b$, inverts with
+    $\Delta = A D - B^2$ to $e_0 = (D N - B M) / \Delta$ and $k = (A M - B N) / \Delta$.
+    Integrating from the clamped end gives
+
+    $$ u(L) = \frac{D P L + B q L^3 / 6}{\Delta}, \qquad
+       w(L) = \frac{B P L^2 / 2 + A q L^4 / 8}{\Delta} + \frac{q L^2}{2 S}, $$
+
+    the last term only for Timoshenko, with $S = (5/6) A / (2 (1 + \nu))$.  With $P = q L^2$
+    the coupling terms are comparable to the others, so a wrong $A$, $B$ or $D$ fails both
+    checks."""
+    q, length = beam_load, beam_length
+    tension = q * length**2
+    mesh = dualmesh.generate_line_mesh(start=0.0, end=length, num_elements=64)
+    problem = dualmesh.Problem(mesh, method="fem")
+    beam = problem.add_physics(
+        "solid_mechanics",
+        formulation="beam",
+        theory=theory,
+        beam_formulation=form,
+        youngs_modulus=_power_law_modulus(beam_height),
+        poissons_ratio=nu,
+        cross_section={"width": beam_width, "height": beam_height},
+        transverse_load=q,
+    )
+    beam.add_boundary_condition("fixed", boundary="left")
+    problem.add_point_source(variable="disp_x", value=tension, points=[length])
+    problem.solve(report="none")
+    a, b, d = (beam_width * value for value in _power_law_section(beam_height))
+    determinant = a * d - b**2
+    u_tip = (d * tension * length + b * q * length**3 / 6) / determinant
+    w_tip = (b * tension * length**2 / 2 + a * q * length**4 / 8) / determinant
+    if theory == "Timoshenko":
+        w_tip += q * length**2 / (2 * 5 / 6 * a / (2 * (1 + nu)))
+    assert problem.sample("disp_x", [[length, 0.0, 0.0]])[0] == pytest.approx(u_tip, rel=1e-3)
+    assert problem.sample("disp_z", [[length, 0.0, 0.0]])[0] == pytest.approx(w_tip, rel=1e-3)
+
+
+def test_a_heated_graded_classical_circular_plate_has_its_thermal_force_and_moment():
+    r"""A free classical circular plate of radius $a$, simply supported at its edge, with the
+    $n = 2$ grade of $E$ and the linear grade $\alpha(z) = \alpha_b + (\alpha_t - \alpha_b) s$
+    of the expansion coefficient, heated uniformly by $\Delta T = 100$ K.  The plate is free of
+    load, so $N_{rr} = N_{\theta\theta} = 0$ and $M_{rr} = M_{\theta\theta} = 0$, and its
+    strain $e_0$ and curvature $k$ are uniform and equal in both directions.  With the plate
+    stiffnesses $A_p = \int E dz / (1 - \nu^2)$ (and so for $B_p$ and $D_p$), the thermal force
+    $N_T = \Delta T \int E \alpha dz / (1 - \nu)$ and the thermal moment
+    $M_T = \Delta T \int E \alpha z dz / (1 - \nu)$, the resultants vanish when
+    $(1 + \nu) [A_p, B_p; B_p, D_p] [e_0; k] = [N_T; M_T]$, that is
+
+    $$ \begin{bmatrix} \int E dz & \int E z dz \\ \int E z dz & \int E z^2 dz \end{bmatrix}
+       \begin{bmatrix} e_0 \\ k \end{bmatrix}
+       = \Delta T \begin{bmatrix} \int E \alpha dz \\ \int E \alpha z dz \end{bmatrix}. $$
+
+    With $\int_0^1 s^m (s - 1/2) ds = m / (2 (m + 1) (m + 2))$, the thermal integrals are
+    $\int E \alpha dz = h (E_b \alpha_b + E_b \Delta\alpha / 2 + \Delta E \alpha_b / 3 + \Delta E
+    \Delta\alpha / 4)$ and $\int E \alpha z dz = h^2 (E_b \Delta\alpha / 12 + \Delta E \alpha_b /
+    12 + 3 \Delta E \Delta\alpha / 40)$, with $\Delta E = E_t - E_b$ and
+    $\Delta\alpha = \alpha_t - \alpha_b$.  Then $u(a) = e_0 a$ and, with $k = -w''$ and
+    $w(a) = 0$, $w(0) = k a^2 / 2$.  A thermal moment left out would leave $k$ near zero."""
+    radius = 0.1
+    problem = _heated(
+        dualmesh.generate_line_mesh(start=0.0, end=radius, num_elements=64),
+        coordinates="axisymmetric",
+    )
+    plate = problem.add_physics(
+        "solid_mechanics",
+        formulation="circular_plate",
+        theory="classical",
+        youngs_modulus=_power_law_modulus(H),
+        poissons_ratio=nu,
+        thickness=H,
+    )
+    plate.add_boundary_condition("disp_r = 0", boundary="left")
+    plate.add_boundary_condition("disp_z = 0", boundary="right")
+    expansion = f"{bottom_expansion!r} + {top_expansion - bottom_expansion!r}*(z/{H!r} + 0.5)"
+    problem.add_coupling(
+        "thermal_expansion",
+        heat_conduction=None,
+        solid_mechanics=plate,
+        linear_expansion_coefficient=expansion,
+        stress_free_temperature=t0,
+    )
+    problem.solve(report="none")
+    a, b, d = _power_law_section(H)
+    modulus, expansion_contrast = top_modulus - bottom_modulus, top_expansion - bottom_expansion
+    force = H * (
+        bottom_modulus * bottom_expansion
+        + bottom_modulus * expansion_contrast / 2
+        + modulus * bottom_expansion / 3
+        + modulus * expansion_contrast / 4
+    )
+    moment = H**2 * (
+        bottom_modulus * expansion_contrast / 12
+        + modulus * bottom_expansion / 12
+        + 3 * modulus * expansion_contrast / 40
+    )
+    strain, curvature = numpy.linalg.solve(
+        [[a, b], [b, d]], [(t1 - t0) * force, (t1 - t0) * moment]
+    )
+    edge = problem.sample("disp_r", [[radius, 0.0, 0.0]])[0]
+    centre = problem.sample("disp_z", [[0.0, 0.0, 0.0]])[0]
+    assert edge == pytest.approx(strain * radius, rel=1e-3)
+    assert centre == pytest.approx(curvature * radius**2 / 2, rel=1e-3)

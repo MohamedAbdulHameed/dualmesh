@@ -3,8 +3,8 @@
 // The parts of a distributed mesh, and how each rank gets its part.
 #pragma once
 
+#include "dualmesh/linalg/Communicator.h"
 #include "dualmesh/mesh/Mesh.h"
-#include "dualmesh/parallel/Communicator.h"
 
 #include <memory>
 #include <string>

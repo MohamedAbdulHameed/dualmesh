@@ -9,12 +9,8 @@
 #include <string>
 #include <unordered_map>
 
-#ifdef DUALMESH_HAVE_MPI
 #include <mpi.h>
-#endif
-#ifdef DUALMESH_HAVE_PETSC
 #include <petscsf.h>
-#endif
 
 #ifdef DUALMESH_HAVE_GSLIB
 // src/parallel/GslibShim.c, the C side of gslib.
@@ -48,14 +44,12 @@ GatherScatter::library(const std::string & name)
   if (name == "gslib")
   {
     if (!haveGslib())
-      throw std::invalid_argument("gather_scatter='gslib' needs a build with MPI and gslib "
-                                  "(DUALMESH_ENABLE_GSLIB, on by default with MPI).");
+      throw std::invalid_argument("gather_scatter='gslib' needs a build with gslib "
+                                  "(the CMake option DUALMESH_ENABLE_GSLIB, on by default).");
     return Library::Gslib;
   }
   throw std::invalid_argument("gather_scatter is 'petsc' or 'gslib', not '" + name + "'.");
 }
-
-#ifdef DUALMESH_HAVE_PETSC
 
 #define DM_PETSC(call) petsc::check((call), #call)
 
@@ -106,14 +100,6 @@ struct GatherScatter::Star
     return sf;
   }
 };
-
-#else
-
-struct GatherScatter::Star
-{
-};
-
-#endif
 
 GatherScatter::GatherScatter() = default;
 
@@ -196,7 +182,6 @@ GatherScatter::setupCompact(const Communicator & comm,
 #endif
   if (library == Library::Gslib)
     throw std::invalid_argument("GatherScatter: this build has no gslib.");
-#ifdef DUALMESH_HAVE_PETSC
   petsc::initialize();
   Index largest = -1;
   for (Index g : global_ids)
@@ -245,9 +230,6 @@ GatherScatter::setupCompact(const Communicator & comm,
       _star->roots.push_back({_owner_compact[i], owner_of[2 * i + 1]});
     }
   }
-#else
-  throw std::runtime_error("GatherScatter: more than one rank needs a build with MPI and PETSc.");
-#endif
 }
 
 Index
@@ -307,7 +289,6 @@ GatherScatter::sumCompact(double * values, int width) const
     return;
   }
 #endif
-#ifdef DUALMESH_HAVE_PETSC
   if (!_star)
     return;
   const PetscSF sf = _star->forest(width);
@@ -318,10 +299,6 @@ GatherScatter::sumCompact(double * values, int width) const
   std::copy(owned.begin(), owned.end(), values);
   DM_PETSC(PetscSFBcastBegin(sf, MPI_DOUBLE, owned.data(), values, MPI_REPLACE));
   DM_PETSC(PetscSFBcastEnd(sf, MPI_DOUBLE, owned.data(), values, MPI_REPLACE));
-#else
-  (void) values;
-  (void) width;
-#endif
 }
 
 void
@@ -345,17 +322,12 @@ GatherScatter::copyCompact(double * values, int width) const
     return;
   }
 #endif
-#ifdef DUALMESH_HAVE_PETSC
   if (!_star)
     return;
   const PetscSF sf = _star->forest(width);
   const std::vector<double> owned(values, values + _star->size * width);
   DM_PETSC(PetscSFBcastBegin(sf, MPI_DOUBLE, owned.data(), values, MPI_REPLACE));
   DM_PETSC(PetscSFBcastEnd(sf, MPI_DOUBLE, owned.data(), values, MPI_REPLACE));
-#else
-  (void) values;
-  (void) width;
-#endif
 }
 
 } // namespace dualmesh

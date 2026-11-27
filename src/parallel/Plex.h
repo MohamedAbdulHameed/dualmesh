@@ -4,8 +4,6 @@
 // Only the corner topology goes into DMPlex: every element is a cell whose cone is its corner nodes, so that every element type, the quadratic ones included, is partitioned by its corners, and the element itself travels as data attached to its cell.
 #pragma once
 
-#ifdef DUALMESH_HAVE_PETSC
-
 #include "dualmesh/mesh/Mesh.h"
 
 #include <petscdmplex.h>
@@ -27,5 +25,3 @@ std::string partitionerType(const std::string & name);
 
 } // namespace plex
 } // namespace dualmesh
-
-#endif

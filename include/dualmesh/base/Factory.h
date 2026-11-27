@@ -3,11 +3,14 @@
 // Object registry and factory: every object type is registered by name, and created by name with validated parameters.
 #pragma once
 
+#include "dualmesh/base/FlowSystem.h"
 #include "dualmesh/base/Object.h"
+#include "dualmesh/base/SolidSystem.h"
 
 #include <functional>
 #include <map>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -42,7 +45,8 @@ public:
     e.module = module;
     e.params = [] { return T::validParams(); };
     e.build = [](const InputParameters & p) { return std::make_shared<T>(p); };
-    _entries[type] = e;
+    if (!_entries.emplace(type, e).second)
+      throw std::logic_error("dualmesh: the object type '" + type + "' is registered twice.");
   }
 
   bool has(const std::string & type) const { return _entries.count(type) > 0; }
@@ -53,8 +57,28 @@ public:
   create(const std::string & type, const std::string & name, InputParameters params) const;
   std::vector<std::string> registeredTypes() const;
 
+  /// The systems of the physics, which the modules register besides their objects: the flow
+  /// system, of which every Problem makes its own, and the solid system, which every Problem
+  /// shares (Problem::flowSystem, Problem::solidSystem).
+  void setFlowSystem(std::function<std::unique_ptr<FlowSystem>()> make)
+  {
+    _make_flow_system = std::move(make);
+  }
+  void setSolidSystem(std::shared_ptr<const SolidSystem> solid)
+  {
+    _solid_system = std::move(solid);
+  }
+  /// A new flow system, or null when no module registered one.
+  std::unique_ptr<FlowSystem> makeFlowSystem() const
+  {
+    return _make_flow_system ? _make_flow_system() : nullptr;
+  }
+  /// The solid system, or null when no module registered one.
+  std::shared_ptr<const SolidSystem> solidSystem() const { return _solid_system; }
+
 private:
-  Factory();
+  /// Empty: the modules register their objects (registerAllObjects of modules/Registry.h).
+  Factory() = default;
   struct Entry
   {
     ObjectCategory category;
@@ -64,18 +88,8 @@ private:
   };
   const Entry & entry(const std::string & type) const;
   std::map<std::string, Entry> _entries;
+  std::function<std::unique_ptr<FlowSystem>()> _make_flow_system;
+  std::shared_ptr<const SolidSystem> _solid_system;
 };
-
-// Module registration functions (called once by the Factory constructor).
-void registerFrameworkObjects(Factory & f);
-void registerHeatTransferObjects(Factory & f);
-/// Solid mechanics: continuum elasticity and, through
-/// registerStructuralMemberObjects, the beams and plates.
-void registerSolidMechanicsObjects(Factory & f);
-void registerStructuralMemberObjects(Factory & f);
-void registerFluidObjects(Factory & f);
-void registerParsedObjects(Factory & f);
-/// The internal states of a balance law (parsed_state).
-void registerParsedStateObjects(Factory & f);
 
 } // namespace dualmesh

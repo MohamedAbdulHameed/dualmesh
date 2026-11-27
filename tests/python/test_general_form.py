@@ -183,11 +183,11 @@ def test_an_incomplete_or_wrong_system_is_refused(parameters, message):
         add_system(**parameters)
 
 
-@pytest.mark.parametrize("coefficient", ["if(x < 0.5, 1, 2)", "max(u, 1)", "1 + (u > 2)"])
+@pytest.mark.parametrize("coefficient", ["conditional(x < 0.5, 1, 2)", "max(u, 1)", "1 + (u > 2)"])
 def test_a_manufactured_solution_refuses_a_term_with_a_condition(coefficient):
     """The manufactured source is the divergence of the flux, which SymPy takes and the engine
-    reads back. The engine reads no condition of SymPy, so a term with if, max or a comparison is
-    refused, with the term that holds it."""
+    reads back. The engine reads no condition of SymPy, so a term with conditional, max or a
+    comparison is refused, with the term that holds it."""
     study = mms.ManufacturedSolution({"u": "1 + x**2"}, dimension=1)
     study.add_physics(
         "general_form_PDE", variables="u", equations=f"div(-({coefficient})*grad(u)) = 0"
@@ -280,7 +280,7 @@ def test_normal_flux_is_told_by_the_kind_of_its_value():
             "general_form_PDE",
             variables=[{"U": "vector"}, "T"],
             k=2.0,
-            equations=["div(100*sym(grad(U))) = 0", "-div(k*grad(T)) = 0"],
+            equations=["div(100*symmetric(grad(U))) = 0", "-div(k*grad(T)) = 0"],
         )
         PDE.add_boundary_condition(["U_x = 0", "U_y = 0", "T = 0"], boundary="left")
         PDE.add_boundary_condition(["normal_flux = [1, -2]", "normal_flux = -3"], boundary="right")

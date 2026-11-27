@@ -3,8 +3,13 @@
 
 from __future__ import annotations
 
+import atexit
+import functools
+import gc
 import os
+import string
 import time
+import weakref
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -12,81 +17,82 @@ import numpy
 
 from . import _core
 from ._core import InputError
-from .console import report_level, suggestion
-from .output import Series
-from .tables import ResultTables
-
-SolveResult = _core.SolveResult
-
-
-def _solve_result_tables(self) -> dict:
-    """``newton``: one row per Newton iteration."""
-    from .tables import Table
-
-    return {
-        "newton": Table(
-            ["continuation_step", "data_fraction", "iteration", "residual_norm", "step_norm"],
-            None,
-            [
-                [r.continuation_step, r.data_fraction, r.iteration, r.residual_norm, r.step_norm]
-                for r in self.history
-            ],
-            title="Newton iterations",
-        )
-    }
+from .console import header, problem_report, report_level, solve_report
+from .modes import solve_buckling, solve_modes
+from .output import Output, Series
+from .parameters import suggestion
+from .physics import Coupling, Physics, problem_method, unique_name
+from .physics import create as create_physics
+from .postprocessors import PostprocessorHistory
+from .postprocessors import create as create_postprocessor
+from .tables import ResultTables, Table, column_header
 
 
-def _solve_result_to_dict(self) -> dict:
-    """Whether the solve converged, its iteration counts and the history of
-    its Newton iterations."""
-    history = [
-        dict(
-            continuation_step=r.continuation_step,
-            data_fraction=r.data_fraction,
-            iteration=r.iteration,
-            residual_norm=r.residual_norm,
-            step_norm=r.step_norm,
-        )
-        for r in self.history
-    ]
-    return {
-        "study": "solve",
-        "converged": bool(self.converged),
-        "total_iterations": int(self.total_iterations),
-        "linear_iterations": int(self.linear_iterations),
-        "time_steps": int(self.time_steps),
-        "rejected_steps": int(self.rejected_steps),
-        "start_correction": self.start_correction,
-        "history": history,
-    }
+class SolveResult(ResultTables):
+    """The outcome of a steady or transient solve.
 
+    It holds the fields of the solve of the library: ``converged``,
+    ``total_iterations``, ``linear_iterations``, ``time_steps``,
+    ``rejected_steps``, ``step_history``, ``next_time_step``,
+    ``start_correction`` and ``history``, the Newton iterations.  ``tables``,
+    ``summary()``, ``to_dict()``, ``write_json(path)`` and ``write_csv(path)``
+    follow the result protocol."""
 
-def _solve_result_summary(self) -> str:
-    """The outcome of the solve, as a table."""
-    from .console import solve_report
+    def __init__(self, result: _core.SolveResult):
+        self._result = result
 
-    return solve_report(self)
+    def __getattr__(self, name):
+        # The fields are those of the solve of the library, read where they are.
+        return getattr(self._result, name)
 
+    @property
+    def tables(self) -> dict:
+        """``newton``: one row per Newton iteration."""
+        return {
+            "newton": Table(
+                ["continuation_step", "data_fraction", "iteration", "residual_norm", "step_norm"],
+                None,
+                [
+                    [
+                        r.continuation_step,
+                        r.data_fraction,
+                        r.iteration,
+                        r.residual_norm,
+                        r.step_norm,
+                    ]
+                    for r in self.history
+                ],
+                title="Newton iterations",
+            )
+        }
 
-def _solve_result_write_json(self, path) -> None:
-    """Write :meth:`to_dict` to a JSON file."""
-    from .parameters import write_json_numbers
+    def to_dict(self) -> dict:
+        """Whether the solve converged, its iteration counts and the history of
+        its Newton iterations."""
+        history = [
+            dict(
+                continuation_step=r.continuation_step,
+                data_fraction=r.data_fraction,
+                iteration=r.iteration,
+                residual_norm=r.residual_norm,
+                step_norm=r.step_norm,
+            )
+            for r in self.history
+        ]
+        return {
+            "study": "solve",
+            "converged": bool(self.converged),
+            "total_iterations": int(self.total_iterations),
+            "linear_iterations": int(self.linear_iterations),
+            "time_steps": int(self.time_steps),
+            "rejected_steps": int(self.rejected_steps),
+            "start_correction": self.start_correction,
+            "history": history,
+        }
 
-    write_json_numbers(self.to_dict(), path)
-
-
-def _solve_result_write_csv(self, path, table: str | None = None) -> None:
-    """Write the Newton iterations (the table ``newton``) to a CSV file."""
-    from .tables import ResultTables
-
-    ResultTables.write_csv(self, path, table)
-
-
-SolveResult.tables = property(_solve_result_tables)
-SolveResult.to_dict = _solve_result_to_dict
-SolveResult.summary = _solve_result_summary
-SolveResult.write_json = _solve_result_write_json
-SolveResult.write_csv = _solve_result_write_csv
+    def summary(self) -> str:
+        """The outcome of the solve, as a table."""
+        return solve_report(self)
 
 
 #: The time schemes of solve_transient, by the weight theta of their steady terms at the new time.
@@ -101,6 +107,30 @@ def _theta_of(time_scheme: str) -> float:
     raise InputError(
         f"solve_transient: unknown time_scheme '{time_scheme}'. Use {', '.join(TIME_SCHEMES)}."
     )
+
+
+def _transient_options(end_time: float, time_step: float, **given) -> _core.TransientOptions:
+    """The TransientOptions of a run: the interval, the first step, and each field of ``given``
+    that is not None. The fields left out keep the defaults of the library (TransientOptions of
+    Problem.h)."""
+    transient = _core.TransientOptions()
+    transient.end_time = end_time
+    transient.dt = time_step
+    for name, value in given.items():
+        if value is not None:
+            setattr(transient, name, value)
+    return transient
+
+
+#: The relative tolerance of the end test of the step loop of the library: a run has reached
+#: its end time within this fraction of its interval.
+_END_TOLERANCE = 1e-12
+
+
+def reached_end(time: float, start_time: float, end_time: float) -> bool:
+    """Whether a run from start_time has reached end_time, by the end test of the step loop of
+    the library."""
+    return time >= end_time - _END_TOLERANCE * abs(end_time - start_time)
 
 
 def _object_name(obj) -> str:
@@ -119,7 +149,7 @@ def _as_function(value):
     return value
 
 
-def petsc_option_string(options) -> str:
+def _petsc_option_string(options) -> str:
     """PETSc options as the option string PETSc parses.
 
     ``options`` may already be a string (``"-ksp_type cg -pc_type gamg"``), a
@@ -142,31 +172,36 @@ def petsc_option_string(options) -> str:
     return " ".join(parts)
 
 
+def _fields(options) -> dict:
+    """The fields of a C++ options struct (_core.SolverOptions, _core.TransientOptions) and
+    their values: the struct is the one source of the defaults."""
+    return {name: getattr(options, name) for name in dir(options) if not name.startswith("_")}
+
+
+def _with_defaults(function, options, **extra):
+    """Write the defaults into the docstring of ``function``: each ``${name}`` becomes the
+    default of the field ``name`` of ``options``, or of ``extra``."""
+    defaults = {
+        name: f"{value:g}" if isinstance(value, float) else str(value)
+        for name, value in {**_fields(options), **extra}.items()
+    }
+    if function.__doc__:  # None under python -OO
+        function.__doc__ = string.Template(function.__doc__).substitute(defaults)
+    return function
+
+
 def _solver_options(**kwargs) -> _core.SolverOptions:
     options = _core.SolverOptions()
-    known = {
-        "nonlinear_solver",
-        "max_iterations",
-        "relative_tolerance",
-        "relaxation",
-        "line_search",
-        "max_line_search_steps",
-        "linear_tolerance",
-        "petsc_options",
-        "error_on_divergence",
-    }
+    # The progress lines are the option verbose, which the report of the solve sets.
+    known = set(_fields(options)) - {"verbose"}
     for key, value in kwargs.items():
-        if key == "verbose":
-            raise TypeError(
-                "Unknown solver option 'verbose'. The parameter report sets what a solve prints: report='full' (the default), 'summary' or 'none'."
-            )
         if key == "_progress":
             options.verbose = bool(value)
             continue
         if key not in known:
             raise TypeError(f"Unknown solver option '{key}'." + suggestion(key, known))
         if key == "petsc_options":
-            value = petsc_option_string(value)
+            value = _petsc_option_string(value)
         if key == "nonlinear_solver" and isinstance(value, str):
             value = value.lower()
         setattr(options, key, value)
@@ -176,6 +211,66 @@ def _solver_options(**kwargs) -> _core.SolverOptions:
 #: The methods, written as the abbreviations they are (CODE_AND_DOCS_RULES 4.1); the lower-case
 #: spelling is accepted.
 METHODS = {"fem": "FEM", "dmcdm": "DMCDM"}
+
+
+class _SerialParallel:
+    """The calls of a distributed problem (_core.DistributedProblem) for a serial problem, where
+    the whole problem is on this process and each call is the identity, as the C++ Parallel of a
+    serial problem is.  Problem makes these calls without asking which of the two it holds."""
+
+    def __init__(self, problem):
+        self._problem = problem
+
+    def rank(self) -> int:
+        return 0
+
+    def num_ranks(self) -> int:
+        return 1
+
+    def num_owned_dofs(self) -> int:
+        return self._problem.num_active_dofs()
+
+    def num_global_dofs(self) -> int:
+        return self._problem.num_active_dofs()
+
+    def sum(self, values):
+        return list(values)
+
+    def maximum(self, value: float) -> float:
+        return value
+
+    def minimum(self, value: float) -> float:
+        return value
+
+    def solve_steady(self, options):
+        return self._problem.solve_steady(options)
+
+    def solve_transient(self, transient, options):
+        return self._problem.solve_transient(transient, options)
+
+    def gathered_values(self, variable: str):
+        return self._problem.values(variable)
+
+    def gathered_element_values(self, local):
+        return local
+
+    def gathered_node_values(self, local, width: int):
+        return local
+
+    def local_node_values(self, values, width: int):
+        return values
+
+    def set_gathered_values(self, variable: str, values) -> None:
+        self._problem.set_values(variable, values)
+
+    def total_outflow(self, variable: str, boundary: str) -> float:
+        return self._problem.total_outflow(variable, boundary)
+
+    def write_vtu(self, filename: str, cell_properties, fields) -> None:
+        self._problem.write_vtu(filename, cell_properties, fields)
+
+    def summary(self) -> str:
+        return "serial problem (one process)"
 
 
 # ---------------------------------------------------------------------------
@@ -200,8 +295,6 @@ def _destroy_collectively() -> None:
     """Destroy the kept distributed problems, on every process at the same point."""
     if _core.mpi_size() <= 1:
         return
-    import gc
-
     gc.collect()
     _KEPT_FOR_COLLECTIVE_DESTRUCTION.sort(key=lambda kept: kept[0])
     while _KEPT_FOR_COLLECTIVE_DESTRUCTION:
@@ -214,15 +307,12 @@ def _destroy_at_exit() -> None:
     _destroy_collectively()
 
 
-import atexit as _atexit  # noqa: E402
-
-_atexit.register(_destroy_at_exit)
+atexit.register(_destroy_at_exit)
 
 
 def _changes_model(method):
     """Mark the solution as no longer that of the model: a method that adds
     to the problem or changes a parameter."""
-    import functools
 
     @functools.wraps(method)
     def wrapper(self, *args, **kwargs):
@@ -244,11 +334,15 @@ class Problem:
     method:
         The discretization: ``"FEM"``, the Galerkin finite element method, for
         solids, or ``"DMCDM"``, the dual mesh control domain method, which
-        conserves mass and heat in every control volume, for fluids.  The
-        default, ``"automatic"``, takes DMCDM when the problem has a
-        ``fluid_dynamics`` of the pressure formulation and FEM otherwise, and
-        is decided when the physics are built.  The rest of the problem
-        definition is the same for both.
+        conserves mass and heat in every control volume, for fluids.  The rest
+        of the problem definition is the same for both.  The default,
+        ``"automatic"``, takes the method from the physics as they are added:
+        a ``fluid_dynamics`` of the ``equal_order`` formulation takes DMCDM,
+        and every other physics FEM.
+        A problem takes one method, so a solid or a heat conduction beside
+        such a flow takes DMCDM, which solves it too.  The method is fixed
+        once the physics are built, at the first solve, so a flow added after
+        it needs the method given.
     coordinates:
         ``"cartesian"``, ``"axisymmetric"`` (the integrals carry the factor
         :math:`2 \\pi r`, with :math:`r` the first coordinate), or
@@ -284,30 +378,29 @@ class Problem:
     ):
         if distributed is None:
             distributed = _core.mpi_size() > 1
-        # The automatic method starts as FEM and becomes DMCDM if a flow is built (_build_physics).
-        automatic = str(method).lower() == "automatic"
-        self._automatic_method = "open" if automatic else "given"
-        given, method = method, "FEM" if automatic else METHODS.get(str(method).lower())
+        self._method_given = str(method).lower() != "automatic"
+        given = method
+        # Without the method, the physics choose it as they are added (add_physics).
+        method = METHODS.get(str(method).lower()) if self._method_given else problem_method(())
         if method is None:
             raise _core.InputError(
                 f"Unknown method '{given}'. Use 'FEM' (solids), 'DMCDM' (fluids) or 'automatic'."
             )
-        self._distributed = None
         _destroy_collectively()
+        # The whole mesh, of which a distributed problem holds a part on each process.
+        self._global_mesh = mesh
         if distributed:
             options = _core.DistributedOptions()
             options.partitioner = partitioner
             options.gather_scatter = gather_scatter
-            self._distributed = _core.DistributedProblem(mesh, method.lower(), coordinates, options)
-            self._problem = self._distributed.local()
-            import weakref
-
+            self._parallel = _core.DistributedProblem(mesh, method.lower(), coordinates, options)
+            self._problem = self._parallel.local()
             _CREATED[0] += 1
-            weakref.finalize(self, _keep_for_collective_destruction, _CREATED[0], self._distributed)
-            self._global_mesh = mesh
+            weakref.finalize(self, _keep_for_collective_destruction, _CREATED[0], self._parallel)
             mesh = self._problem.mesh
         else:
             self._problem = _core.Problem(mesh, method.lower(), coordinates)
+            self._parallel = _SerialParallel(self._problem)
         self._mesh = mesh
         self._objects: list = []  # keeps Python-defined objects alive
         self._init_postprocessing()
@@ -317,8 +410,12 @@ class Problem:
         self._couplings: dict = {}
         # The velocity that a run continued from another mesh starts from (set_gathered_velocities).
         self._continued_velocity: dict = {}
-        self.method = method
         self.coordinates = coordinates
+
+    @property
+    def method(self) -> str:
+        """The method of the problem: ``"FEM"`` or ``"DMCDM"``."""
+        return "DMCDM" if self._problem.is_dual() else "FEM"
 
     def set_num_threads(self, num_threads: int) -> None:
         """Number of threads used by the assembly loops.
@@ -345,8 +442,6 @@ class Problem:
         return self._problem.thread_safe()
 
     def _init_postprocessing(self) -> None:
-        from .postprocessors import PostprocessorHistory
-
         self._postprocessors = PostprocessorHistory()
         self._user_step_callback = None
         self._step_actions = []
@@ -360,9 +455,7 @@ class Problem:
     def gathered_node_coordinates(self) -> numpy.ndarray:
         """The coordinates of the nodes of the whole mesh, in the order of
         :meth:`gathered_values`; in a serial problem they equal :meth:`node_coordinates`."""
-        if self._distributed is not None:
-            return numpy.asarray(self._global_mesh.points())
-        return self.node_coordinates()
+        return numpy.asarray(self._global_mesh.points())
 
     # ---- definition ------------------------------------------------------
     def _set_initial_velocity(self, time: float) -> None:
@@ -377,10 +470,8 @@ class Problem:
         # defines (a problem made of kernels and boundary conditions).
         for variable, whole in self._continued_velocity.items():
             if variable in names:
-                velocity[names.index(variable) :: len(names)] = (
-                    self._distributed.local_node_values(list(whole), 1)
-                    if self._distributed is not None
-                    else whole
+                velocity[names.index(variable) :: len(names)] = self._parallel.local_node_values(
+                    list(whole), 1
                 )
         for physics in self._physics.values():
             for variable in physics.variable_names():
@@ -407,11 +498,7 @@ class Problem:
         local = numpy.asarray(self._problem.velocity(), dtype=float)
         if local.size == 0:
             local = numpy.zeros(len(self.node_coordinates()) * len(names))
-        whole = (
-            numpy.asarray(self._distributed.gathered_node_values(list(local), len(names)))
-            if self._distributed is not None
-            else local
-        )
+        whole = numpy.asarray(self._parallel.gathered_node_values(list(local), len(names)))
         return {name: whole[names.index(name) :: len(names)].copy() for name in second_order}
 
     def set_gathered_velocities(self, velocities: dict) -> None:
@@ -568,14 +655,18 @@ class Problem:
             )
             heat.add_boundary_condition("temperature = 40", boundary="left")
         """
-        from . import physics as _physics
-
-        instance = _physics.create(
-            physics, _physics.unique_name(physics, self._physics), parameters
-        )
-        if not isinstance(instance, _physics.Physics):
-            raise _physics.InputError(f"'{physics}' is a coupling. Add it with add_coupling.")
+        instance = create_physics(physics, unique_name(physics, self._physics), parameters)
+        if not isinstance(instance, Physics):
+            raise InputError(f"'{physics}' is a coupling. Add it with add_coupling.")
         instance._attach(self)
+        if not self._method_given:
+            method = problem_method([*self._physics.values(), instance])
+            if method != self.method:
+                if any(p._built for p in self._physics.values()):
+                    raise InputError(
+                        f"{physics}: the problem took {self.method} when it was first solved, before this physics was added. Give method='{method}' to dualmesh.Problem."
+                    )
+                self._problem.set_method(method.lower())
         self._physics[instance.name] = instance
         return instance
 
@@ -600,14 +691,12 @@ class Problem:
         :meth:`add_physics` returned.  A physics may be left out when the
         problem has only one physics of its type.
         """
-        from . import physics as _physics
-
-        name = _physics.unique_name(coupling, self._couplings)
-        instance = _physics.create(coupling, name, parameters)
-        if not isinstance(instance, _physics.Coupling):
-            raise _physics.InputError(f"'{coupling}' is a physics. Add it with add_physics.")
+        name = unique_name(coupling, self._couplings)
+        instance = create_physics(coupling, name, parameters)
+        if not isinstance(instance, Coupling):
+            raise InputError(f"'{coupling}' is a physics. Add it with add_physics.")
         if any(p._built for p in self._physics.values()):
-            raise _physics.InputError(
+            raise InputError(
                 f"{coupling}: add the couplings before the problem is solved or initialised."
             )
         instance._apply(self)
@@ -619,19 +708,6 @@ class Problem:
         new = [p for p in self._physics.values() if not p._built]
         if not new:
             return
-        # The automatic method: DMCDM for a flow of the pressure formulation, FEM otherwise,
-        # chosen when the physics are first built.
-        flow = any(p.type_name == "fluid_dynamics" and p.formulation == "equal_order" for p in new)
-        if self._automatic_method == "open":
-            if flow:
-                self._problem.set_method("dmcdm")
-                self.method = "DMCDM"
-            self._automatic_method = "chosen"
-        elif self._automatic_method == "chosen" and flow and self.method == "FEM":
-            raise _core.InputError(
-                "The method was chosen as FEM when the problem was first solved, before this flow "
-                "was added. Give method='DMCDM' to dualmesh.Problem for the flow."
-            )
         for physics in new:
             physics._build(self)
             physics._built = True
@@ -660,6 +736,13 @@ class Problem:
         """Resolve all objects (called automatically by :meth:`solve`)."""
         self._build_physics()
         self._problem.initialize()
+
+    def _collective_point(self) -> None:
+        """The start of a solve of a distributed problem, which every process reaches together,
+        is where the processes destroy the distributed problems they keep.  A serial problem may
+        solve on one process alone, so its solves are no such point."""
+        if self.is_distributed:
+            _destroy_collectively()
 
     # ---- solving ---------------------------------------------------------
     def solve(self, report: str = "full", output=None, **options) -> SolveResult:
@@ -690,7 +773,7 @@ class Problem:
         Newton step can cycle, and none otherwise; ``"none"``; or
         ``"backtracking"``, which halves a Newton step until the scaled
         residual falls) and ``max_line_search_steps``
-        (default 10), ``linear_tolerance`` (the relative tolerance of an
+        (default ${max_line_search_steps}), ``linear_tolerance`` (the relative tolerance of an
         iterative linear solve), ``petsc_options`` (PETSc's options, as a
         string or a dictionary) and ``error_on_divergence``.
         :doc:`/user_guide/solving` explains every option and its default.
@@ -722,17 +805,16 @@ class Problem:
         self._report_start(level, "steady solve")
         start = time.perf_counter()
         options["_progress"] = level == "full"
-        if self._distributed is not None:
-            _destroy_collectively()
-            result = self._distributed.solve_steady(_solver_options(**options))
-        else:
-            result = self._problem.solve_steady(_solver_options(**options))
+        self._collective_point()
+        result = SolveResult(self._parallel.solve_steady(_solver_options(**options)))
         self._steady_solution = bool(result.converged)
         if self._postprocessors.postprocessors:
             self._postprocessors.evaluate(self, self.time)
         files = self._write_fields(output) if output is not None else []
         self._report_end(level, self._solve_summary(result, time.perf_counter() - start), files)
         return result
+
+    solve = _with_defaults(solve, _core.SolverOptions())
 
     # ---- adjoint sensitivities ----------------------------------------------
     @_changes_model
@@ -778,7 +860,7 @@ class Problem:
         problem has, and one assembly per parameter.
         """
         level = report_level(report, "Problem.sensitivities")
-        if self._distributed is not None:
+        if self.is_distributed:
             raise InputError(
                 "sensitivities: a distributed problem is not differentiated yet; run the study on one process."
             )
@@ -814,8 +896,6 @@ class Problem:
     def _report_start(self, level: str, study: str, detail: str = "") -> None:
         """The start of the report of a study: the problem in full, or one line that names it."""
         if level == "full":
-            from .console import header
-
             print(header(study))
             print(self.summary(), flush=True)
         elif level == "summary":
@@ -837,8 +917,6 @@ class Problem:
 
     def _solve_summary(self, result, wall_time: float) -> str:
         """The outcome of a steady or transient solve, with the table of the post-processors."""
-        from .console import solve_report
-
         text = solve_report(result, wall_time)
         if self._postprocessors.postprocessors:
             text += f"\nPost-processors\n{self.postprocessor_table()}"
@@ -848,8 +926,6 @@ class Problem:
         """Check an Output group of a solve, or the Series of a transient run that goes on."""
         if output is None:
             return None
-        from .output import Output
-
         group = output.output if isinstance(output, Series) else output
         if not isinstance(group, Output):
             raise InputError(
@@ -868,7 +944,7 @@ class Problem:
                     raise InputError(
                         f"Output: the field '{name}' is not a variable." + suggestion(name, names)
                     )
-        if self._distributed is not None and "csv" in group.formats:
+        if self.is_distributed and "csv" in group.formats:
             raise InputError(
                 "Output: a distributed problem writes the vtu format only. Remove csv from formats."
             )
@@ -878,7 +954,7 @@ class Problem:
     def _vtu_extension(self) -> str:
         """The extension of the file that holds the fields: the .pvtu index of the pieces of a
         problem split among several processes, or .vtu."""
-        return "pvtu" if self._distributed is not None and self.num_ranks > 1 else "vtu"
+        return "pvtu" if self.num_ranks > 1 else "vtu"
 
     def _write_fields(self, output, index: int | None = None) -> list[str]:
         """Write the fields of the Output group in its formats.  ``index`` is
@@ -896,27 +972,130 @@ class Problem:
             files.append(path)
         return files
 
+    def _set_time_scheme(self, transient, time_scheme, spectral_radius, start_time) -> None:
+        """Sets the time scheme of a run and the damping of the generalized-alpha method. A
+        problem with inertia takes a second-order scheme and starts from its initial velocity,
+        and any other problem takes the theta of a theta method."""
+        dynamic = bool(self._problem.second_order_variables())
+        if dynamic:
+            self._set_initial_velocity(start_time)
+            if time_scheme is not None:
+                if time_scheme not in ("generalized_alpha", "Newmark"):
+                    raise InputError(
+                        f"solve_transient: a problem with inertia takes the time_scheme 'generalized_alpha' or 'Newmark', not '{time_scheme}'."
+                    )
+                transient.second_order_scheme = time_scheme
+        elif time_scheme is not None:
+            transient.theta = _theta_of(time_scheme)
+        if spectral_radius is not None:
+            if not dynamic or transient.second_order_scheme != "generalized_alpha":
+                raise InputError(
+                    "solve_transient: spectral_radius is the damping of the time_scheme 'generalized_alpha'."
+                )
+            transient.spectral_radius = float(spectral_radius)
+
+    def _set_restart(self, transient, restart, group) -> float:
+        """Continues the run of a checkpoint: its time, its state and the history of its
+        post-processors. It returns the time of the checkpoint."""
+        if group is not None and group.step_interval is not None:
+            raise InputError(
+                "Output: a restart numbers its files by the output times of the original run, so it takes times or interval, and no step_interval."
+            )
+        restart = str(restart)
+        restart_time = _core.checkpoint_time(restart, self.is_distributed)[0]
+        transient.restart_file = restart
+        history = restart + ".postprocessors.json"
+        if self._postprocessors.postprocessors and os.path.exists(history):
+            self._postprocessors.load_json(history)
+        return restart_time
+
+    def _set_output(self, transient, series, files, start_time, end_time, restart_time) -> list:
+        """Writes the fields of a run to its Series at the output times, or every step_interval
+        accepted steps, and adds each file written to ``files``. It returns the actions to call
+        after every accepted step. ``restart_time`` is the time of the checkpoint of a restart,
+        or None."""
+        group = series.output
+        actions = []
+        times = group.output_times(start_time, end_time)
+        if times is None:
+            # By steps: the first run of a series writes its start, and every run its steps.
+            times = [] if series.times else [start_time]
+
+            def write_every(t, _core_problem):
+                series.steps += 1
+                if series.steps % group.step_interval == 0:
+                    files.extend(series.write(self, t))
+
+            actions.append(write_every)
+        elif restart_time is not None:
+            # The files of the original run up to the checkpoint.  The library writes again
+            # the output time at the checkpoint, under its number.
+            series.times = {index: float(t) for index, t in enumerate(times) if t <= restart_time}
+        # The library calls the writer at each output time, after it applies the boundary
+        # values of the start, and the steps land on these times.
+        transient.output_times = [float(t) for t in times]
+        self._problem.set_output_callback(
+            lambda index: files.extend(series.write(self, times[index], index))
+        )
+        return actions
+
+    def _set_checkpoint(self, transient, group) -> None:
+        """Writes a checkpoint every checkpoint_interval accepted steps, when the Output group
+        asks for one, with the history of the post-processors beside it."""
+        if not group.checkpoint_interval:
+            return
+        checkpoint = group.path(".chk")
+        transient.checkpoint_file = checkpoint
+        transient.checkpoint_interval = int(group.checkpoint_interval)
+        if self._postprocessors.postprocessors:
+            # The library calls this after it writes each checkpoint.
+
+            def save_history():
+                if self.rank == 0:
+                    self._postprocessors.write_json(checkpoint + ".postprocessors.json")
+
+            self._problem.set_checkpoint_callback(save_history)
+
+    def _finish_output(self, series, start_time, end_time) -> list[str]:
+        """The files that a run writes at its end: its last step under output by steps, and the
+        ParaView collection of its vtu files."""
+        group = series.output
+        files = []
+        # Output by steps writes the last step too, unless the run stopped before its end, as
+        # max_steps makes it. A restart takes no output by steps, so start_time is the start of
+        # the step loop of the library.
+        last = series.times[max(series.times)] if series.times else None
+        if (
+            group.step_interval is not None
+            and reached_end(self.time, start_time, end_time)
+            and last != self.time
+        ):
+            files.extend(series.write(self, self.time))
+        if "vtu" in group.formats:
+            files.append(series.write_collection(self._vtu_extension))
+        return files
+
     @_changes_model
     def solve_transient(
         self,
         end_time: float,
         time_step: float,
-        start_time: float = 0.0,
+        start_time: float | None = None,
         time_scheme: str | None = None,
         spectral_radius: float | None = None,
         output=None,
         report: str = "full",
-        time_stepper: str = "error",
-        courant_number: float = 0.5,
-        min_time_step: float = 0.0,
-        max_time_step: float = 0.0,
-        growth_factor: float = 2.0,
-        cutback_factor: float = 0.5,
-        error_tolerance: float = 1.0e-3,
-        optimal_iterations: int = 4,
-        iteration_window: int = 2,
-        max_rejected_steps: int = 10,
-        max_steps: int = 0,
+        time_stepper: str | None = None,
+        courant_number: float | None = None,
+        min_time_step: float | None = None,
+        max_time_step: float | None = None,
+        growth_factor: float | None = None,
+        cutback_factor: float | None = None,
+        error_tolerance: float | None = None,
+        optimal_iterations: int | None = None,
+        iteration_window: int | None = None,
+        max_rejected_steps: int | None = None,
+        max_steps: int | None = None,
         restart: str | None = None,
         **options,
     ) -> SolveResult:
@@ -931,7 +1110,7 @@ class Problem:
             + \theta R_{\text{steady}}(U^{n+1})
             + (1 - \theta) R_{\text{steady}}(U^{n}) = 0,
 
-        with :math:`\theta = 1` for ``"backward_Euler"`` (the default), which is
+        with :math:`\theta = 1` for ``"backward_Euler"``, which is
         unconditionally stable and first-order accurate, :math:`\theta = 1/2`
         for ``"Crank-Nicolson"``, the trapezoidal rule, which is unconditionally
         stable and second-order accurate and can oscillate after a sharp
@@ -947,21 +1126,23 @@ class Problem:
         ----------
         end_time, time_step, start_time:
             The interval to cover and the first step.  The ``"fixed"``
-            stepper keeps ``time_step`` throughout.
+            stepper keeps ``time_step`` throughout.  ``start_time`` defaults
+            to ${start_time} s.
         time_scheme:
-            ``"backward_Euler"`` (the default, stable for every step),
-            ``"Crank-Nicolson"`` or ``"forward_Euler"``.  A problem with
-            inertia (a ``density`` of ``solid_mechanics``, or an ``m`` of
-            ``general_form_PDE``) takes ``"generalized_alpha"`` (the default
-            there: the method of Chung and Hulbert, second order, with damping
-            of the modes the mesh cannot resolve) or ``"Newmark"`` (the
-            average acceleration rule: second order, without numerical
-            damping, energy conserved).  Its first-order equations take the
-            theta method with :math:`\theta = 1 - \alpha_f`.
+            ``"backward_Euler"`` (stable for every step), ``"Crank-Nicolson"``
+            or ``"forward_Euler"``, with the default ``"${time_scheme}"``.  A
+            problem with inertia (a ``density`` of ``solid_mechanics``, or an
+            ``m`` of ``general_form_PDE``) takes ``"generalized_alpha"`` (the
+            method of Chung and Hulbert, second order, with damping of the
+            modes the mesh cannot resolve) or ``"Newmark"`` (the average
+            acceleration rule: second order, without numerical damping, energy
+            conserved), with the default ``"${second_order_scheme}"``.  Its
+            first-order equations take the theta method with
+            :math:`\theta = 1 - \alpha_f`.
         spectral_radius:
             The damping of ``"generalized_alpha"``: the spectral radius
             :math:`\rho_\infty` at infinite frequency, from 0 (the highest
-            frequency damped out in one step) to 1 (no damping).  Default 0.75.
+            frequency damped out in one step) to 1 (no damping).  Default ${spectral_radius}.
         output:
             An :class:`~dualmesh.Output` group: the files, the output times,
             the fields and the formats.  The time steps land on the output
@@ -975,7 +1156,9 @@ class Problem:
             and the result), ``"summary"`` (one line that names the study,
             then the result) or ``"none"``.
         time_stepper:
-            ``"error"`` (the default) chooses the step from an estimate of the
+            The default is ``"${time_stepper}"``.
+
+            ``"error"`` chooses the step from an estimate of the
             local truncation error of the variables with a time derivative.  A
             step of a theta method or of the projection integration of a flow
             is compared with the extrapolation of the last accepted states, at
@@ -990,12 +1173,18 @@ class Problem:
             estimate allows.  A problem without a time derivative measures the
             change of every variable.
 
-            ``"fixed"`` keeps the step, shortening only the last one so that
-            the run lands exactly on ``end_time``.  A step that fails to
-            converge is retried at ``cutback_factor`` times its size, and the
-            accepted steps after it grow back by ``growth_factor`` each until
-            they reach ``time_step``.  Use it when the steps themselves matter,
-            such as a study of the convergence in the step.
+            ``"fixed"`` takes steps of ``time_step`` and lands on every output
+            time and on ``end_time``.  A target time less than two steps away
+            is reached in two equal steps, each between half a step and a full
+            one, and a target less than one step away in one step.  A step that
+            fails to converge is retried at ``cutback_factor`` times its size,
+            and the accepted steps after it grow back by ``growth_factor`` each
+            until they reach ``time_step``.  Every step has the size
+            ``time_step`` only when ``time_step`` divides the interval from
+            ``start_time`` to the first output time, each interval between
+            output times and the interval from the last output time to
+            ``end_time``.  A study of the convergence in the step needs such a
+            ``time_step``.
 
             ``"iteration"`` chooses the step from how hard the nonlinear solver
             worked.  A step that converged in fewer than
@@ -1015,14 +1204,16 @@ class Problem:
             The Courant number the ``"cfl"`` stepper aims for,
             :math:`\Delta t \max_e |\mathbf{v}| / h_e` over the nodes of every
             element :math:`e`, with :math:`\mathbf{v}` the velocity and :math:`h_e`
-            the size of the element.  Default 0.5.
+            the size of the element.  Default ${courant_number}.
         min_time_step, max_time_step:
             Bounds on the step.  A run that has to go below ``min_time_step``
             is reported as a failure.  Zero means ``time_step`` divided by one
-            million, and the whole interval, respectively.
+            million, and the whole interval, respectively.  Default
+            ${dt_min} and ${dt_max}.
         growth_factor, cutback_factor:
             The most the step may grow between accepted steps, and the factor
-            applied after a step whose nonlinear solve failed.
+            applied after a step whose nonlinear solve failed.  Default
+            ${growth_factor} and ${cutback_factor}.
         error_tolerance:
             The target for the relative local error of one step.  Each
             variable is measured against the largest of its range, its change
@@ -1030,18 +1221,18 @@ class Problem:
             magnitude, with :math:`\epsilon_m` the machine epsilon, each the
             largest it has reached in the run, and the components of a
             velocity or a displacement share one scale.  Default
-            :math:`10^{-3}`.
+            ${error_tolerance}.
         optimal_iterations, iteration_window:
             The iteration count the ``"iteration"`` stepper aims for, and the
             half-width of the band around it inside which the step is left
-            alone.
+            alone.  Default ${optimal_iterations} and ${iteration_window}.
         max_rejected_steps:
             How many times in a row a step may be rejected before the run is
-            declared a failure.
+            declared a failure.  Default ${max_rejected_steps}.
         max_steps:
             Stop after this many accepted steps, at the time they reach, with
             ``result.next_time_step`` the step the stepper chose to take next.
-            Default 0: no limit.
+            Zero means no limit.  Default ${max_steps}.
         restart:
             A checkpoint (the ``.chk`` file of an :class:`~dualmesh.Output` group with ``checkpoint_interval``) to continue from: the run starts at its time, with its step size, its solution, the history of its material and the history of its post-processors, on any number of processes.
             ``start_time`` stays the start of the original run, so that the output times and the file numbers continue those of the original run.
@@ -1061,141 +1252,65 @@ class Problem:
             checkpoint or goes on from the state that the last run reached,
             which start from that state as it is.
         """
-        transient = _core.TransientOptions()
-        transient.start_time = start_time
-        transient.end_time = end_time
-        transient.dt = time_step
+        transient = _transient_options(
+            end_time,
+            time_step,
+            start_time=start_time,
+            time_stepper=time_stepper,
+            courant_number=courant_number,
+            dt_min=min_time_step,
+            dt_max=max_time_step,
+            growth_factor=growth_factor,
+            cutback_factor=cutback_factor,
+            error_tolerance=error_tolerance,
+            optimal_iterations=optimal_iterations,
+            iteration_window=iteration_window,
+            max_rejected_steps=max_rejected_steps,
+            max_steps=None if max_steps is None else int(max_steps),
+        )
+        start_time = transient.start_time
         self._build_physics()
-        dynamic = bool(self._problem.second_order_variables())
-        if time_scheme is None:
-            time_scheme = "generalized_alpha" if dynamic else "backward_Euler"
-        if dynamic:
-            self._set_initial_velocity(start_time)
-            if time_scheme not in ("generalized_alpha", "Newmark"):
-                raise InputError(
-                    f"solve_transient: a problem with inertia takes the time_scheme 'generalized_alpha' (the default) or 'Newmark', not '{time_scheme}'."
-                )
-            transient.second_order_scheme = time_scheme
-        else:
-            transient.theta = _theta_of(time_scheme)
-        if spectral_radius is not None:
-            if time_scheme != "generalized_alpha":
-                raise InputError(
-                    "solve_transient: spectral_radius is the damping of the time_scheme 'generalized_alpha'."
-                )
-            transient.spectral_radius = float(spectral_radius)
-        transient.time_stepper = time_stepper
-        transient.courant_number = courant_number
-        transient.dt_min = min_time_step
-        transient.dt_max = max_time_step
-        transient.growth_factor = growth_factor
-        transient.cutback_factor = cutback_factor
-        transient.error_tolerance = error_tolerance
-        transient.optimal_iterations = optimal_iterations
-        transient.iteration_window = iteration_window
-        transient.max_rejected_steps = max_rejected_steps
-        transient.max_steps = int(max_steps)
+        self._set_time_scheme(transient, time_scheme, spectral_radius, start_time)
         level = report_level(report, "Problem.solve_transient")
         output = self._check_output(output, steady=False)
         series = (
             None if output is None else output if isinstance(output, Series) else Series(output)
         )
         group = None if series is None else series.output
-        # A restart continues the run of its checkpoint: its time, its state and the history of its post-processors.
-        first_step = 0
-        if restart is not None:
-            if not _core.have_checkpoints():
-                raise InputError(
-                    "A restart reads a checkpoint, which needs a build with PETSc (MPI, or -DDUALMESH_ENABLE_PETSC=ON)."
-                )
-            if group is not None and group.step_interval is not None:
-                raise InputError(
-                    "Output: a restart numbers its files by the output times of the original run, so it takes times or interval, and no step_interval."
-                )
-            restart = str(restart)
-            restart_time, _, first_step = _core.checkpoint_time(
-                restart, self._distributed is not None
-            )
-            transient.restart_file = restart
-            history = restart + ".postprocessors.json"
-            if self._postprocessors.postprocessors and os.path.exists(history):
-                self._postprocessors.load_json(history)
+        restart_time = None if restart is None else self._set_restart(transient, restart, group)
         files: list[str] = []
-        tolerance = 1e-12 * abs(end_time - start_time)
         actions = []  # Called after every accepted step, after the post-processors
         if group is not None:
-            times = group.output_times(start_time, end_time)
-            if times is None:
-                # By steps: the first run of a series writes its start, and every run its steps.
-                times = [] if series.times else [start_time]
-
-                def write_every(t, _core_problem):
-                    series.steps += 1
-                    if series.steps % group.step_interval == 0:
-                        files.extend(series.write(self, t))
-
-                actions.append(write_every)
-            elif restart is not None:
-                series.times = {
-                    index: float(t) for index, t in enumerate(times) if t < restart_time - tolerance
-                }
-            # The library calls the writer at each output time, after it applies the boundary
-            # values of the start, and the steps land on these times.
-            transient.output_times = [float(t) for t in times]
-            self._problem.set_output_callback(
-                lambda index: files.extend(series.write(self, times[index], index))
-            )
-        checkpoint = None
-        if group is not None and group.checkpoint_interval:
-            if not _core.have_checkpoints():
-                raise InputError(
-                    "Output: checkpoints need a build with PETSc (MPI, or -DDUALMESH_ENABLE_PETSC=ON)."
-                )
-            checkpoint = group.path(".chk")
-            transient.checkpoint_file = checkpoint
-            transient.checkpoint_interval = int(group.checkpoint_interval)
+            actions = self._set_output(transient, series, files, start_time, end_time, restart_time)
+            self._set_checkpoint(transient, group)
         self._report_start(level, "transient solve")
         start = time.perf_counter()
         if self._postprocessors.postprocessors and restart is None:
             self.time = start_time
             self._postprocessors.evaluate(self, start_time)
-        if checkpoint is not None and self._postprocessors.postprocessors:
-            # The history of the post-processors goes beside each checkpoint, at the same steps.
-            steps = [first_step]
-            interval = int(group.checkpoint_interval)
-
-            def save_history(t, _core_problem):
-                steps[0] += 1
-                if (steps[0] % interval == 0 or t >= end_time - tolerance) and self.rank == 0:
-                    self._postprocessors.write_json(checkpoint + ".postprocessors.json")
-
-            actions.append(save_history)
         self._step_actions = actions
         self._install_step_callback()
         options["_progress"] = level == "full"
+        self._collective_point()
         try:
-            if self._distributed is not None:
-                _destroy_collectively()
-                result = self._distributed.solve_transient(transient, _solver_options(**options))
-            else:
-                result = self._problem.solve_transient(transient, _solver_options(**options))
+            result = SolveResult(
+                self._parallel.solve_transient(transient, _solver_options(**options))
+            )
         finally:
             self._problem.set_output_callback(None)
+            self._problem.set_checkpoint_callback(None)
             self._step_actions = []
             self._install_step_callback()
         if group is not None:
-            # A run of output by steps writes its last step, unless it stopped before the end.
-            last = series.times[max(series.times)] if series.times else None
-            if (
-                group.step_interval is not None
-                and self.time >= end_time - tolerance
-                and last != self.time
-            ):
-                files.extend(series.write(self, self.time))
-            if "vtu" in group.formats:
-                files.append(series.write_collection(self._vtu_extension))
+            files.extend(self._finish_output(series, start_time, end_time))
         self._report_end(level, self._solve_summary(result, time.perf_counter() - start), files)
         return result
+
+    solve_transient = _with_defaults(
+        solve_transient,
+        _core.TransientOptions(),
+        time_scheme={t: n for n, t in TIME_SCHEMES.items()}[_core.TransientOptions().theta],
+    )
 
     @_changes_model
     def solve_eigenvalue(
@@ -1210,13 +1325,12 @@ class Problem:
 
         Every field varies in time as :math:`\\hat{u}\\, e^{-\\lambda t}`, so the time derivatives define the eigenvalue :math:`\\lambda`, and the expressions may also use the symbol ``eigenvalue``, at most quadratically.
         The study returns the ``num_modes`` eigenvalues closest to ``near``, with their modes, in an :class:`~dualmesh.modes.EigenmodesResult`, and leaves the first mode in the solution.
+        A vibration, whose only time term is a second time derivative and in which no term uses ``eigenvalue``, has the eigenvalues :math:`\\lambda = i \\omega`, and ``near`` is then the angular frequency :math:`\\omega` (1/s) that the modes are closest to.
         ``tolerance`` is the relative tolerance of the Arnoldi iteration.
 
         ``report`` sets what the study prints: ``"full"`` (the default: the problem with every parameter, the defaults marked, and the result), ``"summary"`` (one line that names the study, then the result) or ``"none"``.
         ``output`` is an :class:`~dualmesh.Output` group: the study writes the first mode once, at the end.
         Default None: no file."""
-        from .modes import solve_modes
-
         level = report_level(report, "Problem.solve_eigenvalue")
         output = self._check_output(output, steady=True)
         self._build_physics()
@@ -1234,8 +1348,6 @@ class Problem:
         equations, so the solid takes ``large_deformation`` (a continuum) or ``von_karman``
         (a plate or a beam).  Returns a :class:`~dualmesh.modes.BucklingResult`; the solution
         is left as it was."""
-        from .modes import solve_buckling
-
         level = report_level(report, "Problem.solve_buckling")
         self._build_physics()
         self._report_start(level, "buckling study")
@@ -1251,7 +1363,7 @@ class Problem:
 
     def _install_step_callback(self) -> None:
         """After every accepted step: the post-processors, the actions of the transient study
-        (its files by steps, the history beside its checkpoints) and the callback of the user."""
+        (its files by steps) and the callback of the user."""
         evaluate = bool(self._postprocessors.postprocessors)
         actions = [
             *self._step_actions,
@@ -1275,9 +1387,7 @@ class Problem:
         boundary ``heat_flow``, ``reaction_force``, ``force``, ``flow_rate``
         and ``boundary_flux``, or ``kernel_boundary_flux`` (see
         :mod:`dualmesh.postprocessors`)."""
-        from .postprocessors import create
-
-        pp = create(postprocessor_type, name, **parameters)
+        pp = create_postprocessor(postprocessor_type, name, **parameters)
         self._postprocessors.add(pp)
         self._install_step_callback()
         return pp
@@ -1349,10 +1459,7 @@ class Problem:
         return self._problem.variable_index(name)
 
     def values(self, variable: str) -> numpy.ndarray:
-        """Values of a variable, one per degree of freedom entity.
-
-        These are nodal values indexed by node.  Use :meth:`entity_points` for the matching coordinates.
-        """
+        """The values of a variable, one per node, in the order of :meth:`node_coordinates`."""
         return self._problem.values(variable)
 
     def set_values(self, variable: str, values) -> None:
@@ -1399,32 +1506,28 @@ class Problem:
         of both, so it appears in both.  Collective in a distributed problem:
         every process calls it (see :doc:`/theory/parallel`)."""
         if per_node:
-            if self._distributed is not None:
+            if self.is_distributed:
                 raise InputError(
                     "boundary_flux(per_node=True) is not available in a distributed problem."
                 )
             return dict(self._problem.boundary_outflow(variable, boundary))
-        if self._distributed is not None:
-            return self._distributed.total_outflow(variable, boundary)
-        return self._problem.total_outflow(variable, boundary)
+        return self._parallel.total_outflow(variable, boundary)
 
     def maximum(self, variable: str) -> float:
         """The largest nodal value of a variable, over every process.  Collective in a distributed problem: every process calls it (see :doc:`/theory/parallel`)."""
         values = numpy.asarray(self.values(variable))
         local = float(values.max()) if values.size else -numpy.inf
-        return _core.mpi_max(local) if self._distributed is not None else local
+        return self._parallel.maximum(local)
 
     def minimum(self, variable: str) -> float:
         """The smallest nodal value of a variable, over every process.  Collective in a distributed problem: every process calls it (see :doc:`/theory/parallel`)."""
         values = numpy.asarray(self.values(variable))
         local = float(values.min()) if values.size else numpy.inf
-        return _core.mpi_min(local) if self._distributed is not None else local
+        return self._parallel.minimum(local)
 
     def _sum(self, value: float) -> float:
-        """The sum of ``value`` over the processes of a distributed problem; ``value`` itself otherwise."""
-        if self._distributed is None:
-            return value
-        return float(_core.mpi_sum([value])[0])
+        """The sum of ``value`` over the processes of a distributed problem, and ``value`` itself in a serial one."""
+        return float(self._parallel.sum([value])[0])
 
     def sample(self, variable: str, points) -> numpy.ndarray:
         """Interpolate a variable at arbitrary points (NaN outside the mesh).  Collective in a distributed problem: every process calls it (see :doc:`/theory/parallel`)."""
@@ -1432,12 +1535,10 @@ class Problem:
         if points.shape[1] < 3:
             points = numpy.hstack([points, numpy.zeros((points.shape[0], 3 - points.shape[1]))])
         values = numpy.asarray(self._problem.sample(variable, [list(p) for p in points]))
-        if self._distributed is None:
-            return values
-        # Every process interpolates in its own elements; a point on a partition boundary lies in elements of several processes, which give the same value, and the processes average what they found.
+        # Every process interpolates in its own elements. A point on a partition boundary lies in elements of several processes, which give the same value, and the processes average what they found.
         found = ~numpy.isnan(values)
         totals = numpy.asarray(
-            _core.mpi_sum(list(numpy.where(found, values, 0.0)) + list(found.astype(float)))
+            self._parallel.sum(list(numpy.where(found, values, 0.0)) + list(found.astype(float)))
         )
         sums, counts = totals[: len(values)], totals[len(values) :]
         with numpy.errstate(invalid="ignore", divide="ignore"):
@@ -1471,14 +1572,14 @@ class Problem:
         """Rows found at points, NaN where this process holds no element at the point.  A point on
         a partition boundary lies in elements of several processes: the first that holds it, in
         rank order, gives the row, so that every process returns the same one."""
-        if self._distributed is None:
-            return rows
         found = ~numpy.isnan(rows[:, 0])
         owner = numpy.asarray(
-            [_core.mpi_min(float(self.rank) if held else numpy.inf) for held in found]
+            [self._parallel.minimum(float(self.rank) if held else numpy.inf) for held in found]
         )
         mine = found & (owner == self.rank)
-        totals = numpy.asarray(_core.mpi_sum(list(numpy.where(mine[:, None], rows, 0.0).ravel())))
+        totals = numpy.asarray(
+            self._parallel.sum(list(numpy.where(mine[:, None], rows, 0.0).ravel()))
+        )
         totals = totals.reshape(rows.shape)
         return numpy.where(numpy.isfinite(owner)[:, None], totals, numpy.nan)
 
@@ -1558,10 +1659,8 @@ class Problem:
             None if exact_gradient is None else [_as_function(g) for g in exact_gradient],
             quadrature_points,
         )
-        if self._distributed is None:
-            return float(l2), float(h1)
         # Each process integrates its own elements: the squares add.
-        squares = _core.mpi_sum([float(l2) ** 2, float(h1) ** 2])
+        squares = self._parallel.sum([float(l2) ** 2, float(h1) ** 2])
         return float(numpy.sqrt(squares[0])), float(numpy.sqrt(squares[1]))
 
     def linear_system(self):
@@ -1619,12 +1718,14 @@ class Problem:
     def node_measures(self) -> numpy.ndarray:
         r"""The measure of each node, in the order of :meth:`values`, as the lumped (nodal) rule
         weighs it.  Under DMCDM it is the measure of the control domain of the node, and under
-        FEM the integral of its shape function, each times the coordinate factor of the problem
-        at the node, such as :math:`2 \pi r` in axisymmetric coordinates.  A lumped heat capacity
+        FEM the integral of its shape function, each with the coordinate factor of the problem
+        inside the integral, such as :math:`2 \pi r` in axisymmetric coordinates.  A lumped heat capacity
         stores the heat :math:`\sum_i \rho c_p T_i M_i`, with :math:`M_i` these measures.
         Collective in a distributed problem: every process calls it (see :doc:`/theory/parallel`),
         after a solve, which sets the distributed problem up."""
-        if self._distributed is None:
+        # The solves set a distributed problem up (DistributedProblem::prepare), which the
+        # initialisation of its local part alone would skip.
+        if not self.is_distributed:
             self.initialize()
         return numpy.asarray(self._problem.node_measures(), dtype=float)
 
@@ -1644,48 +1745,35 @@ class Problem:
         attribute ``units``.  A distributed problem writes one ``.vtu`` file
         per process and a ``.pvtu`` index, which ParaView and VisIt open as one
         data set."""
-        if self._distributed is not None:
-            base = filename[:-4] if filename.endswith((".vtu", ".pvtu")) else filename
-            base = base[:-1] if base.endswith(".") else base
-            self._distributed.write_vtu(base, list(cell_properties), list(fields))
-            return
-        self._problem.write_vtu(filename, list(cell_properties), list(fields))
+        self._parallel.write_vtu(filename, list(cell_properties), list(fields))
 
     # ---- distributed problems ----------------------------------------------
     @property
     def is_distributed(self) -> bool:
         """Whether the problem is split among MPI processes."""
-        return self._distributed is not None
+        return not isinstance(self._parallel, _SerialParallel)
 
     @property
     def rank(self) -> int:
         """This process's rank (0 for a serial problem)."""
-        return self._distributed.rank() if self._distributed is not None else 0
+        return self._parallel.rank()
 
     @property
     def num_ranks(self) -> int:
         """The number of processes the problem is split among (1 for a serial
         problem)."""
-        return self._distributed.num_ranks() if self._distributed is not None else 1
+        return self._parallel.num_ranks()
 
     @property
     def num_owned_dofs(self) -> int:
         """Degrees of freedom this process owns (all of them in a serial
         problem)."""
-        return (
-            self._distributed.num_owned_dofs()
-            if self._distributed is not None
-            else self.num_active_dofs()
-        )
+        return self._parallel.num_owned_dofs()
 
     @property
     def num_global_dofs(self) -> int:
         """Degrees of freedom of the whole problem."""
-        return (
-            self._distributed.num_global_dofs()
-            if self._distributed is not None
-            else self.num_active_dofs()
-        )
+        return self._parallel.num_global_dofs()
 
     def gathered_values(self, variable: str) -> numpy.ndarray:
         """Values of a variable at every node of the whole mesh, on every
@@ -1693,52 +1781,36 @@ class Problem:
         size per process, so this suits tests and small problems, and a large
         run writes its result with :meth:`write_vtu`.  For a serial problem it
         equals :meth:`values`.  Collective in a distributed problem: every process calls it (see :doc:`/theory/parallel`)."""
-        if self._distributed is not None:
-            return numpy.asarray(self._distributed.gathered_values(variable))
-        return self.values(variable)
+        return numpy.asarray(self._parallel.gathered_values(variable))
 
     def gathered_error_indicator(self, variable: str) -> numpy.ndarray:
         """:meth:`error_indicator` of every element of the whole mesh, in its numbering, on every
         process.  Collective in a distributed problem; in a serial one it equals
         :meth:`error_indicator`."""
         local = self._problem.error_indicator(variable)
-        if self._distributed is not None:
-            return numpy.asarray(self._distributed.gathered_element_values(local))
-        return numpy.asarray(local)
+        return numpy.asarray(self._parallel.gathered_element_values(local))
 
     def gathered_node_measures(self) -> numpy.ndarray:
         """:meth:`node_measures` at every node of the whole mesh, in the order of
         :meth:`gathered_values`, on every process.  Collective in a distributed problem; in a
         serial one it equals :meth:`node_measures`."""
-        local = self.node_measures()
-        if self._distributed is not None:
-            return numpy.asarray(self._distributed.gathered_node_values(list(local), 1))
-        return local
+        return numpy.asarray(self._parallel.gathered_node_values(list(self.node_measures()), 1))
 
     def set_gathered_values(self, variable: str, values) -> None:
         """Set a variable from its values at every node of the whole mesh, in its numbering, on
         every process; in a serial problem it equals :meth:`set_values`."""
         values = [float(v) for v in numpy.asarray(values, dtype=float).ravel()]
-        if self._distributed is not None:
-            self._distributed.set_gathered_values(variable, values)
-        else:
-            self._problem.set_values(variable, values)
+        self._parallel.set_gathered_values(variable, values)
 
     def partition_summary(self) -> str:
         """One line describing the partition of a distributed problem."""
-        return (
-            self._distributed.summary()
-            if self._distributed is not None
-            else "serial problem (one process)"
-        )
+        return self._parallel.summary()
 
     def write_csv(self, filename: str, variables: Sequence[str] = ()) -> None:
         """Write the values of the variables as comma-separated values: one
         row for each node, with its coordinates.  The header names
         every column with its unit, for example ``temperature (K)``.
         ``variables`` selects the variables (default: all of them)."""
-        from .tables import column_header
-
         names = list(variables) or [
             self._problem.variable_name(i) for i in range(self._problem.num_variables)
         ]
@@ -1758,8 +1830,6 @@ class Problem:
         """A report of the problem: method, mesh, variables and objects, with
         every parameter of every object and its value, marked ``(default)``
         when it was not set.  See :mod:`dualmesh.console`."""
-        from .console import problem_report
-
         self._build_physics()
         return problem_report(self, parameters=parameters)
 
@@ -1789,8 +1859,6 @@ class SensitivityResult(ResultTables):
 
     @property
     def tables(self) -> dict:
-        from .tables import Table
-
         rows = [[name, value] for name, value in self.values.items()]
         return {
             "sensitivities": Table(
@@ -1813,9 +1881,3 @@ class SensitivityResult(ResultTables):
             "objective": self.description(),
             "sensitivities": dict(self.values),
         }
-
-    def write_json(self, path) -> None:
-        """Write :meth:`to_dict` to a JSON file."""
-        from .parameters import write_json_numbers
-
-        write_json_numbers(self.to_dict(), path)

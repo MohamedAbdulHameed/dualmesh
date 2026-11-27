@@ -11,6 +11,7 @@ from __future__ import annotations
 import dualmesh
 import numpy
 import pytest
+from dualmesh.mms import convergence_rates
 
 nu = 0.1
 
@@ -74,10 +75,6 @@ def Taylor_green(
     return velocity_error, pressure_error, result, problem
 
 
-def rates(errors):
-    return [numpy.log2(a / b) for a, b in zip(errors, errors[1:])]
-
-
 def split(mesh, *rounds):
     """The quadrilateral or hexahedral `mesh` with, in each round, the cells whose centre the
     round accepts split into 2^d children, which leaves nodes hanging on the sides of the cells
@@ -134,25 +131,29 @@ def test_the_vortex_with_walls_converges_at_second_order_in_space(method, elemen
     """The velocity at second order over the two refinements (on Tri3 the rates are 2.05 and
     1.78, and 1.96 on the next mesh), the pressure by at least 7 (measured 7.3 and 7.7 on Tri3,
     whose alternating triangles converge less regularly in pressure than the quadrilaterals)."""
+    levels = (8, 16, 32)
     errors = [
         Taylor_green(n, 0.8 / n, element=element, method=method, time_stepper="fixed")[:2]
-        for n in (8, 16, 32)
+        for n in levels
     ]
-    velocity_order = numpy.log2(errors[0][0] / errors[-1][0]) / 2
-    assert velocity_order > 1.85, rates([e[0] for e in errors])
+    sizes = [1 / n for n in levels]
+    velocity_order = convergence_rates(sizes[::2], [errors[0][0], errors[-1][0]])[0]
+    assert velocity_order > 1.85, convergence_rates(sizes, [e[0] for e in errors])
     assert errors[-1][1] < errors[0][1] / 7
 
 
 @pytest.mark.parametrize("method", methods)
 def test_the_vortex_in_a_periodic_box_converges_at_second_order(method):
+    levels = (8, 16, 32, 64)
     errors = [
         Taylor_green(n, 0.4 / n, periodic=True, method=method, time_stepper="fixed")[:2]
-        for n in (8, 16, 32, 64)
+        for n in levels
     ]
-    assert min(rates([e[0] for e in errors])) > 1.9
+    sizes = [1 / n for n in levels]
+    assert min(convergence_rates(sizes, [e[0] for e in errors])) > 1.9
     # The pressure error falls irregularly on the coarse grids (measured 1.5 to 3.9 from 8 to 16
     # elements) and at second order on the finer ones.
-    assert min(rates([e[1] for e in errors])[1:]) > 1.9
+    assert min(convergence_rates(sizes, [e[1] for e in errors])[1:]) > 1.9
 
 
 def stagnation(dt, order, method="fem"):
@@ -186,8 +187,9 @@ def stagnation(dt, order, method="fem"):
 @pytest.mark.parametrize("method", methods)
 @pytest.mark.parametrize("order, expected", [(1, 0.9), (2, 1.95), (3, 2.6)])
 def test_the_time_integration_has_its_order(method, order, expected):
-    errors = [stagnation(dt, order, method) for dt in (0.05, 0.025, 0.0125)]
-    assert rates(errors)[-1] > expected, errors
+    steps = (0.05, 0.025, 0.0125)
+    errors = [stagnation(dt, order, method) for dt in steps]
+    assert convergence_rates(steps, errors)[-1] > expected, errors
 
 
 @pytest.mark.parametrize("method", methods)
@@ -268,7 +270,7 @@ def test_an_open_boundary_needs_its_pressure():
         problem.solve_transient(end_time=0.1, time_step=0.05, report="none")
 
 
-def open_channel(method, viscous_form, time_integration):
+def open_channel(method, viscous_form, time_integration, time_step=0.02, time_stepper="fixed"):
     """A parabolic inflow into a channel of 16 by 8 quadrilaterals with the pressure zero at its
     open right end, in the steady state: of a steady solve, or of the projection marched to
     t = 10, ten times the viscous time of the width.  Returns the velocity at the outlet."""
@@ -286,7 +288,9 @@ def open_channel(method, viscous_form, time_integration):
     physics.add_boundary_condition(["velocity_x = 0", "velocity_y = 0"], boundary=["top", "bottom"])
     physics.add_boundary_condition("pressure = 0", boundary="right")
     if time_integration == "projection":
-        problem.solve_transient(end_time=10.0, time_step=0.02, time_stepper="fixed", report="none")
+        problem.solve_transient(
+            end_time=10.0, time_step=time_step, time_stepper=time_stepper, report="none"
+        )
     else:
         problem.solve(report="none")
     nodes = problem.mesh.boundary_nodes("right")
@@ -307,6 +311,18 @@ def test_the_projection_has_the_outflow_of_its_viscous_form(method):
         apart = numpy.abs(steady - open_channel(method, other, "monolithic")).max()
         assert apart > 0.15
         assert numpy.abs(split - steady).max() < 0.1 * apart, form
+
+
+@pytest.mark.parametrize("viscous_form", ["laplacian", "stress"])
+@pytest.mark.parametrize("method", methods)
+def test_error_control_reaches_the_steady_state_of_a_small_fixed_step(method, viscous_form):
+    """Near a steady state the error control grows the step.  Above dt = beta_0 tau the weight of
+    the divergence in the pressure equation, and with it the steady state, would change with the
+    step, by more than the error estimate can follow, so the steps stay below it.  The run then
+    reaches the steady state of a small fixed step: 1e-10 to 2e-9 apart (measured)."""
+    adaptive = open_channel(method, viscous_form, "projection", time_stepper="error")
+    fixed = open_channel(method, viscous_form, "projection", time_step=0.01)
+    assert numpy.abs(adaptive - fixed).max() < 1e-7
 
 
 def test_the_body_force_of_the_flow_is_applied():
@@ -330,7 +346,8 @@ def test_the_body_force_of_the_flow_is_applied():
 
 def driven_channel(method, **steps):
     """A body force f = 3 drives the flow through a channel of 8 by 6 triangles, periodic in x, to
-    its steady state at t = 4.  Returns the force on the walls, minus the sum of the reactions."""
+    its steady state at t = 4.  Returns the force on the walls, minus the sum of the reactions,
+    and the largest nodal difference from the Poiseuille profile u = f y (1 - y) / (2 mu)."""
     mesh = dualmesh.generate_rectangle_mesh(0.0, 2.0, 0.0, 1.0, 8, 6, element_type="Tri3")
     problem = dualmesh.Problem(mesh, method=method, distributed=False)
     problem.add_physics(
@@ -345,9 +362,12 @@ def driven_channel(method, **steps):
     for name in ("velocity_x", "velocity_y"):
         problem.add_boundary_condition("Dirichlet", ["bottom", "top"], variable=name, value=0.0)
     problem.solve_transient(end_time=4.0, report="none", **steps)
-    return problem.boundary_flux("velocity_x", "bottom") + problem.boundary_flux(
+    force = problem.boundary_flux("velocity_x", "bottom") + problem.boundary_flux(
         "velocity_x", "top"
     )
+    y = problem.node_coordinates()[:, 1]
+    profile = numpy.abs(problem.values("velocity_x") - 1.5 * y * (1.0 - y)).max()
+    return force, profile
 
 
 @pytest.mark.parametrize("method", methods)
@@ -357,18 +377,22 @@ def test_the_steady_state_is_that_of_the_stabilized_flow_below_the_cap(method):
     on this mesh, the weight is 1 / tau whatever the step, so the steady state does not depend on
     the step (measured: 2e-10 apart at dt = 4e-3 and 2e-3), and the walls carry the body force
     times the area of the channel within 1e-6 of it (measured 2.4e-7, the momentum that the
-    advection of a velocity with a discrete divergence carries).  Above it the steady state
-    depends on the step (docs/theory/fluids.rst): the steady force balance of a flow is that of
+    advection of a velocity with a discrete divergence carries).  The velocity is the Poiseuille
+    profile 1.5 y (1 - y) within 7e-3 at the nodes (measured 6.2e-3, 1.7 % of its peak, with both
+    methods on 6 linear elements across), which a wrong viscosity or body force would miss by a
+    factor.  Above it the steady state depends on the step (docs/theory/fluids.rst): the steady force balance of a flow is that of
     the monolithic solve (test_conservation.py)."""
-    forces = [driven_channel(method, time_step=dt, time_stepper="fixed") for dt in (0.004, 0.002)]
-    assert forces[0] == pytest.approx(forces[1], rel=1e-8)
-    assert forces[1] == pytest.approx(3.0 * 2.0 * 1.0, rel=1e-6)
+    runs = [driven_channel(method, time_step=dt, time_stepper="fixed") for dt in (0.004, 0.002)]
+    (force, _), (fine_force, profile) = runs
+    assert force == pytest.approx(fine_force, rel=1e-8)
+    assert fine_force == pytest.approx(3.0 * 2.0 * 1.0, rel=1e-6)
+    assert profile < 7e-3
 
 
 # ---------------------------------------------------------------------------
 # Meshes with hanging nodes
 # ---------------------------------------------------------------------------
-def accelerating_shear(mesh, dimension, method):
+def accelerating_shear(mesh, dimension, method, **steps):
     """u = (g(t) + y, 0, 0) and p = -rho g'(t) x with g = 1 + t / 2 and rho = 1.  Its advection and
     its viscous term vanish, so it solves the Navier-Stokes equations with the pressure gradient
     driving the acceleration g'.  Its velocity and pressure are linear in space, which every element
@@ -392,7 +416,7 @@ def accelerating_shear(mesh, dimension, method):
     x, y = points[:, 0], points[:, 1]
     problem.set_values("velocity_x", 1.0 + y)
     end = 0.5
-    problem.solve_transient(end_time=end, time_step=0.1, report="none")
+    problem.solve_transient(end_time=end, **({"time_step": 0.1} | steps), report="none")
     velocity_error = max(
         numpy.abs(problem.values("velocity_x") - (1.0 + 0.5 * end + y)).max(),
         *(numpy.abs(problem.values(name)).max() for name in velocities[1:]),
@@ -424,13 +448,28 @@ def test_a_linear_flow_stays_exact_across_hanging_nodes(method, dimension):
     assert pressure_error < 1e-7
 
 
+@pytest.mark.parametrize("time_step", [1.25e-3, 1.6e-3])
+def test_small_steps_keep_a_linear_flow_exact_across_hanging_nodes(time_step):
+    """Steps at which the weight of the divergence of the earlier velocities is 1 / tau in some
+    control domains and beta_0 / dt in others, on the square with nodes hanging inside.  DMCDM
+    takes the weighted divergence as the flux through the sides of each control domain, with one
+    weight for the whole control domain, so a velocity without divergence adds nothing, also
+    where it jumps across the side of a polygon cell, and the flow stays exact."""
+    velocity_error, pressure_error = accelerating_shear(
+        square_with_hanging_nodes(), 2, "dmcdm", time_step=time_step, time_stepper="fixed"
+    )
+    assert velocity_error < 1e-7
+    assert pressure_error < 1e-6
+
+
 @pytest.mark.parametrize("method", methods)
 def test_a_body_force_accelerates_the_fluid_as_one_across_hanging_nodes(method):
     """A uniform body force on a fluid at rest in a periodic box with nodes hanging inside: every
     control domain, or every constrained test function, gains its share of the force, so the
     fluid moves as one body, u = f t / rho, at the hanging nodes too.  The pressure and velocity
-    solves of the projection stop at a relative residual of 1e-10, so they leave a velocity_y of
-    about 1e-10 of the speed U = f t / rho that the fluid reaches, which bounds it."""
+    solves of the projection stop at a relative residual of 1e-10, so each step leaves a
+    velocity_y of about 1e-10 of the speed U = f t / rho that the fluid reaches, and the steps
+    add theirs."""
     problem = dualmesh.Problem(square_with_hanging_nodes(), method=method, distributed=False)
     problem.add_physics(
         "fluid_dynamics",
@@ -442,10 +481,10 @@ def test_a_body_force_accelerates_the_fluid_as_one_across_hanging_nodes(method):
     )
     problem.add_boundary_condition("periodic", primary="left", secondary="right")
     problem.add_boundary_condition("periodic", primary="bottom", secondary="top")
-    problem.solve_transient(end_time=0.5, time_step=0.1, report="none")
+    steps = problem.solve_transient(end_time=0.5, time_step=0.1, report="none").time_steps
     speed = 3.0 * 0.5 / 2.0
     assert problem.values("velocity_x") == pytest.approx(speed, rel=1e-9)
-    assert numpy.abs(problem.values("velocity_y")).max() < 1e-10 * speed
+    assert numpy.abs(problem.values("velocity_y")).max() < 1e-10 * speed * steps
 
 
 @pytest.mark.parametrize(
@@ -575,8 +614,9 @@ def test_an_axisymmetric_flow_has_the_order_of_the_time_integration(method):
     """The operators of the projection are those of the problem, with the coordinate factor 2 pi r
     and the hoop terms of the axisymmetric flow, so the axisymmetric stagnation flow converges at
     the second order of BDF2, as the plane one does."""
-    errors = [axisymmetric_stagnation(dt, method) for dt in (0.05, 0.025, 0.0125)]
-    assert rates(errors)[-1] > 1.95, errors
+    steps = (0.05, 0.025, 0.0125)
+    errors = [axisymmetric_stagnation(dt, method) for dt in steps]
+    assert convergence_rates(steps, errors)[-1] > 1.95, errors
 
 
 def test_the_Taylor_Hood_element_keeps_a_linear_flow_exact():

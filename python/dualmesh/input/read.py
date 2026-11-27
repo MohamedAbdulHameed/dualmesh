@@ -12,7 +12,7 @@ from pathlib import Path
 import tomllib
 import yaml
 
-from dualmesh.input.units import input_error
+from dualmesh._core import InputError
 
 YAML_suffixes = (".yaml", ".yml")
 TOML_suffixes = (".toml",)
@@ -67,13 +67,13 @@ def read(path: str | Path) -> dict:
             with open(path, "rb") as file:
                 tree = tomllib.load(file)
         else:
-            raise input_error(f"{path}: the file name must end in .yaml, .yml or .toml.")
+            raise InputError(f"{path}: the file name must end in .yaml, .yml or .toml.")
     except (yaml.YAMLError, tomllib.TOMLDecodeError) as error:
-        raise input_error(f"{path}: {error}") from error
+        raise InputError(f"{path}: {error}") from error
     except OSError as error:
-        raise input_error(f"{path}: {error.strerror}") from error
+        raise InputError(f"{path}: {error.strerror}") from error
     if not isinstance(tree, dict):
-        raise input_error(
+        raise InputError(
             f"{path}: the file must hold a mapping of sections, such as mesh and physics."
         )
     return tree
@@ -101,11 +101,11 @@ def read_table(path: str | Path) -> dict:
                 if any(cell.strip() for cell in row)
             ]
     except OSError as error:
-        raise input_error(f"{path}: {error.strerror}") from error
+        raise InputError(f"{path}: {error.strerror}") from error
     except csv.Error as error:
-        raise input_error(f"{path}: {error}") from error
+        raise InputError(f"{path}: {error}") from error
     if not lines:
-        raise input_error(
+        raise InputError(
             f"{path}: the file is empty. Its first line names each column with its unit, "
             "as in 'temperature [K], thermal_conductivity [W/(m*K)]'."
         )
@@ -114,31 +114,29 @@ def read_table(path: str | Path) -> dict:
     for cell in header:
         match = header_cell.fullmatch(cell)
         if match is None:
-            raise input_error(
+            raise InputError(
                 f"{path}, line {header_number}: the header cell '{cell.strip()}' is not a name "
                 "with its unit in square brackets, as in 'temperature [K]'."
             )
         name = match["name"]
         if name in columns:
-            raise input_error(f"{path}, line {header_number}: the column '{name}' appears twice.")
+            raise InputError(f"{path}, line {header_number}: the column '{name}' appears twice.")
         unit = (match["unit"] or "").strip() or "1"
         columns[name] = {"unit": unit, "values": []}
     for number, row in lines[1:]:
         if len(row) != len(columns):
-            raise input_error(
+            raise InputError(
                 f"{path}, line {number}: expects {len(columns)} numbers, got {len(row)}."
             )
         for column, cell in zip(columns.values(), row, strict=True):
             try:
                 value = float(cell)
             except ValueError:
-                raise input_error(
+                raise InputError(
                     f"{path}, line {number}: '{cell.strip()}' is not a number."
                 ) from None
             if not math.isfinite(value):
-                raise input_error(
-                    f"{path}, line {number}: '{cell.strip()}' is not a finite number."
-                )
+                raise InputError(f"{path}, line {number}: '{cell.strip()}' is not a finite number.")
             column["values"].append(value)
     return columns
 
@@ -196,7 +194,7 @@ def _write_table(table: dict, keys: list[str], lines: list[str]) -> None:
 
 def _key(key) -> str:
     if not isinstance(key, str):
-        raise input_error(f"TOML keys must be text, got the key {key!r}.")
+        raise InputError(f"TOML keys must be text, got the key {key!r}.")
     return key if bare_key.fullmatch(key) else _string(key)
 
 
@@ -236,4 +234,4 @@ def _value(value, keys: list[str]) -> str:
             )
             + "}"
         )
-    raise input_error(f"{'.'.join(keys)}: TOML cannot hold the value {value!r}.")
+    raise InputError(f"{'.'.join(keys)}: TOML cannot hold the value {value!r}.")

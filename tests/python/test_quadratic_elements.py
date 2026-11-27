@@ -27,6 +27,7 @@ from __future__ import annotations
 import dualmesh
 import numpy
 import pytest
+from dualmesh._core import InputError
 
 quadratic_2d = ["Tri6", "Quad9"]
 quadratic_3d = ["Tet10", "Hex27"]
@@ -287,6 +288,51 @@ def test_one_dimensional_dual_mesh_on_quadratic_elements_equals_the_refined_line
         return problem.values("u")[order]
 
     assert solve(4, "Edge3") == pytest.approx(solve(8, "Edge2"), abs=1e-14)
+
+
+@pytest.mark.parametrize(
+    "quadrature, element_type",
+    [
+        ("nodal", "Tri6"),
+        ("interface", "Tri6"),
+        ("nodal", "Quad8"),
+        ("nodal", "Tet10"),
+        ("interface", "Tet10"),
+    ],
+)
+def test_FEM_refuses_to_lump_where_a_corner_shape_function_integrates_to_zero_or_less(
+    quadrature, element_type
+):
+    """FEM lumps by row sums: each node takes the integral of its shape function.  At a corner of
+    Tri6 the integral of L (2 L - 1) is zero, and at a corner of Quad8 or Tet10 it is negative, so
+    the lumped term would be singular or negative.  Quad8 has no control domains, so the
+    interface rule on it is refused for that reason, in test_element_types."""
+    if element_type == "Tet10":
+        mesh = distorted_cube(1, element_type)
+    else:
+        mesh = distorted_square(2, element_type)
+    problem = dualmesh.Problem(mesh, method="fem")
+    problem.add_variable("u")
+    problem.add_kernel("diffusion", variable="u")
+    problem.add_kernel("body_force", variable="u", value=1.0, quadrature=quadrature)
+    problem.add_boundary_condition("Dirichlet", mesh.sideset_names(), variable="u", value=0.0)
+    with pytest.raises(InputError, match="zero or negative at the corners"):
+        problem.solve()
+
+
+def test_FEM_lumps_on_Edge3_where_every_shape_function_integrates_to_a_positive_weight():
+    """-u'' = 2 with u(0) = u(1) = 0 has the solution u = x (1 - x).  On Edge3 the shape functions
+    integrate to 1/6, 2/3 and 1/6 of the length, so the lumped constant source equals the
+    consistent one and the nodal values stay exact."""
+    mesh = dualmesh.generate_line_mesh(start=0.0, end=1.0, num_elements=4, element_type="Edge3")
+    problem = dualmesh.Problem(mesh, method="fem")
+    problem.add_variable("u")
+    problem.add_kernel("diffusion", variable="u")
+    problem.add_kernel("body_force", variable="u", value=2.0, quadrature="nodal")
+    problem.add_boundary_condition("Dirichlet", ["left", "right"], variable="u", value=0.0)
+    problem.solve()
+    x = problem.node_coordinates()[:, 0]
+    assert problem.values("u") == pytest.approx(x * (1.0 - x), abs=1e-10)
 
 
 @pytest.mark.parametrize("element_type", ["Quad9", "Tri6"])

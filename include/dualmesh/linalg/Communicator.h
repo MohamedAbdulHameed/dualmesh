@@ -2,11 +2,9 @@
 //
 // A very small wrapper around the handful of MPI calls the solver needs.
 //
-// The wrapper exists so that every line of the distributed solver compiles and
-// runs whether or not the library was built with MPI.  Without MPI, or with
-// MPI but only one rank, all the collectives are the identity and all the
-// point-to-point exchanges are empty, so the distributed code path can be
-// tested in a serial build and gives exactly the serial answer.
+// On one rank all the collectives are the identity and all the point-to-point
+// exchanges are empty, so the distributed code path runs on a serial problem and
+// gives exactly the serial answer.
 #pragma once
 
 #include "dualmesh/core/Types.h"
@@ -20,9 +18,9 @@ namespace dualmesh
 class Communicator
 {
 public:
-  /// The communicator of all ranks (MPI_COMM_WORLD), or a single-rank
-  /// communicator in a build without MPI.  MPI is initialized on first use if
-  /// the program has not initialized it already, and finalized at exit.
+  /// The communicator of all ranks (MPI_COMM_WORLD).  MPI is initialized on
+  /// first use if the program has not initialized it already, and finalized at
+  /// exit.
   static Communicator & world();
 
   int rank() const { return _rank; }
@@ -44,8 +42,6 @@ public:
   Index min(Index value) const;
   /// Sum @p values elementwise across all ranks, in place.
   void sumInPlace(std::vector<double> & values) const;
-  /// Elementwise minimum across all ranks, in place.
-  void minInPlace(std::vector<double> & values) const;
   /// True on every rank when it is true on any rank.
   bool any(bool value) const;
   void barrier() const;

@@ -8,17 +8,16 @@ onto the engine, solves it and returns the results.
 import copy
 import os
 from pathlib import Path
+from typing import NamedTuple
 
 import numpy
 
 from dualmesh import _core
 from dualmesh.adaptivity import (
-    _Hierarchy,
-    _marks,
     mark_by_error_fraction,
+    solve_transient_with_adaptive_refinement,
     solve_with_adaptive_refinement,
 )
-from dualmesh.console import inner_study, report_level
 from dualmesh.input import schema
 from dualmesh.input.build import (
     add_postprocessors,
@@ -29,10 +28,8 @@ from dualmesh.input.build import (
 )
 from dualmesh.input.read import read as read_file
 from dualmesh.input.read import write_TOML, write_YAML
-from dualmesh.input.units import input_error
 from dualmesh.output import Output, Series
-from dualmesh.results import results
-from dualmesh.tables import Table
+from dualmesh.solution import results
 
 
 def table(file: str | None = None, **columns) -> dict:
@@ -44,13 +41,15 @@ def table(file: str | None = None, **columns) -> dict:
     values, and the other column is its input: a field, the time or a coordinate.
     """
     if (file is None) == (not columns):
-        raise input_error("table: give either a file or the columns, exactly one of the two.")
+        raise _core.InputError("table: give either a file or the columns, exactly one of the two.")
     if file is not None:
         return {"table": {"file": str(file)}}
     entries = {}
     for name, column in columns.items():
         if not isinstance(column, (tuple, list)) or len(column) != 2:
-            raise input_error(f"table: the column {name} takes (unit, values), got {column!r}.")
+            raise _core.InputError(
+                f"table: the column {name} takes (unit, values), got {column!r}."
+            )
         unit, values = column
         entries[name] = {"unit": unit, "values": list(values)}
     return {"table": entries}
@@ -60,9 +59,7 @@ class problem:
     """One simulation: a mesh, physics, properties, conditions and an analysis."""
 
     def __init__(self, mesh: dict, method: str | None = None):
-        self._tree: dict = {}
-        self._validated: dict | None = None  # The validated tree, kept until a section changes
-        self._directory = os.getcwd()  # Relative mesh and table paths resolve against it
+        self._start({}, os.getcwd())
         sections = {"mesh": copy.deepcopy(mesh)}
         if method is not None:  # The tree holds only what the user chose
             sections["method"] = method
@@ -96,7 +93,7 @@ class problem:
         given = self._tree.get("boundary_conditions", {}).get(boundary, {})
         if condition is not None or isinstance(given, str):
             if values or (condition is None and given == schema.symmetry):
-                raise input_error(
+                raise _core.InputError(
                     f"boundary_conditions.{boundary}: the word {schema.symmetry} takes the place "
                     "of the conditions of a boundary, so it takes no other condition."
                 )
@@ -158,6 +155,12 @@ class problem:
         """The relative tolerance of the nonlinear solve and PETSc options without the leading dash."""
         self._merge("solver", values)
 
+    def _start(self, tree: dict, directory: str) -> None:
+        """Holds a tree and the folder that its relative paths resolve against."""
+        self._tree = tree
+        self._validated: dict | None = None  # The validated tree, kept until a section changes
+        self._directory = directory  # Relative mesh and table paths resolve against it
+
     def _merge(self, section: str, values: dict) -> None:
         self._set(**{section: {**self._tree.get(section, {}), **copy.deepcopy(values)}})
 
@@ -193,7 +196,7 @@ class problem:
 
     def _tree_for_file(self, path: str) -> dict:
         """The validated input tree, with each relative path rewritten relative to the folder of path."""
-        self._valid()
+        self._valid()  # Refuses an invalid tree before it is written
         tree = self.to_tree()
         folder = Path(path).resolve().parent
 
@@ -204,14 +207,12 @@ class problem:
 
         return with_paths(tree, relative)
 
-    @staticmethod
-    def from_file(path: str) -> "problem":
+    @classmethod
+    def from_file(cls, path: str) -> "problem":
         """Reads a problem from a YAML or TOML file. Relative paths in it resolve against its folder."""
-        case = problem.__new__(problem)
-        case._tree = read_file(path)
-        case._directory = str(Path(path).resolve().parent)
-        case._validated = None
-        case._valid()
+        case = cls.__new__(cls)
+        case._start(read_file(path), str(Path(path).resolve().parent))
+        case._valid()  # Refuses an invalid file at once
         return case
 
     # Solving
@@ -220,52 +221,20 @@ class problem:
         """Solves the problem: steady without a time section, transient with one, and an
         eigenvalue study with an eigenvalues section."""
         validated = self._valid()
-        options = validated.get("solver", {})
         mesh = build_mesh(validated["mesh"])
         engine, _, variables = build_problem(validated, mesh)
         add_postprocessors(engine, validated, variables)
-        adaptivity = validated.get("mesh_adaptivity")
-        if adaptivity is not None and adaptivity["field"] not in variables:
-            raise input_error(
-                f"mesh_adaptivity.field: '{adaptivity['field']}' is not a field of the physics, "
-                f"which solve for {', '.join(sorted(variables))}."
-            )
+        _check_adaptivity_field(validated, variables)
         output = _engine_output(validated, variables, self._directory)
         lines = line_samplers(engine, validated, variables)
         write_lines = _line_writer(lines, output)
-        study = None
         if "eigenvalues" in validated:
-            times = []
-            study = engine.solve_eigenvalue(
-                num_modes=validated["eigenvalues"]["count"],
-                near=validated["eigenvalues"]["near"],
-                report=report,
-            )
-            if output is not None:
-                _write_modes(engine, study, output)
-            history = engine.postprocessor_table()
+            run = _solve_eigenvalue(validated, engine, variables, output, report)
         elif "time" not in validated:
-            times = [0.0]
-            if adaptivity is not None:
-                engine, variables = _adapt(validated, mesh, engine, variables, report, options)
-                if output is not None:
-                    engine._write_fields(output)
-            else:
-                engine.solve(report=report, output=output, **options)
-            write_lines(engine, 0.0)
-            history = engine.postprocessor_table()
+            run = _solve_steady(validated, mesh, engine, variables, output, write_lines, report)
         else:
-            series = None if output is None else Series(output, [write_lines])
-            if adaptivity is not None:
-                engine, variables, history, times = _adapt_in_time(
-                    validated, mesh, engine, variables, series, report, options
-                )
-            else:
-                result = engine.solve_transient(
-                    **transient_options(validated["time"]), output=series, report=report, **options
-                )
-                times = [time for time, _ in result.step_history]
-                history = engine.postprocessor_table()
+            run = _solve_transient(validated, mesh, engine, variables, output, write_lines, report)
+        engine, variables, history = run.engine, run.variables, run.history
         # One table for the whole run: the first process writes it.
         if output is not None and len(history.names) > 1 and _core.mpi_rank() == 0:
             history.write_csv(output.path(".csv"))
@@ -276,13 +245,73 @@ class problem:
         }
         coordinates = engine.gathered_node_coordinates()[:, : engine.mesh.dimension]
         return results(
-            times,
+            run.times,
             fields,
             dict.fromkeys(fields, coordinates),
             history,
             lines={line.name: line.table() for line in lines},
-            study=study,
+            study=run.study,
         )
+
+
+class _run(NamedTuple):
+    """What a solve of the input leaves: the problem on the last mesh, its fields by name, the
+    postprocessor table, the times of the solution and the eigenvalue study, or None."""
+
+    engine: object
+    variables: dict
+    history: object
+    times: list
+    study: object = None
+
+
+def _check_adaptivity_field(validated: dict, variables: dict) -> None:
+    """Stops the run when mesh_adaptivity names a field that no physics solves for."""
+    adaptivity = validated.get("mesh_adaptivity")
+    if adaptivity is not None and adaptivity["field"] not in variables:
+        raise _core.InputError(
+            f"mesh_adaptivity.field: '{adaptivity['field']}' is not a field of the physics, "
+            f"which solve for {', '.join(sorted(variables))}."
+        )
+
+
+def _solve_eigenvalue(validated: dict, engine, variables: dict, output, report: str) -> _run:
+    """The eigenvalue study of the input, which writes each mode when the input has an output."""
+    study = engine.solve_eigenvalue(
+        num_modes=validated["eigenvalues"]["count"],
+        near=validated["eigenvalues"]["near"],
+        report=report,
+    )
+    if output is not None:
+        _write_modes(engine, study, output)
+    return _run(engine, variables, engine.postprocessor_table(), [], study)
+
+
+def _solve_steady(validated: dict, mesh, engine, variables: dict, output, write_lines, report):
+    """The steady solve of the input, on an adapted mesh when the input has mesh_adaptivity."""
+    options = validated.get("solver", {})
+    if validated.get("mesh_adaptivity") is not None:
+        engine, variables = _adapt(validated, mesh, engine, variables, report, options)
+        if output is not None:
+            engine._write_fields(output)
+    else:
+        engine.solve(report=report, output=output, **options)
+    write_lines(engine, 0.0)
+    return _run(engine, variables, engine.postprocessor_table(), [0.0])
+
+
+def _solve_transient(validated: dict, mesh, engine, variables: dict, output, write_lines, report):
+    """The transient run of the input, on a mesh adapted in time when the input has
+    mesh_adaptivity."""
+    options = validated.get("solver", {})
+    series = None if output is None else Series(output, [write_lines])
+    if validated.get("mesh_adaptivity") is not None:
+        return _adapt_in_time(validated, mesh, engine, variables, series, report, options)
+    result = engine.solve_transient(
+        **transient_options(validated["time"]), output=series, report=report, **options
+    )
+    times = [time for time, _ in result.step_history]
+    return _run(engine, variables, engine.postprocessor_table(), times)
 
 
 def _line_writer(lines: list, output):
@@ -320,7 +349,7 @@ def _engine_output(validated: dict, variables: dict, directory: str) -> Output |
         return None
     for index, name in enumerate(output["fields"]):
         if name not in variables:
-            raise input_error(
+            raise _core.InputError(
                 f"output.fields[{index}]: the files hold the fields that the physics and the "
                 f"models solve for, here {', '.join(variables)}."
             )
@@ -338,97 +367,69 @@ def _marker(settings: dict):
     return lambda indicators: mark_by_error_fraction(indicators, settings["refine_fraction"])
 
 
+class _rebuilder:
+    """Builds the problem of the input on each mesh of an adaptive loop, and holds the last
+    problem built and its fields. The problem of the first mesh is built already."""
+
+    def __init__(self, validated: dict, mesh, engine, variables: dict):
+        self._validated = validated
+        self._mesh = mesh
+        self.engine = engine
+        self.variables = variables
+
+    def __call__(self, adapted):
+        if adapted is not self._mesh:
+            self.engine, _, self.variables = build_problem(self._validated, adapted)
+            add_postprocessors(self.engine, self._validated, self.variables)
+        return self.engine
+
+
+def _adaptive_options(settings: dict) -> dict:
+    """The keywords that both adaptive loops take from the mesh_adaptivity section."""
+    return {
+        "marker": _marker(settings),
+        "coarsen_fraction": settings["coarsen_fraction"],
+        "maximum_refinement_level": settings["maximum_refinement_level"],
+    }
+
+
 def _adapt(validated: dict, mesh, engine, variables: dict, report: str, options: dict):
     """The steady adaptive loop, solve_with_adaptive_refinement on the problems of the input, until
-    no cell below the maximum refinement level is marked to refine.  It returns the problem on
+    no cell below the maximum refinement level is marked to refine. It returns the problem on
     the last mesh and its fields."""
     settings = validated["mesh_adaptivity"]
-    built = {"engine": engine, "variables": variables}
-
-    def build(adapted):
-        # The problem of the first mesh is built already.
-        if adapted is not mesh:
-            built["engine"], _, built["variables"] = build_problem(validated, adapted)
-            add_postprocessors(built["engine"], validated, built["variables"])
-        return built["engine"]
-
-    max_level = settings["maximum_refinement_level"]
+    build = _rebuilder(validated, mesh, engine, variables)
     solve_with_adaptive_refinement(
         build,
         mesh,
         variables[settings["field"]],
         # Refinement and coarsening may undo each other, so the cycles are bounded.
-        num_cycles=4 * mesh.dimension * max_level + 1,
-        marker=_marker(settings),
+        num_cycles=4 * mesh.dimension * settings["maximum_refinement_level"] + 1,
         report=report,
-        coarsen_fraction=settings["coarsen_fraction"],
-        maximum_refinement_level=max_level,
+        **_adaptive_options(settings),
         **options,
     )
-    return built["engine"], built["variables"]
+    return build.engine, build.variables
 
 
-def _adapt_in_time(validated, mesh, engine, variables, series, report, options):
-    """The transient adaptive loop: run interval accepted steps, adapt the mesh to the indicators
-    of the solution reached, and go on from that time on the new mesh, with the solution carried
-    over and the step that the stepper chose.  It returns the problem on the last mesh, its
+def _adapt_in_time(validated, mesh, engine, variables, series, report, options) -> _run:
+    """The transient adaptive loop, solve_transient_with_adaptive_refinement on the problems of
+    the input, from the time 0 to the end time. It returns the problem on the last mesh, its
     fields, the postprocessor table of all the meshes and the times of the accepted steps."""
     settings = validated["mesh_adaptivity"]
-    time_options = transient_options(validated["time"])
-    end_time = time_options["end_time"]
-    hierarchy = _Hierarchy(mesh)
-    max_level = settings["maximum_refinement_level"]
-    level = report_level(report, "problem.solve")
-    if level != "none":
-        print(
-            f"dualmesh transient solve, the mesh adapted every {settings['interval']} steps",
-            flush=True,
-        )
-    start_time, time_step = 0.0, time_options["time_step"]
-    rows, times = [], []
-    while True:
-        with inner_study():
-            result = engine.solve_transient(
-                **{**time_options, "start_time": start_time, "time_step": time_step},
-                max_steps=settings["interval"],
-                output=series,
-                **options,
-            )
-        times += [time for time, _ in result.step_history]
-        # The rows of this mesh after the time where those of the last one ended.
-        history = engine.postprocessor_table()
-        rows += [row for row in history.rows if not rows or row[0] > rows[-1][0]]
-        start_time = float(engine.time)
-        if start_time >= end_time - 1e-12 * abs(end_time):
-            break
-        time_step = result.next_time_step
-        indicators = numpy.sqrt(
-            sum(engine.gathered_error_indicator(name) ** 2 for name in variables[settings["field"]])
-        )
-        refine, coarsen = _marks(
-            hierarchy, indicators, _marker(settings), settings["coarsen_fraction"], max_level
-        )
-        state = {
-            name: engine.gathered_values(name) for names in variables.values() for name in names
-        }
-        # The velocity of a second-order equation is a state of the step too: the new problem
-        # goes on from the velocity reached, not from that of the initial condition.
-        velocity = engine.gathered_velocities()
-        if hierarchy.adapt(refine, coarsen, max_level):
-            state = hierarchy.carry(engine, state)
-            velocity = hierarchy.carry(engine, velocity)
-            engine, _, variables = build_problem(validated, hierarchy.mesh())
-            add_postprocessors(engine, validated, variables)
-            engine.set_gathered_velocities(velocity)
-            for name, values in state.items():
-                engine.set_gathered_values(name, values)
-            if level == "full":
-                print(
-                    f"  t = {start_time:.6g} s: {hierarchy.mesh().num_elements} cells", flush=True
-                )
-    if level != "none":
-        print(f"  {len(times)} accepted steps, {hierarchy.mesh().num_elements} cells at the end")
-    return engine, variables, Table(history.names, history.units, rows), times
+    build = _rebuilder(validated, mesh, engine, variables)
+    result = solve_transient_with_adaptive_refinement(
+        build,
+        mesh,
+        variables[settings["field"]],
+        interval=settings["interval"],
+        report=report,
+        output=series,
+        **_adaptive_options(settings),
+        **transient_options(validated["time"]),
+        **options,
+    )
+    return _run(build.engine, build.variables, result.history, result.times)
 
 
 def with_paths(tree: dict, change) -> dict:

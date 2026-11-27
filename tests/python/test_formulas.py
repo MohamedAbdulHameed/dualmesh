@@ -6,10 +6,10 @@ operands."""
 from fractions import Fraction
 
 import pytest
-from dualmesh.input.units import base, dimensionless, input_error
+from dualmesh._core import InputError
 from dualmesh.model import parse, syntax_error
 from dualmesh.model.dimensions import dimension_error
-from dualmesh.model.expression import (
+from dualmesh.model.graph import (
     conditional,
     exp,
     field,
@@ -21,6 +21,7 @@ from dualmesh.model.expression import (
     sqrt,
     time,
 )
+from dualmesh.units import base, dimensionless
 
 kelvin = base("temperature")
 metre = base("length")
@@ -97,5 +98,5 @@ def test_an_operation_on_operands_of_unequal_dimensions_is_refused():
     ],
 )
 def test_a_malformed_formula_is_refused_with_its_column_or_a_suggestion(text, message):
-    with pytest.raises(input_error, match=message):
+    with pytest.raises(InputError, match=message):
         parse(text)

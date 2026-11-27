@@ -163,6 +163,114 @@ def test_hill_plasticity_yields_at_the_stress_of_its_coefficients():
     )
 
 
+# Hill's F, G, H, L, M, N, all different, with linear hardening on an isotropic elastic cube.
+Hill = [0.3, 0.9, 0.5, 1.2, 2.0, 0.9]
+hardening = "250e6 + 1e9*equivalent_plastic_strain"
+mu = 200e9 / (2 * (1 + 0.3))
+
+
+def hill_cube(hill, **solid):
+    return cube(
+        youngs_modulus=200e9,
+        poissons_ratio=0.3,
+        plasticity={"yield_stress": hardening, "hill": hill},
+        **solid,
+    )
+
+
+def uniaxial_x_strains(F, G_h, H, sigma):
+    """The strains of uniaxial stress sigma along x for Hill's F, G, H in the global axes."""
+    root = numpy.sqrt(G_h + H)
+    plastic = (root * sigma - 250e6) / 1e9
+    elastic = sigma / 200e9
+    return numpy.array(
+        [
+            elastic + plastic * root,
+            -0.3 * elastic - plastic * H / root,
+            -0.3 * elastic - plastic * G_h / root,
+        ]
+    )
+
+
+def simple_shear(problem, body, plane, shear):
+    """Every face displaced as the simple shear u_i = shear x_j of the plane (i, j)."""
+    i, j = plane
+    conditions = [
+        f"disp_{a} = {shear!r}*{'xyz'[j]}" if k == i else f"disp_{a} = 0"
+        for k, a in enumerate("xyz")
+    ]
+    body.add_boundary_condition(conditions, boundary=list(problem.mesh.sideset_names()))
+
+
+def shear_response(coefficient, shear):
+    """The shear stress and the equivalent plastic strain of simple shear for the Hill
+    coefficient of its plane."""
+    root = numpy.sqrt(2 * coefficient)
+    plastic = (root * mu * shear - 250e6) / (1e9 + mu * root**2)
+    return mu * (shear - root * plastic), plastic
+
+
+def test_hill_plasticity_along_x_yields_at_the_stress_of_G_and_H():
+    """Uniaxial stress sigma along x, with F, G and H all different.  In the scale of the code,
+    where F = G = H = 1/2 and L = M = N = 3/2 is von Mises, Hill's equivalent stress is q^2 =
+    F (s_yy - s_zz)^2 + G (s_zz - s_xx)^2 + H (s_xx - s_yy)^2 + 2 L s_yz^2 + 2 M s_xz^2 +
+    2 N s_xy^2 (Hill 1948, Proc. R. Soc. A 193, 281).  Along x, q = sqrt(G + H) sigma, so the
+    material yields at sigma_y / sqrt(G + H).  The plastic strain p dq/dsigma has the components
+    sqrt(G + H), -H / sqrt(G + H) and -G / sqrt(G + H) along x, y and z, and with sigma_y =
+    250 MPa + 1 GPa p the yield q = sigma_y gives p = (sqrt(G + H) sigma - 250 MPa) / 1 GPa.
+    Each strain is the elastic one plus its plastic part."""
+    F, G_h, H = Hill[:3]
+    problem, body = hill_cube(Hill)
+    uniaxial(problem, body, "x", 300e6)
+    problem.solve(report="none")
+    assert strains(problem) == pytest.approx(uniaxial_x_strains(F, G_h, H, 300e6), rel=1e-8)
+
+
+@pytest.mark.parametrize(
+    "plane, voigt", [((1, 2), 3), ((0, 2), 4), ((0, 1), 5)], ids=["yz_L", "xz_M", "xy_N"]
+)
+def test_hill_plasticity_yields_in_shear_at_the_stress_of_L_M_and_N(plane, voigt):
+    """Simple shear gamma = 1e-2 in the plane of the Hill coefficient c (L for yz, M for xz, N
+    for xy): the stress is the shear tau alone, and Hill's equivalent stress of the previous test
+    is q = sqrt(2 c) tau, so the shear yield stress is sigma_y / sqrt(2 c) (sigma_y / sqrt(3)
+    for von Mises).  The plastic engineering shear is p dq/dtau = sqrt(2 c) p, so tau =
+    mu (gamma - sqrt(2 c) p), with mu the shear modulus, and the yield sqrt(2 c) tau =
+    250 MPa + h p, h = 1 GPa, gives p = (sqrt(2 c) mu gamma - 250 MPa) / (h + 2 c mu)."""
+    problem, body = hill_cube(Hill)
+    simple_shear(problem, body, plane, 1e-2)
+    problem.solve(report="none")
+    tau, plastic = shear_response(Hill[voigt], 1e-2)
+    expected = numpy.zeros(6)
+    expected[voigt] = tau
+    assert problem.property_at_centroids("stress")[0] == pytest.approx(expected, abs=1e-8 * tau)
+    assert problem.property_at_centroids("equivalent_plastic_strain")[0][0] == pytest.approx(
+        plastic, rel=1e-8
+    )
+
+
+def test_the_orientation_turns_the_hill_coefficients_with_the_material_axes():
+    """The material axes turned by 90 degrees about z, axis 1 along y and axis 2 along -x: the
+    material stresses are s_11 = s_yy, s_22 = s_xx, s_33 = s_zz, s_23 = -s_xz, s_13 = s_yz and
+    s_12 = -s_xy, so Hill's q of F, G, H, L, M, N in the material axes is the q of G, F, H, M,
+    L, N in the global ones.  Uniaxial stress along x then has the strains of the previous
+    uniaxial test with F and G swapped, and yields at sigma_y / sqrt(F + H), and simple shear in
+    xz yields at the stress of L instead of M."""
+    F, G_h, H, L = Hill[:4]
+    turned = dict(orientation=[[0.0, 1.0, 0.0], [-1.0, 0.0, 0.0]])
+    problem, body = hill_cube(Hill, **turned)
+    uniaxial(problem, body, "x", 300e6)
+    problem.solve(report="none")
+    assert strains(problem) == pytest.approx(uniaxial_x_strains(G_h, F, H, 300e6), rel=1e-8)
+    problem, body = hill_cube(Hill, **turned)
+    simple_shear(problem, body, (0, 2), 1e-2)
+    problem.solve(report="none")
+    tau, plastic = shear_response(L, 1e-2)
+    assert problem.property_at_centroids("stress")[0][4] == pytest.approx(tau, rel=1e-8)
+    assert problem.property_at_centroids("equivalent_plastic_strain")[0][0] == pytest.approx(
+        plastic, rel=1e-8
+    )
+
+
 def test_hill_creep_flows_along_its_normal():
     """Constant uniaxial stress along axis 3 with Hill creep at A q^n: the axial creep strain is
     A q^n sqrt(F + G) t, q = sqrt(F + G) sigma."""

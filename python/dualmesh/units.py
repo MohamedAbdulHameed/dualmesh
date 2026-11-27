@@ -19,6 +19,8 @@ from fractions import Fraction
 
 import tomllib
 
+from ._core import InputError
+
 base_dimension_names = (
     "length",
     "mass",
@@ -32,13 +34,9 @@ base_dimension_names = (
 base_unit_symbols = ("m", "kg", "s", "A", "K", "mol", "cd")
 
 
-class input_error(ValueError):
-    """Every input and unit error of the Python side."""
-
-
 def fail(path: str, message: str):
-    """Raises input_error with the path of the key in front of the message."""
-    raise input_error(f"{path}: {message}" if path else message)
+    """Raises InputError with the path of the key in front of the message."""
+    raise InputError(f"{path}: {message}" if path else message)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -108,7 +106,7 @@ def base(name: str) -> dimension:
     base("length") has the exponents (1, 0, 0, 0, 0, 0, 0).
     """
     if name not in base_dimension_names:
-        raise input_error(
+        raise InputError(
             f'unknown base dimension "{name}". '
             f"The base dimensions are {', '.join(base_dimension_names)}."
         )
@@ -212,7 +210,7 @@ def _symbol(symbol: str) -> tuple[float, dimension]:
     is the millimetre.
     """
     if symbol in offset_temperature_units:
-        raise input_error(
+        raise InputError(
             f'"{symbol}" has an offset from the kelvin, so it gives a temperature only alone, as in '
             f'"40 {symbol}". Write a temperature difference and a compound unit with K, as in '
             '"W/(m*K)".'
@@ -225,11 +223,11 @@ def _symbol(symbol: str) -> tuple[float, dimension]:
         if symbol.startswith(prefix) and rest in _unit_table:
             factor, unit_dimension, takes_prefix = _unit_table[rest]
             if not takes_prefix:
-                raise input_error(f'the unit "{rest}" takes no prefix, so "{symbol}" is not a unit')
+                raise InputError(f'the unit "{rest}" takes no prefix, so "{symbol}" is not a unit')
             return _prefixes[prefix] * factor, unit_dimension
     nearest = difflib.get_close_matches(symbol, list(_unit_table), n=3)
     hint = f" The nearest units are {', '.join(nearest)}." if nearest else ""
-    raise input_error(f'unknown unit "{symbol}".{hint}')
+    raise InputError(f'unknown unit "{symbol}".{hint}')
 
 
 _token_pattern = re.compile(
@@ -247,7 +245,7 @@ def _tokens(text: str) -> list[tuple[str, str, int]]:
         match = _token_pattern.match(text, position)
         if match is None:
             start = len(text) - len(text[position:].lstrip())
-            raise input_error(
+            raise InputError(
                 f'unit "{text}": unexpected character "{text[start]}" at position {start + 1}'
             )
         kind = match.lastgroup
@@ -276,11 +274,11 @@ class _unit_parser:
     def fail(self, expected: str):
         if self.index < len(self.tokens):
             _, found, position = self.tokens[self.index]
-            raise input_error(
+            raise InputError(
                 f'unit "{self.text}": expected {expected} '
                 f'at position {position + 1}, found "{found}"'
             )
-        raise input_error(f'unit "{self.text}": expected {expected} at the end')
+        raise InputError(f'unit "{self.text}": expected {expected} at the end')
 
     def take(self, kind: str, text: str | None = None) -> str:
         if self.index < len(self.tokens):
@@ -340,7 +338,7 @@ class _unit_parser:
             denominator = int(self.take("integer"))
             self.take("operator", ")")
             if denominator == 0:
-                raise input_error(f'unit "{self.text}": an exponent has the denominator 0')
+                raise InputError(f'unit "{self.text}": an exponent has the denominator 0')
             return Fraction(numerator, denominator)
         return Fraction(self.signed_integer())
 
@@ -357,7 +355,7 @@ def parse_unit(text: str) -> tuple[float, dimension]:
     parse_unit("GPa") gives 1.0e9 and the dimension of pressure.
     """
     if not isinstance(text, str) or not text.strip():
-        raise input_error(f"a unit is a non-empty string, got {text!r}")
+        raise InputError(f"a unit is a non-empty string, got {text!r}")
     return _unit_parser(text).parse()
 
 
@@ -368,17 +366,17 @@ def _split_quantity(text: str) -> tuple[float, str | None]:
     """
     parts = text.strip().split(None, 1)
     if not parts:
-        raise input_error("a quantity is a number with a unit, got an empty string")
+        raise InputError("a quantity is a number with a unit, got an empty string")
     try:
         number = float(parts[0])
     except ValueError:
-        raise input_error(
+        raise InputError(
             f'"{text}" is not a number followed by a unit. '
             "Write the number first and separate it from the unit "
             'with a space, as in "7850 kg/m^3".'
         ) from None
     if not math.isfinite(number):
-        raise input_error(f'"{text}" holds no finite number')
+        raise InputError(f'"{text}" holds no finite number')
     return number, (parts[1] if len(parts) == 2 else None)
 
 
@@ -389,7 +387,7 @@ def parse_quantity(text: str) -> tuple[float, dimension]:
     and dimensionless.
     """
     if not isinstance(text, str):
-        raise input_error(f"a quantity is a string, got {text!r}")
+        raise InputError(f"a quantity is a string, got {text!r}")
     number, unit = _split_quantity(text)
     if unit is None:
         return number, dimensionless
@@ -448,7 +446,7 @@ def to_SI(
     if expected_unit is None:
         expected_unit = SI_unit_text(expected)
     if isinstance(value, bool) or not isinstance(value, (str, int, float)):
-        raise input_error(f"{key}: expected a number or a quantity string, got {value!r}")
+        raise InputError(f"{key}: expected a number or a quantity string, got {value!r}")
     if isinstance(value, str):
         try:
             number, unit = _split_quantity(value)
@@ -458,28 +456,28 @@ def to_SI(
                 factor = 1.0
             else:
                 factor, given = parse_unit(unit) if unit is not None else (1.0, dimensionless)
-        except input_error as error:
-            raise input_error(f"{key}: {error}") from None
+        except InputError as error:
+            raise InputError(f"{key}: {error}") from None
         shown_value = value.strip()
     else:
         number, unit, factor, given = float(value), None, 1.0, dimensionless
         if not math.isfinite(number):
-            raise input_error(f"{key}: {value!r} is not a finite number")
+            raise InputError(f"{key}: {value!r} is not a finite number")
         shown_value = repr(value)
     if given == expected:
         return number * factor
     if unit is None:
-        raise input_error(
+        raise InputError(
             f'{key}: "{shown_value}" has no unit. '
             f"It needs a unit of dimension {expected}, "
             f'for example "{shown_value} {expected_unit}".'
         )
     if expected.is_dimensionless():
-        raise input_error(
+        raise InputError(
             f'{key}: "{shown_value}" has the unit "{unit}" of dimension {given}, '
             "but the value is dimensionless and takes no unit."
         )
-    raise input_error(
+    raise InputError(
         f'{key}: "{shown_value}" has the unit "{unit}" of dimension {given}, '
         f'but it needs the unit "{expected_unit}" '
         f"or another unit of dimension {expected}."
@@ -515,21 +513,21 @@ def _entry(name: str, table: dict) -> standard_name:
     allowed_keys = {"unit", "shape", "description", "value", "ISO_name"}
     unknown_keys = set(table) - allowed_keys
     if unknown_keys:
-        raise input_error(f"{where}: unknown keys {sorted(unknown_keys)}")
+        raise InputError(f"{where}: unknown keys {sorted(unknown_keys)}")
     for required in ("unit", "shape", "description"):
         if not isinstance(table.get(required), str) or not table[required]:
-            raise input_error(f"{where}: {required} is a required non-empty string")
+            raise InputError(f"{where}: {required} is a required non-empty string")
     if table["shape"] not in shapes:
-        raise input_error(f'{where}: shape "{table["shape"]}" is not one of {", ".join(shapes)}')
+        raise InputError(f'{where}: shape "{table["shape"]}" is not one of {", ".join(shapes)}')
     try:
         _, unit_dimension = parse_unit(table["unit"])
-    except input_error as error:
-        raise input_error(f"{where}: {error}") from None
+    except InputError as error:
+        raise InputError(f"{where}: {error}") from None
     ISO_name = table.get("ISO_name")
     if ISO_name is not None and (not isinstance(ISO_name, str) or not ISO_name):
-        raise input_error(f"{where}: ISO_name is a non-empty string when present")
+        raise InputError(f"{where}: ISO_name is a non-empty string when present")
     if ISO_name == name.replace("_", " "):
-        raise input_error(
+        raise InputError(
             f'{where}: ISO_name "{ISO_name}" equals the standard name. '
             "Give ISO_name only where the ISO 80000 name differs"
         )
@@ -554,7 +552,7 @@ def _load() -> dict[str, standard_name]:
     entries = {}
     for name, table in tables.items():
         if not isinstance(table, dict):
-            raise input_error(f"{standard_names_file.name}, {name}: each name is a table")
+            raise InputError(f"{standard_names_file.name}, {name}: each name is a table")
         entries[name] = _entry(name, table)
     return entries
 
@@ -566,7 +564,7 @@ def standard_names() -> dict[str, standard_name]:
 
 def _letters(coordinate_system: str) -> tuple[str, ...]:
     if coordinate_system not in position_names:
-        raise input_error(
+        raise InputError(
             f'unknown coordinate system "{coordinate_system}". '
             f"The coordinate systems are {', '.join(position_names)}."
         )
@@ -610,10 +608,10 @@ def lookup(
     lookup("temperature") gives (entry, ()), lookup("displacement_x") gives (entry of
     displacement, (0,)) and lookup("stress_xy") gives (entry of stress, (0, 1)). The suffix
     letters are the position names of the coordinate system. An unknown name raises
-    input_error that lists the three nearest names.
+    InputError that lists the three nearest names.
     """
     if not isinstance(name, str):
-        raise input_error(f"a standard name is a string, got {name!r}")
+        raise InputError(f"a standard name is a string, got {name!r}")
     names = _load()
     if name in names:
         return names[name], ()
@@ -630,11 +628,9 @@ def lookup(
                 allowed = (
                     f"components such as _{letters[0]}{letters[0]} and _{letters[0]}{letters[1]}"
                 )
-            raise input_error(
+            raise InputError(
                 f'"{name}": {base_name} has the shape {entry.shape} and takes {allowed}'
             )
         return entry, component
     nearest = difflib.get_close_matches(name, list(names), n=3, cutoff=0.0)
-    raise input_error(
-        f'unknown standard name "{name}". The nearest names are {", ".join(nearest)}.'
-    )
+    raise InputError(f'unknown standard name "{name}". The nearest names are {", ".join(nearest)}.')

@@ -6,14 +6,13 @@ reactor core, the Newton iterations of a solve, the meshes of a convergence
 study) is a :class:`Table`: named columns, each with its unit, and rows of
 numbers or texts.  A table prints itself in aligned columns, writes a CSV
 file with one header line in which every column is named with its unit, for
-instance ``temperature (K)``, so that a spreadsheet, pandas or gnuplot reads
-it without parsing, and gives its columns as arrays::
+instance ``temperature [K]``, so that a spreadsheet, pandas or gnuplot reads
+it without parsing, and gives each column as an array::
 
     table = result.tables["history"]
     print(table)
     table.write_csv("history.csv")
     temperature = table["temperature"]  # an array, by column name
-    frame = table.to_pandas()  # when pandas is installed
 """
 
 from __future__ import annotations
@@ -23,6 +22,8 @@ import math
 from collections.abc import Sequence
 
 import numpy
+
+from .parameters import suggestion, write_json_numbers
 
 __all__ = ["Table", "column_header"]
 
@@ -82,8 +83,6 @@ class Table:
     def __getitem__(self, name: str) -> numpy.ndarray:
         """The values of one column, by name, as an array."""
         if name not in self.names:
-            from .console import suggestion
-
             raise KeyError(
                 f"Table '{self.title}' has no column '{name}'." + suggestion(name, self.names)
             )
@@ -95,23 +94,12 @@ class Table:
             else numpy.asarray(values, dtype=object)
         )
 
-    @property
-    def columns(self) -> dict:
-        """Column name -> array of its values."""
-        return {name: self[name] for name in self.names}
-
     def headers(self) -> list[str]:
         """The column names with their units, as in the CSV header."""
         return [column_header(n, u) for n, u in zip(self.names, self.units)]
 
     def unit(self, name: str) -> str:
         return self.units[self.names.index(name)]
-
-    def to_pandas(self):
-        """A pandas DataFrame whose column names carry the units."""
-        import pandas
-
-        return pandas.DataFrame(self.rows, columns=self.headers())
 
     def to_dict(self) -> dict:
         return {"title": self.title, "columns": self.names, "units": self.units, "rows": self.rows}
@@ -184,11 +172,16 @@ class Table:
 
 class ResultTables:
     """The part of the result protocol that every result shares: its tables
-    in ``tables`` (name -> :class:`Table`, the main table first), and
+    in ``tables`` (name -> :class:`Table`, the main table first),
     ``write_csv(path, table=None)``, which writes the main table or the one
-    named."""
+    named, and ``write_json(path)``, which writes the ``to_dict()`` of the
+    result."""
 
     tables: dict
+
+    def write_json(self, path) -> None:
+        """Write :meth:`to_dict` of the result to a JSON file."""
+        write_json_numbers(self.to_dict(), path)
 
     def write_csv(self, path, table: str | None = None) -> None:
         """Write one table of the result to a CSV file: the main table by

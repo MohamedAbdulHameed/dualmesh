@@ -1,14 +1,11 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
-#include "dualmesh/fe/ReferenceElement.h"
+#include "dualmesh/mesh/ReferenceElement.h"
 #include "dualmesh/core/InputParameters.h"
 
 #include <algorithm>
 #include <array>
-#include <cctype>
 #include <cmath>
-#include <map>
 #include <memory>
-#include <set>
 #include <stdexcept>
 
 namespace dualmesh
@@ -148,11 +145,12 @@ ReferenceElement::get(ElementType type)
 
 ReferenceElement::ReferenceElement(ElementType type) : _type(type), _dim(elementDimension(type))
 {
-  // Exactly one of the two lists below is filled.  `grid` holds the
-  // one-dimensional coordinates of a tensor-product element, and
+  // At most one of the two lists below is filled.  `grid` holds the
+  // one-dimensional coordinates of a Lagrange tensor-product element, and
   // `sub_simplices` holds the linear simplices that tile a simplicial
   // element: the element itself when it is linear, and its four (Tri6) or
-  // eight (Tet10) "red" sub-simplices when it is quadratic.
+  // eight (Tet10) "red" sub-simplices when it is quadratic.  The serendipity
+  // elements, the prism and the pyramid fill neither.
   std::vector<double> grid;
   std::vector<std::vector<int>> sub_simplices;
 
@@ -367,162 +365,181 @@ lagrange1D(const std::vector<double> & c, double t, double * L, double * dL)
 }
 } // namespace
 
-void
-ReferenceElement::shape(const Point & xi, double * N, Point * dN) const
+namespace
 {
-  switch (_type)
+/// The shape functions of the serendipity Quad8 with the reference nodes @p nodes, and their
+/// gradients when @p dN is given.
+void
+shapeQuad8(const std::vector<Point> & nodes, const Point & xi, double * N, Point * dN)
+{
+  // Serendipity: N = (1 + x xa)(1 + y ya)(x xa + y ya - 1) / 4 at a corner,
+  // (1 - x^2)(1 + y ya) / 2 or (1 + x xa)(1 - y^2) / 2 at a mid-side node.
+  const double x = xi[0], y = xi[1];
+  for (int a = 0; a < 8; ++a)
   {
-  case ElementType::Quad8:
-  {
-    // Serendipity: N = (1 + x xa)(1 + y ya)(x xa + y ya - 1) / 4 at a corner,
-    // (1 - x^2)(1 + y ya) / 2 or (1 + x xa)(1 - y^2) / 2 at a mid-side node.
-    const double x = xi[0], y = xi[1];
-    for (int a = 0; a < 8; ++a)
+    const double xa = nodes[a][0], ya = nodes[a][1];
+    if (a < 4)
     {
-      const double xa = _nodes[a][0], ya = _nodes[a][1];
-      if (a < 4)
-      {
-        N[a] = 0.25 * (1 + x * xa) * (1 + y * ya) * (x * xa + y * ya - 1);
-        if (dN)
-          dN[a] = {0.25 * xa * (1 + y * ya) * (2 * x * xa + y * ya),
-                   0.25 * ya * (1 + x * xa) * (x * xa + 2 * y * ya),
-                   0};
-      }
-      else if (xa == 0)
-      {
-        N[a] = 0.5 * (1 - x * x) * (1 + y * ya);
-        if (dN)
-          dN[a] = {-x * (1 + y * ya), 0.5 * ya * (1 - x * x), 0};
-      }
-      else
-      {
-        N[a] = 0.5 * (1 + x * xa) * (1 - y * y);
-        if (dN)
-          dN[a] = {0.5 * xa * (1 - y * y), -y * (1 + x * xa), 0};
-      }
-    }
-    return;
-  }
-  case ElementType::Hex20:
-  {
-    // Serendipity: N = (1 + x xa)(1 + y ya)(1 + z za)(x xa + y ya + z za - 2) / 8
-    // at a corner and (1 - s^2)(1 + t ta)(1 + u ua) / 4 at the midpoint of an
-    // edge along which s varies.
-    const double c[3] = {xi[0], xi[1], xi[2]};
-    for (int a = 0; a < 20; ++a)
-    {
-      const double ca[3] = {_nodes[a][0], _nodes[a][1], _nodes[a][2]};
-      if (a < 8)
-      {
-        const double f[3] = {1 + c[0] * ca[0], 1 + c[1] * ca[1], 1 + c[2] * ca[2]};
-        const double g = c[0] * ca[0] + c[1] * ca[1] + c[2] * ca[2] - 2;
-        N[a] = 0.125 * f[0] * f[1] * f[2] * g;
-        if (dN)
-          dN[a] = {0.125 * ca[0] * f[1] * f[2] * (g + f[0]),
-                   0.125 * ca[1] * f[0] * f[2] * (g + f[1]),
-                   0.125 * ca[2] * f[0] * f[1] * (g + f[2])};
-        continue;
-      }
-      // The edge runs along the direction in which the node's coordinate is 0.
-      const int d = ca[0] == 0 ? 0 : (ca[1] == 0 ? 1 : 2);
-      double f[3], df[3];
-      for (int k = 0; k < 3; ++k)
-      {
-        f[k] = k == d ? 1 - c[k] * c[k] : 1 + c[k] * ca[k];
-        df[k] = k == d ? -2 * c[k] : ca[k];
-      }
-      N[a] = 0.25 * f[0] * f[1] * f[2];
+      N[a] = 0.25 * (1 + x * xa) * (1 + y * ya) * (x * xa + y * ya - 1);
       if (dN)
-        dN[a] = {
-            0.25 * df[0] * f[1] * f[2], 0.25 * f[0] * df[1] * f[2], 0.25 * f[0] * f[1] * df[2]};
+        dN[a] = {0.25 * xa * (1 + y * ya) * (2 * x * xa + y * ya),
+                 0.25 * ya * (1 + x * xa) * (x * xa + 2 * y * ya),
+                 0};
     }
-    return;
-  }
-  case ElementType::Wedge6:
-  {
-    // Triangle times segment.  With the VTK numbering the base nodes 0, 1, 2
-    // sit at (xi, eta) = (0, 0), (0, 1), (1, 0).
-    const double x = xi[0], y = xi[1], z = xi[2];
-    const double tri[3] = {1 - x - y, y, x};
-    const Point dtri[3] = {{-1, -1, 0}, {0, 1, 0}, {1, 0, 0}};
-    for (int a = 0; a < 6; ++a)
+    else if (xa == 0)
     {
-      const int t = a % 3;
-      const double h = a < 3 ? 0.5 * (1 - z) : 0.5 * (1 + z);
-      const double dh = a < 3 ? -0.5 : 0.5;
-      N[a] = tri[t] * h;
+      N[a] = 0.5 * (1 - x * x) * (1 + y * ya);
       if (dN)
-        dN[a] = {dtri[t][0] * h, dtri[t][1] * h, tri[t] * dh};
+        dN[a] = {-x * (1 + y * ya), 0.5 * ya * (1 - x * x), 0};
     }
-    return;
-  }
-  case ElementType::Pyramid5:
-  {
-    // The rational basis of Bedrosian (1992), which libMesh and Gmsh also use:
-    // N_a = (zeta - sx_a xi - 1)(zeta - sy_a eta - 1) / [4 (1 - zeta)] at a
-    // base corner with signs (sx_a, sy_a), and N_4 = zeta at the apex.  It is
-    // linear on every edge and on the triangular faces and bilinear on the
-    // base, so it conforms to Tet4 and Hex8 neighbours.  The denominator
-    // vanishes only at the apex, which no quadrature point reaches.
-    const double x = xi[0], y = xi[1], z = xi[2];
-    const double den = std::max(1 - z, 1e-14);
-    const double sx[4] = {-1, 1, 1, -1}, sy[4] = {-1, -1, 1, 1};
-    for (int a = 0; a < 4; ++a)
+    else
     {
-      const double p = z - sx[a] * x - 1, q = z - sy[a] * y - 1;
-      N[a] = 0.25 * p * q / den;
+      N[a] = 0.5 * (1 + x * xa) * (1 - y * y);
       if (dN)
-        dN[a] = {-0.25 * sx[a] * q / den,
-                 -0.25 * sy[a] * p / den,
-                 0.25 * (p + q) / den + 0.25 * p * q / (den * den)};
+        dN[a] = {0.5 * xa * (1 - y * y), -y * (1 + x * xa), 0};
     }
-    N[4] = z;
-    if (dN)
-      dN[4] = {0, 0, 1};
-    return;
   }
-  default:
-    break;
-  }
-  if (isTensor())
-  {
-    // The shape function of a node is the product, over the directions, of the
-    // one-dimensional Lagrange polynomial that is one at that node's grid
-    // coordinate and zero at the others.
-    double L[3][3] = {{1, 0, 0}, {1, 0, 0}, {1, 0, 0}};
-    double dL[3][3] = {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}};
-    for (int d = 0; d < _dim; ++d)
-      lagrange1D(_grid_coordinates, xi[d], L[d], dL[d]);
-    for (int a = 0; a < numNodes(); ++a)
-    {
-      double value = 1.0;
-      for (int d = 0; d < _dim; ++d)
-        value *= L[d][_grid[a][d]];
-      N[a] = value;
-      if (!dN)
-        continue;
-      Point g{0, 0, 0};
-      for (int d = 0; d < _dim; ++d)
-      {
-        double t = dL[d][_grid[a][d]];
-        for (int e = 0; e < _dim; ++e)
-          if (e != d)
-            t *= L[e][_grid[a][e]];
-        g[d] = t;
-      }
-      dN[a] = g;
-    }
-    return;
-  }
+}
 
-  // Simplices.  The natural variables are the barycentric coordinates
+/// The shape functions of the serendipity Hex20 with the reference nodes @p nodes, and their
+/// gradients when @p dN is given.
+void
+shapeHex20(const std::vector<Point> & nodes, const Point & xi, double * N, Point * dN)
+{
+  // Serendipity: N = (1 + x xa)(1 + y ya)(1 + z za)(x xa + y ya + z za - 2) / 8
+  // at a corner and (1 - s^2)(1 + t ta)(1 + u ua) / 4 at the midpoint of an
+  // edge along which s varies.
+  const double c[3] = {xi[0], xi[1], xi[2]};
+  for (int a = 0; a < 20; ++a)
+  {
+    const double ca[3] = {nodes[a][0], nodes[a][1], nodes[a][2]};
+    if (a < 8)
+    {
+      const double f[3] = {1 + c[0] * ca[0], 1 + c[1] * ca[1], 1 + c[2] * ca[2]};
+      const double g = c[0] * ca[0] + c[1] * ca[1] + c[2] * ca[2] - 2;
+      N[a] = 0.125 * f[0] * f[1] * f[2] * g;
+      if (dN)
+        dN[a] = {0.125 * ca[0] * f[1] * f[2] * (g + f[0]),
+                 0.125 * ca[1] * f[0] * f[2] * (g + f[1]),
+                 0.125 * ca[2] * f[0] * f[1] * (g + f[2])};
+      continue;
+    }
+    // The edge runs along the direction in which the node's coordinate is 0.
+    const int d = ca[0] == 0 ? 0 : (ca[1] == 0 ? 1 : 2);
+    double f[3], df[3];
+    for (int k = 0; k < 3; ++k)
+    {
+      f[k] = k == d ? 1 - c[k] * c[k] : 1 + c[k] * ca[k];
+      df[k] = k == d ? -2 * c[k] : ca[k];
+    }
+    N[a] = 0.25 * f[0] * f[1] * f[2];
+    if (dN)
+      dN[a] = {0.25 * df[0] * f[1] * f[2], 0.25 * f[0] * df[1] * f[2], 0.25 * f[0] * f[1] * df[2]};
+  }
+}
+
+/// The shape functions of the Wedge6, and their gradients when @p dN is given.
+void
+shapeWedge6(const Point & xi, double * N, Point * dN)
+{
+  // Triangle times segment.  With the VTK numbering the base nodes 0, 1, 2
+  // sit at (xi, eta) = (0, 0), (0, 1), (1, 0).
+  const double x = xi[0], y = xi[1], z = xi[2];
+  const double tri[3] = {1 - x - y, y, x};
+  const Point dtri[3] = {{-1, -1, 0}, {0, 1, 0}, {1, 0, 0}};
+  for (int a = 0; a < 6; ++a)
+  {
+    const int t = a % 3;
+    const double h = a < 3 ? 0.5 * (1 - z) : 0.5 * (1 + z);
+    const double dh = a < 3 ? -0.5 : 0.5;
+    N[a] = tri[t] * h;
+    if (dN)
+      dN[a] = {dtri[t][0] * h, dtri[t][1] * h, tri[t] * dh};
+  }
+}
+
+/// The smallest distance 1 - zeta of the denominator of the pyramid basis from the apex.
+constexpr double kPyramidApexDistance = 1e-14;
+
+/// The shape functions of the Pyramid5, and their gradients when @p dN is given.
+void
+shapePyramid5(const Point & xi, double * N, Point * dN)
+{
+  // The rational basis of Bedrosian (1992), which libMesh and Gmsh also use:
+  // N_a = (zeta - sx_a xi - 1)(zeta - sy_a eta - 1) / [4 (1 - zeta)] at a
+  // base corner with signs (sx_a, sy_a), and N_4 = zeta at the apex.  It is
+  // linear on every edge and on the triangular faces and bilinear on the
+  // base, so it conforms to Tet4 and Hex8 neighbours.  The denominator
+  // vanishes only at the apex, which no quadrature point reaches.
+  const double x = xi[0], y = xi[1], z = xi[2];
+  const double den = std::max(1 - z, kPyramidApexDistance);
+  const double sx[4] = {-1, 1, 1, -1}, sy[4] = {-1, -1, 1, 1};
+  for (int a = 0; a < 4; ++a)
+  {
+    const double p = z - sx[a] * x - 1, q = z - sy[a] * y - 1;
+    N[a] = 0.25 * p * q / den;
+    if (dN)
+      dN[a] = {-0.25 * sx[a] * q / den,
+               -0.25 * sy[a] * p / den,
+               0.25 * (p + q) / den + 0.25 * p * q / (den * den)};
+  }
+  N[4] = z;
+  if (dN)
+    dN[4] = {0, 0, 1};
+}
+
+/// The shape functions of a Lagrange tensor-product element of dimension @p dim, whose nodes sit
+/// at the one-dimensional coordinates @p grid_coordinates indexed by @p grid, and their gradients
+/// when @p dN is given.
+void
+shapeTensor(const std::vector<double> & grid_coordinates,
+            const std::vector<std::array<int, 3>> & grid,
+            int dim,
+            const Point & xi,
+            double * N,
+            Point * dN)
+{
+  // The shape function of a node is the product, over the directions, of the
+  // one-dimensional Lagrange polynomial that is one at that node's grid
+  // coordinate and zero at the others.
+  double L[3][3] = {{1, 0, 0}, {1, 0, 0}, {1, 0, 0}};
+  double dL[3][3] = {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}};
+  for (int d = 0; d < dim; ++d)
+    lagrange1D(grid_coordinates, xi[d], L[d], dL[d]);
+  for (int a = 0; a < static_cast<int>(grid.size()); ++a)
+  {
+    double value = 1.0;
+    for (int d = 0; d < dim; ++d)
+      value *= L[d][grid[a][d]];
+    N[a] = value;
+    if (!dN)
+      continue;
+    Point g{0, 0, 0};
+    for (int d = 0; d < dim; ++d)
+    {
+      double t = dL[d][grid[a][d]];
+      for (int e = 0; e < dim; ++e)
+        if (e != d)
+          t *= L[e][grid[a][e]];
+      g[d] = t;
+    }
+    dN[a] = g;
+  }
+}
+
+/// The shape functions of a linear or @p quadratic simplex of dimension @p dim, and their
+/// gradients when @p dN is given.
+void
+shapeSimplex(int dim, bool quadratic, const Point & xi, double * N, Point * dN)
+{
+  // The natural variables are the barycentric coordinates
   // lambda_0 = 1 - sum(xi), lambda_i = xi_i, whose gradients are constant.
-  const int nl = _dim + 1;
+  const int nl = dim + 1;
   double lambda[4];
   Point glambda[4];
   lambda[0] = 1.0;
   glambda[0] = {0, 0, 0};
-  for (int d = 0; d < _dim; ++d)
+  for (int d = 0; d < dim; ++d)
   {
     lambda[d + 1] = xi[d];
     lambda[0] -= xi[d];
@@ -531,7 +548,7 @@ ReferenceElement::shape(const Point & xi, double * N, Point * dN) const
     glambda[d + 1] = g;
     glambda[0][d] = -1.0;
   }
-  if (order() == 1)
+  if (!quadratic)
   {
     for (int i = 0; i < nl; ++i)
     {
@@ -551,15 +568,42 @@ ReferenceElement::shape(const Point & xi, double * N, Point * dN) const
   }
   static const int tri_edges[3][2] = {{0, 1}, {1, 2}, {2, 0}};
   static const int tet_edges[6][2] = {{0, 1}, {1, 2}, {0, 2}, {0, 3}, {1, 3}, {2, 3}};
-  const int ne = _dim == 2 ? 3 : 6;
+  const int ne = dim == 2 ? 3 : 6;
   for (int e = 0; e < ne; ++e)
   {
-    const int p = _dim == 2 ? tri_edges[e][0] : tet_edges[e][0];
-    const int q = _dim == 2 ? tri_edges[e][1] : tet_edges[e][1];
+    const int p = dim == 2 ? tri_edges[e][0] : tet_edges[e][0];
+    const int q = dim == 2 ? tri_edges[e][1] : tet_edges[e][1];
     N[nl + e] = 4.0 * lambda[p] * lambda[q];
     if (dN)
       dN[nl + e] = (4.0 * lambda[q]) * glambda[p] + (4.0 * lambda[p]) * glambda[q];
   }
+}
+} // namespace
+
+void
+ReferenceElement::shape(const Point & xi, double * N, Point * dN) const
+{
+  switch (_type)
+  {
+  case ElementType::Quad8:
+    shapeQuad8(_nodes, xi, N, dN);
+    return;
+  case ElementType::Hex20:
+    shapeHex20(_nodes, xi, N, dN);
+    return;
+  case ElementType::Wedge6:
+    shapeWedge6(xi, N, dN);
+    return;
+  case ElementType::Pyramid5:
+    shapePyramid5(xi, N, dN);
+    return;
+  default:
+    break;
+  }
+  if (isTensor())
+    shapeTensor(_grid_coordinates, _grid, _dim, xi, N, dN);
+  else
+    shapeSimplex(_dim, order() != 1, xi, N, dN);
 }
 
 void
@@ -1098,54 +1142,53 @@ ReferenceElement::buildSubdividedSimplexDual(const std::vector<std::vector<int>>
 // ----------------------------------------------------------------------------
 
 QuadratureSpec
-QuadratureSpec::parse(const std::string & text_in, bool reduced)
+QuadratureSpec::parse(const std::string & text, bool reduced)
 {
-  std::string text;
-  for (char c : text_in)
-    text.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+  const std::string choices = "Use automatic, gauss1 to gauss" + std::to_string(kMaxGaussPoints) +
+                              ", midpoint, trapezoid, simpson, nodal, interface or "
+                              "control_domain_trapezoid.";
   QuadratureSpec q;
   q.reduced = reduced;
-  if (text == "automatic" || text == "auto")
+  if (text == "automatic")
   {
     q.kind = Kind::Gauss;
     q.points = 2;
     q.automatic = true;
   }
-  else if (text == "trapezoid" || text == "trapezoidal")
+  else if (text == "trapezoid")
     q.kind = Kind::Trapezoid;
   else if (text == "simpson")
     q.kind = Kind::Simpson;
-  else if (text == "nodal" || text == "lumped")
+  else if (text == "nodal")
     q.kind = Kind::Nodal;
   else if (text == "interface")
     q.kind = Kind::Interface;
-  else if (text == "control_domain_trapezoid" || text == "cd_trapezoid")
+  else if (text == "control_domain_trapezoid")
     q.kind = Kind::ControlDomainTrapezoid;
-  else if (text == "midpoint" || text == "centroid")
+  else if (text == "midpoint")
   {
     q.kind = Kind::Gauss;
     q.points = 1;
   }
   else if (text.rfind("gauss", 0) == 0)
   {
+    // The number of points is written out, without a leading zero: gauss1 to gauss20.
     q.kind = Kind::Gauss;
     const std::string rest = text.substr(5);
     const bool digits =
-        !rest.empty() &&
+        !rest.empty() && rest.size() <= 2 && rest[0] != '0' &&
         std::all_of(rest.begin(), rest.end(), [](char c) { return c >= '0' && c <= '9'; });
-    if (!rest.empty() && (!digits || rest.size() > 2))
-      throw InputError("Unknown quadrature '" + text_in +
-                       "'. Gauss rules are written gauss1 to gauss" +
-                       std::to_string(kMaxGaussPoints) + ".");
-    q.points = rest.empty() ? 2 : std::stoi(rest);
-    if (q.points < 1 || q.points > kMaxGaussPoints)
-      throw InputError("Gauss quadrature supports 1 to " + std::to_string(kMaxGaussPoints) +
-                       " points per direction.");
+    if (!digits)
+      throw InputError("Unknown quadrature '" + text + "'. A Gauss rule names its points per " +
+                       "direction, gauss1 to gauss" + std::to_string(kMaxGaussPoints) + ". " +
+                       choices);
+    q.points = std::stoi(rest);
+    if (q.points > kMaxGaussPoints)
+      throw InputError("Unknown quadrature '" + text + "'. Gauss quadrature supports 1 to " +
+                       std::to_string(kMaxGaussPoints) + " points per direction.");
   }
   else
-    throw InputError("Unknown quadrature '" + text_in +
-                     "'. Use automatic, gauss1..gauss20, midpoint, trapezoid, simpson, nodal, "
-                     "interface, or control_domain_trapezoid.");
+    throw InputError("Unknown quadrature '" + text + "'. The names are case-sensitive. " + choices);
   return q;
 }
 

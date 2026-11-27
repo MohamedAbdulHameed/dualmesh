@@ -1,7 +1,7 @@
 Installation
 ============
 
-You build dualmesh from its source.  The build compiles a C++17
+You build dualmesh from its source.  The build compiles a C++20
 library and its Python extension, and it links them to MPI, the Message Passing
 Interface, and to PETSc, the Portable, Extensible Toolkit for Scientific
 Computation.  The code builds on Linux and macOS.  Windows is not supported.
@@ -9,7 +9,7 @@ Computation.  The code builds on Linux and macOS.  Windows is not supported.
 Requirements
 ------------
 
-* A C++17 compiler.
+* A C++20 compiler: GCC 10 or Clang 10, or newer.
 * CMake 3.18 or newer.
 * Python 3.11 or newer.
 * An MPI library, such as Open MPI.

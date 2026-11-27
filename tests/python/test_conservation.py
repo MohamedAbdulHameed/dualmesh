@@ -152,6 +152,81 @@ def test_a_nonlinear_storage_is_conserved_exactly(method):
     assert abs(stored(rate) - start) > 1e-6 * start
 
 
+@pytest.mark.parametrize("method", methods)
+@pytest.mark.parametrize("element_type", ["Quad4", "Tri3"])
+def test_an_insulated_body_of_revolution_heats_uniformly(method, element_type):
+    """The cylinder 0 <= r <= 1, 0 <= z <= 1 in axisymmetric coordinates, insulated, at the
+    temperature 1 and heated by the uniform source Q = 10 with rho c_p = 6.  It heats uniformly,
+    T = 1 + Q t / (rho c_p), and its heat sum_i rho c_p T_i M_i, with M_i the node measures of the
+    lumped storage, rises by Q V t, with V = int 2 pi r dr dz = pi its volume.  The storage is
+    lumped on these linear elements, and a uniform field conducts no heat, so node i heats at the
+    rate S_i / (rho c_p M_i), with S_i the integral of the source over the node.  The field stays
+    uniform only where M_i integrates 2 pi r as S_i does, which includes the nodes on the axis
+    r = 0."""
+    mesh = dualmesh.generate_rectangle_mesh(0, 1, 0, 1, 4, 4, element_type=element_type)
+    problem = dualmesh.Problem(mesh, method=method, coordinates="axisymmetric")
+    problem.add_physics(
+        "heat_conduction",
+        thermal_conductivity=1.0,
+        density=2.0,
+        specific_heat=3.0,
+        heat_source=10.0,
+        initial_condition=1.0,
+    )
+    problem.initialize()
+    measures = problem.node_measures()
+    start = 6.0 * numpy.sum(problem.values("temperature") * measures)
+    problem.solve_transient(
+        end_time=0.2,
+        time_step=0.05,
+        time_scheme="backward_Euler",
+        time_stepper="fixed",
+        report="none",
+        **to_round_off,
+    )
+    temperature = problem.values("temperature")
+    assert temperature == pytest.approx(1.0 + 10.0 * 0.2 / 6.0, rel=1e-12)
+    heat = 6.0 * numpy.sum(temperature * measures)
+    assert abs(heat - start - 10.0 * numpy.pi * 0.2) < exact * heat
+
+
+@pytest.mark.parametrize("method", methods)
+def test_a_body_of_revolution_heated_through_its_base_heats_as_a_column(method):
+    """The cylinder 0 <= r <= 1, 0 <= z <= 1 in axisymmetric coordinates, insulated but for the
+    uniform inflow q = 5 through its base z = 0, with rho c_p = 6 and the storage and the inflow
+    lumped at the nodes.  The temperature depends on z and t only, so the nodes of each row of the
+    Quad4 grid share it.  The heat that enters, q pi t through the base of area pi, is the heat
+    stored, sum_i rho c_p (T_i - 1) M_i with M_i the node measures.  On this grid every term of
+    the equation of a node, the storage, the conduction along z and the inflow, carries the same
+    integral of 2 pi r over the node, so the rows hold the same temperature only where the lumped
+    storage and the lumped inflow integrate 2 pi r, which includes the nodes on the axis."""
+    mesh = dualmesh.generate_rectangle_mesh(0, 1, 0, 1, 4, 4, element_type="Quad4")
+    problem = dualmesh.Problem(mesh, method=method, coordinates="axisymmetric")
+    problem.add_variable("temperature", initial_condition=lambda x, y, z, t: 1.0)
+    problem.add_kernel("diffusion", variable="temperature", diffusivity=1.0)
+    problem.add_kernel("time_derivative", variable="temperature", coefficient=6.0)
+    problem.add_boundary_condition(
+        "Neumann", "bottom", variable="temperature", flux=5.0, quadrature="nodal"
+    )
+    problem.initialize()
+    measures = problem.node_measures()
+    problem.solve_transient(
+        end_time=0.2,
+        time_step=0.05,
+        time_scheme="backward_Euler",
+        time_stepper="fixed",
+        report="none",
+        **to_round_off,
+    )
+    temperature = problem.values("temperature")
+    z = problem.node_coordinates()[:, 1]
+    for height in numpy.unique(numpy.round(z, 12)):
+        row = temperature[numpy.isclose(z, height)]
+        assert numpy.ptp(row) < 1e-12 * numpy.abs(row).max(), (height, row)
+    stored = 6.0 * numpy.sum((temperature - 1.0) * measures)
+    assert abs(stored - 5.0 * numpy.pi * 0.2) < exact * stored
+
+
 # ---- solid mechanics ------------------------------------------------------------------------
 
 

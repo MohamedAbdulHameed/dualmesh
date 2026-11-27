@@ -35,9 +35,10 @@ A minimal example (a cooling fin governed by ``-u'' + 400 u = 0``)::
 from __future__ import annotations
 
 from . import _core as _core  # the compiled extension module
-from . import adaptivity, fgm, mms, parallel, physics, postprocess
+from . import adaptivity, fgm, mms, parallel, parameters, physics
 from ._core import (
     ADReal,
+    InputError,
     InputParameters,
     IntegratedBC,
     Kernel,
@@ -50,18 +51,20 @@ from ._core import (
     object_module,
     registered_types,
 )
-from .ad import abs, cos, exp, log, pow, sin, sqrt, tanh
+from .ad import abs, cos, exp, log, sin, sqrt, tanh
 from .adaptivity import (
     AdaptivityResult,
+    TransientAdaptivityResult,
     mark_by_error_fraction,
     mark_by_fraction,
     mark_by_threshold,
     refine_marked,
+    solve_transient_with_adaptive_refinement,
     solve_with_adaptive_refinement,
 )
+from .case import problem, table
 from .engine import Problem, SensitivityResult, SolveResult
 from .expressions import Expression, ParsedFunction, parsed_function
-from .input.units import input_error
 from .meshing import (
     generate_annulus_mesh,
     generate_box_mesh,
@@ -88,8 +91,7 @@ from .parallel import (
     partition_mesh,
     petsc_version,
 )
-from .problem import problem, table
-from .results import results
+from .solution import results
 from .surfaces import (
     generate_cylinder_surface_mesh,
     generate_spherical_shell_mesh,
@@ -100,7 +102,7 @@ from .tables import Table
 __version__ = "0.2.0"
 
 __all__ = [
-    "input_error",
+    "InputError",
     "problem",
     "results",
     "table",
@@ -124,6 +126,7 @@ __all__ = [
     "SolveResult",
     "Table",
     "AdaptivityResult",
+    "TransientAdaptivityResult",
     "abs",
     "adaptivity",
     "cos",
@@ -150,14 +153,13 @@ __all__ = [
     "num_ranks",
     "object_category",
     "object_module",
-    "postprocess",
     "parallel",
     "parsed_function",
     "partition_mesh",
     "physics",
-    "pow",
     "read_mesh",
     "refine_marked",
+    "solve_transient_with_adaptive_refinement",
     "solve_with_adaptive_refinement",
     "registered_types",
     "sin",
@@ -175,12 +177,10 @@ def describe(object_type: str) -> str:
     if physics.is_registered(object_type):
         return physics.describe(object_type)
     if object_type not in registered_types():
-        from .console import suggestion
-
         names = set(registered_types()) | set(physics.registered())
         raise ValueError(
             f"Unknown type '{object_type}'."
-            + suggestion(object_type, names, listing=False)
+            + parameters.suggestion(object_type, names, listing=False)
             + " 'dualmesh list' prints every type."
         )
     return f"{object_type} ({object_category(object_type)}, module {object_module(object_type)})\n{describe_object(object_type)}"

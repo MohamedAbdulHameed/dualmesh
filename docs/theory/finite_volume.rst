@@ -107,7 +107,7 @@ reaction, the flow out of the body through the part of :math:`\partial V_I` on
 boundary.  The physics name this flow:
 :meth:`~dualmesh.physics.HeatConduction.heat_flow` gives the heat that leaves
 through a boundary, and :meth:`~dualmesh.physics.SolidMechanics.reaction_force`
-the force of the body on its support.
+the force of the support on the body.
 
 Comparison with the finite element method
 -----------------------------------------

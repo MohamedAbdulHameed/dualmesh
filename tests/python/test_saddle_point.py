@@ -25,6 +25,7 @@ from __future__ import annotations
 import dualmesh
 import numpy
 import pytest
+from helpers import lid_driven_cavity
 
 direct = "-ksp_type preonly -pc_type lu"
 
@@ -37,24 +38,8 @@ def exact_split(approximation):
     )
 
 
-def _cavity(formulation, element_type, n, density=0.0, method="fem"):
-    mesh = dualmesh.generate_rectangle_mesh(0, 1, 0, 1, n, n, element_type=element_type)
-    problem = dualmesh.Problem(mesh, method=method)
-    problem.add_physics(
-        "fluid_dynamics",
-        density=density,
-        formulation=formulation,
-    )
-    problem.add_boundary_condition("Dirichlet", "top", variable="velocity_x", value=1.0)
-    problem.add_boundary_condition("Dirichlet", "top", variable="velocity_y", value=0.0)
-    for variable in ("velocity_x", "velocity_y"):
-        problem.add_boundary_condition(
-            "Dirichlet",
-            ["left", "right", "bottom"],
-            variable=variable,
-            value=0.0,
-        )
-    return problem
+def _cavity(formulation, element_type, n):
+    return lid_driven_cavity("fem", n, element_type, density=0.0, formulation=formulation)
 
 
 def _relative_difference(problem, reference):
@@ -95,19 +80,6 @@ def test_iterations_do_not_grow_with_the_mesh(
         assert _relative_difference(problem, reference) < 1e-8
     assert max(counts) <= limit, counts
     assert max(counts) <= growth * min(counts), counts
-
-
-def _channel(formulation, element_type, n, density):
-    mesh = dualmesh.generate_rectangle_mesh(
-        x=[0, 4], y=[0, 1], num_elements=[4 * n, n], element_type=element_type
-    )
-    problem = dualmesh.Problem(mesh, method="fem")
-    flow = problem.add_physics(
-        "fluid_dynamics", density=density, dynamic_viscosity=1.0, formulation=formulation
-    )
-    flow.add_boundary_condition(["velocity_x = 1", "velocity_y = 0"], boundary="left")
-    flow.add_boundary_condition(["velocity_x = 0", "velocity_y = 0"], boundary=["top", "bottom"])
-    return problem
 
 
 def _pipe(radius):

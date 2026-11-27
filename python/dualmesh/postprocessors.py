@@ -22,9 +22,13 @@ column of the history.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 
 import numpy
+
+from .parameters import suggestion
+from .tables import Table
 
 
 @dataclass
@@ -147,11 +151,9 @@ class PropertyMaximum(Postprocessor):
     property: str = ""
 
     def compute(self, problem) -> float:
-        from . import _core
-
         values, _ = _cell_values(problem, self.property)
         local = float(values.max()) if values.size else -numpy.inf
-        return _core.mpi_max(local) if problem._distributed is not None else local
+        return problem._parallel.maximum(local)
 
 
 @dataclass
@@ -161,11 +163,9 @@ class PropertyMinimum(Postprocessor):
     property: str = ""
 
     def compute(self, problem) -> float:
-        from . import _core
-
         values, _ = _cell_values(problem, self.property)
         local = float(values.min()) if values.size else numpy.inf
-        return _core.mpi_min(local) if problem._distributed is not None else local
+        return problem._parallel.minimum(local)
 
 
 @dataclass
@@ -215,9 +215,6 @@ def _physics_of(problem, physics, type_name: str, where: str):
             f"Post-processor '{where}': give the {type_name} physics as physics (the problem has: {names or 'none'})."
         )
     return found[0]
-
-
-_DIRECTIONS = {"x": 0, "y": 1, "z": 2}
 
 
 @dataclass
@@ -313,8 +310,6 @@ like every object type."""
 def create(type_name: str, name: str, **parameters) -> Postprocessor:
     """A post-processor of the registered type ``type_name``."""
     if type_name not in TYPES:
-        from .console import suggestion
-
         raise ValueError(
             f"Unknown post-processor type '{type_name}'." + suggestion(type_name, TYPES)
         )
@@ -363,23 +358,17 @@ class PostprocessorHistory:
     def as_table(self):
         """The history as a :class:`~dualmesh.Table`: the time in s, then one column for each
         post-processor, with its unit."""
-        from .tables import Table
-
         names = [pp.name for pp in self.postprocessors]
         rows = [[t] + [self.values[n][i] for n in names] for i, t in enumerate(self.time)]
         return Table(["time", *names], ["s", *(pp.unit for pp in self.postprocessors)], rows)
 
     def write_json(self, filename: str) -> None:
         """The history as JSON, which load_json reads back when a run restarts from a checkpoint."""
-        import json
-
         with open(filename, "w") as f:
             json.dump({"time": self.time, "values": self.values}, f)
 
     def load_json(self, filename: str) -> None:
         """Continue the history written by write_json, for the post-processors of this problem."""
-        import json
-
         with open(filename) as f:
             saved = json.load(f)
         self.time = [float(t) for t in saved["time"]]

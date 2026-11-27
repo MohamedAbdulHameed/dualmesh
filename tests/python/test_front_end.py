@@ -139,7 +139,7 @@ def test_a_property_that_no_physics_reads_is_refused():
     slab = heated_slab()
     slab.properties(Young_modulus="200 GPa")
     with pytest.raises(
-        dualmesh.input_error, match=r"properties\.Young_modulus: no physics of the problem reads"
+        dualmesh.InputError, match=r"properties\.Young_modulus: no physics of the problem reads"
     ):
         slab.solve(report="none")
 
@@ -149,7 +149,7 @@ def test_a_property_that_a_physics_needs_is_asked_for():
     slab.physics("heat_conduction")
     slab.boundary_conditions("left", temperature="300 K")
     with pytest.raises(
-        dualmesh.input_error, match="heat_conduction needs the property thermal_conductivity"
+        dualmesh.InputError, match="heat_conduction needs the property thermal_conductivity"
     ):
         slab.solve(report="none")
 
@@ -329,7 +329,7 @@ def test_water_at_rest_in_a_tank_carries_the_hydrostatic_pressure(method):
 def test_gravity_on_a_problem_without_a_solid_or_a_flow_is_refused():
     slab = heated_slab()
     slab.gravity(["-9.81 m/s^2"])
-    with pytest.raises(dualmesh.input_error, match="gravity: no physics of the problem reads"):
+    with pytest.raises(dualmesh.InputError, match="gravity: no physics of the problem reads"):
         slab.solve(report="none")
 
 
@@ -345,7 +345,7 @@ def test_a_heated_flow_under_gravity_asks_for_its_expansion_coefficient():
     )
     cavity.gravity(["0 m/s^2", "-9.81 m/s^2"])
     with pytest.raises(
-        dualmesh.input_error,
+        dualmesh.InputError,
         match="fluid_dynamics needs the property volumetric_expansion_coefficient",
     ):
         cavity.solve(report="none")
@@ -445,7 +445,7 @@ def test_air_in_a_heated_cavity_convects_heat_at_the_Nusselt_number_of_de_Vahl_D
 
 def test_gravity_takes_one_acceleration_per_direction_of_space():
     column = standing_column()
-    with pytest.raises(dualmesh.input_error, match="gravity is a list of 2 accelerations"):
+    with pytest.raises(dualmesh.InputError, match="gravity is a list of 2 accelerations"):
         column.gravity(["-9.81 m/s^2"])
 
 
@@ -455,7 +455,7 @@ def test_an_initial_displacement_of_a_steady_solid_is_refused():
     bar.properties(Young_modulus="200 GPa", Poisson_ratio=0.3)
     bar.initial_conditions(displacement=["0 m", "0 m"])
     bar.boundary_conditions("left", displacement_x="0 m", displacement_y="0 m")
-    with pytest.raises(dualmesh.input_error, match="initial displacement is the start of a"):
+    with pytest.raises(dualmesh.InputError, match="initial displacement is the start of a"):
         bar.solve(report="none")
 
 
@@ -471,8 +471,53 @@ def test_a_thermal_expansion_takes_its_two_properties_together():
     )
     slab.boundary_conditions("left", temperature="400 K", displacement_x="0 m")
     slab.boundary_conditions("bottom", displacement_y="0 m")
-    with pytest.raises(dualmesh.input_error, match="gives only linear_expansion_coefficient"):
+    with pytest.raises(dualmesh.InputError, match="gives only linear_expansion_coefficient"):
         slab.solve(report="none")
+
+
+def test_a_bar_with_a_coefficient_of_the_temperature_expands_by_its_secant_strain(tmp_path):
+    """A plane-stress bar held at T_1 = 593.15 K on its ends and insulated on its sides takes the
+    uniform temperature T_1. With the secant coefficient alpha(T) = a + b T, where a = 1.0e-5 1/K
+    and b = 4.0e-9 1/K^2, and the stress-free temperature T_0 = 293.15 K, the bar, held only
+    against rigid motion, expands free of stress: u_x = alpha(T_1) (T_1 - T_0) x and
+    u_y = alpha(T_1) (T_1 - T_0) y."""
+    pytest.importorskip("yaml")
+    case = tmp_path / "heated_bar.yaml"
+    case.write_text(
+        "mesh:\n"
+        "  rectangle: {size: [2 m, 0.5 m], cells: [8, 2]}\n"
+        "physics:\n"
+        "  heat_conduction: {}\n"
+        "  solid_mechanics: {formulation: plane_stress}\n"
+        "properties:\n"
+        "  thermal_conductivity: 45 W/(m*K)\n"
+        "  Young_modulus: 200 GPa\n"
+        "  Poisson_ratio: 0.3\n"
+        '  linear_expansion_coefficient: "[1.0e-5 1/K] + [4.0e-9 1/K^2]*temperature"\n'
+        "  stress_free_temperature: 293.15 K\n"
+        "boundary_conditions:\n"
+        "  left: {temperature: 593.15 K, displacement_x: 0 m}\n"
+        "  right: {temperature: 593.15 K}\n"
+        "  bottom: {displacement_y: 0 m}\n"
+    )
+    solution = dualmesh.problem.from_file(case).solve(report="none")
+    strain = (1.0e-5 + 4.0e-9 * 593.15) * (593.15 - 293.15)
+    x, y = solution.coordinates("displacement").T
+    displacement = solution.field("displacement")
+    assert displacement[:, 0] == pytest.approx(strain * x, rel=1e-8, abs=1e-14)
+    assert displacement[:, 1] == pytest.approx(strain * y, rel=1e-8, abs=1e-14)
+
+
+def test_an_expansion_coefficient_of_a_wrong_unit_is_refused_with_its_key():
+    """The input language checks the unit of a formula: b T with b in 1/K has the unit 1, and the
+    expansion coefficient takes 1/K."""
+    bar = dualmesh.problem(mesh={"rectangle": {"size": ["2 m", "0.5 m"], "cells": [2, 1]}})
+    bar.physics("heat_conduction")
+    bar.physics("solid_mechanics", formulation="plane_stress")
+    with pytest.raises(
+        dualmesh.InputError, match="linear_expansion_coefficient needs the unit 1/K"
+    ):
+        bar.properties(linear_expansion_coefficient="[4.0e-9 1/K]*temperature")
 
 
 def test_the_heat_of_the_example_case_leaves_through_its_held_and_cooled_sides():

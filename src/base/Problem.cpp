@@ -1,19 +1,14 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
+//
+// The definition of a problem: its variables, functions and objects, its values and element
+// fields, and the context of an integration point, with the history and the properties there.
 #include "dualmesh/base/Problem.h"
 #include "dualmesh/core/ParsedFunction.h"
 
-#include <Eigen/IterativeLinearSolvers>
-#include <Eigen/LU>
-
 #include <algorithm>
-#include <cmath>
-#include <fstream>
-#include <iomanip>
-#include <iostream>
-#include <limits>
+#include <ranges>
 #include <set>
 #include <sstream>
-#include <unordered_map>
 #include <utility>
 
 namespace dualmesh
@@ -22,6 +17,12 @@ namespace dualmesh
 Problem::Problem(std::shared_ptr<Mesh> mesh, Method method, CoordinateSystem coord)
     : _mesh(std::move(mesh)), _method(method), _coord(coord)
 {
+  // The systems of the physics come from the modules, which register them with their objects.
+  _flow = Factory::instance().makeFlowSystem();
+  _solid = Factory::instance().solidSystem();
+  if (!_flow || !_solid)
+    throw std::logic_error("dualmesh: the modules are not registered. Call registerAllObjects() "
+                           "(dualmesh/modules/Registry.h) before making a Problem.");
   if (!_mesh)
     throw InputError("Problem needs a mesh.");
   if (_mesh->numElements() == 0)
@@ -206,8 +207,21 @@ Problem::updateDependentDofs(Vector & U) const
 void
 Problem::addFunction(const std::string & name, FunctionPtr f)
 {
-  if (hasVariable(name) || _by_name.count(name))
-    throw InputError("The name '" + name + "' is already used.");
+  // Objects resolve the functions they name when they are set up, so a function is never replaced:
+  // an object that resolved the old one would keep reading it.
+  if (_functions.count(name))
+    throw InputError("The name '" + name +
+                     "' is already a registered function, and replacing it would leave the "
+                     "objects that resolved it reading the old one. Register the function or the "
+                     "parameter under a new name.");
+  if (hasVariable(name))
+    throw InputError("The name '" + name +
+                     "' is already a variable. Register the function or the parameter under a "
+                     "new name.");
+  if (_by_name.count(name))
+    throw InputError("The name '" + name +
+                     "' is already the name of an object. Register the function or the parameter "
+                     "under a new name.");
   _functions[name] = std::move(f);
 }
 
@@ -314,8 +328,8 @@ Problem::addObject(const std::string & type, const std::string & name_in, InputP
     }
     return last;
   }
-  if (type == "symmetry")
-    return addSymmetryCondition(name, std::move(params));
+  if (params.normalComponent())
+    return addNormalComponentCondition(type, name, std::move(params));
   // An object given a list of variables is added once for each of them.
   if (params.has("variable") && params.isSetByUser("variable"))
   {
@@ -373,7 +387,9 @@ Problem::addObject(const std::string & type, const std::string & name_in, InputP
 }
 
 std::shared_ptr<Object>
-Problem::addSymmetryCondition(const std::string & name, InputParameters params)
+Problem::addNormalComponentCondition(const std::string & type,
+                                     const std::string & name,
+                                     InputParameters params)
 {
   // The plane of the side set is normal to the coordinate axis along which
   // all its nodes share one coordinate.  The condition is the zero value of
@@ -435,7 +451,7 @@ Problem::addSymmetryCondition(const std::string & name, InputParameters params)
   InputParameters copy = params;
   copy.set("variable", displacements[axis]);
   const std::string object_name = name + "_" + displacements[axis];
-  auto obj = Factory::instance().create("symmetry", object_name, std::move(copy));
+  auto obj = Factory::instance().create(type, object_name, std::move(copy));
   addNodalBC(std::static_pointer_cast<NodalBC>(obj));
   return obj;
 }
@@ -517,356 +533,6 @@ Problem::addConstraint(std::shared_ptr<Constraint> constraint)
   _initialized = false;
 }
 
-std::unordered_map<Index, Index>
-joinedRepresentatives(const std::vector<std::pair<Index, Index>> & pairs)
-{
-  std::unordered_map<Index, Index> parent;
-  std::unordered_map<Index, bool> secondary;
-  const auto root = [&](Index g)
-  {
-    Index r = g;
-    while (parent[r] != r)
-      r = parent[r];
-    while (parent[g] != r)
-      g = std::exchange(parent[g], r);
-    return r;
-  };
-  for (const auto & [s, p] : pairs)
-  {
-    if (s == p)
-      continue;
-    parent.emplace(s, s);
-    parent.emplace(p, p);
-    secondary[s] = true;
-    secondary.emplace(p, false);
-    const Index a = root(s), b = root(p);
-    if (a != b)
-      parent[std::max(a, b)] = std::min(a, b);
-  }
-  std::unordered_map<Index, Index> representative;
-  for (const auto & [g, is_secondary] : secondary)
-    if (!is_secondary)
-    {
-      const auto [it, added] = representative.emplace(root(g), g);
-      if (!added)
-        it->second = std::min(it->second, g);
-    }
-  std::unordered_map<Index, Index> joined;
-  for (const auto & [g, is_secondary] : secondary)
-  {
-    const auto it = representative.find(root(g));
-    if (it == representative.end())
-      throw InputError("The constraints make a node a copy of itself through a loop. One node of "
-                       "each loop must stay a primary.");
-    if (it->second != g)
-      joined[g] = it->second;
-  }
-  return joined;
-}
-
-void
-Problem::buildDependentDofs()
-{
-  const Index n = numDofs();
-  const int nv = numVariables();
-  _dependent_of.clear();
-  _fold_dependents = false;
-  _polygon_of.clear();
-  _polygon_cells.clear();
-  // What each dependent degree of freedom depends on directly, before chains are resolved.
-  std::vector<std::vector<std::pair<Index, double>>> on(static_cast<std::size_t>(n));
-  bool any = false;
-  // A first-order variable has no unknown at a non-corner node of a quadratic element: its slot
-  // there is the linear interpolant of the corners, the same from every element that holds the
-  // node, because the interpolant is continuous.
-  if (_mixed_order)
-  {
-    double N[kMaxElementNodes];
-    Point dN[kMaxElementNodes];
-    for (const auto & el : _mesh->elements())
-    {
-      const int corners = el.numCorners();
-      if (corners == el.numNodes())
-        continue;
-      const auto & quadratic = ReferenceElement::get(el.type);
-      const auto & linear = ReferenceElement::get(elementCornerType(el.type));
-      for (int k = corners; k < el.numNodes(); ++k)
-      {
-        linear.shape(quadratic.node(k), N, dN);
-        for (int v = 0; v < nv; ++v)
-        {
-          auto & list = on[static_cast<std::size_t>(dof(el.nodes[k], v))];
-          if (_full_order_rank[v] >= 0 || !list.empty())
-            continue;
-          for (int a = 0; a < corners; ++a)
-            if (N[a] != 0.0)
-              list.push_back({dof(el.nodes[a], v), N[a]});
-          any = true;
-        }
-      }
-    }
-  }
-  // A periodic copy takes the value of its group's representative.  A distributed run joins the
-  // copies in its gather-scatter instead (DistributedProblem::joinConstraints).
-  std::unordered_map<Index, Index> representative;
-  if (!_parallel)
-  {
-    std::vector<std::pair<Index, Index>> pairs;
-    for (const auto & c : _constraints)
-    {
-      c->initialSetup(*this);
-      pairs.insert(pairs.end(), c->pairs().begin(), c->pairs().end());
-    }
-    representative = joinedRepresentatives(pairs);
-    for (const auto & [d, r] : representative)
-      if (on[static_cast<std::size_t>(d)].empty())
-      {
-        on[static_cast<std::size_t>(d)] = {{r, 1.0}};
-        any = _fold_dependents = true;
-      }
-  }
-  // Under FEM a hanging node is the weighted sum of the nodes of the side it lies on.  A periodic
-  // group with a hanging member hangs as a whole: its representative takes the weights, its own
-  // first, and every copy follows the representative.  DMCDM keeps a hanging node as an unknown
-  // of its own, in a polygon cell.
-  const auto & hanging = _mesh->nodeConstraints();
-  if (!hanging.empty() && isDual())
-    buildPolygonCells();
-  else
-    for (const bool copies : {false, true})
-      for (const auto & c : hanging)
-        for (int v = 0; v < nv; ++v)
-        {
-          const Index d = dof(c.node, v);
-          const auto joined = representative.find(d);
-          const Index target = joined == representative.end() ? d : joined->second;
-          auto & list = on[static_cast<std::size_t>(target)];
-          if ((target != d) != copies || !list.empty())
-            continue;
-          for (const auto & [p, w] : c.on)
-            list.push_back({dof(p, v), w});
-          any = _fold_dependents = true;
-        }
-  if (!any)
-    return;
-  // Resolve chains (a node hanging on a hanging node or on a periodic copy, the copy of a hanging
-  // node) until every dependent degree of freedom is a sum over independent ones.
-  _dependent_of.assign(static_cast<std::size_t>(n), {});
-  std::vector<char> state(static_cast<std::size_t>(n), 0);
-  const std::function<const std::vector<std::pair<Index, double>> &(Index)> resolve =
-      [&](Index d) -> const std::vector<std::pair<Index, double>> &
-  {
-    auto & out = _dependent_of[static_cast<std::size_t>(d)];
-    if (state[static_cast<std::size_t>(d)] == 2)
-      return out;
-    if (state[static_cast<std::size_t>(d)] == 1)
-      throw InputError("The periodic boundaries and the hanging nodes of the mesh make a node "
-                       "depend on itself through a loop.");
-    state[static_cast<std::size_t>(d)] = 1;
-    std::map<Index, double> sum;
-    for (const auto & [p, w] : on[static_cast<std::size_t>(d)])
-      if (on[static_cast<std::size_t>(p)].empty())
-        sum[p] += w;
-      else
-        for (const auto & [q, u] : resolve(p))
-          sum[q] += w * u;
-    out.assign(sum.begin(), sum.end());
-    state[static_cast<std::size_t>(d)] = 2;
-    return out;
-  };
-  for (Index d = 0; d < n; ++d)
-    if (!on[static_cast<std::size_t>(d)].empty())
-      resolve(d);
-  // A dependent degree of freedom has no equation of its own, so it can be prescribed only where
-  // every degree of freedom it depends on is.
-  const std::vector<char> prescribed = prescribedDofs();
-  for (Index d = 0; d < n; ++d)
-    if (prescribed[static_cast<std::size_t>(d)])
-      for (const auto & [p, w] : _dependent_of[static_cast<std::size_t>(d)])
-        if (!prescribed[static_cast<std::size_t>(p)])
-          throw InputError("A periodic copy or a hanging node carries a prescribed value that its "
-                           "primary node does not. Prescribe the value on both periodic "
-                           "boundaries or on neither, and on the whole side a node hangs on.");
-  updateDependentDofs(_U);
-}
-
-void
-Problem::buildPolygonCells()
-{
-  // The hanging node in the middle of each edge, and at the centre of each face.
-  std::map<std::pair<Index, Index>, Index> on_edge;
-  std::map<std::vector<Index>, Index> on_face;
-  for (const auto & c : _mesh->nodeConstraints())
-  {
-    std::vector<Index> on;
-    for (const auto & [node, weight] : c.on)
-      on.push_back(node);
-    std::sort(on.begin(), on.end());
-    if (on.size() == 2)
-      on_edge[{on[0], on[1]}] = c.node;
-    else if (on.size() == 4)
-      on_face[on] = c.node;
-  }
-  _polygon_of.assign(static_cast<std::size_t>(_mesh->numElements()), -1);
-  for (Index e = 0; e < _mesh->numElements(); ++e)
-  {
-    const Element & el = _mesh->element(e);
-    if (el.type != ElementType::Quad4 && el.type != ElementType::Hex8)
-      continue;
-    const auto & ref = ReferenceElement::get(el.type);
-    PolygonCell cell;
-    for (int k = 0; k < ref.numNodes(); ++k)
-    {
-      cell.nodes.push_back(el.nodes[k]);
-      cell.xi.push_back(ref.node(k));
-    }
-    // The slot of a hanging node, made the first time it is met.
-    bool hanging = false;
-    const auto slotOf = [&](Index node, const Point & xi)
-    {
-      hanging = true;
-      for (std::size_t k = 0; k < cell.nodes.size(); ++k)
-        if (cell.nodes[k] == node)
-          return static_cast<int>(k);
-      cell.nodes.push_back(node);
-      cell.xi.push_back(xi);
-      return static_cast<int>(cell.nodes.size() - 1);
-    };
-    const auto middleOf = [&](int i, int j) -> int
-    {
-      const auto found = on_edge.find(std::minmax(el.nodes[i], el.nodes[j]));
-      return found == on_edge.end() ? -1 : slotOf(found->second, 0.5 * (ref.node(i) + ref.node(j)));
-    };
-    // The leaf edges (2D) or the leaf faces, each the ring of its slots, and their centres (3D).
-    std::vector<std::array<int, 2>> edges;
-    std::vector<std::vector<int>> faces;
-    std::vector<Point> face_centres;
-    if (el.type == ElementType::Quad4)
-      // The sides of Quad4 go round the cell; a side with a hanging node is two leaf edges.
-      for (int side = 0; side < ref.numSides(); ++side)
-      {
-        const int i = ref.sideNodes(side)[0], j = ref.sideNodes(side)[1];
-        const int m = middleOf(i, j);
-        if (m < 0)
-          edges.push_back({i, j});
-        else
-        {
-          edges.push_back({i, m});
-          edges.push_back({m, j});
-        }
-      }
-    else
-      // A side of Hex8 whose centre hangs is four leaf faces; another is one, with the hanging
-      // middles of its edges among its corners.
-      for (int side = 0; side < ref.numSides(); ++side)
-      {
-        const std::vector<int> & corners = ref.sideNodes(side);
-        std::vector<Index> sorted;
-        Point face_centre{0, 0, 0};
-        for (int k : corners)
-        {
-          sorted.push_back(el.nodes[k]);
-          face_centre = face_centre + 0.25 * ref.node(k);
-        }
-        std::sort(sorted.begin(), sorted.end());
-        const auto centre = on_face.find(sorted);
-        if (centre == on_face.end())
-        {
-          std::vector<int> ring;
-          for (std::size_t k = 0; k < corners.size(); ++k)
-          {
-            ring.push_back(corners[k]);
-            const int m = middleOf(corners[k], corners[(k + 1) % corners.size()]);
-            if (m >= 0)
-              ring.push_back(m);
-          }
-          faces.push_back(ring);
-          face_centres.push_back(face_centre);
-          continue;
-        }
-        const int c = slotOf(centre->second, face_centre);
-        for (std::size_t k = 0; k < corners.size(); ++k)
-        {
-          const int v = corners[k];
-          const int next = middleOf(v, corners[(k + 1) % corners.size()]);
-          const int previous = middleOf(corners[(k + corners.size() - 1) % corners.size()], v);
-          if (next < 0 || previous < 0)
-            throw std::logic_error("dualmesh: a hanging face centre without its edge middles.");
-          const std::vector<int> ring{v, next, c, previous};
-          Point sub_centre{0, 0, 0};
-          for (int slot : ring)
-            sub_centre = sub_centre + 0.25 * cell.xi[static_cast<std::size_t>(slot)];
-          faces.push_back(ring);
-          face_centres.push_back(sub_centre);
-        }
-      }
-    if (!hanging)
-      continue;
-    // The dual mesh of the polygon, as ReferenceElement builds that of a conforming cell.
-    const Point & centre = ref.centroid();
-    const auto at = [&](int slot) { return cell.xi[static_cast<std::size_t>(slot)]; };
-    cell.control.assign(cell.nodes.size(), {});
-    if (el.type == ElementType::Quad4)
-    {
-      // Each slot ends two leaf edges, whose middles bound its quadrilateral with the centre.
-      std::vector<std::vector<Point>> middles(cell.nodes.size());
-      for (const auto & [p, q] : edges)
-      {
-        const Point middle = 0.5 * (at(p) + at(q));
-        middles[static_cast<std::size_t>(p)].push_back(middle);
-        middles[static_cast<std::size_t>(q)].push_back(middle);
-        DualFace face{p, q, {}};
-        face.patch.dim = 1;
-        face.patch.corners = {middle, centre};
-        cell.faces.push_back(face);
-      }
-      for (std::size_t k = 0; k < cell.nodes.size(); ++k)
-      {
-        Patch patch;
-        patch.dim = 2;
-        patch.corners = {cell.xi[k], middles[k][0], centre, middles[k][1]};
-        cell.control[k] = {patch};
-      }
-    }
-    else
-      for (std::size_t f = 0; f < faces.size(); ++f)
-      {
-        const auto & ring = faces[f];
-        const Point & face_centre = face_centres[f];
-        for (std::size_t i = 0; i < ring.size(); ++i)
-        {
-          const int p = ring[i], q = ring[(i + 1) % ring.size()];
-          const int r = ring[(i + ring.size() - 1) % ring.size()];
-          const Point next = 0.5 * (at(p) + at(q)), previous = 0.5 * (at(r) + at(p));
-          // The pyramid over the part of the leaf face nearest p, a cube collapsed onto the centre.
-          Patch patch;
-          patch.dim = 3;
-          patch.extra_points = 1;
-          patch.corners = {at(p), next, face_centre, previous, centre, centre, centre, centre};
-          cell.control[static_cast<std::size_t>(p)].push_back(patch);
-          // The triangle between p and q, a square collapsed onto the centre.
-          DualFace face{p, q, {}};
-          face.patch.dim = 2;
-          face.patch.extra_points = 1;
-          face.patch.corners = {next, face_centre, centre, centre};
-          cell.faces.push_back(face);
-        }
-      }
-    // Automatic differentiation seeds a slot for every variable at every node of the cell, its
-    // hanging nodes included.
-    const int slots = static_cast<int>(cell.nodes.size()) * numVariables();
-    if (slots > kMaxDerivatives)
-      throw InputError("A cell with hanging nodes on its sides carries " + std::to_string(slots) +
-                       " degrees of freedom, and automatic differentiation seeds one slot per "
-                       "local degree of freedom, within a limit of " +
-                       std::to_string(kMaxDerivatives) +
-                       ". Rebuild with -DDUALMESH_MAX_AD_DERIVATIVES=<n>, with n at least " +
-                       std::to_string(slots) + ", to raise it.");
-    _polygon_of[static_cast<std::size_t>(e)] = static_cast<int>(_polygon_cells.size());
-    _polygon_cells.push_back(std::move(cell));
-  }
-}
-
 void
 Problem::addProperty(std::shared_ptr<Property> m)
 {
@@ -894,212 +560,6 @@ Problem::objectNames() const
 }
 
 void
-Problem::buildNodeGradients()
-{
-  const Index nn = _mesh->numNodes();
-  const int dim = _mesh->dimension();
-  if (dim != _mesh->spaceDimension())
-    throw InputError("The linear upwind and limited schemes of DMCDM need a "
-                     "mesh of the dimension of its space (not a surface or a line in space).");
-  std::vector<std::set<Index>> around(static_cast<std::size_t>(nn));
-  for (const auto & el : _mesh->elements())
-    for (int i = 0; i < el.numNodes(); ++i)
-      for (int j = 0; j < el.numNodes(); ++j)
-        if (i != j)
-          around[static_cast<std::size_t>(el.nodes[i])].insert(el.nodes[j]);
-  _gradient_offsets.assign(static_cast<std::size_t>(nn) + 1, 0);
-  _gradient_nodes.clear();
-  _gradient_weights.clear();
-  for (Index a = 0; a < nn; ++a)
-  {
-    const Point xa = _mesh->node(a);
-    Eigen::Matrix3d G = Eigen::Matrix3d::Zero();
-    for (Index b : around[static_cast<std::size_t>(a)])
-    {
-      const Point d = _mesh->node(b) - xa;
-      for (int i = 0; i < dim; ++i)
-        for (int j = 0; j < dim; ++j)
-          G(i, j) += d[i] * d[j];
-    }
-    const Eigen::MatrixXd Gd = G.topLeftCorner(dim, dim);
-    const Eigen::FullPivLU<Eigen::MatrixXd> lu(Gd);
-    if (!lu.isInvertible())
-      throw InputError("The gradient at node " + std::to_string(a) +
-                       " cannot be reconstructed from the nodes around it (they do not span the "
-                       "space), which the linear upwind and limited schemes need.");
-    const Eigen::MatrixXd Ginv = lu.inverse();
-    for (Index b : around[static_cast<std::size_t>(a)])
-    {
-      const Point d = _mesh->node(b) - xa;
-      Point w{0, 0, 0};
-      for (int i = 0; i < dim; ++i)
-        for (int j = 0; j < dim; ++j)
-          w[i] += Ginv(i, j) * d[j];
-      _gradient_nodes.push_back(b);
-      _gradient_weights.push_back(w);
-    }
-    _gradient_offsets[static_cast<std::size_t>(a) + 1] = static_cast<Index>(_gradient_nodes.size());
-  }
-}
-
-void
-Problem::initialize()
-{
-  if (_initialized)
-    return;
-  _singularity_checked = false;
-  _levels_checked = false;
-  _levels.clear();
-  _singularity_pattern_rows = -1;
-  _singularity_pattern_nonzeros = -1;
-  if (_vars.empty())
-    throw InputError("The problem has no variables.");
-  if (_kernels.empty())
-    throw InputError("The problem has no kernels.");
-  buildOrderLayout();
-  if (_mixed_order)
-  {
-    std::string first;
-    for (const auto & v : _vars)
-      if (v.order == VariableOrder::First)
-        first += (first.empty() ? "'" : ", '") + v.name + "'";
-    if (isDual())
-      throw InputError(
-          "The variable " + first +
-          " is declared first order on a mesh with quadratic elements. Mixed-order "
-          "interpolation (the Taylor-Hood element) is a finite element construction and needs "
-          "method='FEM'. The dual mesh control domain method interpolates every variable at "
-          "the order of the mesh; for it, declare the variable with the mesh order.");
-    for (const auto & el : _mesh->elements())
-      if (el.numCorners() < el.numNodes() &&
-          ReferenceElement::get(elementCornerType(el.type)).numNodes() > MappedPoint::kMaxCorners)
-        throw InputError("Internal error: an element has more corners than MappedPoint holds.");
-  }
-  _props = PropertyRegistry();
-  for (auto & m : _property_objects)
-  {
-    m->initialSetup(*this);
-    m->declareProperties(_props);
-    m->setupPropertyFactors(_props);
-  }
-  for (auto & k : _kernels)
-    k->initialSetup(*this);
-  // The equations without a time derivative, which a step of the theta method takes at the new
-  // time only.
-  _second_order_variables.assign(_vars.size(), 0);
-  for (const auto & k : _kernels)
-    if (k->isSecondOrder())
-      _second_order_variables[static_cast<std::size_t>(k->variable())] = 1;
-  _new_time_only.assign(_vars.size(), 1);
-  for (const auto & k : _kernels)
-    if (k->isTimeKernel())
-      _new_time_only[static_cast<std::size_t>(k->variable())] = 0;
-  _needs_laplacian = false;
-  for (const auto & k : _kernels)
-    _needs_laplacian = _needs_laplacian || k->needsLaplacian();
-  // The second-order advection schemes of DMCDM take the gradient at the nodes.
-  _gradient_offsets.clear();
-  if (isDual())
-    for (const auto & k : _kernels)
-      if (k->needsSideGradients())
-      {
-        if (_parallel)
-          throw InputError(
-              "'" + k->name() +
-              "': the linear upwind and limited schemes of DMCDM reconstruct the gradient at a "
-              "node from the nodes around it, which a part of a distributed mesh does not hold "
-              "at its interfaces. Use them on one process, or the upwind scheme.");
-        buildNodeGradients();
-        break;
-      }
-  for (auto & b : _ibcs)
-    b->initialSetup(*this);
-  if (_mixed_order)
-    for (const auto & b : _ibcs)
-      if (const auto * ib = dynamic_cast<const InterfaceBC *>(b.get()))
-        for (int v : ib->coupledVariables())
-          if (_full_order_rank[v] < 0)
-            throw InputError("'" + ib->name() + "' couples the first-order variable '" +
-                             _vars[v].name +
-                             "' across an interface, which is not supported. Interface "
-                             "conditions work with variables of the mesh order.");
-  for (auto & b : _nbcs)
-    b->initialSetup(*this);
-  for (auto & l : _loads)
-    l->initialSetup(*this);
-  buildDependentDofs();
-  // Check that required properties exist.
-  for (auto & k : _kernels)
-    for (const auto & p : k->requiredProperties())
-      _props.id(p);
-  // The history records: every stateful property object gets its slice of the
-  // record, and every owner an (initially empty) list of points.
-  _state_record = 0;
-  for (auto & m : _property_objects)
-  {
-    m->setStateOffset(_state_record);
-    _state_record += m->stateSize();
-  }
-  _state.assign(_state_record > 0 ? _mesh->numElements() : 0, OwnerState{});
-  buildGroups();
-  buildInterfacePairs();
-  markActiveDofs();
-  // The mesh caches the list of exterior sides and the boundary node markers
-  // the first time they are asked for.  Build them here, before any threaded
-  // loop, so that no two threads try to fill them at the same time.
-  _mesh->exteriorSides();
-  _mesh->boundaryNodeMarkers();
-  // Reference element definitions are built on first use and cached in a
-  // function-local static; touch every type present in the mesh for the same
-  // reason.
-  for (Index e = 0; e < _mesh->numElements(); ++e)
-    ReferenceElement::get(_mesh->element(e).type);
-  checkMeshInversions();
-  // Threading is only used when every object and every function can be called
-  // from several threads at once.  Anything defined in Python cannot, because
-  // the interpreter is protected by the global interpreter lock.
-  _thread_safe = true;
-  for (const auto & [n, obj] : _by_name)
-  {
-    (void) n;
-    if (!obj->threadSafe())
-      _thread_safe = false;
-  }
-  for (const auto & [n, f] : _functions)
-  {
-    (void) n;
-    if (f && !f->threadSafe())
-      _thread_safe = false;
-  }
-  for (const auto & v : _vars)
-    if (v.initial_condition && !v.initial_condition->threadSafe())
-      _thread_safe = false;
-  _initialized = true;
-}
-
-void
-Problem::buildGroups()
-{
-  _groups.clear();
-  const auto groupOf = [&](const QuadratureSpec & spec) -> Group &
-  {
-    auto it = std::find_if(
-        _groups.begin(), _groups.end(), [&](const Group & g) { return g.spec == spec; });
-    if (it != _groups.end())
-      return *it;
-    _groups.push_back({spec, {}});
-    return _groups.back();
-  };
-  // The groups of the rules of time stepping come first, in every study, so that the index of
-  // a group, which keys the history states of its points (stateKey), is the same in each.
-  for (const auto & k : _kernels)
-    groupOf(k->quadrature());
-  for (const auto & k : _kernels)
-    groupOf(_eigenvalue_study ? k->eigenvalueStudyQuadrature() : k->quadrature())
-        .kernels.push_back(k.get());
-}
-
-void
 Problem::setEigenvalueStudy(bool on)
 {
   if (on == _eigenvalue_study)
@@ -1107,87 +567,6 @@ Problem::setEigenvalueStudy(bool on)
   _eigenvalue_study = on;
   if (_initialized)
     buildGroups();
-}
-
-void
-Problem::markActiveDofs()
-{
-  const int nv = numVariables();
-  _active_dof.assign(numDofs(), 0);
-  for (Index e = 0; e < _mesh->numElements(); ++e)
-  {
-    const auto & el = _mesh->element(e);
-    for (int v = 0; v < nv; ++v)
-    {
-      const auto & vb = _vars[v].blocks;
-      if (!vb.empty() && !vb.count(el.block))
-        continue;
-      bool has = false;
-      for (const auto & k : _kernels)
-        has = has || (k->variable() == v && k->activeOnBlock(el.block));
-      if (!has)
-        continue;
-      for (int a = 0; a < numLocalNodes(el, v); ++a)
-        _active_dof[dof(el.nodes[a], v)] = 1;
-    }
-  }
-  for (const auto & bc : _ibcs)
-    for (Index d : bc->multiplierDofs(*this))
-      _active_dof[d] = 1;
-}
-
-void
-Problem::checkMeshInversions()
-{
-  // The measure of a volume element enters every integral as |det J|, so a
-  // mesh whose winding is reversed is integrated with a positive measure and
-  // returns a wrong answer without a warning.  The generators and the mesh
-  // readers fix the orientation themselves; a mesh built node by node may not,
-  // and this is where that is caught.  The check runs once, at initialize(),
-  // at the centroid and half way from it to every node: points inside every
-  // element, where the integration points lie, and away from the apex of a
-  // pyramid, whose map is degenerate there by construction.  A surface or a
-  // curve in space is exempt: its measure is a square root, and the side of
-  // its normal is a convention that fixOrientation sets.
-  const int space = _mesh->spaceDimension();
-  MappedPoint mp;
-  for (Index e = 0; e < _mesh->numElements(); ++e)
-  {
-    const Element & el = _mesh->element(e);
-    const auto & ref = ReferenceElement::get(el.type);
-    if (ref.dimension() != space)
-      continue;
-    const Point & c = ref.centroid();
-    bool inverted = false;
-    for (int n = -1; !inverted && n < el.numNodes(); ++n)
-    {
-      const Point xi = n < 0 ? c : 0.5 * (c + ref.node(n));
-      try
-      {
-        mapPoint(*_mesh, el, xi, mp);
-      }
-      catch (const std::runtime_error &)
-      {
-        std::ostringstream os;
-        os << "Element " << e << " of block " << el.block << " is degenerate: its Jacobian "
-           << "determinant is zero inside it (nodes on one line or in one plane, or a repeated "
-           << "node). Correct the mesh where it is generated.";
-        throw InputError(os.str());
-      }
-      inverted = mp.detJ < 0.0;
-    }
-    if (!inverted)
-      continue;
-    const Point & x = _mesh->node(el.nodes[0]);
-    std::ostringstream os;
-    os << "Element " << e << " of block " << el.block << " (a " << el.numNodes()
-       << "-node element whose first node is at (" << x[0] << ", " << x[1] << ", " << x[2]
-       << ")) is inverted: its Jacobian determinant is negative, so its "
-          "integrals would be computed with a positive measure and the answer would be wrong. "
-          "Reverse the winding of its nodes, or call fix_orientation() on the mesh (the "
-          "generators and read_mesh do this themselves; a mesh built node by node may need it).";
-    throw InputError(os.str());
-  }
 }
 
 void
@@ -1253,27 +632,9 @@ std::vector<std::string>
 Problem::elementFieldNames() const
 {
   std::vector<std::string> out;
-  for (const auto & [name, values] : _element_fields)
-  {
-    (void) values;
+  for (const auto & name : std::views::keys(_element_fields))
     out.push_back(name);
-  }
   return out;
-}
-
-double
-Problem::coordFactor(const Point & x) const
-{
-  switch (_coord)
-  {
-  case CoordinateSystem::Cartesian:
-    return 1.0;
-  case CoordinateSystem::Axisymmetric:
-    return 2.0 * M_PI * x[0];
-  case CoordinateSystem::SphericalRadial:
-    return 4.0 * M_PI * x[0] * x[0];
-  }
-  return 1.0;
 }
 
 void
@@ -1295,20 +656,22 @@ Problem::fillShifts(QpContext & ctx,
     const double * N = corner ? fp.corner_shape : fp.N;
     const Point * dN = corner ? fp.corner_gradient : fp.dN;
     const int count = corner ? fp.num_corners : el.numNodes();
-    double r = 0, a = 0;
-    Point g{0, 0, 0};
-    for (int k = 0; k < count; ++k)
-    {
-      const int i = localDofIndex(el, k, v);
-      r += N[k] * rate_local[i];
-      a += N[k] * accel_local[i];
-      for (int d = 0; d < dim; ++d)
-        g[d] += dN[k][d] * rate_local[i];
-    }
-    ctx.rate_shift[v] = r;
-    ctx.accel_shift[v] = a;
-    ctx.grad_rate_shift[v] = g;
+    const auto rate = [&](int k) { return rate_local[localDofIndex(el, k, v)]; };
+    const auto accel = [&](int k) { return accel_local[localDofIndex(el, k, v)]; };
+    ctx.rate_shift[v] = interpolate(N, dN, count, dim, rate, ctx.grad_rate_shift[v]);
+    ctx.accel_shift[v] = interpolate(N, count, accel);
   }
+}
+
+Problem::Shape
+Problem::variableShape(const Element & el, const MappedPoint & fp, int v) const
+{
+  if (!(_mixed_order && usesCornerShape(el, v)))
+    return {fp.N, fp.dN, el.numNodes()};
+  if (fp.num_corners == 0)
+    throw std::logic_error("dualmesh: fillContext needs mapCornerShape for a first-order "
+                           "variable on a quadratic element.");
+  return {fp.corner_shape, fp.corner_gradient, fp.num_corners};
 }
 
 void
@@ -1325,77 +688,35 @@ Problem::fillContext(QpContext & ctx,
   // compact layout.
   const int nv = numVariables();
   const int dim = _mesh->spaceDimension();
+  ctx.x_field = fp.x;
   ctx.u.resize(nv);
   ctx.grad_u.resize(nv);
-  // The shape functions a variable is interpolated with: the element's own,
-  // or those of its corners for a first-order variable on a quadratic element.
-  const int num_nodes = el.numNodes();
-  const auto shapeOf = [&](int v, const double *& N, const Point *& dN, int & count)
-  {
-    if (_mixed_order && usesCornerShape(el, v))
-    {
-      if (fp.num_corners == 0)
-        throw std::logic_error("dualmesh: fillContext needs mapCornerShape for a first-order "
-                               "variable on a quadratic element.");
-      N = fp.corner_shape;
-      dN = fp.corner_gradient;
-      count = fp.num_corners;
-    }
-    else
-    {
-      N = fp.N;
-      dN = fp.dN;
-      count = num_nodes;
-    }
-  };
-  // The local index of variable v at local node k.  Without mixed orders it
-  // is k * nv + v, computed inline; with them, localDofIndex.
-  const bool mixed = _mixed_order;
-  const auto index = [&](int k, int v) { return mixed ? localDofIndex(el, k, v) : k * nv + v; };
   for (int v = 0; v < nv; ++v)
   {
-    const double * N;
-    const Point * dN;
-    int count;
-    shapeOf(v, N, dN, count);
-    double val = 0;
-    Point g{0, 0, 0};
-    for (int k = 0; k < count; ++k)
-    {
-      const double Uk = cur_local[index(k, v)];
-      val += N[k] * Uk;
-      for (int d = 0; d < dim; ++d)
-        g[d] += dN[k][d] * Uk;
-    }
+    const Shape shape = variableShape(el, fp, v);
+    const auto current = [&](int k) { return cur_local[localIndex(el, k, v)]; };
+    Point g;
+    const double val = interpolate(shape.N, shape.dN, shape.count, dim, current, g);
     ADReal & u = ctx.u[v];
     ADVector3 & gr = ctx.grad_u[v];
     u = ADReal::withZeroDerivatives(val, ld);
     for (int d = 0; d < 3; ++d)
       gr[d] = ADReal::withZeroDerivatives(g[d], d < dim ? ld : 0);
     if (ld > 0)
-      for (int k = 0; k < count; ++k)
+      for (int k = 0; k < shape.count; ++k)
       {
-        const int i = index(k, v);
-        u.setDerivative(i, N[k]);
+        const int i = localIndex(el, k, v);
+        u.setDerivative(i, shape.N[k]);
         for (int d = 0; d < dim; ++d)
-          gr[d].setDerivative(i, dN[k][d]);
+          gr[d].setDerivative(i, shape.dN[k][d]);
       }
   }
-  const auto interpolate = [&](const std::vector<double> & loc, int v, double & val, Point & g)
+  // The value of variable v from the local values @p local, and its gradient @p g.
+  const auto interpolateLocal = [&](const std::vector<double> & local, int v, Point & g)
   {
-    const double * N;
-    const Point * dN;
-    int count;
-    shapeOf(v, N, dN, count);
-    val = 0;
-    g = {0, 0, 0};
-    for (int k = 0; k < count; ++k)
-    {
-      const double Uk = loc[index(k, v)];
-      val += N[k] * Uk;
-      for (int d = 0; d < dim; ++d)
-        g[d] += dN[k][d] * Uk;
-    }
+    const Shape shape = variableShape(el, fp, v);
+    const auto nodal = [&](int k) { return local[localIndex(el, k, v)]; };
+    return interpolate(shape.N, shape.dN, shape.count, dim, nodal, g);
   };
   if (lag_local)
   {
@@ -1403,10 +724,8 @@ Problem::fillContext(QpContext & ctx,
     ctx.grad_u_lag.resize(nv);
     for (int v = 0; v < nv; ++v)
     {
-      double val;
       Point g;
-      interpolate(*lag_local, v, val, g);
-      ctx.u_lag[v] = ADReal(val);
+      ctx.u_lag[v] = ADReal(interpolateLocal(*lag_local, v, g));
       ctx.grad_u_lag[v] = {ADReal(g[0]), ADReal(g[1]), ADReal(g[2])};
     }
   }
@@ -1416,55 +735,65 @@ Problem::fillContext(QpContext & ctx,
     ctx.u_lag = ctx.u;
     ctx.grad_u_lag = ctx.grad_u;
   }
-  // The Laplacian of the variables of a quadratic element, in the coordinates of the problem: the
-  // Cartesian one, plus (c'/c) du/dr, with c the coordinate factor (1/r axisymmetric, 2/r
-  // spherical).  A linear element has none.
-  ctx.laplacian.clear();
-  ctx.laplacian_old.clear();
-  if (_needs_laplacian && ReferenceElement::get(el.type).order() == 2 &&
-      ReferenceElement::get(el.type).dimension() == dim)
-  {
-    double L[kMaxElementNodes];
-    mapLaplacian(*_mesh, el, fp, L);
-    const double r = fp.x[0];
-    const double radial = r > 0.0 ? (_coord == CoordinateSystem::Axisymmetric      ? 1.0 / r
-                                     : _coord == CoordinateSystem::SphericalRadial ? 2.0 / r
-                                                                                   : 0.0)
-                                  : 0.0;
-    ctx.laplacian.assign(nv, ADReal(0.0));
-    ctx.laplacian_old.assign(nv, 0.0);
-    for (int v = 0; v < nv; ++v)
-    {
-      if (_mixed_order && usesCornerShape(el, v))
-        continue;
-      double value = 0.0, old = 0.0;
-      for (int k = 0; k < num_nodes; ++k)
-      {
-        const double c = L[k] + radial * fp.dN[k][0];
-        value += c * cur_local[index(k, v)];
-        if (old_local)
-          old += c * (*old_local)[index(k, v)];
-      }
-      ADReal & lap = ctx.laplacian[v];
-      lap = ADReal::withZeroDerivatives(value, ld);
-      if (ld > 0)
-        for (int k = 0; k < num_nodes; ++k)
-          lap.setDerivative(index(k, v), L[k] + radial * fp.dN[k][0]);
-      ctx.laplacian_old[v] = old_local ? old : value;
-    }
-  }
+  fillLaplacian(ctx, el, fp, cur_local, old_local, ld);
   ctx.u_old.assign(nv, 0.0);
   ctx.grad_u_old.assign(nv, {0, 0, 0});
   for (int v = 0; v < nv; ++v)
   {
     if (old_local)
-      interpolate(*old_local, v, ctx.u_old[v], ctx.grad_u_old[v]);
+      ctx.u_old[v] = interpolateLocal(*old_local, v, ctx.grad_u_old[v]);
     else
     {
       ctx.u_old[v] = ctx.u[v].value();
       for (int d = 0; d < 3; ++d)
         ctx.grad_u_old[v][d] = ctx.grad_u[v][d].value();
     }
+  }
+}
+
+void
+Problem::fillLaplacian(QpContext & ctx,
+                       const Element & el,
+                       const MappedPoint & fp,
+                       const std::vector<double> & cur_local,
+                       const std::vector<double> * old_local,
+                       int ld) const
+{
+  // The Laplacian of the variables of a quadratic element, in the coordinates of the problem: the
+  // Cartesian one, plus the hoop term (n/r) du/dr of the divergence of the gradient, with n the
+  // hoop factor (1 axisymmetric, 2 spherical).  A linear element has none.
+  ctx.laplacian.clear();
+  ctx.laplacian_old.clear();
+  const int dim = _mesh->spaceDimension();
+  if (!(_needs_laplacian && ReferenceElement::get(el.type).order() == 2 &&
+        ReferenceElement::get(el.type).dimension() == dim))
+    return;
+  const int nv = numVariables();
+  const int num_nodes = el.numNodes();
+  double L[kMaxElementNodes];
+  mapLaplacian(*_mesh, el, fp, L);
+  const double r = fp.x[0];
+  const double radial = hoopOverRadius(_coord, r);
+  ctx.laplacian.assign(nv, ADReal(0.0));
+  ctx.laplacian_old.assign(nv, 0.0);
+  for (int v = 0; v < nv; ++v)
+  {
+    if (_mixed_order && usesCornerShape(el, v))
+      continue;
+    double value = 0.0, old = 0.0;
+    for (int k = 0; k < num_nodes; ++k)
+    {
+      const double c = L[k] + radial * fp.dN[k][0];
+      value += c * cur_local[localIndex(el, k, v)];
+      if (old_local)
+        old += c * (*old_local)[localIndex(el, k, v)];
+    }
+    ADReal & lap = ctx.laplacian[v];
+    lap = ADReal::withZeroDerivatives(value, ld);
+    if (ld > 0)
+      for (int k = 0; k < num_nodes; ++k)
+        lap.setDerivative(localIndex(el, k, v), L[k] + radial * fp.dN[k][0]);
+    ctx.laplacian_old[v] = old_local ? old : value;
   }
 }
 

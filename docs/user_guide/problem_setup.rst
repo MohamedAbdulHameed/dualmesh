@@ -39,9 +39,12 @@ the same for every method.
    control domain (see :doc:`/theory/finite_volume`).
 
 ``"automatic"``
-   The default.  The problem takes DMCDM when it has a ``fluid_dynamics``
-   physics of the ``equal_order`` formulation, and FEM otherwise.  The choice
-   is made when the physics are built, at the first solve.
+   The default.  The physics choose the method as you add them: a
+   ``fluid_dynamics`` physics of the ``equal_order`` formulation takes DMCDM,
+   and every other physics takes FEM.  A problem takes one method, so a solid
+   or a heat conduction beside such a flow takes DMCDM, which solves it too.
+   The method is fixed at the first solve, so a flow that you add after it
+   needs the method given to :class:`~dualmesh.Problem`.
 
 The lower-case spellings ``"fem"`` and ``"dmcdm"`` are accepted.
 
@@ -260,11 +263,17 @@ so ``heat_conduction=heat`` and ``solid_mechanics=solid`` are optional here.  Ad
 the couplings before the first solve.
 
 ``thermal_expansion``
-   The thermal strain :math:`\alpha (T - T_0)` of a solid, with
+   The thermal strain :math:`\alpha(T) (T - T_0)` of a solid, with
    :math:`\alpha` the linear expansion coefficient
    (``linear_expansion_coefficient``) in :math:`\mathrm{1/K}` and :math:`T_0`
    the stress-free temperature (``stress_free_temperature``) in
-   :math:`\mathrm{K}`.
+   :math:`\mathrm{K}`.  The coefficient is the secant (mean) coefficient
+   between :math:`T_0` and :math:`T`, as a number, the name of a function or
+   an expression of the temperature and the coordinates, such as
+   ``"1.0e-5 + 4.0e-9*temperature"``.  A beam, a plate or a shell integrates
+   the strain through its thickness into a thermal force and moment, and there
+   :math:`z`, the height above the mid-surface in :math:`\mathrm{m}`, gives a
+   coefficient :math:`\alpha(z)` that varies through the thickness.
 
 ``nonisothermal_flow``
    The heat that a flow carries, :math:`\rho c_p \mathbf{v} \cdot \nabla T`
@@ -276,7 +285,10 @@ the couplings before the first solve.
    :math:`\mathbf{g}` the gravitational acceleration in :math:`\mathrm{m/s^2}`,
    :math:`\beta` the volumetric expansion coefficient in :math:`\mathrm{1/K}`
    and :math:`T_0` the reference temperature (``reference_temperature``,
-   default 0).
+   default 0).  The buoyancy force needs a positive ``density`` of
+   ``fluid_dynamics`` and one component of :math:`\mathbf{g}` per velocity
+   component.  A slow flow keeps its density, since its inertia is small by
+   itself.
 
 The streamline upwind Petrov-Galerkin (SUPG) term stabilizes the heat that a
 ``nonisothermal_flow`` coupling carries.  ``advection_scheme`` of
@@ -567,10 +579,7 @@ lists them with the parameters of its object.
    ``"trapezoid"``, ``"simpson"``, ``"nodal"`` (one point at the owning node,
    which lumps the term), ``"interface"`` (one point at the control domain
    interface) and ``"control_domain_trapezoid"`` (the trapezoidal rule over the
-   whole control domain).  The names ``"auto"``, ``"trapezoidal"``,
-   ``"lumped"``, ``"centroid"`` and ``"cd_trapezoid"`` are accepted as aliases,
-   ``"gauss"``
-   means ``"gauss2"``, and the case of the letters does not matter (see
+   whole control domain).  The names are case-sensitive (see
    :doc:`/theory/elements`).
 
 ``reduced_integration``
@@ -646,10 +655,8 @@ An expression holds these elements:
 * The comparisons ``<``, ``>``, ``<=``, ``>=``, ``==`` and ``!=``, which give 1
   when true and 0 when false, and ``if(condition, a, b)``.
 * The constants ``pi`` and ``e``.
-* The functions ``sin``, ``cos``, ``tan``, ``asin``, ``acos``, ``atan``,
-  ``sinh``, ``cosh``, ``tanh``, ``exp``, ``log``, ``log10``, ``sqrt``,
-  ``abs``, ``floor``, ``ceil``, ``erf`` and ``sign`` of one argument, and
-  ``atan2``, ``pow``, ``hypot``, ``min`` and ``max`` of two.
+* The functions of a formula of the input (see :ref:`input-formulas`) other
+  than ``less``, ``greater`` and ``conditional``.
 
 An expression compiles once to a short program that C++ evaluates.  A text
 that is neither a registered name nor a valid expression is refused with the
@@ -756,16 +763,16 @@ variable or ``problem.property_id("thermal_conductivity")`` for a property.
      - The outward unit normal, and whether the point lies on a boundary.
    * - ``ctx.is_picard``
      - Whether the nonlinear solver is the Picard iteration
-       (``nonlinear_solver="picard"``).
+       (``nonlinear_solver="Picard"``).
 
 The arithmetic inside these methods runs on :class:`dualmesh.ADReal`
 numbers, which carry their derivatives with respect to the degrees of freedom
 of the element.  The Jacobian is exact without a derivative written by hand,
 so Newton's method converges quadratically.  Use ``dualmesh.exp``,
 ``dualmesh.log``, ``dualmesh.sqrt``, ``dualmesh.sin``, ``dualmesh.cos``,
-``dualmesh.tanh``, ``dualmesh.abs`` and ``dualmesh.pow``, which accept both
-floats and these numbers.  The functions of ``math`` and ``numpy`` drop the
-derivatives.
+``dualmesh.tanh`` and ``dualmesh.abs``, which accept both floats and these
+numbers, and write a power as ``a**b``.  The functions of ``math`` and
+``numpy`` drop the derivatives.
 
 A kernel of a time derivative defines ``is_time_kernel`` to return true, so
 that a steady solve skips it and the time scheme does not weight it.

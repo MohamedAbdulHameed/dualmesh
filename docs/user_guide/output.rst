@@ -185,8 +185,9 @@ Every study takes a ``report`` argument with three levels:
 The studies are :meth:`~dualmesh.Problem.solve`, :meth:`~dualmesh.Problem.solve_transient`,
 :meth:`~dualmesh.Problem.solve_eigenvalue`, :meth:`~dualmesh.Problem.solve_buckling`,
 :meth:`~dualmesh.Problem.sensitivities`,
-:meth:`ManufacturedSolution.convergence_study <dualmesh.mms.ManufacturedSolution.convergence_study>`
-and :func:`~dualmesh.solve_with_adaptive_refinement`. A study that runs other studies prints its
+:meth:`ManufacturedSolution.convergence_study <dualmesh.mms.ManufacturedSolution.convergence_study>`,
+:func:`~dualmesh.solve_with_adaptive_refinement` and
+:func:`~dualmesh.solve_transient_with_adaptive_refinement`. A study that runs other studies prints its
 own report alone, so the solves of a convergence study print nothing. In a run on several
 processes, the first process prints. When your script runs a study in a loop and prints its own
 table, pass ``report="none"``:
@@ -221,7 +222,9 @@ The studies return result objects that share these methods:
 
 The result objects are the :class:`~dualmesh.SolveResult` of a solve, whose table ``newton`` has
 one row for each Newton iteration, the :class:`~dualmesh.AdaptivityResult` of adaptive refinement,
-with one row for each cycle, and the :class:`~dualmesh.mms.ConvergenceResult` of a convergence
+with one row for each cycle, the :class:`~dualmesh.TransientAdaptivityResult` of a transient
+adaptive run, with one row for each interval of steps and the table ``history`` of the
+post-processors, and the :class:`~dualmesh.mms.ConvergenceResult` of a convergence
 study, with one row for each mesh. A :class:`~dualmesh.SolveResult` also holds ``converged``,
 ``total_iterations`` and ``linear_iterations``, and after a transient solve ``time_steps``,
 ``rejected_steps`` and ``next_time_step``.
@@ -333,8 +336,10 @@ boundary conditions prescribe, so a boundary without a condition carries none.
 :meth:`~dualmesh.Problem.boundary_flux` with ``per_node=True`` returns the share of each node of
 the boundary, and refuses a distributed problem. A node on two boundaries of prescribed values,
 such as a corner, carries the reaction of both and appears in both.
-:meth:`~dualmesh.Problem.kernel_boundary_flux` integrates the normal flux of one kernel over a
-side set, which is the part of the flux that one term of the equation carries.
+:meth:`~dualmesh.Problem.kernel_boundary_flux` answers another question: it integrates the normal
+flux of one kernel over a side set. For the advection kernel at a free outlet this is what the flow
+carries out, which :meth:`~dualmesh.Problem.boundary_flux` does not report, since no condition
+supplies it.
 
 Post-processors
 ~~~~~~~~~~~~~~~
@@ -480,11 +485,12 @@ Checkpoints and restarts
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
 A checkpoint holds what a transient run needs to continue: the time, the next step size, the
-number of steps taken, the solution, the history of the material and the history of the
-post-processors. With ``checkpoint_interval``, a
-transient study writes ``<file_base>.chk`` every that many accepted steps and after its last step,
-and replaces the file each time. When the problem has post-processors, their history goes beside
-it, in ``<file_base>.chk.postprocessors.json``. ``restart`` continues a run from a checkpoint, on any
+number of steps taken, the solution, the history of the material and of the cohesive zones, and the history of
+the post-processors. With ``checkpoint_interval``, a
+transient study writes ``<file_base>.chk`` every that many accepted steps of the run, counted from
+its start or from its restart, and after its last step, and replaces the file each time. When the
+problem has post-processors, their history goes beside it, written with each checkpoint, in
+``<file_base>.chk.postprocessors.json``. ``restart`` continues a run from a checkpoint, on any
 number of processes:
 
 .. code-block:: python
@@ -495,33 +501,44 @@ number of processes:
    # Later, in a new process that builds the same problem:
    problem.solve_transient(end_time=2e6, time_step=1e3, restart="results/plate.chk")
 
+The checkpoint records a fingerprint of the mesh: the coordinates and the numbers of its nodes,
+and the numbers, nodes, types and blocks of its elements. A restart on a mesh with another
+fingerprint raises ``dualmesh.InputError``, even when the numbers of nodes and elements agree, so
+you restart on the mesh of the original run, numbered as it was.
+
 ``start_time`` stays the start of the original run, so the output times and the file numbers
 continue those of the original run. A restart numbers its files by the output times, so it
 refuses ``step_interval``. Checkpoints need a build with the Portable, Extensible Toolkit
 for Scientific Computation (PETSc), which every build with the Message Passing Interface (MPI)
 has.
 
-Helpers for comparisons
-~~~~~~~~~~~~~~~~~~~~~~~
+Profiles and convergence rates
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-``dualmesh.postprocess`` holds small functions for comparisons with references:
-
-* ``sample_line(problem, variable, start, end, num_points=21)`` samples a variable along a
-  segment and returns the arc length and the values.
-* ``values_on_line(problem, variable, coordinates, axis=0, other=0.0)`` samples a variable at
-  given coordinates along one axis.
-* ``relative_error(computed, reference)`` and ``max_relative_error(computed, reference)`` compare
-  values with a reference.
-* ``convergence_rates(mesh_sizes, errors)`` returns the observed order between successive
-  meshes.
-* ``comparison_table(labels, computed, reference, title="")`` formats computed values against
-  reference values, with the relative error of each.
+To sample a profile along a segment, pass evenly spaced points to
+:meth:`~dualmesh.Problem.sample`. In an input, the ``line`` post-processor writes the same
+profile as a table (:ref:`input-postprocessors`).
 
 .. code-block:: python
 
-   from dualmesh import postprocess
+   import numpy
 
-   distance, values = postprocess.sample_line(problem, "temperature", [0.0, 0.0], [1.0, 0.0], 101)
+   points = numpy.linspace([0.0, 0.0], [1.0, 0.0], 101)  # From (0, 0) to (1, 0), in m
+   temperature = problem.sample("temperature", points)
+
+:func:`dualmesh.mms.convergence_rates` returns the observed order :math:`p_k` between the
+refinements :math:`k` and :math:`k + 1`, from the size :math:`h_k` of each refinement, such as its
+element size in m or its time step in s, and its error :math:`e_k`:
+
+.. math::
+
+   p_k = \frac{\log(e_k / e_{k+1})}{\log(h_k / h_{k+1})} .
+
+.. code-block:: python
+
+   from dualmesh.mms import convergence_rates
+
+   convergence_rates([0.1, 0.05, 0.025], errors)  # The element sizes in m and their errors
 
 Looking at the results
 ~~~~~~~~~~~~~~~~~~~~~~

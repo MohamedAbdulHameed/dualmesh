@@ -1,16 +1,17 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 //
 // Solid mechanics module, structural members: beams, axisymmetric circular
-// plates, and rectangular plates, including functionally graded
-// (through-thickness graded) sections and the von Karman geometric
-// nonlinearity.
+// plates, rectangular plates, trusses and shells, including functionally graded
+// (through-thickness graded) sections, the thermal strain and the von Karman
+// geometric nonlinearity.  The beams, the plates and the shells share one
+// section law (MaterialSection).
 //
 // These are the reduced theories of solid mechanics: a beam or a plate is a
 // three-dimensional elastic body whose kinematics have been restricted by an
 // assumption about how the displacement varies through the thickness, and
-// whose equilibrium equations have been integrated through it.  They belong
-// to the same module as the continuum elasticity of SolidMechanics.cpp, and
-// are kept in a separate file only because they are long.
+// whose equilibrium equations have been integrated through it.  They are the
+// structural part of the module whose continuum elasticity is in
+// SolidMechanics.cpp.
 //
 // All models are written as systems of second-order equations, which is what
 // the dual mesh control domain method requires, so every equation takes the
@@ -22,15 +23,22 @@
 // Shear locking is avoided as in the book: the transverse shear terms
 // (phi + dw/dx) are evaluated at the centre of the primal element (selective
 // reduced integration), which `quadrature = midpoint` with
-// `reduced_integration = true` gives.  The physics adds the kernels so.
+// `reduced_integration = true` gives.  The structural formulations of the
+// Python front end (dualmesh.physics.solid.structures) add each model as a
+// `shear_treatment = exclude` instance and a reduced `shear_treatment = only`
+// one.
 #include "dualmesh/base/Factory.h"
 #include "dualmesh/base/FieldExpression.h"
 #include "dualmesh/base/Kernel.h"
 #include "dualmesh/base/Problem.h"
-#include "dualmesh/fe/ReferenceElement.h"
+#include "dualmesh/core/Coordinates.h"
+#include "dualmesh/mesh/ReferenceElement.h"
+#include "dualmesh/modules/SolidMechanics.h"
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
+#include <optional>
 
 namespace dualmesh
 {
@@ -38,22 +46,221 @@ namespace dualmesh
 namespace
 {
 
-/// Shared parameters and variable bookkeeping of the structural models.
-class StructuralKernel : public Kernel
+/// The section stiffnesses at an integration point, with Abar = (D A - B^2)/D and Bbar = B/D of
+/// the mixed models, and the thermal force and moment, the integrals of the thermal stress
+/// through the thickness.
+struct Section
+{
+  ADReal A, B, D, S, Abar, Bbar;
+  ADReal NT = 0.0, MT = 0.0;
+};
+
+/// The normal of a beam or a plate, whose mesh lies along x or in the plane z = 0.
+constexpr Point kUp{0.0, 0.0, 1.0};
+
+/// The section of a beam, a plate or a shell given by its material: the law of an isotropic,
+/// linear elastic material with the thermal strain alpha (T - T_0), integrated through the
+/// thickness at Gauss points.  A plate or a shell section is per unit width, in plane stress,
+/// so its stiffnesses carry 1/(1 - nu^2) and its thermal stress is E alpha (T - T_0)/(1 - nu).
+/// The law is evaluated at the point x + z n through the thickness, with x the integration point
+/// on the mid-surface, n its unit normal and z the height above it, so that a modulus or an
+/// expansion coefficient that varies through the thickness (a functionally graded section) or
+/// with the fields enters the stiffnesses exactly.
+class MaterialSection
 {
 public:
-  /// The variables of the model are named by @p keys; added without 'variable', the kernel is added once per variable, so that it assembles every equation of the model.
-  static void modelVariables(InputParameters & p, std::vector<std::string> keys)
+  /// The parameters of the integration through the thickness and of the thermal strain.
+  static void addParams(InputParameters & p)
   {
-    p.setModelVariables(std::move(keys));
-    p.addOptional("variable",
-                  ParameterKind::Names,
-                  std::vector<std::string>{},
-                  "The variable whose equation this instance assembles. Default: every variable "
-                  "of the model, each with an instance of its own, so that one call adds the "
-                  "whole model.");
+    p.addOptional("through_thickness_points",
+                  ParameterKind::Integer,
+                  8L,
+                  "Number of Gauss points through the thickness of a section given by its "
+                  "material, 1 to 20. Default 8, which integrates exactly a modulus that is a "
+                  "polynomial of degree up to 13 in z.");
+    p.addOptional("temperature",
+                  ParameterKind::String,
+                  std::string(""),
+                  "Name of the temperature variable T (K) of a thermal strain alpha (T - T_0), "
+                  "uniform through the thickness, which the section integrates into the thermal "
+                  "force N_T and the thermal moment M_T. It needs the section given by its "
+                  "material. Default none: no thermal strain.");
+    p.addOptional("linear_expansion_coefficient",
+                  ParameterKind::Function,
+                  0.0,
+                  "Linear expansion coefficient alpha (1/K) of the thermal strain alpha(T) (T - "
+                  "T_0), the secant (mean) coefficient between T_0 and T, as in "
+                  "thermal_expansion_eigenstrain: a constant, a function, or an expression of the "
+                  "temperature, the other fields and the coordinates, in which z (m) is the "
+                  "height above the mid-surface. Default 0: no thermal strain.");
+    p.addOptional("stress_free_temperature",
+                  ParameterKind::Real,
+                  std::monostate{},
+                  "Temperature T_0 (K) at which the section is free of thermal strain. Required "
+                  "with 'temperature', because no value is right for every problem.");
   }
 
+  /// Set up the law of @p params (youngs_modulus, shear_correction and the parameters of
+  /// addParams) for the object @p owner.  A @p plate section (of a plate or a shell) is per unit
+  /// width, with the thickness @p height.  A beam section is the rectangle @p width x @p height,
+  /// or, with @p area > 0, a homogeneous section of that area and second moment @p inertia.  A
+  /// section with @p shear has the transverse shear stiffness K_s G of Poisson's ratio @p nu.
+  void setup(const Problem & problem,
+             const InputParameters & params,
+             const std::string & owner,
+             bool plate,
+             bool shear,
+             double nu,
+             double width,
+             double height,
+             double area,
+             double inertia)
+  {
+    _plate = plate;
+    _shear = shear;
+    _nu = nu;
+    _area = area;
+    _inertia = inertia;
+    _E.setup(problem, params, "youngs_modulus", owner);
+    _kappa = params.getReal("shear_correction");
+    const std::string temperature = params.getString("temperature");
+    _T = -1;
+    if (!temperature.empty())
+    {
+      _T = problem.variableIndex(temperature);
+      _alpha.setup(problem, params, "linear_expansion_coefficient", owner);
+      if (!params.isSet("stress_free_temperature"))
+        throw InputError("'" + owner +
+                         "': give 'stress_free_temperature', the temperature at which the "
+                         "section is free of thermal strain, with 'temperature'.");
+      _T0 = params.getReal("stress_free_temperature");
+    }
+    const long n = params.getInt("through_thickness_points");
+    if (n < 1 || n > 20)
+      throw InputError("'" + owner + "': through_thickness_points is 1 to 20.");
+    QuadratureSpec spec;
+    spec.kind = QuadratureSpec::Kind::Gauss;
+    spec.points = static_cast<int>(n);
+    rule1D(spec, _z, _w);
+    for (std::size_t k = 0; k < _z.size(); ++k)
+    {
+      _z[k] *= 0.5 * height;
+      _w[k] *= 0.5 * height * width;
+    }
+  }
+
+  /// The stiffnesses and the thermal resultants at the integration point @p ctx of a section
+  /// whose unit normal is @p normal.
+  Section integrate(const QpContext & ctx, const Point & normal) const
+  {
+    Section s;
+    const double plate = _plate ? 1.0 / (1.0 - _nu * _nu) : 1.0;
+    const double shear = _shear ? _kappa / (2.0 * (1.0 + _nu)) : 0.0;
+    // The thermal stress of a plate is E alpha dT / (1 - nu), equal in both directions; of a beam,
+    // E alpha dT.
+    const double thermal = _plate ? 1.0 / (1.0 - _nu) : 1.0;
+    const ADReal dT = _T >= 0 ? ctx.value(_T) - _T0 : ADReal(0.0);
+    if (_area > 0.0)
+    {
+      const ADReal E = _E.value(ctx);
+      s.A = E * _area;
+      s.B = 0.0;
+      s.D = E * _inertia;
+      s.S = shear * E * _area;
+      if (_T >= 0)
+        s.NT = E * _alpha.value(ctx) * dT * _area;
+    }
+    else
+    {
+      s.A = s.B = s.D = s.S = 0.0;
+      for (std::size_t k = 0; k < _z.size(); ++k)
+      {
+        const Point x = pointAt(ctx, _z[k], normal);
+        const ADReal E = _E.valueAt(ctx, x) * _w[k];
+        s.A += plate * E;
+        s.B += plate * E * _z[k];
+        s.D += plate * E * _z[k] * _z[k];
+        s.S += shear * E;
+        if (_T >= 0)
+        {
+          const ADReal stress = thermal * E * _alpha.valueAt(ctx, x) * dT;
+          s.NT += stress;
+          s.MT += stress * _z[k];
+        }
+      }
+    }
+    s.Abar = (s.D * s.A - s.B * s.B) / s.D;
+    s.Bbar = s.B / s.D;
+    return s;
+  }
+
+  /// Young's modulus and the free thermal strain alpha (T - T_0) at the height @p z above the
+  /// mid-surface of a section whose unit normal is @p normal.
+  std::pair<double, double> materialAt(const QpContext & ctx, double z, const Point & normal) const
+  {
+    const Point x = pointAt(ctx, z, normal);
+    const double E = _E.valueAt(ctx, x).value();
+    const double strain =
+        _T >= 0 ? _alpha.valueAt(ctx, x).value() * (ctx.value(_T).value() - _T0) : 0.0;
+    return {E, strain};
+  }
+
+private:
+  /// The point x + z n at the height @p z above the integration point x of @p ctx.
+  static Point pointAt(const QpContext & ctx, double z, const Point & normal)
+  {
+    return {ctx.x[0] + z * normal[0], ctx.x[1] + z * normal[1], ctx.x[2] + z * normal[2]};
+  }
+
+  FieldCoefficient _E, _alpha;
+  int _T = -1;
+  double _T0 = 0.0, _nu = 0.0, _kappa = 5.0 / 6.0, _area = 0.0, _inertia = 0.0;
+  bool _plate = false, _shear = false;
+  std::vector<double> _z, _w;
+};
+
+/// The variables of a model (@p what is "model") or a member in space ("member"), named by the
+/// parameters @p keys.  Added without 'variable', the kernel is added once per variable, so that
+/// it assembles every equation, and each instance finds its equation from its variable.
+void
+addModelVariables(InputParameters & p, std::vector<std::string> keys, const std::string & what)
+{
+  p.setModelVariables(std::move(keys));
+  p.addOptional("variable",
+                ParameterKind::Names,
+                std::vector<std::string>{},
+                "The variable whose equation this instance assembles. Default: every variable of "
+                "the " +
+                    what + ", each with an instance of its own, so that one call adds the whole " +
+                    what + ".");
+}
+
+/// Which terms an instance contributes (used to integrate the transverse shear terms with a
+/// reduced rule).
+enum class ShearTreatment
+{
+  Include,
+  Exclude,
+  Only
+};
+
+/// The shear treatment of the value @p name of 'shear_treatment', or none for an unknown name.
+std::optional<ShearTreatment>
+shearTreatmentFromName(const std::string & name)
+{
+  if (name == "include")
+    return ShearTreatment::Include;
+  if (name == "exclude")
+    return ShearTreatment::Exclude;
+  if (name == "only")
+    return ShearTreatment::Only;
+  return std::nullopt;
+}
+
+/// Shared parameters and variable bookkeeping of the structural models.
+class StructuralKernel : public SectionKernel
+{
+public:
   static InputParameters validParams()
   {
     InputParameters p = Kernel::validParams();
@@ -70,11 +277,13 @@ public:
         "stiffnesses.");
     p.addOptional("poissons_ratio",
                   ParameterKind::Real,
-                  1.0 / 3.0,
+                  std::monostate{},
                   "Poisson's ratio nu (dimensionless), with -1 < nu < 1/2. In a plate it sets the "
                   "hoop and cross-coupling terms of the stress resultants. With youngs_modulus it "
                   "also sets the plate factor 1/(1 - nu^2) and the shear modulus G = E/(2 (1 + "
-                  "nu)). Default 1/3, a value typical of metals.");
+                  "nu)). Required by the plate models and by a beam with transverse shear given "
+                  "by its material, because no one value suits every material. A beam given by "
+                  "its stiffnesses and the Euler-Bernoulli beam do not use it.");
     p.addOptional("thickness",
                   ParameterKind::Real,
                   0.0,
@@ -96,30 +305,7 @@ public:
                   "Default 5/6, the value of a homogeneous rectangle, which suits a plate and a "
                   "rectangular beam section. A beam section given by its area and second_moment "
                   "has no known shape, so a model with transverse shear needs K_s given.");
-    p.addOptional("through_thickness_points",
-                  ParameterKind::Integer,
-                  8L,
-                  "Number of Gauss points through the thickness of a section given by its "
-                  "material, 1 to 20. Default 8, which integrates exactly a modulus that is a "
-                  "polynomial of degree up to 13 in z.");
-    p.addOptional("temperature",
-                  ParameterKind::String,
-                  std::string(""),
-                  "Name of the temperature variable T (K) of a thermal strain alpha (T - T_0), "
-                  "uniform through the thickness, which the section integrates into the thermal "
-                  "force N_T and the thermal moment M_T. It needs the section given by its "
-                  "material. Default none: no thermal strain.");
-    p.addOptional("linear_expansion_coefficient",
-                  ParameterKind::Function,
-                  0.0,
-                  "Linear expansion coefficient alpha (1/K): a constant, a function, or an "
-                  "expression of the fields and of z, the position through the thickness. "
-                  "Default 0: no thermal strain.");
-    p.addOptional("stress_free_temperature",
-                  ParameterKind::Real,
-                  std::monostate{},
-                  "Temperature T_0 (K) at which the section is free of thermal strain. Required "
-                  "with 'temperature', because no value is right for every problem.");
+    MaterialSection::addParams(p);
     p.addOptional("extensional_stiffness",
                   ParameterKind::Real,
                   std::monostate{},
@@ -179,7 +365,7 @@ public:
                   "side of the equilibrium of u, -dN/dx = f for a beam with N the axial force, so "
                   "in the balance law dm/dt + div F = s of u it is part of the source s. The three "
                   "beam models and the two circular plate models use it. plate_first_order "
-                  "ignores it and takes its in-plane load from 'in_plane_load'. Default 0: no "
+                  "refuses it and takes its in-plane load from 'in_plane_load'. Default 0: no "
                   "load.");
     p.addOptional("von_karman",
                   ParameterKind::Boolean,
@@ -194,13 +380,31 @@ public:
   }
 
   /// @p shear: whether the model has transverse shear deformation, and so a shear stiffness.
-  StructuralKernel(const InputParameters & p, bool shear)
-      : Kernel(p), _B(p.getReal("coupling_stiffness")), _cf(p.getReal("foundation_modulus")),
-        _nu(p.getReal("poissons_ratio")), _von_karman(p.getBool("von_karman")),
-        _material(p.isSetByUser("youngs_modulus")), _has_shear(shear)
+  /// @p plate: whether it is a plate, whose section is per unit width.
+  StructuralKernel(const InputParameters & p, bool shear, bool plate)
+      : SectionKernel(p), _B(p.getReal("coupling_stiffness")), _cf(p.getReal("foundation_modulus")),
+        _von_karman(p.getBool("von_karman")), _material(p.isSetByUser("youngs_modulus")),
+        _plate(plate), _has_shear(shear)
   {
-    if (!(_nu > -1.0 && _nu < 0.5))
-      throw InputError("'" + name() + "': poissons_ratio must lie in (-1, 0.5).");
+    // A plate takes nu in its stress resultants, and a beam with transverse shear given by its
+    // material takes it in its shear modulus. No other model uses it, so it stays unset there.
+    if (p.isSet("poissons_ratio"))
+    {
+      _nu = p.getReal("poissons_ratio");
+      if (!(_nu > -1.0 && _nu < 0.5))
+        throw InputError("'" + name() + "': poissons_ratio must lie in (-1, 0.5).");
+    }
+    else if (_plate)
+      throw InputError("'" + name() +
+                       "': give the poissons_ratio of the plate, which sets the hoop and "
+                       "cross-coupling terms of its stress resultants (and, for a section given "
+                       "by its material, the plate factor 1/(1 - nu^2)), because no one value "
+                       "suits every material.");
+    else if (_material && _has_shear)
+      throw InputError("'" + name() +
+                       "': give the poissons_ratio of the beam, which sets the shear modulus G = "
+                       "E/(2 (1 + nu)) of its transverse shear, because no one value suits every "
+                       "material.");
     if (_material)
     {
       for (const char * k :
@@ -238,48 +442,34 @@ public:
     Kernel::initialSetup(problem);
     _q = getFunction(problem, "transverse_load");
     _f = getFunction(problem, "axial_load");
-    const std::string temperature = _params.getString("temperature");
-    if (!temperature.empty())
+    if (!_material)
     {
-      if (!_material)
+      if (!_params.getString("temperature").empty())
         throw InputError("'" + name() +
                          "': a thermal strain needs the section given by its material "
                          "(youngs_modulus), whose law it integrates through the thickness.");
-      _T = problem.variableIndex(temperature);
-      _alpha.setup(problem, _params, "linear_expansion_coefficient", name());
-      if (!_params.isSet("stress_free_temperature"))
-        throw InputError("'" + name() +
-                         "': give 'stress_free_temperature', the temperature at which the "
-                         "section is free of thermal strain, with 'temperature'.");
-      _T0 = _params.getReal("stress_free_temperature");
-    }
-    if (!_material)
       return;
-    _E.setup(problem, _params, "youngs_modulus", name());
-    _kappa = _params.getReal("shear_correction");
-    const long n = _params.getInt("through_thickness_points");
-    if (n < 1 || n > 20)
-      throw InputError("'" + name() + "': through_thickness_points is 1 to 20.");
+    }
     const RealMap section = _params.getRealMap("cross_section");
     const auto has = [&](const char * k) { return section.count(k) > 0; };
+    double width = 1.0, height = 0.0, area = 0.0, inertia = 0.0;
     if (_plate)
     {
       if (!section.empty())
         throw InputError("'" + name() + "': a plate takes its thickness, not a cross_section.");
-      _height = _params.getReal("thickness");
-      _width = 1.0;
-      if (!(_height > 0.0))
+      height = _params.getReal("thickness");
+      if (!(height > 0.0))
         throw InputError("'" + name() + "': give the thickness of the plate.");
     }
     else if (has("width") && has("height") && section.size() == 2)
     {
-      _width = section.at("width");
-      _height = section.at("height");
+      width = section.at("width");
+      height = section.at("height");
     }
     else if (has("area") && has("second_moment") && section.size() == 2)
     {
-      _area = section.at("area");
-      _inertia = section.at("second_moment");
+      area = section.at("area");
+      inertia = section.at("second_moment");
       if (_has_shear && !_params.isSetByUser("shear_correction"))
         throw InputError("'" + name() +
                          "': a section given by its area and second_moment has no known shape, so "
@@ -290,36 +480,19 @@ public:
       throw InputError("'" + name() +
                        "': give the cross_section of the beam as {width, height} "
                        "or {area, second_moment}.");
-    QuadratureSpec spec;
-    spec.kind = QuadratureSpec::Kind::Gauss;
-    spec.points = static_cast<int>(n);
-    rule1D(spec, _z, _w);
-    for (std::size_t k = 0; k < _z.size(); ++k)
-    {
-      _z[k] *= 0.5 * _height;
-      _w[k] *= 0.5 * _height * _width;
-    }
+    _law.setup(problem, _params, name(), _plate, _has_shear, _nu, width, height, area, inertia);
   }
 
 protected:
-  /// Which terms an instance contributes (used to integrate the transverse
-  /// shear terms with a reduced rule).
-  enum class ShearTreatment
-  {
-    Include,
-    Exclude,
-    Only
-  };
   static ShearTreatment shearTreatment(const std::string & name)
   {
-    if (name == "include")
-      return ShearTreatment::Include;
-    if (name == "exclude")
-      return ShearTreatment::Exclude;
-    if (name == "only")
-      return ShearTreatment::Only;
+    if (const auto treatment = shearTreatmentFromName(name))
+      return *treatment;
     throw InputError("'shear_treatment' must be 'include', 'exclude', or 'only'.");
   }
+
+  /// @p x / r at the radius @p r, and 0 on the axis.
+  static ADReal overRadius(const ADReal & x, double r) { return r != 0.0 ? x / r : ADReal(0.0); }
 
   /// The membrane strain of an axis or a radius: du/dx, with the von Karman term (dw/dx)^2 / 2.
   ADReal axialStrain(const QpContext & ctx, int u, int w) const
@@ -334,7 +507,7 @@ protected:
   }
 
   /// Identify which equation of the model this instance represents.
-  int equationFor(Problem & problem, const std::vector<std::string> & parameters)
+  int equationFor(const std::vector<std::string> & parameters) const
   {
     for (std::size_t i = 0; i < parameters.size(); ++i)
       if (_params.getString(parameters[i]) == variableName())
@@ -345,71 +518,21 @@ protected:
     throw InputError("The variable '" + variableName() + "' of kernel '" + name() +
                      "' is none of the model variables:" + names +
                      ". Add this kernel once for each variable of the model.");
-    (void) problem;
   }
 
-  /// The section stiffnesses at an integration point, with Abar = (D A - B^2)/D and Bbar = B/D
-  /// of the mixed models.  Given by the material, they are the integrals of its law through the
-  /// thickness (per unit width for a plate, whose stiffness carries 1/(1 - nu^2)), so a modulus
-  /// that depends on z, on the temperature or on any field enters them exactly.
-  struct Section
-  {
-    ADReal A, B, D, S, Abar, Bbar;
-    /// The thermal force and moment, the integrals of the thermal stress through the thickness.
-    ADReal NT = 0.0, MT = 0.0;
-  };
-
+  /// The section stiffnesses at an integration point: those given, or the integrals of the
+  /// material law through the thickness (MaterialSection).
   Section section(const QpContext & ctx) const
   {
+    if (_material)
+      return _law.integrate(ctx, kUp);
     Section s;
-    if (!_material)
-    {
-      s.A = _A;
-      s.B = _B;
-      s.D = _D;
-      s.S = _S;
-      s.Abar = _Abar;
-      s.Bbar = _Bbar;
-      return s;
-    }
-    const double plate = _plate ? 1.0 / (1.0 - _nu * _nu) : 1.0;
-    const double shear = _kappa / (2.0 * (1.0 + _nu));
-    // The thermal stress of a plate is E alpha dT / (1 - nu), equal in both directions; of a beam,
-    // E alpha dT.
-    const double thermal = _plate ? 1.0 / (1.0 - _nu) : 1.0;
-    const ADReal dT = _T >= 0 ? ctx.value(_T) - _T0 : ADReal(0.0);
-    if (_area > 0.0)
-    {
-      const ADReal E = _E.value(ctx);
-      s.A = E * _area;
-      s.B = 0.0;
-      s.D = E * _inertia;
-      s.S = shear * E * _area;
-      if (_T >= 0)
-        s.NT = E * _alpha.value(ctx) * dT * _area;
-    }
-    else
-    {
-      s.A = s.B = s.D = s.S = 0.0;
-      for (std::size_t k = 0; k < _z.size(); ++k)
-      {
-        Point x = ctx.x;
-        x[2] = _z[k];
-        const ADReal E = _E.valueAt(ctx, x) * _w[k];
-        s.A += plate * E;
-        s.B += plate * E * _z[k];
-        s.D += plate * E * _z[k] * _z[k];
-        s.S += shear * E;
-        if (_T >= 0)
-        {
-          const ADReal stress = thermal * E * _alpha.valueAt(ctx, x) * dT;
-          s.NT += stress;
-          s.MT += stress * _z[k];
-        }
-      }
-    }
-    s.Abar = (s.D * s.A - s.B * s.B) / s.D;
-    s.Bbar = s.B / s.D;
+    s.A = _A;
+    s.B = _B;
+    s.D = _D;
+    s.S = _S;
+    s.Abar = _Abar;
+    s.Bbar = _Bbar;
     return s;
   }
 
@@ -422,12 +545,7 @@ protected:
                        "': the stress needs the section given by its material "
                        "(youngs_modulus). A section given by its stiffnesses "
                        "has no material law to evaluate.");
-    Point x = ctx.x;
-    x[2] = z;
-    const double E = _E.valueAt(ctx, x).value();
-    const double strain =
-        _T >= 0 ? _alpha.valueAt(ctx, x).value() * (ctx.value(_T).value() - _T0) : 0.0;
-    return {E, strain};
+    return _law.materialAt(ctx, z, kUp);
   }
 
   /// The stresses (sigma_11, sigma_22, sigma_12) of a plate at a point where the strains are
@@ -452,18 +570,16 @@ protected:
 
   double _A = 0.0, _B, _D = 0.0, _S = 0.0, _cf;
   double _Abar = 0.0, _Bbar = 0.0;
-  double _nu;
+  /// Poisson's ratio, NaN in a model that does not use it.
+  double _nu = std::numeric_limits<double>::quiet_NaN();
   bool _von_karman;
   FunctionPtr _q, _f;
   /// The section is given by its material, and it is a plate section (per unit width).
   bool _material = false, _plate = false;
   /// The model has transverse shear deformation.
   bool _has_shear = false;
-  FieldCoefficient _E, _alpha;
-  int _T = -1;
-  double _T0 = 0.0;
-  double _kappa = 5.0 / 6.0, _width = 1.0, _height = 0.0, _area = 0.0, _inertia = 0.0;
-  std::vector<double> _z, _w;
+  /// The law of a section given by its material.
+  MaterialSection _law;
 };
 
 // ---------------------------------------------------------------------------
@@ -494,11 +610,12 @@ public:
         "an unknown of its own, and it needs its own boundary conditions: leave it free at a "
         "clamped end, where the natural condition is the vanishing slope, and prescribe it to be "
         "zero at a simply supported or free end.");
-    modelVariables(p, {"axial_displacement", "transverse_displacement", "bending_moment"});
+    addModelVariables(
+        p, {"axial_displacement", "transverse_displacement", "bending_moment"}, "model");
     return p;
   }
   /// @p shear: the Timoshenko beam, whose moment equation carries the shear flexibility.
-  BeamMixed(const InputParameters & p, bool shear) : StructuralKernel(p, shear) {}
+  BeamMixed(const InputParameters & p, bool shear) : StructuralKernel(p, shear, false) {}
 
   void initialSetup(Problem & problem) override
   {
@@ -506,7 +623,7 @@ public:
     _u = problem.variableIndex(_params.getString("axial_displacement"));
     _w = problem.variableIndex(_params.getString("transverse_displacement"));
     _m = problem.variableIndex(_params.getString("bending_moment"));
-    _eq = equationFor(problem, {"axial_displacement", "transverse_displacement", "bending_moment"});
+    _eq = equationFor({"axial_displacement", "transverse_displacement", "bending_moment"});
   }
 
   bool hasFlux() const override { return true; }
@@ -623,10 +740,12 @@ public:
                   ParameterKind::String,
                   "Name of the variable holding the rotation phi (rad) of the cross-section, "
                   "positive when it adds to the slope dw/dx in the shear strain phi + dw/dx.");
-    modelVariables(p, {"axial_displacement", "transverse_displacement", "rotation"});
+    addModelVariables(p, {"axial_displacement", "transverse_displacement", "rotation"}, "model");
     return p;
   }
-  explicit BeamTimoshenkoDisplacement(const InputParameters & p) : StructuralKernel(p, true) {}
+  explicit BeamTimoshenkoDisplacement(const InputParameters & p) : StructuralKernel(p, true, false)
+  {
+  }
 
   void initialSetup(Problem & problem) override
   {
@@ -634,7 +753,7 @@ public:
     _u = problem.variableIndex(_params.getString("axial_displacement"));
     _w = problem.variableIndex(_params.getString("transverse_displacement"));
     _phi = problem.variableIndex(_params.getString("rotation"));
-    _eq = equationFor(problem, {"axial_displacement", "transverse_displacement", "rotation"});
+    _eq = equationFor({"axial_displacement", "transverse_displacement", "rotation"});
   }
 
   bool hasFlux() const override { return true; }
@@ -721,13 +840,12 @@ public:
                   "midpoint and reduced_integration = true integrate the shear terms at the "
                   "element centre, which removes shear locking in thin plates. Default include: "
                   "one instance assembles the whole model.");
-    modelVariables(p, {"radial_displacement", "transverse_displacement", "rotation"});
+    addModelVariables(p, {"radial_displacement", "transverse_displacement", "rotation"}, "model");
     return p;
   }
   explicit CircularPlateFirstOrder(const InputParameters & p)
-      : StructuralKernel(p, true), _shear(shearTreatment(p.getString("shear_treatment")))
+      : StructuralKernel(p, true, true), _shear(shearTreatment(p.getString("shear_treatment")))
   {
-    _plate = true;
   }
 
   void initialSetup(Problem & problem) override
@@ -738,41 +856,12 @@ public:
     _u = problem.variableIndex(_params.getString("radial_displacement"));
     _w = problem.variableIndex(_params.getString("transverse_displacement"));
     _phi = problem.variableIndex(_params.getString("rotation"));
-    _eq = equationFor(problem, {"radial_displacement", "transverse_displacement", "rotation"});
+    _eq = equationFor({"radial_displacement", "transverse_displacement", "rotation"});
   }
 
   bool hasFlux() const override { return true; }
   bool hasSource() const override { return true; }
 
-private:
-  struct Resultants
-  {
-    ADReal n_rr, n_tt, m_rr, m_tt, q_r;
-  };
-
-  Resultants resultants(const QpContext & ctx, const Section & s) const
-  {
-    const double r = ctx.x[0];
-    const ADReal & du = ctx.gradient(_u)[0];
-    const ADReal & dw = ctx.gradient(_w)[0];
-    const ADReal & dphi = ctx.gradient(_phi)[0];
-    ADReal e_rr = du;
-    if (_von_karman)
-      e_rr += 0.5 * dw * dw;
-    // At r = 0 the hoop strain u/r is replaced by its limit du/dr.
-    const ADReal e_tt = r != 0.0 ? ctx.value(_u) / r : du;
-    const ADReal k_rr = dphi;
-    const ADReal k_tt = r != 0.0 ? ctx.value(_phi) / r : dphi;
-    Resultants out;
-    out.n_rr = s.A * (e_rr + _nu * e_tt) + s.B * (k_rr + _nu * k_tt) - s.NT;
-    out.n_tt = s.A * (e_tt + _nu * e_rr) + s.B * (k_tt + _nu * k_rr) - s.NT;
-    out.m_rr = s.B * (e_rr + _nu * e_tt) + s.D * (k_rr + _nu * k_tt) - s.MT;
-    out.m_tt = s.B * (e_tt + _nu * e_rr) + s.D * (k_tt + _nu * k_rr) - s.MT;
-    out.q_r = s.S * (ctx.value(_phi) + dw);
-    return out;
-  }
-
-public:
   void computeFlux(const QpContext & ctx, ADVector3 & F) const override
   {
     const Section s = section(ctx);
@@ -802,8 +891,7 @@ public:
     {
       if (shear_only)
         return ADReal(0.0);
-      return (r != 0.0 ? res.n_tt / r : ADReal(0.0)) -
-             ctx.data_fraction * _f->value(ctx.x, ctx.time);
+      return overRadius(res.n_tt, r) - ctx.data_fraction * _f->value(ctx.x, ctx.time);
     }
     if (_eq == 1)
     {
@@ -813,7 +901,7 @@ public:
     }
     ADReal out(0.0);
     if (!shear_only)
-      out += (r != 0.0 ? res.m_tt / r : ADReal(0.0));
+      out += overRadius(res.m_tt, r);
     if (!no_shear)
       out += res.q_r;
     return out;
@@ -823,16 +911,41 @@ public:
   {
     const double r = ctx.x[0];
     const double du = ctx.gradient(_u)[0].value();
-    const double dw = ctx.gradient(_w)[0].value();
     const double dphi = ctx.gradient(_phi)[0].value();
-    double e_rr = du + (_von_karman ? 0.5 * dw * dw : 0.0);
-    const double e_tt = r != 0.0 ? ctx.value(_u).value() / r : du;
-    const double k_tt = r != 0.0 ? ctx.value(_phi).value() / r : dphi;
+    const double e_rr = axialStrain(ctx, _u, _w).value();
+    const double e_tt = hoopStrain(ctx.value(_u).value(), du, r);
+    const double k_tt = hoopStrain(ctx.value(_phi).value(), dphi, r);
     const auto out = plateStress(ctx, z, e_rr + z * dphi, e_tt + z * k_tt, 0.0);
     return {out[0], out[1]};
   }
 
 private:
+  struct Resultants
+  {
+    ADReal n_rr, n_tt, m_rr, m_tt, q_r;
+  };
+
+  Resultants resultants(const QpContext & ctx, const Section & s) const
+  {
+    const double r = ctx.x[0];
+    const ADReal & du = ctx.gradient(_u)[0];
+    const ADReal & dw = ctx.gradient(_w)[0];
+    const ADReal & dphi = ctx.gradient(_phi)[0];
+    const ADReal e_rr = axialStrain(ctx, _u, _w);
+    // The hoop strain u/r and the hoop curvature phi/r, with their limits du/dr and dphi/dr at
+    // r = 0.
+    const ADReal e_tt = hoopStrain(ctx.value(_u), du, r);
+    const ADReal k_rr = dphi;
+    const ADReal k_tt = hoopStrain(ctx.value(_phi), dphi, r);
+    Resultants out;
+    out.n_rr = s.A * (e_rr + _nu * e_tt) + s.B * (k_rr + _nu * k_tt) - s.NT;
+    out.n_tt = s.A * (e_tt + _nu * e_rr) + s.B * (k_tt + _nu * k_rr) - s.NT;
+    out.m_rr = s.B * (e_rr + _nu * e_tt) + s.D * (k_rr + _nu * k_tt) - s.MT;
+    out.m_tt = s.B * (e_tt + _nu * e_rr) + s.D * (k_tt + _nu * k_rr) - s.MT;
+    out.q_r = s.S * (ctx.value(_phi) + dw);
+    return out;
+  }
+
   ShearTreatment _shear;
   int _u = -1, _w = -1, _phi = -1, _eq = 0;
 };
@@ -904,12 +1017,12 @@ public:
         "of the mixed classical plate model. Prescribe it to be zero at a simply supported edge, "
         "and leave it free at a clamped edge, where the vanishing slope is the natural "
         "condition.");
-    modelVariables(p, {"radial_displacement", "transverse_displacement", "bending_moment"});
+    addModelVariables(
+        p, {"radial_displacement", "transverse_displacement", "bending_moment"}, "model");
     return p;
   }
-  explicit CircularPlateClassicalMixed(const InputParameters & p) : StructuralKernel(p, false)
+  explicit CircularPlateClassicalMixed(const InputParameters & p) : StructuralKernel(p, false, true)
   {
-    _plate = true;
   }
 
   void initialSetup(Problem & problem) override
@@ -920,8 +1033,7 @@ public:
     _u = problem.variableIndex(_params.getString("radial_displacement"));
     _w = problem.variableIndex(_params.getString("transverse_displacement"));
     _m = problem.variableIndex(_params.getString("bending_moment"));
-    _eq =
-        equationFor(problem, {"radial_displacement", "transverse_displacement", "bending_moment"});
+    _eq = equationFor({"radial_displacement", "transverse_displacement", "bending_moment"});
   }
 
   bool hasFlux() const override { return true; }
@@ -933,8 +1045,7 @@ private:
   {
     const double r = ctx.x[0];
     ADReal e = axialStrain(ctx, _u, _w);
-    // At r = 0 the hoop strain u/r is replaced by its limit du/dr.
-    e += _nu * (r != 0.0 ? ctx.value(_u) / r : ctx.gradient(_u)[0]);
+    e += _nu * hoopStrain(ctx.value(_u), ctx.gradient(_u)[0], r);
     return e;
   }
 
@@ -952,7 +1063,7 @@ private:
     ADReal e = _nu * du;
     if (_von_karman)
       e += 0.5 * _nu * dw * dw;
-    e += (r != 0.0 ? ctx.value(_u) / r : du);
+    e += hoopStrain(ctx.value(_u), du, r);
     ADReal out = s.Abar * e + _nu * s.Bbar * (ctx.value(_m) + s.MT) - s.NT;
     if (r != 0.0)
       out += (1.0 - _nu * _nu) * s.B / r * (s.Bbar * ctx.value(_u) - dw);
@@ -991,8 +1102,7 @@ public:
     const Section s = section(ctx);
     const double r = ctx.x[0];
     if (_eq == 0)
-      return (r != 0.0 ? hoopForce(ctx, s) / r : ADReal(0.0)) -
-             ctx.data_fraction * _f->value(ctx.x, ctx.time);
+      return overRadius(hoopForce(ctx, s), r) - ctx.data_fraction * _f->value(ctx.x, ctx.time);
     if (_eq == 1)
       return _cf * ctx.value(_w) - ctx.data_fraction * _q->value(ctx.x, ctx.time);
     ADReal out = s.Bbar * effectiveStrain(ctx) - (ctx.value(_m) + s.MT) / s.D;
@@ -1010,10 +1120,10 @@ public:
     const double du = ctx.gradient(_u)[0].value();
     const double dw = ctx.gradient(_w)[0].value();
     const double combined = ((ctx.value(_m) + s.MT - s.B * effectiveStrain(ctx)) / s.D).value();
-    const double k_tt = r != 0.0 ? -dw / r : combined / (1.0 + _nu);
+    const double k_tt = hoopStrain(-dw, combined / (1.0 + _nu), r);
     const double k_rr = combined - _nu * k_tt;
     const double e_rr = du + (_von_karman ? 0.5 * dw * dw : 0.0);
-    const double e_tt = r != 0.0 ? ctx.value(_u).value() / r : du;
+    const double e_tt = hoopStrain(ctx.value(_u).value(), du, r);
     const auto out = plateStress(ctx, z, e_rr + z * k_rr, e_tt + z * k_tt, 0.0);
     return {out[0], out[1]};
   }
@@ -1069,14 +1179,18 @@ public:
         "expression of x, y, z, t and the fields. It is the right side of the in-plane "
         "equilibrium -div(N) = f, with N the in-plane force, so in the balance law dm/dt + div F "
         "= s of u and v it is part of the source s. It replaces the inherited 'axial_load', which "
-        "this model ignores. Default 0, 0: no load.");
-    modelVariables(p, {"in_plane_displacements", "transverse_displacement", "rotations"});
+        "this model refuses. Default 0, 0: no load.");
+    addModelVariables(
+        p, {"in_plane_displacements", "transverse_displacement", "rotations"}, "model");
     return p;
   }
   explicit PlateFirstOrder(const InputParameters & p)
-      : StructuralKernel(p, true), _shear(shearTreatment(p.getString("shear_treatment")))
+      : StructuralKernel(p, true, true), _shear(shearTreatment(p.getString("shear_treatment")))
   {
-    _plate = true;
+    if (p.isSetByUser("axial_load"))
+      throw InputError("'" + this->name() +
+                       "': a plate takes its in-plane load (f_x, f_y) as 'in_plane_load', not "
+                       "'axial_load'.");
   }
 
   void initialSetup(Problem & problem) override
@@ -1239,20 +1353,6 @@ private:
   FieldCoefficient _fx, _fy;
 };
 
-/// The variables of a member in space: given as 'displacements' (and 'rotations'), the kernel is
-/// added once per variable, and each instance finds its equation from its variable.
-void
-memberVariables(InputParameters & p, std::vector<std::string> keys)
-{
-  p.setModelVariables(std::move(keys));
-  p.addOptional("variable",
-                ParameterKind::Names,
-                std::vector<std::string>{},
-                "The variable whose equation this instance assembles. Default: every variable of "
-                "the member, each with an instance of its own, so that one call adds the whole "
-                "member.");
-}
-
 /// The position of variable 'name' in 'names', or -1.
 int
 indexOf(const std::vector<std::string> & names, const std::string & name)
@@ -1290,7 +1390,7 @@ public:
                   std::vector<double>{},
                   "The body force b per unit volume (N/m^3), one value per displacement. Default "
                   "none: no distributed load.");
-    memberVariables(p, {"displacements"});
+    addModelVariables(p, {"displacements"}, "member");
     return p;
   }
   explicit Truss(const InputParameters & p)
@@ -1351,16 +1451,17 @@ private:
 /// A shell of flat facets: each quadrilateral of a surface mesh in three dimensions is a flat
 /// shell with its own axes e1, e2 (in its plane) and e3 (its normal).  The global displacements u
 /// and rotations theta give the local u_l = R u and theta_l = R theta (R has the rows e1, e2,
-/// e3), the rotations of the normal beta = (theta_l2, -theta_l1), and
-///   membrane:  eps_ab = sym d_a u_lb,               N = A [(1 - nu) eps + nu tr(eps) I]
-///   bending:   kappa_ab = sym d_a beta_b,           M = D [(1 - nu) kappa + nu tr(kappa) I]
-///   shear:     gamma_a = d_a w_l + beta_a,          Q = k G h gamma
-///   drilling:  omega = theta_l3 - (d_1 u_l2 - d_2 u_l1) / 2,   m = G h omega
-/// with A = E h / (1 - nu^2), D = E h^3 / (12 (1 - nu^2)).  The drilling term ties the rotation
-/// about the normal to the rotation of the membrane, which it is in the continuum (Hughes and
-/// Brezzi), so that the six unknowns of a node have a stiffness where facets meet at an angle.
-/// The virtual work N : d eps + M : d kappa + Q . d gamma + m d omega gives the flux and the
-/// source of each global equation.  The shear is integrated at the centre of the element
+/// e3), the rotations of the normal beta = (theta_l2, -theta_l1), and the strains
+///   membrane:  eps_ab = sym d_a u_lb,               N = A [eps] + B [kappa] - N_T I
+///   bending:   kappa_ab = sym d_a beta_b,           M = B [eps] + D [kappa] - M_T I
+///   shear:     gamma_a = d_a w_l + beta_a,          Q = S gamma
+///   drilling:  omega = theta_l3 - (d_1 u_l2 - d_2 u_l1) / 2,   m = (1 - nu)/2 A omega
+/// with [e] = (1 - nu) e + nu tr(e) I and the section A, B, D, S, N_T and M_T of the plates
+/// (MaterialSection), integrated through the thickness along e3.  The drilling term ties the
+/// rotation about the normal to the rotation of the membrane, which it is in the continuum
+/// (Hughes and Brezzi), so that the six unknowns of a node have a stiffness where facets meet at
+/// an angle.  The virtual work N : d eps + M : d kappa + Q . d gamma + m d omega gives the flux
+/// and the source of each global equation.  The shear is integrated at the centre of the element
 /// (shear_treatment), which keeps thin shells from locking.
 class Shell : public Kernel
 {
@@ -1373,18 +1474,26 @@ public:
         "dimensions: membrane, Mindlin bending and transverse shear in the axes of each facet, "
         "and the rotation about the normal tied to the rotation of the membrane, so that the six "
         "unknowns of a node have a stiffness where facets meet at an angle. The unknowns are the "
-        "displacements and the rotations about the global axes. The membrane stiffness is E "
-        "H/(1 - nu^2), the bending stiffness E H^3/(12 (1 - nu^2)) and the shear stiffness K_s G "
-        "H, with H the thickness and G = E/(2 (1 + nu)). 'body_force' is the load per unit "
-        "volume, which the thickness turns into a load per unit area.");
+        "displacements and the rotations about the global axes. The section is that of "
+        "plate_first_order given by its material: the membrane, coupling, bending and shear "
+        "stiffnesses and the thermal force and moment are the integrals of the material law "
+        "through the thickness H, so a graded section and a thermal strain enter as in a plate. "
+        "'body_force' is the load per unit volume, which the thickness turns into a load per "
+        "unit area.");
     p.addRequired("displacements",
                   ParameterKind::StringList,
                   "The displacement variables (m) along x, y and z.");
     p.addRequired("rotations",
                   ParameterKind::StringList,
                   "The rotation variables (rad) about the global axes x, y and z.");
-    p.addRequired("youngs_modulus", ParameterKind::Real, "Young's modulus E (Pa).");
-    p.setRange("youngs_modulus", ParameterRange::Positive);
+    p.addRequired("youngs_modulus",
+                  ParameterKind::Function,
+                  "Young's modulus E (Pa): a constant, a function, or an expression of the fields, "
+                  "the properties and the coordinates. It is evaluated at the point x + z n "
+                  "through the thickness, with x the point of the mid-surface, n the unit normal "
+                  "of the facet and z (m) the height above the mid-surface, so that on a flat "
+                  "shell in the plane z = 0 an expression of z gives the functionally graded "
+                  "section of a plate.");
     p.addRequired("poissons_ratio",
                   ParameterKind::Real,
                   "Poisson's ratio nu (dimensionless), with -1 < nu < 1/2.");
@@ -1396,6 +1505,7 @@ public:
                   "The shear correction factor K_s (dimensionless). Default 5/6, the value of a "
                   "homogeneous section.");
     p.setRange("shear_correction", ParameterRange::Positive);
+    MaterialSection::addParams(p);
     p.addOptional("body_force",
                   ParameterKind::RealList,
                   std::vector<double>{},
@@ -1410,20 +1520,19 @@ public:
                   "reduced_integration = true integrate the shear at the centre of the element, "
                   "which keeps thin shells free of shear locking. Default include: one instance "
                   "assembles every term.");
-    memberVariables(p, {"displacements", "rotations"});
+    addModelVariables(p, {"displacements", "rotations"}, "member");
     return p;
   }
   explicit Shell(const InputParameters & p)
-      : Kernel(p), _E(p.getReal("youngs_modulus")), _nu(p.getReal("poissons_ratio")),
-        _h(p.getReal("thickness")), _k(p.getReal("shear_correction"))
+      : Kernel(p), _nu(p.getReal("poissons_ratio")), _h(p.getReal("thickness"))
   {
     if (!(_nu > -1.0 && _nu < 0.5))
       throw InputError("'" + name() + "': Poisson's ratio must lie between -1 and 0.5.");
-    const std::string treatment = p.getString("shear_treatment");
-    if (treatment != "include" && treatment != "exclude" && treatment != "only")
+    const auto treatment = shearTreatmentFromName(p.getString("shear_treatment"));
+    if (!treatment)
       throw InputError("'" + name() + "': 'shear_treatment' is 'include', 'exclude' or 'only'.");
-    _membrane = treatment != "only";
-    _shear = treatment != "exclude";
+    _membrane = *treatment != ShearTreatment::Only;
+    _shear = *treatment != ShearTreatment::Exclude;
   }
   void initialSetup(Problem & problem) override
   {
@@ -1451,6 +1560,7 @@ public:
     if (!force.empty() && force.size() != 3)
       throw InputError("'" + name() + "': 'body_force' takes three values, in x, y and z.");
     _force = force.empty() || _eq >= 3 ? 0.0 : force[_eq];
+    _law.setup(problem, _params, name(), true, true, _nu, 1.0, _h, 0.0, 0.0);
   }
   bool hasFlux() const override { return true; }
   bool hasSource() const override { return true; }
@@ -1492,117 +1602,142 @@ private:
     double R[3][3];
     ADReal du[3][2], dtheta[3][2], theta[3];
   };
+  /// The local gradients G[k][a] = d_a u_lk of the displacements and H[k][a] = d_a theta_lk of
+  /// the rotations, and the local rotations theta_lk, in the axes of the facet.
+  struct LocalFields
+  {
+    ADReal G[3][2], H[3][2], theta[3];
+  };
+
   Terms terms(const QpContext & ctx) const
   {
     Terms t;
-    const Element & el = _mesh->element(ctx.element);
-    const auto x = [&](int k) { return _mesh->node(el.nodes[k]); };
-    // The axes: e3 normal to the diagonals, e1 along the first side, e2 = e3 x e1.
-    const Point p0 = x(0), p1 = x(1), p2 = x(2), p3 = x(3);
-    const double d1[3] = {p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]};
-    const double d2[3] = {p3[0] - p1[0], p3[1] - p1[1], p3[2] - p1[2]};
-    double e3[3] = {d1[1] * d2[2] - d1[2] * d2[1],
-                    d1[2] * d2[0] - d1[0] * d2[2],
-                    d1[0] * d2[1] - d1[1] * d2[0]};
-    double e1[3] = {p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]};
-    const auto normalize = [](double * v)
-    {
-      const double n = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+    const std::array<Point, 3> axes = elementAxes(ctx.element);
+    for (int a = 0; a < 3; ++a)
       for (int k = 0; k < 3; ++k)
-        v[k] /= n;
+        t.R[a][k] = axes[a][k];
+    const LocalFields local = localFields(ctx, t.R);
+    // The section, integrated through the thickness along the normal e3.
+    const Section s = _law.integrate(ctx, axes[2]);
+    if (_membrane)
+      addMembraneTerms(s, local, t);
+    if (_shear)
+      addShearTerms(s, local, t);
+    return t;
+  }
+
+  /// The axes of the facet of element @p e: e3 normal to the diagonals, e1 along the first side
+  /// and e2 = e3 x e1.
+  std::array<Point, 3> elementAxes(Index e) const
+  {
+    const Element & el = _mesh->element(e);
+    const auto x = [&](int k) { return _mesh->node(el.nodes[k]); };
+    const auto unit = [](const Point & v)
+    {
+      const double n = norm(v);
+      return Point{v[0] / n, v[1] / n, v[2] / n};
     };
-    normalize(e3);
-    const double along = e1[0] * e3[0] + e1[1] * e3[1] + e1[2] * e3[2];
+    const Point e3 = unit(cross(x(2) - x(0), x(3) - x(1)));
+    Point e1 = x(1) - x(0);
+    const double along = dot(e1, e3);
     for (int k = 0; k < 3; ++k)
       e1[k] -= along * e3[k];
-    normalize(e1);
-    const double e2[3] = {e3[1] * e1[2] - e3[2] * e1[1],
-                          e3[2] * e1[0] - e3[0] * e1[2],
-                          e3[0] * e1[1] - e3[1] * e1[0]};
+    e1 = unit(e1);
+    return {e1, cross(e3, e1), e3};
+  }
+
+  /// The local gradients and rotations of the point of @p ctx in the axes @p R.
+  LocalFields localFields(const QpContext & ctx, const double (&R)[3][3]) const
+  {
+    LocalFields f;
     for (int k = 0; k < 3; ++k)
-    {
-      t.R[0][k] = e1[k];
-      t.R[1][k] = e2[k];
-      t.R[2][k] = e3[k];
-    }
-    // The local gradients G[k][a] = d_a u_lk and H[k][a] = d_a theta_lk, and the local rotations.
-    ADReal G[3][2], H[3][2], th[3];
-    for (int k = 0; k < 3; ++k)
-    {
-      th[k] = ADReal(0.0);
-      for (int a = 0; a < 2; ++a)
-      {
-        G[k][a] = ADReal(0.0);
-        H[k][a] = ADReal(0.0);
-      }
       for (int j = 0; j < 3; ++j)
       {
         const auto & gu = ctx.gradient(_vars[j]);
         const auto & gt = ctx.gradient(_vars[3 + j]);
-        th[k] += t.R[k][j] * ctx.value(_vars[3 + j]);
+        f.theta[k] += R[k][j] * ctx.value(_vars[3 + j]);
         for (int a = 0; a < 2; ++a)
         {
-          const ADReal du = gu[0] * t.R[a][0] + gu[1] * t.R[a][1] + gu[2] * t.R[a][2];
-          const ADReal dt = gt[0] * t.R[a][0] + gt[1] * t.R[a][1] + gt[2] * t.R[a][2];
-          G[k][a] += t.R[k][j] * du;
-          H[k][a] += t.R[k][j] * dt;
+          const ADReal du = gu[0] * R[a][0] + gu[1] * R[a][1] + gu[2] * R[a][2];
+          const ADReal dt = gt[0] * R[a][0] + gt[1] * R[a][1] + gt[2] * R[a][2];
+          f.G[k][a] += R[k][j] * du;
+          f.H[k][a] += R[k][j] * dt;
         }
       }
-    }
-    for (int k = 0; k < 3; ++k)
-    {
-      t.theta[k] = ADReal(0.0);
-      for (int a = 0; a < 2; ++a)
-      {
-        t.du[k][a] = ADReal(0.0);
-        t.dtheta[k][a] = ADReal(0.0);
-      }
-    }
-    const double G_shear = _E / (2.0 * (1.0 + _nu));
-    if (_membrane)
-    {
-      const double A = _E * _h / (1.0 - _nu * _nu), D = A * _h * _h / 12.0;
-      // Membrane: eps = (G00, G11, G01 + G10).
-      const ADReal N11 = A * (G[0][0] + _nu * G[1][1]), N22 = A * (G[1][1] + _nu * G[0][0]);
-      const ADReal N12 = 0.5 * A * (1.0 - _nu) * (G[0][1] + G[1][0]);
-      // Drilling: omega = theta_l3 - (d_1 u_l2 - d_2 u_l1) / 2.
-      const ADReal m = G_shear * _h * (th[2] - 0.5 * (G[1][0] - G[0][1]));
-      t.du[0][0] += N11;
-      t.du[1][1] += N22;
-      t.du[0][1] += N12 + 0.5 * m;
-      t.du[1][0] += N12 - 0.5 * m;
-      t.theta[2] += m;
-      // Bending: beta = (theta_l2, -theta_l1), kappa = (d_1 beta_1, d_2 beta_2, d_1 beta_2 + d_2 beta_1)
-      // = (H[1][0], -H[0][1], -H[0][0] + H[1][1]).
-      const ADReal k11 = H[1][0], k22 = -H[0][1], k12 = H[1][1] - H[0][0];
-      const ADReal M11 = D * (k11 + _nu * k22), M22 = D * (k22 + _nu * k11);
-      const ADReal M12 = 0.5 * D * (1.0 - _nu) * k12;
-      t.dtheta[1][0] += M11;
-      t.dtheta[0][1] -= M22;
-      t.dtheta[0][0] -= M12;
-      t.dtheta[1][1] += M12;
-    }
-    if (_shear)
-    {
-      // gamma = (d_1 w_l + theta_l2, d_2 w_l - theta_l1).
-      const double S = _k * G_shear * _h;
-      const ADReal Q1 = S * (G[2][0] + th[1]), Q2 = S * (G[2][1] - th[0]);
-      t.du[2][0] += Q1;
-      t.du[2][1] += Q2;
-      t.theta[1] += Q1;
-      t.theta[0] -= Q2;
-    }
-    return t;
+    return f;
   }
 
-  double _E, _nu, _h, _k, _force = 0.0;
+  /// The membrane, bending and drilling terms of the virtual work.
+  void addMembraneTerms(const Section & s, const LocalFields & f, Terms & t) const
+  {
+    const auto & G = f.G;
+    const auto & H = f.H;
+    const double shear_factor = 0.5 * (1.0 - _nu);
+    // Membrane: eps = (G00, G11, G01 + G10).  Bending: beta = (theta_l2, -theta_l1), kappa =
+    // (d_1 beta_1, d_2 beta_2, d_1 beta_2 + d_2 beta_1) = (H[1][0], -H[0][1], -H[0][0] +
+    // H[1][1]).
+    const ADReal e11 = G[0][0], e22 = G[1][1], g12 = G[0][1] + G[1][0];
+    const ADReal k11 = H[1][0], k22 = -H[0][1], k12 = H[1][1] - H[0][0];
+    const ADReal N11 = s.A * (e11 + _nu * e22) + s.B * (k11 + _nu * k22) - s.NT;
+    const ADReal N22 = s.A * (e22 + _nu * e11) + s.B * (k22 + _nu * k11) - s.NT;
+    const ADReal N12 = shear_factor * (s.A * g12 + s.B * k12);
+    const ADReal M11 = s.B * (e11 + _nu * e22) + s.D * (k11 + _nu * k22) - s.MT;
+    const ADReal M22 = s.B * (e22 + _nu * e11) + s.D * (k22 + _nu * k11) - s.MT;
+    const ADReal M12 = shear_factor * (s.B * g12 + s.D * k12);
+    // Drilling: omega = theta_l3 - (d_1 u_l2 - d_2 u_l1) / 2, with the in-plane shear
+    // stiffness (1 - nu)/2 A of the membrane, G H in a homogeneous section.
+    const ADReal m = shear_factor * s.A * (f.theta[2] - 0.5 * (G[1][0] - G[0][1]));
+    t.du[0][0] += N11;
+    t.du[1][1] += N22;
+    t.du[0][1] += N12 + 0.5 * m;
+    t.du[1][0] += N12 - 0.5 * m;
+    t.theta[2] += m;
+    t.dtheta[1][0] += M11;
+    t.dtheta[0][1] -= M22;
+    t.dtheta[0][0] -= M12;
+    t.dtheta[1][1] += M12;
+  }
+
+  /// The transverse shear terms of the virtual work, with gamma = (d_1 w_l + theta_l2, d_2 w_l -
+  /// theta_l1).
+  static void addShearTerms(const Section & s, const LocalFields & f, Terms & t)
+  {
+    const ADReal Q1 = s.S * (f.G[2][0] + f.theta[1]), Q2 = s.S * (f.G[2][1] - f.theta[0]);
+    t.du[2][0] += Q1;
+    t.du[2][1] += Q2;
+    t.theta[1] += Q1;
+    t.theta[0] -= Q2;
+  }
+
+  double _nu, _h, _force = 0.0;
   bool _membrane = true, _shear = true;
+  MaterialSection _law;
   const Mesh * _mesh = nullptr;
   std::vector<int> _vars;
   int _eq = 0;
 };
 
 } // namespace
+
+std::vector<std::vector<double>>
+sectionStressAtCentroids(Problem & problem, const std::string & kernel, double z)
+{
+  auto k = std::dynamic_pointer_cast<Kernel>(problem.object(kernel));
+  if (!k)
+    throw InputError("'" + kernel + "' is not a kernel.");
+  const auto * section = dynamic_cast<const SectionKernel *>(k.get());
+  std::vector<std::vector<double>> out;
+  problem.centroidContexts(
+      [&](QpContext & ctx, int block)
+      {
+        auto row = section && k->activeOnBlock(block) ? section->sectionStress(ctx, z)
+                                                      : std::vector<double>{};
+        if (row.empty() && k->activeOnBlock(block))
+          throw InputError("'" + kernel + "' is not a structural member with a section.");
+        out.push_back(std::move(row));
+      });
+  return out;
+}
 
 void
 registerStructuralMemberObjects(Factory & f)

@@ -24,18 +24,15 @@ measured pressure orders, 1.3 to 1.7, are above the guaranteed one.
 
 from __future__ import annotations
 
-import importlib.util
-from pathlib import Path
-
 import dualmesh
 import numpy
 import pytest
 
 sympy = pytest.importorskip("sympy")
 from dualmesh import mms  # noqa: E402
+from helpers import Ghia_differences, lid_driven_cavity  # noqa: E402
 
 methods = ["fem", "dmcdm"]
-_root = Path(__file__).resolve().parents[2]
 
 # A divergence-free velocity (from a stream function) and a pressure with no
 # symmetry, on a square that is not centred on a symmetry line of either.
@@ -159,54 +156,18 @@ def test_newton_converges_quadratically(method):
     assert result.total_iterations <= 8
 
 
-def _cavity(method, n, Reynolds_number):
-    mesh = dualmesh.generate_rectangle_mesh(0, 1, 0, 1, n, n)
-    problem = dualmesh.Problem(mesh, method=method)
-    problem.add_physics(
-        "fluid_dynamics",
-        dynamic_viscosity=1.0,
-        density=Reynolds_number,
-        formulation="equal_order",
-    )
-    problem.add_boundary_condition(
-        "Dirichlet",
-        "top",
-        variable="velocity_x",
-        value=1.0,
-    )
-    problem.add_boundary_condition("Dirichlet", "top", variable="velocity_y", value=0.0)
-    # The walls are added last, so that the two top corner nodes of the node
-    # based methods belong to the walls: the lid does not leak.
-    for variable in ("velocity_x", "velocity_y"):
-        problem.add_boundary_condition(
-            "Dirichlet",
-            ["left", "right", "bottom"],
-            variable=variable,
-            value=0.0,
-        )
-    problem.solve()
-    return problem
-
-
 @pytest.mark.parametrize("method", methods)
 def test_cavity_matches_ghia(method):
     """Re = 100 on a 32 by 32 mesh: the centreline velocities are within 0.015
     of the tabulated values of Ghia, Ghia and Shin (1982); the measured
     differences are 0.002 to 0.014."""
-    spec = importlib.util.spec_from_file_location(
-        "compare_cavity", _root / "verification" / "openfoam" / "compare_cavity.py"
+    problem = lid_driven_cavity(
+        method, 32, dynamic_viscosity=1.0, density=100.0, formulation="equal_order"
     )
-    reference = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(reference)
-    problem = _cavity(method, 32, 100.0)
-    u = problem.sample(
-        "velocity_x", numpy.column_stack([numpy.full_like(reference.ghia_y, 0.5), reference.ghia_y])
-    )
-    v = problem.sample(
-        "velocity_y", numpy.column_stack([reference.ghia_x, numpy.full_like(reference.ghia_x, 0.5)])
-    )
-    assert numpy.max(numpy.abs(u - reference.ghia_u)) < 0.015
-    assert numpy.max(numpy.abs(v - reference.ghia_v)) < 0.015
+    problem.solve()
+    u_difference, v_difference = Ghia_differences(problem)
+    assert u_difference < 0.015
+    assert v_difference < 0.015
 
 
 @pytest.mark.parametrize("method", methods)

@@ -17,6 +17,15 @@ registered types: the physics, the couplings and the objects of
    object_module
    describe_object
 
+A misspelled name, a missing parameter or a value outside its range raises
+:class:`InputError`, from the C++ core and from the Python input alike.
+
+.. autosummary::
+   :toctree: generated/
+   :template: class.rst
+
+   InputError
+
 Parameter declarations
 ----------------------
 
@@ -33,9 +42,3 @@ declaration checks the keywords and prints the reference of a type.
    keyword_checked
    check_keywords
    describe_fields
-
-.. autosummary::
-   :toctree: generated/
-   :template: class.rst
-
-   InputError

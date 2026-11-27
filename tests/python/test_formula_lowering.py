@@ -6,10 +6,9 @@ dimension, or with a name the vocabulary does not hold, is refused with its key.
 import math
 
 import pytest
-from dualmesh._core import ParsedFunction
-from dualmesh.input.lower import engine_formula
-from dualmesh.input.units import input_error
+from dualmesh._core import InputError, ParsedFunction
 from dualmesh.model.dimensions import dimension_error
+from dualmesh.model.engine_form import engine_formula
 
 
 def value_at(text, unit, x=0.0, y=0.0, z=0.0, t=0.0):
@@ -51,5 +50,5 @@ def test_a_formula_of_the_wrong_dimension_is_refused_with_its_key():
 
 
 def test_an_unknown_name_is_refused_with_its_key():
-    with pytest.raises(input_error, match=r"^properties\.density: .*unknown name 'temprature'"):
+    with pytest.raises(InputError, match=r"^properties\.density: .*unknown name 'temprature'"):
         engine_formula("[7850 kg/m^3]*(1 - [1e-5 1/K]*temprature)", "kg/m^3", "properties.density")

@@ -52,10 +52,3 @@ def abs(value):  # noqa: A001 - mirrors the builtin on purpose
     if isinstance(value, ADReal):
         return _core.abs(value)
     return builtins.abs(value)
-
-
-def pow(base, exponent):  # noqa: A001 - mirrors the builtin on purpose
-    """Power for floats and AD numbers."""
-    if isinstance(base, ADReal) or isinstance(exponent, ADReal):
-        return base**exponent
-    return base**exponent

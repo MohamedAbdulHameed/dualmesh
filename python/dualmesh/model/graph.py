@@ -25,7 +25,7 @@ $(\\nabla\\mathbf{u})_{ij} = \\partial u_i / \\partial x_j$.
 A `list` is a vector of scalar items, or a tensor whose rows are its vector
 items, with one item per direction of space. A `rate` (a time derivative of a
 field) and a `divergence` (of a flux) are the terms of an equation, which
-`parse.read_equations` sorts into a conservation law. They stand nowhere
+`syntax.read_equations` sorts into a conservation law. They stand nowhere
 else, so `expand` refuses them. A `constant` without a value is a name that the
 engine resolves, such as a property or `eigenvalue`, and the printer writes it
 by its name.
@@ -43,8 +43,8 @@ import weakref
 from collections.abc import Sequence
 from functools import reduce
 
-from dualmesh.input import units
-from dualmesh.input.units import base, dimension, dimensionless, input_error
+from dualmesh import units
+from dualmesh._core import InputError, expression_functions
 from dualmesh.model.dimensions import (
     comparisons,
     dimension_of,
@@ -53,6 +53,7 @@ from dualmesh.model.dimensions import (
     leaf_kinds,
     length,
 )
+from dualmesh.units import base, dimension, dimensionless
 
 __all__ = [
     "expression",
@@ -126,7 +127,7 @@ __all__ = [
 ]
 
 
-class rank_error(input_error):
+class rank_error(InputError):
     """An operation on operands of the wrong rank."""
 
 
@@ -135,7 +136,21 @@ largest_rank = 2
 largest_table_input_count = 3
 time_dimension = base("time")
 
-# The functions of one scalar, each in the math module or of Python.
+# The functions of the engine's expression language, each with its number of arguments, from
+# their one table in C++. The model language calls each by the same name. The kind of its node
+# is that name, except for the three functions of `other_kinds`.
+engine_functions = dict(expression_functions())
+other_kinds = {"max": "maximum", "min": "minimum", "pow": "power"}
+engine_kinds = {name: other_kinds.get(name, name) for name in engine_functions}
+# The kinds of the functions of one scalar, and of the operations of two scalars.
+scalar_functions = frozenset(
+    kind for name, kind in engine_kinds.items() if engine_functions[name] == 1
+)
+scalar_pairs = frozenset(
+    {*(kind for name, kind in engine_kinds.items() if engine_functions[name] == 2), *comparisons}
+)
+
+# The value of each function of one scalar, from the math module or from Python.
 number_functions = {
     "exp": math.exp,
     "log": math.log,
@@ -156,8 +171,7 @@ number_functions = {
     "sign": lambda value: float((value > 0.0) - (value < 0.0)),
     "abs": abs,
 }
-scalar_functions = frozenset(number_functions)
-# The operations of two scalars.
+# The value of each operation of two scalars.
 number_operations = {
     "add": operator.add,
     "multiply": operator.mul,
@@ -168,7 +182,6 @@ number_operations = {
     "atan2": math.atan2,
     "hypot": math.hypot,
 }
-scalar_pairs = frozenset({"power", "maximum", "minimum", "atan2", "hypot", *comparisons})
 # The truth of each comparison of two numbers.
 comparison_operations = {
     "less": operator.lt,
@@ -511,13 +524,13 @@ def values_text(values) -> str:
 
 
 def fold(kind: str, function, *values) -> float:
-    """Return function of values, or raise input_error when it has no real value."""
+    """Return function of values, or raise InputError when it has no real value."""
     try:
         result = function(*values)
     except (ValueError, OverflowError, ZeroDivisionError) as error:
-        raise input_error(f"{kind} of {values_text(values)}: {error}") from None
+        raise InputError(f"{kind} of {values_text(values)}: {error}") from None
     if isinstance(result, complex) or not math.isfinite(result):
-        raise input_error(f"{kind} of {values_text(values)} has no finite real value")
+        raise InputError(f"{kind} of {values_text(values)} has no finite real value")
     return result
 
 
@@ -553,7 +566,7 @@ def simplify(kind: str, operands: tuple, rank: int, node_dimension: dimension):
     elif kind == "divide":
         numerator, denominator = operands
         if is_zero(denominator):
-            raise input_error(f"division by zero in '{numerator}/{denominator}'")
+            raise InputError(f"division by zero in '{numerator}/{denominator}'")
         if rank == 0 and is_zero(numerator):
             return number(0.0, node_dimension)
         if is_one(denominator):
@@ -603,7 +616,7 @@ def registry_entry(name: str):
 
 def check_name(name, what: str) -> str:
     if not isinstance(name, str) or not name.isidentifier():
-        raise input_error(
+        raise InputError(
             f"the name of a {what} must be a word of letters, digits and underscores, got {name!r}"
         )
     return name
@@ -616,10 +629,10 @@ def SI_dimension(unit, what: str) -> dimension:
     """
     try:
         factor, unit_dimension = units.parse_unit(str(unit))
-    except input_error as error:
-        raise input_error(f"{what}: {error}") from None
+    except InputError as error:
+        raise InputError(f"{what}: {error}") from None
     if abs(factor - 1.0) > 1.0e-12:
-        raise input_error(
+        raise InputError(
             f"{what}: '{unit}' is not a coherent SI unit. Values inside the model are in SI, "
             f"so declare the SI unit, for example 'mol/m^3' in place of 'mmol/m^3'"
         )
@@ -631,24 +644,24 @@ def declared_rank_and_dimension(name: str, unit, shape: str, what: str) -> tuple
     entry = registry_entry(name)
     if entry is not None:
         if entry.value is not None:
-            raise input_error(
+            raise InputError(
                 f"{what} '{name}' is a physical constant. Use physical_constant('{name}')"
             )
         if unit is not None:
-            raise input_error(
+            raise InputError(
                 f"{what} '{name}' is a standard name with the unit {entry.unit}. Leave out unit"
             )
         if entry.shape != "scalar_or_tensor":
             shape = entry.shape
         elif shape not in ("scalar", "tensor"):
-            raise input_error(f"{what} '{name}' is a scalar or a tensor, got shape '{shape}'")
+            raise InputError(f"{what} '{name}' is a scalar or a tensor, got shape '{shape}'")
         return rank_of_shape[shape], entry.physical_dimension
     if unit is None:
-        raise input_error(
+        raise InputError(
             f"{what} '{name}' is not a standard name, so it needs a unit, for example unit=\"mol/m^3\""
         )
     if shape not in rank_of_shape:
-        raise input_error(
+        raise InputError(
             f"the shape of {what} '{name}' must be scalar, vector or tensor, got '{shape}'"
         )
     return rank_of_shape[shape], SI_dimension(unit, f"{what} '{name}'")
@@ -674,7 +687,7 @@ def state(name: str, unit=None, initial=0.0, shape: str = "scalar") -> expressio
     ):
         initial_value = float(initial)
     else:
-        raise input_error(
+        raise InputError(
             f"the initial value of state '{name}' must be a finite number or a quantity, "
             f"got {initial!r}"
         )
@@ -696,11 +709,11 @@ def constant(name: str, value=None, unit=None) -> expression:
     key = f"constant {name}"
     if entry is not None:
         if entry.value is not None:
-            raise input_error(
+            raise InputError(
                 f"constant '{name}' is a physical constant. Use physical_constant('{name}')"
             )
         if unit is not None:
-            raise input_error(
+            raise InputError(
                 f"constant '{name}' is a standard name with the unit {entry.unit}. Leave out unit"
             )
         constant_dimension = entry.physical_dimension
@@ -709,7 +722,7 @@ def constant(name: str, value=None, unit=None) -> expression:
     elif isinstance(value, str):
         value, constant_dimension = units.parse_quantity(value)
         if unit is not None and SI_dimension(unit, key) != constant_dimension:
-            raise input_error(
+            raise InputError(
                 f"constant '{name}': the value has the dimension {constant_dimension}, "
                 f"which differs from the unit '{unit}'"
             )
@@ -723,7 +736,7 @@ def constant(name: str, value=None, unit=None) -> expression:
             or not isinstance(value, (int, float))
             or not math.isfinite(value)
         ):
-            raise input_error(
+            raise InputError(
                 f"the value of constant '{name}' must be a finite number or a quantity, got {value!r}"
             )
         value = float(value)
@@ -733,7 +746,7 @@ def constant(name: str, value=None, unit=None) -> expression:
 def number(value, physical_dimension: dimension = dimensionless) -> expression:
     """Return a number in SI with a dimension, dimensionless by default."""
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
-        raise input_error(f"a number must be a finite int or float, got {value!r}")
+        raise InputError(f"a number must be a finite int or float, got {value!r}")
     # Adding 0.0 turns -0.0 into 0.0, so both zeros share one node.
     return build("number", value=float(value) + 0.0, rank=0, physical_dimension=physical_dimension)
 
@@ -745,7 +758,7 @@ def physical_constant(name: str) -> expression:
         known = sorted(
             key for key, item in units.standard_names().items() if item.value is not None
         )
-        raise input_error(
+        raise InputError(
             f"'{name}' is not a physical constant. The physical constants are {', '.join(known)}"
         )
     return number(entry.value, entry.physical_dimension)
@@ -787,7 +800,7 @@ def component_dimension(name: str, field_dimension) -> dimension:
         return field_dimension
     entry = registry_entry(name)
     if entry is None:
-        raise input_error(f"'{name}' is not a standard name. Pass the dimension of the field")
+        raise InputError(f"'{name}' is not a standard name. Pass the dimension of the field")
     return entry.physical_dimension
 
 
@@ -1077,7 +1090,7 @@ class table_data:
 
 
 def finite_numbers(numbers, what: str) -> tuple[float, ...]:
-    """Return numbers as a tuple of floats, or raise input_error naming what."""
+    """Return numbers as a tuple of floats, or raise InputError naming what."""
     result = []
     for entry in numbers:
         if (
@@ -1085,7 +1098,7 @@ def finite_numbers(numbers, what: str) -> tuple[float, ...]:
             or not isinstance(entry, (int, float))
             or not math.isfinite(entry)
         ):
-            raise input_error(f"{what} must be finite numbers, got {entry!r}")
+            raise InputError(f"{what} must be finite numbers, got {entry!r}")
         result.append(float(entry) + 0.0)
     return tuple(result)
 
@@ -1111,32 +1124,32 @@ def interpolation(
     names source.
     """
     if not isinstance(source, str) or not source:
-        raise input_error(f"the source of a table must be a non-empty text, got {source!r}")
+        raise InputError(f"the source of a table must be a non-empty text, got {source!r}")
     inputs = tuple(as_expression(node) for node in inputs)
     if not 1 <= len(inputs) <= largest_table_input_count:
-        raise input_error(
+        raise InputError(
             f"{source}: a table takes 1 to {largest_table_input_count} inputs, got {len(inputs)}"
         )
     if len(axes) != len(inputs):
-        raise input_error(f"{source}: the table has {len(inputs)} inputs but {len(axes)} axes")
+        raise InputError(f"{source}: the table has {len(inputs)} inputs but {len(axes)} axes")
     checked_axes = []
     for index, axis in enumerate(axes):
         axis = finite_numbers(axis, f"{source}: the values of axis {index}")
         if len(axis) < 2 or any(second <= first for first, second in itertools.pairwise(axis)):
-            raise input_error(
+            raise InputError(
                 f"{source}: axis {index} needs at least 2 strictly increasing values, got {axis}"
             )
         checked_axes.append(axis)
     values = finite_numbers(values, f"{source}: the table values")
     expected_count = math.prod(len(axis) for axis in checked_axes)
     if len(values) != expected_count:
-        raise input_error(
+        raise InputError(
             f"{source}: the grid holds {expected_count} points, but the table has "
             f"{len(values)} values"
         )
     names = tuple(input_names)
     if len(names) != len(inputs) or not all(isinstance(name, str) and name for name in names):
-        raise input_error(f"{source}: give one non-empty name per input, got {input_names!r}")
+        raise InputError(f"{source}: give one non-empty name per input, got {input_names!r}")
     grid = table_data(names, tuple(checked_axes), values, (0,) * len(inputs))
     return build(
         "interpolation", inputs, name=source, table=grid, physical_dimension=value_dimension
@@ -1189,150 +1202,218 @@ def expand(node: expression, space_dimension: int):
     time, time_step and cell_size.
     """
     if space_dimension not in (1, 2, 3):
-        raise input_error(f"the space dimension must be 1, 2 or 3, got {space_dimension!r}")
-    expanded = {}
+        raise InputError(f"the space dimension must be 1, 2 or 3, got {space_dimension!r}")
+    return component_expansion(space_dimension).walk(node)
 
-    def entry(tensor, index):
-        for position_index in index:
-            tensor = tensor[position_index]
-        return tensor
 
-    def tabulate(rank, function):
+def tensor_entry(tensor, index):
+    """The entry of an expanded tensor (or vector, or scalar) at the tuple index."""
+    for position_index in index:
+        tensor = tensor[position_index]
+    return tensor
+
+
+def sum_terms(terms):
+    """The sum of the expressions terms, added from the first."""
+    return reduce(operator.add, terms)
+
+
+class component_expansion:
+    """The expansion of expressions into scalar components in a space of space_dimension,
+    which expands each node once."""
+
+    def __init__(self, space_dimension: int):
+        self.space_dimension = space_dimension
+        self.expanded = {}
+
+    def tabulate(self, rank: int, function):
+        """The scalar, vector or tensor of rank whose entry at each index is function(index)."""
         if rank == 0:
             return function(())
         if rank == 1:
-            return [function((row,)) for row in range(space_dimension)]
+            return [function((row,)) for row in range(self.space_dimension)]
         return [
-            [function((row, column)) for column in range(space_dimension)]
-            for row in range(space_dimension)
+            [function((row, column)) for column in range(self.space_dimension)]
+            for row in range(self.space_dimension)
         ]
 
-    def indices(rank):
-        return itertools.product(range(space_dimension), repeat=rank)
+    def indices(self, rank: int):
+        """Every index of an entry of a tensor of rank."""
+        return itertools.product(range(self.space_dimension), repeat=rank)
 
-    def total(terms):
-        return reduce(operator.add, terms)
-
-    def walk(current: expression):
-        if current in expanded:
-            return expanded[current]
-        result = expand_node(current)
-        expanded[current] = result
+    def walk(self, current: expression):
+        if current in self.expanded:
+            return self.expanded[current]
+        result = self.expand_node(current)
+        self.expanded[current] = result
         return result
 
-    def expand_node(current: expression):
+    def expand_node(self, current: expression):
         kind = current.kind
-        rank = current.rank
-        if kind == "field":
-            return tabulate(
-                rank, lambda index: field_component(current.name, index, current.dimension)
-            )
-        if kind == "state":
-            return tabulate(
-                rank, lambda index: state_component(current.name, index, current.dimension)
-            )
-        if kind == "grad":
-            unknown = current.operands[0]
-            return tabulate(
-                rank,
-                lambda index: gradient_component(
-                    unknown.name, index[:-1], index[-1], unknown.dimension
-                ),
-            )
-        if kind == "position":
-            return tabulate(1, lambda index: position_component(index[0]))
-        if kind == "normal":
-            return tabulate(1, lambda index: normal_component(index[0]))
-        if kind == "identity":
-            return tabulate(2, lambda index: number(1.0 if index[0] == index[1] else 0.0))
+        if kind in leaf_expansions:
+            return leaf_expansions[kind](self, current)
         if not current.operands:
             return current
         if kind in ("rate", "divergence"):
-            raise input_error(
+            raise InputError(
                 f"'{current}' is a term of an equation of its own, so it stands neither inside a "
                 f"function nor inside another operator or derivative. A fourth-order equation is "
                 f"written as two second-order ones"
             )
-        if kind == "list" and len(current.operands) != space_dimension:
+        if kind == "list" and len(current.operands) != self.space_dimension:
             raise rank_error(
-                f"a vector here has {space_dimension} components, one per dimension, and "
+                f"a vector here has {self.space_dimension} components, one per dimension, and "
                 f"'{current}' has {len(current.operands)}"
             )
-        parts = [walk(operand) for operand in current.operands]
+        parts = [self.walk(operand) for operand in current.operands]
         if kind == "list":
             return parts
-        ranks = [operand.rank for operand in current.operands]
-        if kind == "component":
-            if any(index >= space_dimension for index in current.component):
-                raise rank_error(
-                    f"component {current.component} of '{current.operands[0]}' "
-                    f"does not exist in {space_dimension} dimensions"
-                )
-            return entry(parts[0], current.component)
-        if kind == "add":
-            return tabulate(rank, lambda index: entry(parts[0], index) + entry(parts[1], index))
-        if kind == "negate":
-            return tabulate(rank, lambda index: -entry(parts[0], index))
-        if kind in ("multiply", "outer"):
-            return tabulate(
-                rank,
-                lambda index: (
-                    entry(parts[0], index[: ranks[0]]) * entry(parts[1], index[ranks[0] :])
-                ),
-            )
-        if kind == "divide":
-            return tabulate(rank, lambda index: entry(parts[0], index) / parts[1])
-        if kind == "conditional":
-            return tabulate(
-                rank,
-                lambda index: conditional(parts[0], entry(parts[1], index), entry(parts[2], index)),
-            )
-        if kind == "dot":
-            split = ranks[0] - 1
-            return tabulate(
-                rank,
-                lambda index: total(
-                    entry(parts[0], index[:split] + (summation_index,))
-                    * entry(parts[1], (summation_index,) + index[split:])
-                    for summation_index in range(space_dimension)
-                ),
-            )
-        if kind == "inner":
-            return total(
-                entry(parts[0], index) * entry(parts[1], index) for index in indices(ranks[0])
-            )
-        if kind == "norm":
-            return sqrt(total(entry(parts[0], index) ** 2 for index in indices(ranks[0])))
-        tensor = parts[0]
-        if kind == "transpose":
-            return tabulate(2, lambda index: tensor[index[1]][index[0]])
-        diagonal = range(space_dimension)
-        if kind == "trace":
-            return total(tensor[row][row] for row in diagonal)
-        if kind == "symmetric":
-            return tabulate(
-                2, lambda index: 0.5 * (tensor[index[0]][index[1]] + tensor[index[1]][index[0]])
-            )
-        if kind == "deviatoric":
-            mean = total(tensor[row][row] for row in diagonal) / space_dimension
-            return tabulate(
-                2,
-                lambda index: (
-                    tensor[index[0]][index[1]] - mean
-                    if index[0] == index[1]
-                    else tensor[index[0]][index[1]]
-                ),
-            )
-        if kind == "determinant":
-            return determinant_and_cofactors(tensor, space_dimension)[0]
-        if kind == "inverse":
-            tensor_determinant, cofactors = determinant_and_cofactors(tensor, space_dimension)
-            return tabulate(2, lambda index: cofactors[index[1]][index[0]] / tensor_determinant)
+        if kind in operation_expansions:
+            return operation_expansions[kind](self, current, parts)
         # Scalar operations: power, the functions, maximum, minimum, less, greater,
         # interpolation and antiderivative.
         return rebuild(kind, tuple(parts), current.attributes())
 
-    return walk(node)
+
+def expand_gradient(expansion: component_expansion, current: expression):
+    unknown = current.operands[0]
+    return expansion.tabulate(
+        current.rank,
+        lambda index: gradient_component(unknown.name, index[:-1], index[-1], unknown.dimension),
+    )
+
+
+#: The expansion of each kind of leaf, and of grad, which stands for the gradient of a field:
+#: kind -> function(expansion, current).
+leaf_expansions = {
+    "field": lambda expansion, current: expansion.tabulate(
+        current.rank, lambda index: field_component(current.name, index, current.dimension)
+    ),
+    "state": lambda expansion, current: expansion.tabulate(
+        current.rank, lambda index: state_component(current.name, index, current.dimension)
+    ),
+    "grad": expand_gradient,
+    "position": lambda expansion, current: expansion.tabulate(
+        1, lambda index: position_component(index[0])
+    ),
+    "normal": lambda expansion, current: expansion.tabulate(
+        1, lambda index: normal_component(index[0])
+    ),
+    "identity": lambda expansion, current: expansion.tabulate(
+        2, lambda index: number(1.0 if index[0] == index[1] else 0.0)
+    ),
+}
+
+
+def expand_component(expansion: component_expansion, current: expression, parts: list):
+    if any(index >= expansion.space_dimension for index in current.component):
+        raise rank_error(
+            f"component {current.component} of '{current.operands[0]}' "
+            f"does not exist in {expansion.space_dimension} dimensions"
+        )
+    return tensor_entry(parts[0], current.component)
+
+
+def expand_product(expansion: component_expansion, current: expression, parts: list):
+    """A product of a scalar and a tensor, or the outer product of two tensors."""
+    first_rank = current.operands[0].rank
+    return expansion.tabulate(
+        current.rank,
+        lambda index: (
+            tensor_entry(parts[0], index[:first_rank]) * tensor_entry(parts[1], index[first_rank:])
+        ),
+    )
+
+
+def expand_dot(expansion: component_expansion, current: expression, parts: list):
+    """The contraction of the last index of the first operand with the first of the second."""
+    split = current.operands[0].rank - 1
+    return expansion.tabulate(
+        current.rank,
+        lambda index: sum_terms(
+            tensor_entry(parts[0], index[:split] + (summation_index,))
+            * tensor_entry(parts[1], (summation_index,) + index[split:])
+            for summation_index in range(expansion.space_dimension)
+        ),
+    )
+
+
+def expand_inner(expansion: component_expansion, current: expression, parts: list):
+    return sum_terms(
+        tensor_entry(parts[0], index) * tensor_entry(parts[1], index)
+        for index in expansion.indices(current.operands[0].rank)
+    )
+
+
+def expand_norm(expansion: component_expansion, current: expression, parts: list):
+    return sqrt(
+        sum_terms(
+            tensor_entry(parts[0], index) ** 2
+            for index in expansion.indices(current.operands[0].rank)
+        )
+    )
+
+
+def expand_trace(expansion: component_expansion, current: expression, parts: list):
+    tensor = parts[0]
+    return sum_terms(tensor[row][row] for row in range(expansion.space_dimension))
+
+
+def expand_deviatoric(expansion: component_expansion, current: expression, parts: list):
+    tensor = parts[0]
+    mean = expand_trace(expansion, current, parts) / expansion.space_dimension
+    return expansion.tabulate(
+        2,
+        lambda index: (
+            tensor[index[0]][index[1]] - mean
+            if index[0] == index[1]
+            else tensor[index[0]][index[1]]
+        ),
+    )
+
+
+def expand_inverse(expansion: component_expansion, current: expression, parts: list):
+    tensor_determinant, cofactors = determinant_and_cofactors(parts[0], expansion.space_dimension)
+    return expansion.tabulate(2, lambda index: cofactors[index[1]][index[0]] / tensor_determinant)
+
+
+#: The expansion of each operation from the expanded operands parts:
+#: kind -> function(expansion, current, parts).
+operation_expansions = {
+    "component": expand_component,
+    "add": lambda expansion, current, parts: expansion.tabulate(
+        current.rank, lambda index: tensor_entry(parts[0], index) + tensor_entry(parts[1], index)
+    ),
+    "negate": lambda expansion, current, parts: expansion.tabulate(
+        current.rank, lambda index: -tensor_entry(parts[0], index)
+    ),
+    "multiply": expand_product,
+    "outer": expand_product,
+    "divide": lambda expansion, current, parts: expansion.tabulate(
+        current.rank, lambda index: tensor_entry(parts[0], index) / parts[1]
+    ),
+    "conditional": lambda expansion, current, parts: expansion.tabulate(
+        current.rank,
+        lambda index: conditional(
+            parts[0], tensor_entry(parts[1], index), tensor_entry(parts[2], index)
+        ),
+    ),
+    "dot": expand_dot,
+    "inner": expand_inner,
+    "norm": expand_norm,
+    "transpose": lambda expansion, current, parts: expansion.tabulate(
+        2, lambda index: parts[0][index[1]][index[0]]
+    ),
+    "trace": expand_trace,
+    "symmetric": lambda expansion, current, parts: expansion.tabulate(
+        2, lambda index: 0.5 * (parts[0][index[0]][index[1]] + parts[0][index[1]][index[0]])
+    ),
+    "deviatoric": expand_deviatoric,
+    "determinant": lambda expansion, current, parts: determinant_and_cofactors(
+        parts[0], expansion.space_dimension
+    )[0],
+    "inverse": expand_inverse,
+}
 
 
 def determinant_and_cofactors(tensor: list, space_dimension: int) -> tuple:
